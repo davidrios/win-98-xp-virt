@@ -12,7 +12,8 @@ pub const RETRO_API_VERSION: c_uint = 1;
 pub const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: c_uint = 10;
 pub const RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME: c_uint = 18;
 
-pub const RETRO_PIXEL_FORMAT_XRGB8888: c_uint = 2;
+// enum retro_pixel_format: 0RGB1555 = 0, XRGB8888 = 1, RGB565 = 2
+pub const RETRO_PIXEL_FORMAT_XRGB8888: c_uint = 1;
 
 pub const RETRO_REGION_NTSC: c_uint = 0;
 
