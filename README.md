@@ -37,6 +37,27 @@ and explicitly **out of scope** — we don't duplicate that work.
 9. [Reference hardware rig](docs/09-reference-hardware.md)
 10. [Decision records](docs/10-decisions.md)
 
+## Building
+
+```sh
+git clone --recurse-submodules <repo-url>   # submodules: qemu (gitlab.com, pinned v9.2.4),
+cd win98-xp-virt                            #             third_party/qemu-3dfx (github.com)
+# already cloned without submodules? → git submodule update --init --depth 1
+
+cargo build --release        # libretro core + libdisc + launcher stub
+scripts/test-core.sh         # headless smoke test (needs retroarch installed)
+
+scripts/prepare-qemu.sh      # overlay qemu-3dfx devices, patch, sign
+scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja, glib, pixman)
+ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
+```
+
+Try the core in RetroArch: `retroarch -L target/release/libwin98xp_libretro.so`
+(M0 state: renders a test pattern — QEMU embedding lands in M1).
+
+CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
+Actions tab (`workflow_dispatch`).
+
 ## License
 
 GPL-2.0. Non-negotiable in practice: the core links QEMU (GPL-2.0)
