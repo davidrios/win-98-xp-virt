@@ -1,0 +1,67 @@
+# 6. Guest machines: Win98 and XP reference configs
+
+The frontend ships two "machine families" with tested defaults. These are the
+reference definitions the guided creation flow instantiates; users supply
+their own OS media and licenses.
+
+## Windows 98 SE machine
+
+Modeled as a ~1998–2000 consumer PC.
+
+| Component | Choice | Rationale |
+|---|---|---|
+| Machine | `pc` (i440FX + PIIX) | period-correct chipset, best-tested with 9x |
+| CPU model | `pentium2` (TCG) / host-masked (KVM) | avoids CPUID features 9x mishandles; sidesteps the fast-CPU Win9x bugs (e.g. the >2.1 GHz-class IOS/NDIS crashes) |
+| RAM | 256 MB default, **≤ 512 MB hard cap** | 9x VCache breaks above ~512 MB without patches |
+| Video | QEMU std VGA (bochs) | SoftGPU's primary target; clean mode behavior for our pipeline |
+| Audio | SB16 (DOS-mode compat) + AC'97 | SB16 for DOS boxes/games, AC'97 driver in guest tools |
+| Net | PCnet (AMD) | driver in-box on 98 |
+| Storage | IDE HDD (qcow2) + our ATAPI CD | period-correct; no VirtIO for 9x |
+| Input | PS/2 mouse + kbd; USB tablet optional | PS/2 relative mode for games (see doc 03) |
+| Floppy | enabled | driver/utility sneakernet, boot disks |
+
+Guest install notes (docs shipped with the app): install from user's CD image;
+apply guest-tools ISO (SoftGPU, 3dfx wrappers, AC'97, unofficial fixes the
+user opts into). Known quirks to document: DOS-compatibility-mode storage
+regressions, ACPI off vs. APM for clean shutdown (test and pin one).
+
+## Windows XP machine
+
+Modeled as a ~2002–2005 PC.
+
+| Component | Choice | Rationale |
+|---|---|---|
+| Machine | `pc` (i440FX) | best compat with XP-era drivers; q35 unnecessary |
+| CPU | `pentium3`/host-class with sane flags | XP handles more, keep TCG features modest |
+| RAM | 512 MB–1 GB default | period-typical, snappy |
+| Video | std VGA + qemu-3dfx | XP inbox driver for 2D; wrappers for 3D |
+| Audio | AC'97 (fallback: emulated HDA) | XP AC'97 driver in guest tools |
+| Net | RTL8139 | in-box XP driver |
+| Storage | IDE + our ATAPI CD | AHCI needs F6 drivers; not worth it |
+| Input | PS/2 + USB tablet toggle | same grab semantics as 98 |
+
+Notes: SP3 recommended; activation is the user's affair with their own
+license (volume/retail as they possess) — the project ships nothing related
+to it. TSC/HAL: uniprocessor ACPI HAL default; SMP under TCG is a measured
+decision later (MTTCG helps, XP-era games rarely do).
+
+## Performance expectations (set honestly in-app)
+
+| Host | Win98 | XP |
+|---|---|---|
+| Linux/Windows x86 (KVM/WHPX) | vastly faster than period hardware | near-native |
+| Apple Silicon (TCG) | comfortably faster than a period PC | usable; single-core ~early-2000s class — validate M1 |
+
+The XP-on-Apple-Silicon row is the one architectural risk in the guest story;
+it gets benchmarked in milestone M1, not discovered in M4. Baselines come from
+the reference rig (P4 + GeForce 6200, doc 09): expectations are stated as a
+percentage of that real machine's benchmark scores, not adjectives.
+
+## Snapshots and storage
+
+- qcow2 with named snapshots ("fresh install", "drivers installed",
+  "pre-game-X") surfaced in the frontend — the retro workflow is
+  reinstall-heavy and snapshots are the killer convenience.
+- Machine definitions are declarative files (TOML/JSON) in the machine
+  library; the player process translates to QEMU config. No user-visible
+  QEMU command lines anywhere.

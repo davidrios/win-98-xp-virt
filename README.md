@@ -1,0 +1,45 @@
+# win98-xp-virt (working name)
+
+An open-source, cross-platform stack for running Windows 98 and Windows XP as
+"native vintage boxes": hardware-accelerated period 3D (Direct3D / Glide /
+OpenGL), pixel-accurate CRT-shaded video output, and faithful CD-ROM drive
+emulation that works with raw disc dumps — including era copy protection
+(SafeDisc, SecuROM, etc.) — of discs you own.
+
+Built on QEMU. Runs on Linux, Windows, and macOS, with Apple Silicon as a
+first-class target.
+
+## What exists vs. what we build
+
+| Piece | Status |
+|---|---|
+| x86 emulation/virtualization | Exists — QEMU (TCG on ARM hosts, KVM/WHPX on x86) |
+| Guest 3D acceleration | Exists — qemu-3dfx (integrate, package, test) |
+| Win9x guest GPU drivers | Exists — SoftGPU + qemu-3dfx guest wrappers (package) |
+| CRT shaders, frame pacing, input, packaging | Exists — RetroArch (we run inside it) |
+| **QEMU libretro core: in-process QEMU + pixel-accurate presentation** | **We build** (Rust) |
+| **Companion launcher (machine library, guided creation)** | **We build** (Rust) |
+| **Raw CD-ROM backend (cue/bin, subchannel, C2, CD-DA)** | **We build** (Rust "libdisc"; libmirage as reference) |
+
+Authentic-hardware Win98 emulation (real Voodoo, real S3) is 86Box's territory
+and explicitly **out of scope** — we don't duplicate that work.
+
+## Design docs
+
+1. [Goals and non-goals](docs/01-goals.md)
+2. [Architecture: in-process QEMU, process model, threading](docs/02-architecture.md)
+3. [Display pipeline: pixel accuracy, CRT shaders, latency](docs/03-display-pipeline.md)
+4. [3D acceleration: qemu-3dfx and guest drivers](docs/04-3d-acceleration.md)
+5. [CD-ROM backend: raw images and copy protection](docs/05-cdrom-backend.md)
+6. [Guest machines: Win98 and XP reference configs](docs/06-guest-machines.md)
+7. [Frontend: machine library, UX, input, audio](docs/07-frontend.md)
+8. [Roadmap and milestones](docs/08-roadmap.md)
+9. [Reference hardware rig](docs/09-reference-hardware.md)
+10. [Decision records](docs/10-decisions.md)
+
+## License
+
+GPL-2.0. Non-negotiable in practice: the core links QEMU (GPL-2.0)
+in-process. Original code is Rust wherever possible (see ADR-004 in
+[decision records](docs/10-decisions.md)); C only inside QEMU/qemu-3dfx and
+in guest-side era code.

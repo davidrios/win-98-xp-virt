@@ -1,0 +1,6 @@
+[submodule "qemu"]
+	path = qemu
+	url = https://gitlab.com/qemu-project/qemu.git
+[submodule "third_party/qemu-3dfx"]
+	path = third_party/qemu-3dfx
+	url = https://github.com/kjliew/qemu-3dfx.git

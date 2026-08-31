@@ -1,0 +1,8 @@
+[package]
+name = "launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Companion launcher: machine library, guided creation, disc shelf (doc 07). M0: stub."
+
+[dependencies]

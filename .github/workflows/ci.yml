@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-14 = Apple Silicon (mandatory target, doc 02)
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --release
+      - name: verify libretro exports (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          lib=$(ls target/release/libwin98xp_libretro.* | head -1)
+          count=$(nm -gU "$lib" 2>/dev/null | grep -c 'retro_' || nm -D "$lib" | grep -c ' T retro_')
+          echo "exported retro_* symbols: $count"
+          test "$count" -ge 25
+
+  qemu-prepare:
+    name: qemu prepare + configure (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev flex bison rsync python3-venv
+      - name: prepare (3dfx overlay + patch + sign)
+        run: ./scripts/prepare-qemu.sh
+      - name: configure
+        run: |
+          mkdir -p build/qemu && cd build/qemu
+          ../../qemu/configure --target-list=i386-softmmu,x86_64-softmmu
+      # TODO(M1): full cached QEMU build + link against the embed API

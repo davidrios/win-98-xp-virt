@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["core", "libdisc", "launcher"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-only"
+repository = "https://example.invalid/win98-xp-virt"
+
+[profile.release]
+lto = "thin"
