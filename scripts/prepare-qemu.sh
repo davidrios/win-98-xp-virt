@@ -32,8 +32,4 @@ fi
 echo "==> signing with qemu-3dfx commit"
 (cd "$QEMU" && bash "$FX/scripts/sign_commit" -git="$FX")
 
-echo "==> done. Configure with e.g.:"
-echo "    mkdir -p build/qemu && cd build/qemu && \\"
-echo "    ../../qemu/configure --disable-werror --target-list=i386-softmmu,x86_64-softmmu"
-echo "    (--disable-werror: pinned 9.2.x trips new-toolchain warnings, e.g. glibc const strstr;"
-echo "     add --python=/usr/bin/python3 if a too-new venv python wins the PATH)"
+echo "==> done. Configure with: scripts/configure-qemu.sh  (uv-managed python, --disable-werror)"

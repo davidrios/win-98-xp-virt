@@ -40,11 +40,10 @@ jobs:
         with:
           submodules: recursive
       - name: deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev flex bison rsync python3-venv
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev flex bison rsync
+      - uses: astral-sh/setup-uv@v5
       - name: prepare (3dfx overlay + patch + sign)
         run: ./scripts/prepare-qemu.sh
-      - name: configure
-        run: |
-          mkdir -p build/qemu && cd build/qemu
-          ../../qemu/configure --disable-werror --target-list=i386-softmmu,x86_64-softmmu
+      - name: configure (uv-managed python)
+        run: ./scripts/configure-qemu.sh
       # TODO(M1): full cached QEMU build + link against the embed API
