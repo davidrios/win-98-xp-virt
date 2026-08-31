@@ -1,9 +1,9 @@
 name: CI
 
+# Manual-only for now (user request); restore push/pull_request triggers
+# when we're ready to burn CI minutes.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   rust:
