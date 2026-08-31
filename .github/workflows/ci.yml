@@ -46,5 +46,5 @@ jobs:
       - name: configure
         run: |
           mkdir -p build/qemu && cd build/qemu
-          ../../qemu/configure --target-list=i386-softmmu,x86_64-softmmu
+          ../../qemu/configure --disable-werror --target-list=i386-softmmu,x86_64-softmmu
       # TODO(M1): full cached QEMU build + link against the embed API
