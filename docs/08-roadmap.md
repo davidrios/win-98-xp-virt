@@ -74,7 +74,7 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
 - **Exit:** mode-sweep test passes; a DOS game under Win98 looks right and
   mouselook feels right.
 
-## M3 — 3D for Win98
+## M3 — 3D for Win98  (design: doc 12; pulled forward, starts after M1 closes)
 
 - 3D output through the librashader chain per Spike A; guest tools ISO build
   (SoftGPU + matching wrappers + AC'97/net drivers).

@@ -36,6 +36,8 @@ and explicitly **out of scope** — we don't duplicate that work.
 8. [Roadmap and milestones](docs/08-roadmap.md)
 9. [Reference hardware rig](docs/09-reference-hardware.md)
 10. [Decision records](docs/10-decisions.md)
+11. [M1 embed API design](docs/11-m1-embed-api.md)
+12. [M3 window-less GL context provider design](docs/12-m3-context-provider.md)
 
 ## Building
 
