@@ -13,7 +13,22 @@
 #include "ui/console.h"
 #include "ui/surface.h"
 #include "ui/input.h"
+#include "qemu-main.h"
 #include "libqemu_embed.h"
+
+/*
+ * system/main.c is not part of the library, but ui/cocoa.m (macOS) still
+ * references qemu_default_main()/qemu_main: provide upstream's definitions.
+ * Unused in the embed flow (-display none); the caller drives the loop via
+ * qemu_embed_run().
+ */
+int qemu_default_main(void)
+{
+    int status = qemu_main_loop();
+    qemu_cleanup(status);
+    return status;
+}
+int (*qemu_main)(void) = qemu_default_main;
 
 enum { EV_KEY, EV_REL, EV_ABS, EV_BTN };
 
