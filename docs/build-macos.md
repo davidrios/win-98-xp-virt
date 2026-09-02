@@ -137,6 +137,11 @@ on the SDL backend is `SDL_GL_SwapWindow` from the device handler; if it
 looks janky unless the mouse moves, try `DispTimerMS,16` and/or
 `ContextVsyncOff,1` / `FpsLimit,60` and report.
 
+**Grab workaround for desktop use:** add `-usb -device usb-tablet`. With an
+absolute pointer SDL never grabs mouse or keyboard, so no release hotkey is
+needed (Win98 SE drives a USB HID tablet with in-box drivers). Relative
+(PS/2) mode is only needed for mouselook games.
+
 **Mouse/keyboard grab under `-display sdl`:** hotkey is left-Ctrl +
 left-Option + G (SDL `KMOD_LCTRL|KMOD_LALT`; the right-hand keys don't
 count). Alternatives: `-display sdl,grab-mod=lshift-lctrl-lalt`
