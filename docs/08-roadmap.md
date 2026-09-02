@@ -29,7 +29,9 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
   `qemu-embed` crate (hand-written FFI, rpath via `links` metadata);
   **FreeDOS boots inside the player on Linux** — 720×400 text mode frames
   through the embed display path (`PLAYER_DUMP` verification).
-- Next: Win98 boot; keyboard/mouse verified in-guest; audio backend patch;
+- ✅ keyboard path verified (scripted `PLAYER_KEYS` → FreeDOS installer
+  prompt answered "N" through the embed input queue).
+- Next: Win98 boot (Air); mouse verified in-guest; audio backend patch;
   QMP over socketpair; librashader chain; latency HUD; macOS build of the
   embed lib (dylib) on the M1 Air.
 - librashader-wgpu chain with one CRT preset; keyboard/mouse injection; cpal
