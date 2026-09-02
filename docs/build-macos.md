@@ -143,9 +143,9 @@ needed (Win98 SE drives a USB HID tablet with in-box drivers). Relative
 (PS/2) mode is only needed for mouselook games.
 
 **Mouse/keyboard grab under `-display sdl`:** hotkey is Ctrl+Option+G
-(fullscreen: Ctrl+Option+F). On the Air, SDL reported the left Control key
-as *right* Control (`mod=0x0181`), which made every hotkey dead in stock
-QEMU; our queue patch `03-sdl-darwin-either-ctrl` accepts either Control on
+(fullscreen: Ctrl+Option+F). With macOS's Caps Lock→Control remap, SDL reports that
+Control as *right* Control (`mod=0x0181`), which makes every hotkey dead in
+stock QEMU; our queue patch `03-sdl-darwin-either-ctrl` accepts either Control on
 macOS. Without it, `-display sdl,grab-mod=rctrl` works as a fallback.
 `Ctrl+Alt+G` deliberately does not release while the window is fullscreen;
 qemu-3dfx's `fxui_grab` re-grabs on focus while 3D is active.
