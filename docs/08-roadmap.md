@@ -35,7 +35,13 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
   ring, rate-paced) → cpal on the host; verified headlessly (FreeDOS
   `echo ^G` fills the ring). `prepare-qemu.sh` made deterministic
   (restores tracked files, re-applies every patch each run).
-- Next: Win98 boot (Air); mouse verified in-guest;
+- ✅ 2026-09-02 **Windows 98 runs inside the player on the M1 Air** —
+  display, sound (embed audiodev → cpal), keyboard, USB-tablet mouse, all
+  through `libqemu-embed-i386.dylib`. macOS needed: `qemu_default_main`
+  provided by the shim, an ld64 export list (QEMU's plugin
+  `-exported_symbols_list` hid the API), sRGB-tagged guest texture (macOS
+  swapchain is sRGB), and absolute-mode cursor handling.
+- Next: measured latency (HUD); XP boot + benchmark on the Air;
   QMP over socketpair; librashader chain; latency HUD; macOS build of the
   embed lib (dylib) on the M1 Air.
 - librashader-wgpu chain with one CRT preset; keyboard/mouse injection; cpal

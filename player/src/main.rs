@@ -150,6 +150,14 @@ impl Gpu {
             return;
         }
         // XRGB8888 little-endian == BGRA8 byte order: upload as-is.
+        // Guest pixels are sRGB-encoded: tag the texture sRGB when the swapchain
+        // is sRGB (macOS default) so sampling decodes and presenting re-encodes;
+        // on a linear swapchain (Linux default) pass values through unchanged.
+        let format = if self.config.format.is_srgb() {
+            wgpu::TextureFormat::Bgra8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Bgra8Unorm
+        };
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("guest framebuffer"),
             size: wgpu::Extent3d {
@@ -160,7 +168,7 @@ impl Gpu {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -398,10 +406,26 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(vm) = self.vm() {
                     if vm.mouse_is_absolute() {
-                        if let Some((x, y, w, h)) = self.to_guest(position.x, position.y) {
+                        if self.grabbed {
+                            // guest switched to a tablet: a relative grab is wrong now
+                            self.set_grab(false);
+                        }
+                        let inside = self.to_guest(position.x, position.y);
+                        if let Some(gpu) = &self.gpu {
+                            // the guest draws its own pointer: hide ours over the image
+                            gpu.window.set_cursor_visible(inside.is_none());
+                        }
+                        if let Some((x, y, w, h)) = inside {
                             vm.mouse_abs(x, y, w, h);
                             vm.input_flush();
                         }
+                    }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(gpu) = &self.gpu {
+                    if !self.grabbed {
+                        gpu.window.set_cursor_visible(true);
                     }
                 }
             }
