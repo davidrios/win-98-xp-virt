@@ -13,6 +13,25 @@ FX="$ROOT/third_party/qemu-3dfx"
 OUT="$ROOT/guest-tools/out"
 REV="$(git -C "$FX" rev-parse --short HEAD)"
 
+# gendef (mingw-w64-tools) is not in Homebrew's mingw-w64; build it from
+# pinned upstream sources when missing. It is a standalone C program.
+GENDEF_SRC_REF="93f3505a758fe70e56678f00e753af3bc4f640bb"   # mirror/mingw-w64 master, 2024-09-24
+ensure_gendef() {
+  if command -v gendef >/dev/null && [ -z "${GENDEF_FORCE_BUILD:-}" ]; then return; fi
+  local d="$ROOT/guest-tools/tools" bin="$ROOT/guest-tools/tools/bin"
+  if [ ! -x "$bin/gendef" ]; then
+    echo "==> building gendef from mingw-w64 @ ${GENDEF_SRC_REF:0:7}"
+    mkdir -p "$d/gendef-src" "$bin"
+    local base="https://raw.githubusercontent.com/mirror/mingw-w64/$GENDEF_SRC_REF/mingw-w64-tools/gendef/src"
+    for f in compat_string.c compat_string.h fsredir.c fsredir.h gendef.c gendef.h gendef_def.c; do
+      curl -fsSL -o "$d/gendef-src/$f" "$base/$f"
+    done
+    cc -O2 -w -DVERSION='"1.0-win98xp"' -o "$bin/gendef" "$d"/gendef-src/*.c
+  fi
+  export PATH="$bin:$PATH"
+}
+ensure_gendef
+
 build_wrapper() {  # $1 = 3dfx | mesa
   local d="$FX/wrappers/$1/build"
   rm -rf "$d" && mkdir -p "$d"

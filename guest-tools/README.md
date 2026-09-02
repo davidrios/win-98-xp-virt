@@ -17,7 +17,10 @@ GAMEDIR\  OPENGL32.DLL WGLGEARS.EXE                        → next to each Open
 
 Needs a mingw32 cross toolchain + gendef/xxd/shasum and an ISO tool
 (Arch: `mingw-w64-gcc mingw-w64-tools xorriso`; macOS: `brew install
-mingw-w64 xorriso`). DOS-only pieces (GLIDE2X.OVL, DJGPP DXEs) are skipped.
+mingw-w64 xorriso`). Homebrew's mingw-w64 ships no `gendef`; the script
+builds it from pinned mingw-w64 sources into `out/tools/bin` when it is
+missing (`GENDEF_FORCE_BUILD=1` forces that path). DOS-only pieces
+(GLIDE2X.OVL, DJGPP DXEs) are skipped.
 `WGLGEARS.EXE` is Mesa's wglgears from qemu-3dfx's demos — run it in the
 guest next to `OPENGL32.DLL` as the zero-dependency GL pass-through check.
 

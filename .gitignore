@@ -9,3 +9,4 @@
 /reference/**/*.cue
 build/
 /guest-tools/out/
+/guest-tools/tools/
