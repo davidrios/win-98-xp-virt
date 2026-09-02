@@ -28,6 +28,14 @@ if [ "$(uname -s)" = Darwin ]; then
   # /opt/X11) and the patch requires SDL2.
   [ -d /opt/X11/include ] || { echo "XQuartz missing: brew install --cask xquartz"; exit 1; }
   pkg-config --exists sdl2 || { echo "SDL2 missing: brew install sdl2"; exit 1; }
+  # SDK 15.4+ declares strchrnul (and friends) with an availability of 15.4;
+  # QEMU detects and uses them unguarded, so a lower deployment target spams
+  # -Wunguarded-availability-new. Target the running OS for local builds
+  # (release packaging picks its own floor). Honour a preset value.
+  if [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ]; then
+    export MACOSX_DEPLOYMENT_TARGET="$(sw_vers -productVersion | cut -d. -f1,2)"
+  fi
+  echo "==> MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 fi
 "$ROOT/qemu/configure" \
   --python="$PYTHON" \

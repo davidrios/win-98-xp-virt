@@ -54,6 +54,13 @@ scripts/configure-qemu.sh      # uv-managed Python 3.12, --disable-werror
 ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
 ```
 
+`configure-qemu.sh` sets `MACOSX_DEPLOYMENT_TARGET` to the running macOS
+version (unless you preset it). Without that, the 15.4+ SDK's availability
+annotations (`strchrnul is only available on macOS 15.4 or newer`) produce a
+wall of `-Wunguarded-availability-new` warnings, because QEMU's configure
+detects the function and uses it unguarded. Local builds therefore target the
+machine they're built on; release packaging will choose its own floor.
+
 Order matters: if you re-run `prepare-qemu.sh` later (e.g. after pulling a
 patch-queue change), run `configure-qemu.sh` again before `ninja` — a
 refreshed overlay can make ninja regenerate the build with default options
