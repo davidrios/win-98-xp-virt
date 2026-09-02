@@ -24,8 +24,9 @@ window path uses it.)
 requires QEMU's SDL2 display — `sdl_display_valid()` (patched `ui/sdl2.c`)
 exits unless `sdl2_console` exists, and the SDL window is torn down and
 recreated to host the GL context (`sdl_gui_restart`). With the player's
-`-display none`, launching a GL/Glide title would `exit(1)` the whole
-process. So the M3 integration is not optional plumbing: our fork must
+`-display none`, launching a GL/Glide title used to `exit(1)` the whole
+process (confirmed on the Air with wglgears under the player); patch 04
+now makes GL activation fail cleanly (Glide still exits). So the M3 integration is not optional plumbing: our fork must
 replace the SDL-window dependency (`mesa_prepare_window`,
 `glide_prepare_window`, `sdl_display_valid`, fullscreen helpers in
 `include/ui/console.h:482-490`) with a window-less context provider that

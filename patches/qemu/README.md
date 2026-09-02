@@ -30,6 +30,11 @@ Current queue:
 - `03-sdl-darwin-either-ctrl.patch` — SDL on macOS reported the left Control
   key as `KMOD_RCTRL`, so `get_mod_state()` never matched and all Ctrl+Alt
   hotkeys (grab release, fullscreen) were dead; accept either Control.
+- `04-3dfx-graceful-no-display.patch` — without an SDL display (the
+  player's `-display none`), GL pass-through activation used to `exit(1)`
+  the process; now it refuses the context (guest `wglCreateContext` fails,
+  the VM survives). Glide activation still exits — its window path is not
+  NULL-safe. Both are replaced by the M3 context provider.
 - `90-debug-sdl-keydebug.patch` — `QEMU_SDL_KEYDEBUG=1` logs SDL keydowns
   (temporary diagnostic; env-gated, harmless).
 - `00-3dfx-darwin-contextalpha.patch` — upstream qemu-3dfx Darwin build

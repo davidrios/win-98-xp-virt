@@ -1,0 +1,124 @@
+Do not kill the VM when a guest activates GL pass-through without an SDL
+display (the player runs -display none): sdl_display_valid() reports instead
+of exit(1), mesa_prepare_window() hands the backend a NULL window, and the
+Mesa backends refuse context creation so the guest's wglCreateContext fails
+cleanly. Glide pass-through still exits (its window path is not NULL-safe);
+both get a real window-less context provider in M3.
+
+--- a/hw/mesa/mglcntx_linux.c	2026-09-02 17:07:11.346825984 -0300
++++ b/hw/mesa/mglcntx_linux.c	2026-09-02 17:07:11.362491177 -0300
+@@ -416,6 +416,10 @@
+ int MGLCreateContext(uint32_t gDC)
+ {
+     int i, ret;
++    if (!win) {
++        DPRINTF("no window: GL context refused");
++        return 1;
++    }
+     i = gDC & (MAX_PBUFFER - 1);
+     if (gDC == ((MESAGL_HPBDC & 0xFFFFFFF0U) | i)) {
+         ret = 0;
+@@ -437,6 +441,8 @@
+ 
+ int MGLMakeCurrent(uint32_t cntxRC, int level)
+ {
++    if (!win)
++        return 0;
+     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
+     uint32_t i = cntxRC & (MAX_PBUFFER - 1);
+     if (cntxRC == (MESAGL_MAGIC - n)) {
+--- a/hw/mesa/mglcntx_sdlgl.c	2026-09-02 17:07:11.343169610 -0300
++++ b/hw/mesa/mglcntx_sdlgl.c	2026-09-02 17:07:11.362399525 -0300
+@@ -443,6 +443,10 @@
+ int MGLCreateContext(uint32_t gDC)
+ {
+     int i, ret;
++    if (!window) {
++        DPRINTF("no window: GL context refused");
++        return 1;
++    }
+     i = gDC & (MAX_PBUFFER - 1);
+     if (gDC == ((MESAGL_HPBDC & 0xFFFFFFF0U) | i)) {
+         ret = 0;
+@@ -463,6 +467,8 @@
+ 
+ int MGLMakeCurrent(uint32_t cntxRC, int level)
+ {
++    if (!window)
++        return 0;
+     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
+     uint32_t i = cntxRC & (MAX_PBUFFER - 1);
+     if (cntxRC == (MESAGL_MAGIC - n)) {
+--- a/ui/sdl2.c	2026-09-02 17:07:11.339428257 -0300
++++ b/ui/sdl2.c	2026-09-02 17:07:11.362148411 -0300
+@@ -816,16 +816,21 @@
+     SDL_QuitSubSystem(SDL_INIT_VIDEO);
+ }
+ 
+-static void sdl_display_valid(const char *feat)
++/* win98-xp-virt: report instead of exit(1) — under an embedding frontend
++ * (-display none) a guest launching a 3D title must not kill the VM. Callers
++ * hand the backend a NULL window so context creation fails cleanly. */
++static bool sdl_display_valid(const char *feat)
+ {
+     if (!sdl2_console) {
+-        error_report("%s: invalid sdl display. Use '-display sdl'", feat);
+-        exit(1);
++        error_report("%s: no SDL display (3D pass-through needs '-display sdl'); "
++                     "refusing GL context", feat);
++        return false;
+     }
+     if (sdl2_console[0].opengl) {
+         error_report("%s: qemu-3dfx activation conflicts with display 'sdl,gl=on'", feat);
+         exit(1);
+     }
++    return true;
+ }
+ static void sdl_gui_restart(struct sdl2_console *scon, SDL_Surface *icon)
+ {
+@@ -997,7 +1002,10 @@
+     int scr_w, scr_h;
+     struct sdl_console_cb *s = &scon_cb;
+ 
+-    sdl_display_valid("glidept");
++    if (!sdl_display_valid("glidept")) {
++        error_report("glidept: Glide pass-through without an SDL display is not supported yet");
++        exit(1);
++    }
+     s->scon = &sdl2_console[0];
+     s->opaque = opaque;
+     s->cwnd_fn = (void (*)(void *, void *, void *))cwnd_fn;
+@@ -1024,7 +1032,9 @@
+ {
+     struct sdl_console_cb *s = &scon_cb;
+ 
+-    sdl_display_valid("glidept");
++    if (!sdl_display_valid("glidept")) {
++        return;
++    }
+     s->scon = &sdl2_console[0];
+     s->opaque = opaque;
+     s->cwnd_fn = (void (*)(void *, void *, void *))cwnd_fn;
+@@ -1093,7 +1103,10 @@
+     int scr_w, scr_h;
+     struct sdl_console_cb *s = &scon_cb;
+ 
+-    sdl_display_valid("mesapt");
++    if (!sdl_display_valid("mesapt")) {
++        ((void (*)(void *, void *, void *))cwnd_fn)(NULL, NULL, NULL);
++        return;
++    }
+     s->scon = &sdl2_console[0];
+     s->msaa = msaa;
+     s->alpha = alpha;
+@@ -1121,7 +1134,9 @@
+ {
+     struct sdl_console_cb *s = &scon_cb;
+ 
+-    sdl_display_valid("mesapt");
++    if (!sdl_display_valid("mesapt")) {
++        return;
++    }
+     s->scon = &sdl2_console[0];
+     s->res = 0;
+     s->opaque = 0;
