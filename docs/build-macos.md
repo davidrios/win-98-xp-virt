@@ -185,12 +185,27 @@ renderer string + fps under "Result" in `docs/spikes/spike-a-macos.md`.
 ## The player on the Mac (M1)
 
 ```sh
+export MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1,2)  # same as configure-qemu.sh
 ninja -C build/qemu libqemu-embed-i386.dylib && cargo build --release
 PLAYER_LATENCY=1 target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- \
   -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 -hda ~/vms/win98.qcow2 \
   -vga cirrus -net none -usb -device usb-tablet -device sb16,audiodev=embed0
 # XP: -m 512 -vga std -device AC97,audiodev=embed0
 ```
+After `git pull`, always `scripts/prepare-qemu.sh && scripts/configure-qemu.sh`
+before that `ninja`: `qemu/embed/` is a copy of `embed/`, so a pull that
+changes the embed API (e.g. v3 added `qemu_embed_set_refresh_ms`) leaves the
+old dylib in place and the player link fails with
+`Undefined symbols for architecture arm64: _qemu_embed_set_refresh_ms`.
+`qemu-embed/build.rs` prints a warning when the copy is stale.
+
+The deployment-target export silences ld's
+`object file … was built for newer macOS version than being linked` /
+`building for macOS 11 but linking with dylib built for 15.0` warnings:
+rustc links for 11.0 by default, while libqemu (configure-qemu.sh) and the
+cmake-built C++ deps (glslang, spirv-cross) target the running OS. They are
+warnings only; the link is fine either way.
+
 Verified 2026-09-02: Win98 desktop with sound, keyboard, tablet mouse;
 sRGB-correct. `PLAYER_LATENCY=1` prints publish→present percentiles — the
 M1 latency number should be taken here. 3D inside the player: not until M3

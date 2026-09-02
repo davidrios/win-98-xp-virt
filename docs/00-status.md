@@ -21,6 +21,12 @@ git clone --recurse-submodules --shallow-submodules <repo>
 scripts/prepare-qemu.sh && scripts/configure-qemu.sh
 ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so     # .dylib on macOS
 cargo build --release
+# After every git pull: repeat prepare → configure → ninja → cargo. qemu/embed/
+# is a COPY of embed/ (prepare-qemu.sh rsyncs it); a stale copy links the
+# player against an old dylib ("undefined symbol _qemu_embed_..."). build.rs
+# warns when the copy differs. macOS: export MACOSX_DEPLOYMENT_TARGET (same
+# value configure-qemu.sh printed) before cargo too, or ld warns about
+# "built for newer macOS version" on every C++ dep and libqemu.
 # Win98 in the player (macOS shown; Linux identical, drop coreaudio bits)
 target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- \
   -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 -hda ~/vms/win98.qcow2 \
@@ -46,6 +52,9 @@ macOS specifics: `docs/build-macos.md`.
 - `enable_cache` for librashader off (needs `Features::PIPELINE_CACHE`).
 - `prepare-qemu.sh` must be followed by `configure-qemu.sh` when meson
   files change; the script keeps `werror` off and unchanged mtimes stable.
+- Embed API bump (header `QEMU_EMBED_API_VERSION` + `qemu-embed` crate
+  `API_VERSION`) ⇒ every machine must re-run prepare + ninja the dylib
+  before `cargo build`, or the link fails on the new symbol.
 
 ## Next steps, in order
 
