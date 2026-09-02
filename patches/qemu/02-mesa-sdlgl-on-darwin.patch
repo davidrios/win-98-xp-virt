@@ -1,0 +1,23 @@
+Use qemu-3dfx's SDL GL context backend (mglcntx_sdlgl.c, native
+OpenGL.framework) instead of the GLX/XQuartz one on macOS.
+
+XQuartz's GLX is broken on macOS Tahoe (XQuartz issue #446: Apple-DRI
+opcode 129/2 BadDrawable/BadValue for any GLX client), which kills 3D
+activation with "X Error of failed request: BadDrawable". Upstream ships
+mglcntx_sdlgl.c with a CONFIG_DARWIN path but does not build it; both
+backends export the identical symbol set. Linux keeps GLX.
+
+--- a/hw/mesa/meson.build
++++ b/hw/mesa/meson.build
+@@ -1,9 +1,10 @@
++mesa_ctx = host_os == 'darwin' ? 'mglcntx_sdlgl.c' : 'mglcntx_linux.c'
+ i386_system_ss.add(files(
+   'extensions_table.c',
+   'mesagl_blit.c',
+   'mesagl_impl.c',
+   'mesapt_mm.c',
+-  'mglcntx_linux.c',
++  mesa_ctx,
+   'mglcntx_mingw.c',
+   'mglmapbo.c',
+   'mglvarry.c',

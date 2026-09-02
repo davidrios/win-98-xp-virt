@@ -40,6 +40,13 @@ Consequences for the interop:
   exists as a starting point and targets `OpenGL.framework` directly —
   which drops XQuartz entirely and makes the IOSurface route direct.
   Scope after step 2.
+- **2026-09-02, Air on macOS Tahoe:** the GLX backend fails at activation
+  with `BadDrawable, Major opcode 129 (Apple-DRI)` — XQuartz GLX is broken
+  on Tahoe (XQuartz #446). Switched macOS to `mglcntx_sdlgl.c` via
+  `patches/qemu/02-mesa-sdlgl-on-darwin.patch`; that backend creates the GL
+  context with SDL on QEMU's window and loads Apple's OpenGL.framework —
+  no X server. This is also the backend we build our own context provider
+  from (M3).
 - Upstream Darwin support is evidently lightly maintained: the July 2026
   sync broke the Darwin build (`GL_CONTEXTALPHA`), fixed in our queue by
   `patches/qemu/00-3dfx-darwin-contextalpha.patch`.
