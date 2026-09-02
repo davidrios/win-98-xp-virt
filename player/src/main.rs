@@ -297,7 +297,7 @@ impl Gpu {
                         if chain.frame_count() == want {
                             self.queue.submit(Some(chain_enc.take().unwrap().finish()));
                             shader::dump_texture(&self.device, &self.queue, &out_tex, &path);
-                            std::process::exit(0);
+                            hard_exit(0);
                         }
                     }
                 }
@@ -380,14 +380,50 @@ struct App {
     latency: Vec<f32>, // ms, publish→present per presented guest frame
     modifiers: ModifiersState,
     grabbed: bool,
+    /// Set on CloseRequested: no further calls into the VM handle, which the
+    /// QEMU thread is about to destroy.
+    closing: bool,
+    qemu_thread: Option<std::thread::JoinHandle<i32>>,
+}
+
+/// Exit without running atexit handlers. QEMU registers several
+/// (`audio_cleanup`, `qemu_run_exit_notifiers`); running them on a thread
+/// other than the QEMU thread, or while that thread is still alive, is a
+/// crash. stderr is unbuffered so diagnostics already printed are safe.
+fn hard_exit(code: i32) -> ! {
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(not(unix))]
+    std::process::exit(code)
 }
 
 impl App {
     fn vm(&self) -> Option<Qemu> {
         match &self.source {
-            Some(Source::Qemu { vm, .. }) => Some(*vm),
+            Some(Source::Qemu { vm, .. }) if !self.closing => Some(*vm),
             _ => None,
         }
+    }
+
+    /// Orderly exit: QEMU must finish `qemu_cleanup` before the process
+    /// exits, or QEMU's own atexit handlers (audio_cleanup, exit notifiers)
+    /// run on this thread concurrently with the main loop — seen on macOS as
+    /// `assertion failed: mutex->initialized` in qemu_mutex_lock_impl.
+    fn join_qemu(&mut self) -> i32 {
+        let Some(handle) = self.qemu_thread.take() else {
+            return 0;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !handle.is_finished() {
+            if std::time::Instant::now() > deadline {
+                eprintln!("[player] QEMU did not shut down in 15 s; exiting without cleanup");
+                hard_exit(1);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        handle.join().unwrap_or(1)
     }
 
     fn set_grab(&mut self, on: bool) {
@@ -450,7 +486,8 @@ impl ApplicationHandler for App {
             }
             self.audio = audio_out;
             let audio_cfg = self.audio.as_ref().map(|o| (ring, o.sample_rate));
-            let (vm, display, _join) = qemu_vm::start(self.qemu_args.clone(), audio_cfg);
+            let (vm, display, join) = qemu_vm::start(self.qemu_args.clone(), audio_cfg);
+            self.qemu_thread = Some(join);
             Source::Qemu {
                 vm,
                 display,
@@ -465,6 +502,7 @@ impl ApplicationHandler for App {
                 if let Some(vm) = self.vm() {
                     vm.vm_shutdown();
                 }
+                self.closing = true;
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -659,7 +697,7 @@ pub fn maybe_dump(pixels: &[u32], w: usize, h: usize, seq: u64) {
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header().unwrap().write_image_data(&rgb).unwrap();
     eprintln!("dumped {w}x{h} frame #{seq} to {path}");
-    std::process::exit(0);
+    hard_exit(0);
 }
 
 fn main() {
@@ -682,4 +720,11 @@ fn main() {
         ..Default::default()
     };
     event_loop.run_app(&mut app).expect("run");
+    let status = app.join_qemu();
+    // Return, don't exit(): QEMU's atexit handlers run here, after its
+    // thread has already completed qemu_cleanup — the same order as
+    // qemu-system's own main().
+    if status != 0 {
+        std::process::exit(status);
+    }
 }

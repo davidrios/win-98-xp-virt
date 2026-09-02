@@ -79,3 +79,8 @@ macOS specifics: `docs/build-macos.md`.
 - Win98 must be an ACPI install (`SETUP /p j`) or PCI hot-adds are never
   detected; repair path in build-macos.md.
 - Caps-Lock→Control on macOS reports as right Ctrl to SDL (patch 03).
+- Never `exit()` the process while the QEMU thread is alive: QEMU registers
+  atexit handlers (`audio_cleanup`, exit notifiers) that then race
+  `qemu_cleanup` → `assertion failed: mutex->initialized` on macOS. The
+  player joins the QEMU thread after the event loop; headless dump paths use
+  `_exit`.
