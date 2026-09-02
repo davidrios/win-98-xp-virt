@@ -52,6 +52,8 @@ scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja,
 ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
 ```
 
+macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
+
 CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
 Actions tab (`workflow_dispatch`).
 

@@ -7,6 +7,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# qemu-3dfx's sign_commit uses GNU `sed -i -e`; BSD sed would leave "-e"
+# backup files behind. Prefer Homebrew gnu-sed on macOS.
+if [ "$(uname -s)" = Darwin ]; then
+  GNUBIN="$(brew --prefix gnu-sed 2>/dev/null || true)/libexec/gnubin"
+  [ -d "$GNUBIN" ] && export PATH="$GNUBIN:$PATH" || echo "warning: gnu-sed not found (brew install gnu-sed)"
+fi
 QEMU="$ROOT/qemu"
 FX="$ROOT/third_party/qemu-3dfx"
 PATCH="$FX/00-qemu92x-mesa-glide.patch"
@@ -22,7 +29,9 @@ esac
 echo "==> overlaying hw/3dfx and hw/mesa"
 rsync -r "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
 
-if git -C "$QEMU" apply --reverse --check "$PATCH" 2>/dev/null; then
+# Applied-check: the patch wires glidept_mm_init() into pc.c; sign_commit
+# later edits vl.c, so a `git apply --reverse --check` would wrongly fail.
+if grep -q glidept_mm_init "$QEMU/hw/i386/pc.c"; then
   echo "==> patch already applied"
 else
   echo "==> applying $(basename "$PATCH")"
