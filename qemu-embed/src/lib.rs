@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
 
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 pub const FMT_XRGB8888: u32 = 1;
 
 #[repr(C)]
@@ -49,6 +49,22 @@ extern "C" {
     fn qemu_embed_mouse_btn(e: *mut qemu_embed_t, button: u32, down: bool);
     fn qemu_embed_mouse_is_absolute(e: *mut qemu_embed_t) -> bool;
     fn qemu_embed_input_flush(e: *mut qemu_embed_t);
+    fn qemu_embed_set_audio_ring(
+        base: *mut c_void,
+        bytes: usize,
+        wr_idx: *mut u32,
+        rd_idx: *const u32,
+    );
+}
+
+/// Install the audio ring. Must be called BEFORE [`Qemu::new`] on any
+/// thread; then configure `-audiodev embed,id=...,out.format=s16,...`.
+///
+/// # Safety
+/// `base`/`wr`/`rd` must stay valid for the process lifetime; `bytes` is a
+/// power of two; the consumer only writes `rd`, QEMU only writes `wr`.
+pub unsafe fn set_audio_ring(base: *mut u8, bytes: usize, wr: *mut u32, rd: *const u32) {
+    qemu_embed_set_audio_ring(base as *mut c_void, bytes, wr, rd)
 }
 
 /// Library API version; must equal [`API_VERSION`].

@@ -1,0 +1,48 @@
+Register the "embed" audiodev driver (embed/embedaudio.c, built into
+libqemu-embed): QAPI enum/union entry plus the per-direction options case.
+The driver clips QEMU's mixed output into a ring owned by the embedding
+application (docs/11-m1-embed-api.md).
+
+--- a/audio/audio.c
++++ b/audio/audio.c
+@@ -2003,6 +2003,7 @@
+         break
+ 
+         CASE(NONE, none, );
++        CASE(EMBED, embed, );
+ #ifdef CONFIG_AUDIO_ALSA
+         CASE(ALSA, alsa, Alsa);
+ #endif
+--- a/qapi/audio.json
++++ b/qapi/audio.json
+@@ -462,7 +462,8 @@
+             { 'name': 'sdl', 'if': 'CONFIG_AUDIO_SDL' },
+             { 'name': 'sndio', 'if': 'CONFIG_AUDIO_SNDIO' },
+             { 'name': 'spice', 'if': 'CONFIG_SPICE' },
+-            'wav' ] }
++            'wav',
++            'embed' ] }
+ 
+ ##
+ # @Audiodev:
+@@ -508,7 +509,8 @@
+                    'if': 'CONFIG_AUDIO_SNDIO' },
+     'spice':     { 'type': 'AudiodevGenericOptions',
+                    'if': 'CONFIG_SPICE' },
+-    'wav':       'AudiodevWavOptions' } }
++    'wav':       'AudiodevWavOptions',
++    'embed':     'AudiodevGenericOptions' } }
+ 
+ ##
+ # @query-audiodevs:
+--- a/audio/audio_template.h
++++ b/audio/audio_template.h
+@@ -340,6 +340,8 @@
+     switch (dev->driver) {
+     case AUDIODEV_DRIVER_NONE:
+         return dev->u.none.TYPE;
++    case AUDIODEV_DRIVER_EMBED:
++        return dev->u.embed.TYPE;
+ #ifdef CONFIG_AUDIO_ALSA
+     case AUDIODEV_DRIVER_ALSA:
+         return qapi_AudiodevAlsaPerDirectionOptions_base(dev->u.alsa.TYPE);

@@ -4,6 +4,7 @@
 //! presents the guest framebuffer through wgpu (integer-scaled 4:3);
 //! keyboard and mouse are injected. No args → the M0 test pattern.
 
+mod audio;
 mod keymap;
 mod pattern;
 mod qemu_vm;
@@ -283,6 +284,7 @@ struct App {
     qemu_args: Vec<String>,
     gpu: Option<Gpu>,
     source: Option<Source>,
+    audio: Option<audio::Output>,
     modifiers: ModifiersState,
     grabbed: bool,
 }
@@ -340,7 +342,15 @@ impl ApplicationHandler for App {
         self.source = Some(if self.qemu_args.is_empty() {
             Source::Pattern(Pattern::new())
         } else {
-            let (vm, display, _join) = qemu_vm::start(self.qemu_args.clone());
+            // host audio first: QEMU's audiodev must match the device rate
+            let ring = audio::Ring::new();
+            let audio_out = audio::start(ring.clone());
+            if audio_out.is_none() {
+                eprintln!("[audio] no output device; guest audio disabled");
+            }
+            self.audio = audio_out;
+            let audio_cfg = self.audio.as_ref().map(|o| (ring, o.sample_rate));
+            let (vm, display, _join) = qemu_vm::start(self.qemu_args.clone(), audio_cfg);
             Source::Qemu {
                 vm,
                 display,

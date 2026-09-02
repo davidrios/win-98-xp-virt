@@ -19,7 +19,7 @@ pub struct Frame {
 /// numbers (headless input verification; names: a-z, 0-9, enter, esc, space,
 /// tab, up, down, left, right, f1-f12).
 struct KeyScript {
-    steps: Vec<(u64, u32)>, // (frame seq, AT set-1 scancode)
+    steps: Vec<(u64, Vec<u32>)>, // (frame seq, AT set-1 scancodes pressed together)
     next: usize,
 }
 
@@ -65,6 +65,9 @@ fn key_name_to_atset1(name: &str) -> Option<u32> {
         };
     }
     Some(match n.as_str() {
+        "ctrl" => 0x1D,
+        "alt" => 0x38,
+        "shift" => 0x2A,
         "enter" => 0x1C,
         "esc" => 0x01,
         "space" => 0x39,
@@ -89,8 +92,12 @@ fn key_script_from_env() -> Option<KeyScript> {
     let spec = std::env::var("PLAYER_KEYS").ok()?;
     let mut steps = Vec::new();
     for item in spec.split(',') {
-        let (at, name) = item.split_once(':')?;
-        steps.push((at.trim().parse().ok()?, key_name_to_atset1(name.trim())?));
+        let (at, names) = item.split_once(':')?;
+        let chord: Option<Vec<u32>> = names
+            .split('+')
+            .map(|n| key_name_to_atset1(n.trim()))
+            .collect();
+        steps.push((at.trim().parse().ok()?, chord?));
     }
     steps.sort();
     Some(KeyScript { steps, next: 0 })
@@ -181,13 +188,21 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     }
     if let (Some(vm), Some(sc)) = (vm.as_ref(), script.as_mut()) {
         while sc.next < sc.steps.len() && sc.steps[sc.next].0 <= front.seq {
-            let qcode = qemu_embed::atset1_to_qcode(sc.steps[sc.next].1);
+            let chord = &sc.steps[sc.next].1;
+            let qcodes: Vec<u32> = chord
+                .iter()
+                .map(|&c| qemu_embed::atset1_to_qcode(c))
+                .collect();
             eprintln!(
-                "[script] frame {} key scancode {:#x} -> qcode {}",
-                front.seq, sc.steps[sc.next].1, qcode
+                "[script] frame {} chord {:x?} -> qcodes {:?}",
+                front.seq, chord, qcodes
             );
-            vm.key(qcode, true);
-            vm.key(qcode, false);
+            for &q in &qcodes {
+                vm.key(q, true);
+            }
+            for &q in qcodes.iter().rev() {
+                vm.key(q, false);
+            }
             vm.input_flush();
             sc.next += 1;
         }
@@ -212,7 +227,22 @@ fn copy_rect(s: &mut Shared, x: usize, y: usize, w: usize, h: usize) {
 }
 
 /// Start QEMU on its own thread. Returns once the VM is created and started.
-pub fn start(args: Vec<String>) -> (Qemu, Display, JoinHandle<i32>) {
+/// `audio`: (ring, sample rate) — the ring is installed before qemu_init and
+/// an `-audiodev embed,id=embed0` matching the host rate is appended; attach
+/// devices with `audiodev=embed0`.
+pub fn start(
+    mut args: Vec<String>,
+    audio: Option<(Arc<crate::audio::Ring>, u32)>,
+) -> (Qemu, Display, JoinHandle<i32>) {
+    let ring_ptrs = audio.map(|(ring, rate)| {
+        args.push("-audiodev".into());
+        args.push(format!(
+            "embed,id=embed0,out.frequency={rate},out.channels=2,out.format=s16"
+        ));
+        // ring lives for the process; leak a strong ref for the C side
+        let r = Arc::into_raw(ring);
+        (r as usize, rate)
+    });
     let shared = Arc::new(Mutex::new(Shared {
         vm: None,
         script: key_script_from_env(),
@@ -241,6 +271,17 @@ pub fn start(args: Vec<String>) -> (Qemu, Display, JoinHandle<i32>) {
                 on_cursor: None,
                 on_mouse_set: None,
             };
+            if let Some((r, _)) = ring_ptrs {
+                let ring = unsafe { &*(r as *const crate::audio::Ring) };
+                unsafe {
+                    qemu_embed::set_audio_ring(
+                        ring.buf.as_ptr() as *mut u8,
+                        ring.buf.len(),
+                        ring.wr.as_ptr(),
+                        ring.rd.as_ptr(),
+                    )
+                };
+            }
             let (q, owner) =
                 unsafe { Qemu::new(&args, &cb, ud as *mut c_void) }.expect("qemu_embed_new failed");
             q.vm_start();

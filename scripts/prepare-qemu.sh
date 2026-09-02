@@ -49,21 +49,28 @@ rsync -rc "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
 echo "==> overlaying embed/ (libqemu_embed)"
 rsync -rc --delete "$ROOT/embed/" "$QEMU/embed/"
 
-# Applied-check: the patch wires glidept_mm_init() into pc.c; sign_commit
-# later edits vl.c, so a `git apply --reverse --check` would wrongly fail.
-if grep -q glidept_mm_init "$QEMU/hw/i386/pc.c"; then
-  echo "==> patch already applied"
-else
-  echo "==> applying $(basename "$PATCH")"
-  git -C "$QEMU" apply "$PATCH"
-fi
+# Deterministic: restore every TRACKED file any patch touches to pristine
+# v9.2.4, then apply the 3dfx patch and our queue fresh. (Overlay files were
+# already refreshed by rsync above.) Partial states — e.g. a manual
+# `git checkout meson.build` — previously slipped past an "already applied"
+# heuristic and silently dropped hunks.
+patched_files() {  # print paths from '+++ ./x' (diff -Nru) and '+++ b/x' (git) headers
+  sed -n 's|^+++ \./||p; s|^+++ b/||p' "$@" | sort -u
+}
+echo "==> restoring tracked files touched by patches"
+patched_files "$PATCH" "$ROOT"/patches/qemu/*.patch | while read -r f; do
+  if git -C "$QEMU" ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+    git -C "$QEMU" checkout -q -- "$f"
+  fi
+done
+
+echo "==> applying $(basename "$PATCH")"
+git -C "$QEMU" apply "$PATCH"
 
 echo "==> applying our patch queue (patches/qemu/*.patch)"
 for p in "$ROOT"/patches/qemu/*.patch; do
   [ -e "$p" ] || continue
-  if git -C "$QEMU" apply --reverse --check "$p" 2>/dev/null; then
-    echo "    $(basename "$p"): already applied"
-  elif git -C "$QEMU" apply --check "$p" 2>/dev/null; then
+  if git -C "$QEMU" apply --check "$p" 2>/dev/null; then
     git -C "$QEMU" apply "$p" && echo "    $(basename "$p"): applied"
   else
     echo "    $(basename "$p"): DOES NOT APPLY"; exit 1

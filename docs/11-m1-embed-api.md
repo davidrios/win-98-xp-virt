@@ -59,13 +59,15 @@ overlaid into `qemu/embed/` by `prepare-qemu.sh`, like the 3dfx devices;
    dependencies: arch_deps + [sdl], link_args…)` next to the executable.
    Objects are linked directly (not via archive) so `type_init`
    constructors survive. Requires `-fPIC` (configure-qemu.sh adds it).
-2. `20-embed-audio.patch` (next step, not in the first cut) —
-   `audio/embedaudio.c` modeled on `noaudio.c` with `dbusaudio.c`'s
-   `get_buffer_out`/`put_buffer_out` so the mixer clips straight into our
-   ring; plus the ~6-line QAPI enum/union entry (`qapi/audio.json`) and
-   `audio_template.h` CASE. Launch with
-   `-audiodev embed,id=snd0,out.frequency=48000,out.channels=2,out.format=s16`
-   — `fixed_settings` gives one voice with exactly those settings.
+2. `20-embed-audio.patch` (done) — driver lives in `embed/embedaudio.c`
+   (compiled into the shared lib, so no `audio/meson.build` change): the
+   mixer clips straight into the caller's ring via
+   `get_buffer_out`/`put_buffer_out`, rate-paced like `noaudio`. QEMU-side
+   touches: `qapi/audio.json` enum+union entry, `audio_template.h`
+   per-direction case, **and `audio/audio.c: audio_create_pdos()` CASE**
+   (missing it → NULL pdo → segfault in `audio_validate_per_direction_opts`).
+   The player appends `-audiodev embed,id=embed0,out.frequency=<host rate>,
+   out.channels=2,out.format=s16`; attach devices with `audiodev=embed0`.
 
 ## Hazards recorded
 

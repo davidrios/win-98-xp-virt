@@ -31,7 +31,11 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
   through the embed display path (`PLAYER_DUMP` verification).
 - ✅ keyboard path verified (scripted `PLAYER_KEYS` → FreeDOS installer
   prompt answered "N" through the embed input queue).
-- Next: Win98 boot (Air); mouse verified in-guest; audio backend patch;
+- ✅ audio: `embed` audiodev (patch 20 + `embed/embedaudio.c`, zero-copy
+  ring, rate-paced) → cpal on the host; verified headlessly (FreeDOS
+  `echo ^G` fills the ring). `prepare-qemu.sh` made deterministic
+  (restores tracked files, re-applies every patch each run).
+- Next: Win98 boot (Air); mouse verified in-guest;
   QMP over socketpair; librashader chain; latency HUD; macOS build of the
   embed lib (dylib) on the M1 Air.
 - librashader-wgpu chain with one CRT preset; keyboard/mouse injection; cpal

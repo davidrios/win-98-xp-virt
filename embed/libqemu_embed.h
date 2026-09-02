@@ -82,9 +82,18 @@ bool qemu_embed_mouse_is_absolute(qemu_embed_t *e);
 /* Schedule delivery of everything enqueued (one sync). */
 void qemu_embed_input_flush(qemu_embed_t *e);
 
+/* --- Audio: call BEFORE qemu_embed_new(); then pass
+ *   -audiodev embed,id=snd0,out.frequency=48000,out.channels=2,out.format=s16
+ * QEMU's mixer writes interleaved PCM in that format into the ring; the host
+ * audio thread consumes it. `bytes` must be a power of two. wr_idx is
+ * written by QEMU (release), rd_idx by the consumer (release); both are byte
+ * positions in [0, bytes). One byte is kept free. */
+void qemu_embed_set_audio_ring(void *base, size_t bytes,
+                               uint32_t *wr_idx, const uint32_t *rd_idx);
+
 /* Library version of the embed API, for the bindings to sanity-check. */
 uint32_t qemu_embed_api_version(void);
-#define QEMU_EMBED_API_VERSION 1
+#define QEMU_EMBED_API_VERSION 2
 
 #ifdef __cplusplus
 }

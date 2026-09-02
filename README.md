@@ -56,6 +56,10 @@ cargo build --release        # player links libqemu-embed (rpath into build/qemu
 target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
   -drive file=path/to/floppy.img,format=raw,if=floppy -boot a -vga std -net none
 # PLAYER_DUMP=frame.png PLAYER_DUMP_SEQ=150 dumps guest frame #150 and exits (headless check)
+# PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test)
+# PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
+# audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.
+#   -machine pc,pcspk-audiodev=embed0   or   -device sb16,audiodev=embed0
 ```
 
 macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
