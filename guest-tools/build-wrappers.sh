@@ -56,6 +56,10 @@ ensure_gnu_tools
 # libmsvcrt-os.a on UCRT-default toolchains). Done via a compiler shim so
 # qemu-3dfx's Makefiles need no changes; the same flags build wglgears.
 MSVCRT_FLAGS="-D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os"
+# qemu-3dfx's Makefiles use -march=x86-64-v2 (SSE4.2/POPCNT); our reference
+# guests are pentium2/pentium3 class (doc 06) and would #UD. Appended AFTER
+# the Makefile's flags so it wins: Pentium III floor (SSE1; doubles on x87).
+ARCH_FLAGS="-march=pentium3 -mtune=generic"
 ensure_msvcrt_cc() {
   local bin="$ROOT/guest-tools/tools/bin" real
   real="$(PATH="${PATH#"$bin:"}" command -v i686-w64-mingw32-gcc || true)"
@@ -63,11 +67,15 @@ ensure_msvcrt_cc() {
   [ -f "$(dirname "$(dirname "$real")")/i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
   [ -f "$(dirname "$real")/../i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
     echo "warning: libmsvcrt-os.a not found next to the toolchain; msvcrt link may fail"
-  printf '#!/usr/bin/env bash\nexec "%s" %s "$@"\n' "$real" "$MSVCRT_FLAGS" > "$bin/i686-w64-mingw32-gcc"
+  printf '#!/usr/bin/env bash\nexec "%s" %s "$@" %s\n' "$real" "$MSVCRT_FLAGS" "$ARCH_FLAGS" > "$bin/i686-w64-mingw32-gcc"
   chmod +x "$bin/i686-w64-mingw32-gcc"
 }
 ensure_msvcrt_cc
 
+check_isa() {  # fail loudly on SSE2+ / POPCNT (guest CPU floor is pentium3)
+  local n; n=$(objdump -d "$1" | grep -cE '\b(movdq[au]|movapd|movupd|pshufd|punpck[hl](bw|wd|dq|qdq)|paddq|cvtsd2|cvtsi2sd|cvttsd2si|movsd[[:space:]]+%xmm|xorpd|andpd|popcnt|ptest|pcmpistr|pshufb|pmaddubsw)\b' || true)
+  if [ "$n" -gt 0 ]; then echo "ERROR: $1 contains $n SSE2+/POPCNT instructions (pentium3 floor)"; exit 1; fi
+}
 check_crt() {  # fail loudly if anything still imports the UCRT api-sets
   if objdump -p "$1" | grep -q 'api-ms-win-crt'; then
     echo "ERROR: $1 links against the UCRT (not loadable on Win9x)"; exit 1
@@ -93,7 +101,7 @@ cp "$M"/opengl32.dll "$OUT/iso/GAMEDIR/"
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
   -lopengl32 -lgdi32 -lglu32 -mwindows
-for f in "$OUT"/iso/*/*.dll "$OUT"/iso/*/*.exe; do check_crt "$f"; done
+for f in "$OUT"/iso/*/*.dll "$OUT"/iso/*/*.exe; do check_crt "$f"; check_isa "$f"; done
 # CRLF: Win9x Notepad shows LF-only text as one line
 crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }'; }
 crlf > "$OUT/iso/README.TXT" <<TXT

@@ -126,6 +126,7 @@ prepare → configure → ninja, and reboot the same disk image — the install
 itself is fine.
 
 Notes: `-cpu pentium3` is the compatibility-safe choice for Win9x under
-TCG; try `-cpu max` (qemu-3dfx's recommendation on Apple Silicon) once it
-works. Keep RAM ≤ 512 MB (Win9x VCache limit). Record renderer string + fps
+TCG and the floor our wrappers are built for (SSE1). qemu-3dfx's own
+`-cpu max` recommendation exists because *their* wrapper builds target
+x86-64-v2; ours don't need it. Keep RAM ≤ 512 MB (Win9x VCache limit). Record renderer string + fps
 under "Result" in `docs/spikes/spike-a-macos.md`.

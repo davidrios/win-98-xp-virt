@@ -11,7 +11,7 @@ Modeled as a ~1998–2000 consumer PC.
 | Component | Choice | Rationale |
 |---|---|---|
 | Machine | `pc` (i440FX + PIIX) | period-correct chipset, best-tested with 9x |
-| CPU model | `pentium2` (TCG) / host-masked (KVM) | avoids CPUID features 9x mishandles; sidesteps the fast-CPU Win9x bugs (e.g. the >2.1 GHz-class IOS/NDIS crashes) |
+| CPU model | `pentium3` (TCG) / host-masked (KVM) | avoids CPUID features 9x mishandles; sidesteps the fast-CPU Win9x bugs (e.g. the >2.1 GHz-class IOS/NDIS crashes). **Floor is pentium3 (SSE1)**: our guest-tools wrappers are built `-march=pentium3` (upstream builds them x86-64-v2 and expects `-cpu host`/`max`) |
 | RAM | 256 MB default, **≤ 512 MB hard cap** | 9x VCache breaks above ~512 MB without patches |
 | Video | QEMU std VGA (bochs) | SoftGPU's primary target; clean mode behavior for our pipeline |
 | Audio | SB16 (DOS-mode compat) + AC'97 | SB16 for DOS boxes/games, AC'97 driver in guest tools |
