@@ -101,12 +101,12 @@ brew install mingw-w64 xorriso && guest-tools/build-wrappers.sh
 qemu-img create -f qcow2 ~/vms/win98.qcow2 4G
 build/qemu/qemu-system-i386 -machine pc -cpu pentium3 -m 256 \
   -hda ~/vms/win98.qcow2 -cdrom ~/isos/Win98SE.iso -boot d \
-  -vga cirrus -display cocoa -net none \
+  -vga cirrus -display sdl -net none \
   -audiodev coreaudio,id=snd -device sb16,audiodev=snd
 # 2. after install, boot with the guest-tools ISO attached
 build/qemu/qemu-system-i386 -machine pc -cpu pentium3 -m 256 \
   -hda ~/vms/win98.qcow2 -cdrom guest-tools/out/guest-tools-3dfx-*.iso \
-  -vga cirrus -display cocoa -net none \
+  -vga cirrus -display sdl -net none \
   -audiodev coreaudio,id=snd -device sb16,audiodev=snd
 ```
 

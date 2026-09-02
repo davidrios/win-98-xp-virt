@@ -20,6 +20,17 @@ GLX drawable**, and XQuartz is a hard runtime dependency, not just a
 build one. (SDL2 is still required by the patched build; the 3dfx Glide
 window path uses it.)
 
+**Hard constraint (confirmed 2026-09-02 on the Air):** 3D activation
+requires QEMU's SDL2 display — `sdl_display_valid()` (patched `ui/sdl2.c`)
+exits unless `sdl2_console` exists, and the SDL window is torn down and
+recreated to host the GL context (`sdl_gui_restart`). With the player's
+`-display none`, launching a GL/Glide title would `exit(1)` the whole
+process. So the M3 integration is not optional plumbing: our fork must
+replace the SDL-window dependency (`mesa_prepare_window`,
+`glide_prepare_window`, `sdl_display_valid`, fullscreen helpers in
+`include/ui/console.h:482-490`) with a window-less context provider that
+renders to a texture we can import.
+
 Consequences for the interop:
 - Step 2 must establish what XQuartz's libGL sits on (Apple's GLX bridge
   over native OpenGL). IOSurface sharing via the underlying CGL context

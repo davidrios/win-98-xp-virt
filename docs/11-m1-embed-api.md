@@ -76,9 +76,10 @@ overlaid into `qemu/embed/` by `prepare-qemu.sh`, like the 3dfx devices;
   lifetime** — matches our launcher/player split (doc 02).
 - qemu-3dfx's `graphic_hw_passthrough()` makes `graphic_hw_update` skip the
   device (`ui/console.c:147-152`) while 3D is active, and 3dfx/mesa render
-  into their own SDL2 window (`ui/sdl2.c`). So with `-display none` the 2D
-  path works and 3D appears in a separate window — acceptable for M1; the
-  interop is Spike A / M3.
+  into QEMU's SDL2 window — **and refuse to activate without it**
+  (`sdl_display_valid()` exits the process). So with `-display none` the 2D
+  path works and any 3D title kills the VM until M3 replaces the SDL-window
+  dependency (Spike A doc). The player must not advertise 3D before then.
 
 ## Embed API (v1)
 
