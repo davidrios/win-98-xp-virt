@@ -38,13 +38,14 @@ Done, all through the in-process embed path:
 - librashader chain: `--shader <preset.slangp>` (submodule
   `third_party/slang-shaders`); verified with crt-lottes via GPU readback.
 - Latency instrumentation (`PLAYER_LATENCY=1`), 16 ms refresh pull.
+  **Measured on the M1 Air (Win98, crt-lottes, 2026-09-02):** publish→present
+  p50 6–10 ms, p95 15–17 ms, max 18 ms — the vsync-phase floor at 60 Hz;
+  Linux/Wayland reads the same. Meets the ≤ 1 host frame budget (doc 03).
 - Spike A step 1: qemu-3dfx GL pass-through at 500+ fps on the Air
   (standalone `-display sdl`, SDL/native-OpenGL backend, no XQuartz at
   runtime).
 
 Open before calling M1 closed:
-- A measured latency number (must come from the Air; the Linux dev session
-  has no presented window).
 - XP boot + TCG benchmark on the Air against the rig baseline (doc 09).
 - QMP over socketpair (snapshots/media) — not started; design in doc 11.
 - Windows host untested throughout.

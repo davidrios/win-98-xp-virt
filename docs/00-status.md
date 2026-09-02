@@ -58,10 +58,9 @@ macOS specifics: `docs/build-macos.md`.
 
 ## Next steps, in order
 
-1. M1 close-out: latency number from the Air (Linux/Wayland floor: p50 8.3,
-   p95 15.6, max 16.3 ms; the Air showed p50 24.5 / max 32.8 with the old
-   free-running loop — re-measure after 2026-09-02's publish-driven render)
-   + XP benchmark; QMP over socketpair (doc 11 §QMP).
+1. M1 close-out: latency DONE (Air: p50 6–10 / p95 15–17 / max 18 ms,
+   the 60 Hz vsync-phase floor; Linux identical). Left: XP benchmark on the
+   Air; QMP over socketpair (doc 11 §QMP).
 2. **M3 (pulled forward, doc 12):** `30-3dfx-ui-vtable` patch →
    `embed/mglcntx_embed.c` (EGL pbuffer, compat profile) with readback
    bring-up → dma-buf import into wgpu → macOS CGL/IOSurface → Glide.

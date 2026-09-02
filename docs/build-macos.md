@@ -207,6 +207,8 @@ cmake-built C++ deps (glslang, spirv-cross) target the running OS. They are
 warnings only; the link is fine either way.
 
 Verified 2026-09-02: Win98 desktop with sound, keyboard, tablet mouse;
-sRGB-correct. `PLAYER_LATENCY=1` prints publish→present percentiles — the
-M1 latency number should be taken here. 3D inside the player: not until M3
+sRGB-correct. `PLAYER_LATENCY=1` prints publish→present percentiles; on the
+Air with Win98 + crt-lottes: p50 6–10 ms, p95 15–17 ms, max 18 ms (the
+vsync-phase floor; earlier ~32 ms readings were the saturated-FIFO bug fixed
+2026-09-02). Guest power-off closes the player cleanly. 3D inside the player: not until M3
 (a GL app is refused cleanly; a Glide app still exits QEMU).
