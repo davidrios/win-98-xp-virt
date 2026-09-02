@@ -181,3 +181,17 @@ TCG and the floor our wrappers are built for (SSE1); qemu-3dfx's own
 RAM ≤ 512 MB (Win9x VCache limit). Warm reboot currently freezes on the
 Air (under investigation — shut down and cold start instead). Record
 renderer string + fps under "Result" in `docs/spikes/spike-a-macos.md`.
+
+## The player on the Mac (M1)
+
+```sh
+ninja -C build/qemu libqemu-embed-i386.dylib && cargo build --release
+PLAYER_LATENCY=1 target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- \
+  -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 -hda ~/vms/win98.qcow2 \
+  -vga cirrus -net none -usb -device usb-tablet -device sb16,audiodev=embed0
+# XP: -m 512 -vga std -device AC97,audiodev=embed0
+```
+Verified 2026-09-02: Win98 desktop with sound, keyboard, tablet mouse;
+sRGB-correct. `PLAYER_LATENCY=1` prints publish→present percentiles — the
+M1 latency number should be taken here. 3D inside the player: not until M3
+(a GL app is refused cleanly; a Glide app still exits QEMU).

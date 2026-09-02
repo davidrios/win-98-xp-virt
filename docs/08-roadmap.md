@@ -21,49 +21,33 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
 - Detour: a libretro core was built and validated in RetroArch, then dropped
   (ADR-005).
 
-## M1 — Architecture validation  (in progress)
+## M1 — Architecture validation  (essentially done, 2026-09-02)
 
-- ✅ 2026-09-02: `10-embed-api` patch builds `libqemu-embed-i386.so` from
-  QEMU's own meson (design: doc 11); `embed/libqemu_embed.{h,c}` shim
-  (lifecycle, display listener, input via bottom-half, VM control);
-  `qemu-embed` crate (hand-written FFI, rpath via `links` metadata);
-  **FreeDOS boots inside the player on Linux** — 720×400 text mode frames
-  through the embed display path (`PLAYER_DUMP` verification).
-- ✅ keyboard path verified (scripted `PLAYER_KEYS` → FreeDOS installer
-  prompt answered "N" through the embed input queue).
-- ✅ audio: `embed` audiodev (patch 20 + `embed/embedaudio.c`, zero-copy
-  ring, rate-paced) → cpal on the host; verified headlessly (FreeDOS
-  `echo ^G` fills the ring). `prepare-qemu.sh` made deterministic
-  (restores tracked files, re-applies every patch each run).
-- ✅ 2026-09-02 **Windows 98 runs inside the player on the M1 Air** —
-  display, sound (embed audiodev → cpal), keyboard, USB-tablet mouse, all
-  through `libqemu-embed-i386.dylib`. macOS needed: `qemu_default_main`
-  provided by the shim, an ld64 export list (QEMU's plugin
-  `-exported_symbols_list` hid the API), sRGB-tagged guest texture (macOS
-  swapchain is sRGB), and absolute-mode cursor handling.
-- ✅ librashader chain: `player --shader <preset.slangp>` runs any
-  libretro slang preset (submodule `third_party/slang-shaders`) on wgpu
-  between the guest texture and the viewport; verified with crt-lottes on
-  FreeDOS (`PLAYER_DUMP_OUT` GPU readback). Pipeline cache disabled until
-  `Features::PIPELINE_CACHE` is requested.
-- Latency instrumentation: `PLAYER_LATENCY=1` reports publish→present
-  p50/p95/max; refresh pull interval now 16 ms via `qemu_embed_set_refresh_ms`
-  (API v3) instead of QEMU's 30 ms. Numbers to be taken on the Air (this
-  Linux session's window is never presented).
-- Next: XP boot + benchmark on the Air; then the
-  M3 window-less GL context provider is pulled forward (3D through the CRT
-  chain) ahead of M2's mode table.
-  QMP over socketpair; librashader chain; latency HUD; macOS build of the
-  embed lib (dylib) on the M1 Air.
-- librashader-wgpu chain with one CRT preset; keyboard/mouse injection; cpal
-  audio; latency HUD (dirty→upload→present).
-- XP boots on Apple Silicon and is benchmarked against the rig baseline.
-- **Spike A (parallel, on the M1 Air + Linux):** qemu-3dfx host GL output →
-  wgpu texture interop per platform (docs/spikes/spike-a-macos.md).
-  ✅ step 1 (2026-09-02): GL pass-through works on Apple Silicon, 500+ fps
-  in wglgears, via the SDL/native-OpenGL backend — no XQuartz at runtime.
-- **Exit:** Win98 desktop, CRT-shaded, mouse/keyboard/audio working on all
-  three platforms; added display latency ≤ 1 host frame measured.
+Done, all through the in-process embed path:
+- `10-embed-api` builds `libqemu-embed-<target>` from QEMU's meson; shim
+  `embed/libqemu_embed.{h,c}` (lifecycle on one thread, display listener,
+  input via bottom-half, VM control, audio ring, refresh interval; API v3);
+  `qemu-embed` crate (hand-written FFI, rpath via `links` metadata).
+- Display: FreeDOS and **Windows 98** render in the player — Linux and the
+  M1 Air (dylib). sRGB-correct on macOS swapchains.
+- Input: keyboard (scripted `PLAYER_KEYS` verified in FreeDOS; typing in
+  Win98 on the Air), USB-tablet absolute mouse (never grabs), PS/2 relative
+  grab with Ctrl+Alt+G release.
+- Audio: `embed` audiodev → SPSC ring → cpal; verified (ring fills on
+  FreeDOS `echo ^G`; Win98 plays sounds on the Air).
+- librashader chain: `--shader <preset.slangp>` (submodule
+  `third_party/slang-shaders`); verified with crt-lottes via GPU readback.
+- Latency instrumentation (`PLAYER_LATENCY=1`), 16 ms refresh pull.
+- Spike A step 1: qemu-3dfx GL pass-through at 500+ fps on the Air
+  (standalone `-display sdl`, SDL/native-OpenGL backend, no XQuartz at
+  runtime).
+
+Open before calling M1 closed:
+- A measured latency number (must come from the Air; the Linux dev session
+  has no presented window).
+- XP boot + TCG benchmark on the Air against the rig baseline (doc 09).
+- QMP over socketpair (snapshots/media) — not started; design in doc 11.
+- Windows host untested throughout.
 
 ## M2 — Pixel accuracy + input polish
 

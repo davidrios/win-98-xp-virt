@@ -59,7 +59,8 @@ Small stable C API on the QEMU fork, written upstream-style:
 - display: register listener → surface + dirty rects callback (2D); a
   GPU-texture handoff for 3D output (see docs 03/04);
 - input: keyboard scancodes, relative + absolute pointer injection;
-- audio: pull callback into caller-provided ring;
+- audio: caller-owned SPSC ring installed before init (`embed` audiodev);
+- display refresh pull interval;
 - media: disc mount/eject (drives libdisc), floppy;
 - control: QMP-JSON channel over in-memory pipe for everything else.
 

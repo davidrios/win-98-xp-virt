@@ -26,6 +26,7 @@ and explicitly **out of scope** — we don't duplicate that work.
 
 ## Design docs
 
+0. [**Status and how to resume**](docs/00-status.md) — read first
 1. [Goals and non-goals](docs/01-goals.md)
 2. [Architecture: in-process QEMU, process model, threading](docs/02-architecture.md)
 3. [Display pipeline: pixel accuracy, CRT shaders, latency](docs/03-display-pipeline.md)
@@ -51,7 +52,7 @@ target/release/player        # M0: native window with test pattern (integer-scal
 
 scripts/prepare-qemu.sh      # overlay qemu-3dfx devices + embed/, patches, sign
 scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja, glib, pixman, SDL2)
-ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so
+ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so   # .dylib on macOS
 cargo build --release        # player links libqemu-embed (rpath into build/qemu)
 
 # M1: boot something in-process (firmware path needed until machine bundles land)

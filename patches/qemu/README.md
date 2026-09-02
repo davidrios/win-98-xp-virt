@@ -1,42 +1,34 @@
 # QEMU patch queue
 
-Our own patches on top of the pinned QEMU submodule (v9.2.4 — pinned to the
-newest release qemu-3dfx's `00-qemu92x` patch supports; their reference is
-9.2.2, ours applies clean on 9.2.4).
+Applied by `scripts/prepare-qemu.sh` on top of the pinned QEMU submodule
+(v9.2.4 — the newest release qemu-3dfx's `00-qemu92x` patch supports) after
+the qemu-3dfx overlay (`third_party/qemu-3dfx` → `hw/3dfx`, `hw/mesa`) and
+the `embed/` overlay (→ `qemu/embed`). Order = filename order. The script is
+deterministic: it restores every tracked file any patch touches to pristine
+and re-applies everything on each run, then runs qemu-3dfx's `sign_commit`
+(stamps the qemu-3dfx commit; guest wrappers must be built from the same
+commit — `guest-tools/build-wrappers.sh` does that).
 
-- qemu-3dfx overlay + patch come from `third_party/qemu-3dfx` and are applied
-  by `scripts/prepare-qemu.sh` — they do NOT live in this queue.
-- This queue holds *our* patches, numbered `NN-name.patch`, applied in order
-  after prepare-qemu.sh. Planned series:
-  - `10-embed-api` — `libqemu_embed.h` + library build (M1)
-  - `20-atapi-libdisc` — raw-CD ATAPI device calling libdisc (M5)
-- Every patch is written upstream-style (see doc 02: upstream-first is the
-  fork-maintenance exit strategy).
+**Never `git checkout` files inside `qemu/` by hand between prepare runs** and
+never rely on "already applied" heuristics — a partial tree once silently
+lost the 3dfx meson hunk (symptom: `unknown type 'glidept'`).
 
-Applied automatically by `scripts/prepare-qemu.sh` after the qemu-3dfx
-overlay (`git apply`, idempotent via reverse-check — fine as long as a patch
-doesn't touch files `sign_commit` edits: `hw/3dfx/g2xfuncs.h`,
-`hw/mesa/mglfuncs.h`, `system/vl.c`).
+| Patch | What / why | Drop when |
+|---|---|---|
+| `00-3dfx-darwin-contextalpha` | qemu-3dfx Darwin build regression: `GL_CONTEXTALPHA` only defined under `CONFIG_LINUX` but used in shared code | upstream qemu-3dfx fixes it |
+| `01-upstream-i386-lss-tb-exit-fix` | backport of QEMU `0f1d6606c28d` (issue 2987): 9.2.4 carries the LSS/IRQ-shadow regression but not the fix → Win98 SE `exception 0D` on first boot after setup under TCG | QEMU ≥ 10.1 |
+| `02-mesa-sdlgl-on-darwin` | build `mglcntx_sdlgl.c` (SDL/native OpenGL.framework) instead of GLX on macOS: with a Cocoa SDL window the GLX backend gets an `NSWindow*` as "X11 window" → `BadDrawable`; also defines two missing NV enums | our own M3 backend replaces it |
+| `03-sdl-darwin-either-ctrl` | macOS Caps-Lock→Control remap reports `KMOD_RCTRL`; accept either Control for SDL hotkeys | — |
+| `04-3dfx-graceful-no-display` | without an SDL display (player: `-display none`) GL activation refused the context cleanly instead of `exit(1)`; Glide still exits | M3 vtable/provider |
+| `10-embed-api` | meson: `shared_library('qemu-embed-<target>')` per softmmu target from the existing static lib + `embed/libqemu_embed.c` + `embed/embedaudio.c`; ld64 export list (`embed/libqemu_embed.symbols`) because QEMU's plugin `-exported_symbols_list` hides everything else on macOS | upstreamed embed API (aspirational) |
+| `20-embed-audio` | register the `embed` audiodev: QAPI enum/union entry, `audio_template.h` per-direction case, **and `audio/audio.c` `audio_create_pdos` CASE** (missing → NULL pdo segfault) | with 10 |
+| `90-debug-sdl-keydebug` | `QEMU_SDL_KEYDEBUG=1` logs SDL keydown/modifier state (diagnostic) | any time |
 
-Current queue:
-- `01-upstream-i386-lss-tb-exit-fix.patch` — backport of upstream
-  0f1d6606c28d fixing QEMU issue 2987 (TCG regression: Windows 98 SE
-  exception 0D on first boot after setup; 9.2.4 carries the regressing LSS
-  change but not the fix). Drop at QEMU >= 10.1.
-- `02-mesa-sdlgl-on-darwin.patch` — build qemu-3dfx's SDL/native-OpenGL
-  Mesa backend (`mglcntx_sdlgl.c`) instead of GLX on macOS: with a Cocoa
-  SDL window the GLX backend gets an `NSWindow*` as "X11 window" →
-  BadDrawable. Linux keeps GLX.
-- `03-sdl-darwin-either-ctrl.patch` — SDL on macOS reported the left Control
-  key as `KMOD_RCTRL`, so `get_mod_state()` never matched and all Ctrl+Alt
-  hotkeys (grab release, fullscreen) were dead; accept either Control.
-- `04-3dfx-graceful-no-display.patch` — without an SDL display (the
-  player's `-display none`), GL pass-through activation used to `exit(1)`
-  the process; now it refuses the context (guest `wglCreateContext` fails,
-  the VM survives). Glide activation still exits — its window path is not
-  NULL-safe. Both are replaced by the M3 context provider.
-- `90-debug-sdl-keydebug.patch` — `QEMU_SDL_KEYDEBUG=1` logs SDL keydowns
-  (temporary diagnostic; env-gated, harmless).
-- `00-3dfx-darwin-contextalpha.patch` — upstream qemu-3dfx Darwin build
-  regression (`GL_CONTEXTALPHA` only defined under `CONFIG_LINUX`). Report
-  upstream; drop when fixed there.
+Planned: `30-3dfx-ui-vtable` (11 UI entry points behind a registered
+vtable; doc 12), then the embed context provider backend.
+
+Regenerating a patch: apply the queue, edit the file(s) in `qemu/`, produce
+`diff -u` against a copy of the pre-edit state with `a/`/`b/` paths, then
+re-run `prepare-qemu.sh` twice to prove it applies cleanly and is idempotent.
+Patches touching overlay files (hw/3dfx, hw/mesa, embed/) must come after
+the overlay is refreshed — prepare handles the order.
