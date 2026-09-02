@@ -7,12 +7,26 @@ Everything below runs natively on arm64. Tested target: M1 MacBook Air.
 ```sh
 xcode-select --install                       # Apple clang + git
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install ninja meson pkg-config glib pixman gnu-sed uv
+brew install ninja meson pkg-config glib pixman sdl2 gnu-sed uv
+brew install --cask xquartz                  # log out/in once after installing
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh      # Rust toolchain
 ```
 
-`gnu-sed` matters: qemu-3dfx's `sign_commit` uses GNU `sed -i` syntax;
-`scripts/prepare-qemu.sh` puts Homebrew's `gsed` first on PATH when present.
+Why each of the odd ones:
+- **XQuartz** — build-time only: qemu-3dfx's GLX fallback backend compiles
+  on Darwin too, and the patched `meson.build` hardcodes
+  `-I/opt/X11/include` and links `-L/opt/X11/lib -lX11 -lXxf86vm -lGL
+  -framework OpenGL`. Without it: `GL/glcorearb.h not found`, then link
+  errors. At runtime the GL context is SDL2 → Apple's native OpenGL.
+- **sdl2** — the patch makes SDL2 mandatory
+  (`error('Featuring qemu-3dfx required SDL2')`) and it is the actual GL
+  context provider on macOS.
+- **gnu-sed** — `sign_commit` uses GNU `sed -i` syntax;
+  `scripts/prepare-qemu.sh` puts Homebrew's `gsed` first on PATH when present.
+- The Khronos `GL/glcorearb.h` is additionally vendored in
+  `third_party/khronos` and put on the include path by
+  `scripts/configure-qemu.sh`, so the header itself never depends on
+  XQuartz's Mesa headers version.
 
 ## Clone
 

@@ -10,6 +10,23 @@ qemu-3dfx renders guest Glide/GL with host OpenGL on QEMU's threads. Can that
 output land in a **wgpu texture** on the player's render thread — no CPU
 readback — so it goes through librashader like the 2D framebuffer does?
 
+## Finding (2026-09-02, from reading the patched tree)
+
+`hw/mesa` has two Unix context backends: `mglcntx_sdlgl.c` (SDL2 GL context,
+`MESAGL_SDLGL 1` on Linux and Darwin) and `mglcntx_linux.c` (GLX fallback).
+On Darwin the SDL backend loads Apple's **native**
+`OpenGL.framework/Libraries/libGL.dylib` — so at runtime guest 3D lands in
+an SDL2-created CGL context, not XQuartz. XQuartz is only a *build-time*
+requirement (the GLX file still compiles, and the patched `meson.build`
+links `/opt/X11/lib`).
+
+Consequence for the interop: the context underneath is CGL, so the
+IOSurface route (GL texture backed by IOSurface ↔ `MTLTexture`) is direct.
+Open question for step 2: whether we render into qemu-3dfx's SDL window
+(and share its drawable) or hand `hw/mesa` an offscreen context/FBO of our
+own in the fork — the latter is cleaner for the player and drops the SDL
+window entirely.
+
 ## Sub-questions, cheapest first
 
 1. **Does qemu-3dfx run on the M1 Air at all?** Use the startergo
