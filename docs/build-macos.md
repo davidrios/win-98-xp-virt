@@ -97,6 +97,11 @@ brew install mingw-w64 xorriso && guest-tools/build-wrappers.sh
 #   → guest-tools/out/guest-tools-3dfx-<rev>.iso   (or one built on Linux — same commit)
 
 # 1. install Win98 (cirrus = in-box high-color driver, no extra guest driver needed)
+#    IMPORTANT: at the CD boot menu pick "Boot from CD-ROM" → "Start computer with
+#    CD-ROM support", then run   D:\WIN98\SETUP /p j   (ACPI install). A plain
+#    SETUP installs in PnP-BIOS mode, which in QEMU leaves the PCI bus
+#    un-enumerated ("Plug and Play BIOS" with a yellow ! in Device Manager) — any
+#    PCI device added later (USB controller, AC'97, NIC) is never detected.
 qemu-img create -f qcow2 ~/vms/win98.qcow2 4G
 build/qemu/qemu-system-i386 -machine pc -cpu pentium3 -m 256 \
   -hda ~/vms/win98.qcow2 -cdrom ~/isos/Win98SE.iso -boot d \
@@ -140,7 +145,14 @@ looks janky unless the mouse moves, try `DispTimerMS,16` and/or
 **Grab workaround for desktop use:** add `-usb -device usb-tablet`. With an
 absolute pointer SDL never grabs mouse or keyboard, so no release hotkey is
 needed (Win98 SE drives a USB HID tablet with in-box drivers). Relative
-(PS/2) mode is only needed for mouselook games.
+(PS/2) mode is only needed for mouselook games. If `info usb` shows the
+tablet but Win98 shows nothing, the guest is a PnP-BIOS install (see the
+`/p j` note above). Repair without reinstalling: copy the CD's `WIN98`
+folder to `C:\` first, then Device Manager → System devices → "Plug and
+Play BIOS" → Update Driver → "Display a list…" → Show all hardware → "PCI
+Bus"; Windows then re-detects every device (that's why the folder copy is
+needed — the CD driver goes away mid-way) and finally finds the QEMU USB
+Tablet.
 
 **Mouse/keyboard grab under `-display sdl`:** hotkey is Ctrl+Option+G
 (fullscreen: Ctrl+Option+F). With macOS's Caps Lock→Control remap, SDL reports that

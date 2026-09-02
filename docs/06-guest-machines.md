@@ -29,8 +29,12 @@ still open as of 2026-09 — cosmetic, the OS survives; KVM/WHPX unaffected).
 
 Guest install notes (docs shipped with the app): install from user's CD image;
 apply guest-tools ISO (SoftGPU, 3dfx wrappers, AC'97, unofficial fixes the
-user opts into). Known quirks to document: DOS-compatibility-mode storage
-regressions, ACPI off vs. APM for clean shutdown (test and pin one).
+user opts into). **Install mode is pinned: ACPI (`SETUP /p j`).** A default (PnP-BIOS)
+install in QEMU leaves the PCI bus un-enumerated — "Plug and Play BIOS"
+with a yellow ! and no PCI hot-adds ever detected (USB tablet, AC'97, NIC).
+The launcher's guided install must pass `/p j` (or drive the PnP-BIOS→PCI
+Bus repair). Known quirks to document: DOS-compatibility-mode storage
+regressions.
 
 ## Windows XP machine
 
