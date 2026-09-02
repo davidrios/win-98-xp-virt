@@ -85,4 +85,7 @@ macOS specifics: `docs/build-macos.md`.
   atexit handlers (`audio_cleanup`, exit notifiers) that then race
   `qemu_cleanup` → `assertion failed: mutex->initialized` on macOS. The
   player joins the QEMU thread after the event loop; headless dump paths use
-  `_exit`.
+  `_exit`. The other direction too: a guest power-off returns from
+  `qemu_main_loop` while the UI thread still holds the handle — the QEMU
+  thread flags `stopped`, wakes the loop, and waits for `release()` before
+  `qemu_embed_destroy` (which frees the input mutex → same assert).

@@ -118,12 +118,25 @@ struct Shared {
     front: Frame,
     // wakes the render thread after each publish (event-loop proxy)
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    // QEMU's main loop has returned; the handle must not be used any more
+    stopped: bool,
+    // the UI thread promises no further calls; qemu_embed_destroy may run
+    released: bool,
 }
 unsafe impl Send for Shared {}
 
 pub struct Display(Arc<Mutex<Shared>>);
 
 impl Display {
+    /// True once QEMU's main loop has returned (guest power-off, `quit`).
+    pub fn stopped(&self) -> bool {
+        self.0.lock().unwrap().stopped
+    }
+    /// Promise that no thread but the QEMU thread will touch the VM handle
+    /// from now on; lets the QEMU thread proceed to `qemu_embed_destroy`.
+    pub fn release(&self) {
+        self.0.lock().unwrap().released = true;
+    }
     /// Copy out the latest frame if it changed since `last_seq`.
     pub fn take_if_newer(&self, last_seq: u64) -> Option<Frame> {
         let s = self.0.lock().unwrap();
@@ -272,9 +285,12 @@ pub fn start(
             published: std::time::Instant::now(),
         },
         waker,
+        stopped: false,
+        released: false,
     }));
     // Leak one strong ref for the C side; the process holds one VM for life.
     let ud = Arc::into_raw(shared.clone()) as usize;
+    let shared_q = shared.clone();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::Builder::new()
         .name("qemu".into())
@@ -302,6 +318,26 @@ pub fn start(
             q.vm_start();
             tx.send(q).unwrap();
             let status = owner.run();
+            // The UI thread holds a copy of the handle (input path). Tell it
+            // the loop is over and wait until it has stopped calling in;
+            // destroy frees the input mutex and the object itself.
+            let waker = {
+                let mut s = shared_q.lock().unwrap();
+                s.stopped = true;
+                s.vm = None;
+                s.waker.clone()
+            };
+            if let Some(w) = waker {
+                w();
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !shared_q.lock().unwrap().released {
+                if std::time::Instant::now() > deadline {
+                    eprintln!("[qemu] UI thread did not release the VM handle; cleaning up anyway");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             owner.destroy(status);
             status
         })

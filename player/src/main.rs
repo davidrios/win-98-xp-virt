@@ -252,7 +252,23 @@ impl Gpu {
         ((sw - vw) / 2.0, (sh - vh) / 2.0, vw, vh)
     }
 
-    fn render(&mut self) {
+    /// Next swapchain image. With FIFO this blocks until one is free; call
+    /// it BEFORE sampling the guest frame so the newest frame is presented
+    /// (a saturated queue otherwise ages every frame by a host vblank).
+    fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
+        use wgpu::CurrentSurfaceTexture as Cst;
+        match self.surface.get_current_texture() {
+            Cst::Success(f) | Cst::Suboptimal(f) => Some(f),
+            Cst::Timeout | Cst::Occluded => None,
+            _ => {
+                self.resize(self.config.width, self.config.height);
+                None
+            }
+        }
+    }
+
+    /// Run the shader chain and, if `frame` is given, blit and present it.
+    fn render(&mut self, frame: Option<wgpu::SurfaceTexture>) {
         if self.fb_tex.is_none() {
             return;
         }
@@ -315,15 +331,7 @@ impl Gpu {
             (Some(_), Some((bg, _, _))) => bg,
             _ => &self.fb_tex.as_ref().unwrap().1,
         };
-        use wgpu::CurrentSurfaceTexture as Cst;
-        let frame = match self.surface.get_current_texture() {
-            Cst::Success(f) | Cst::Suboptimal(f) => f,
-            Cst::Timeout | Cst::Occluded => return,
-            _ => {
-                self.resize(self.config.width, self.config.height);
-                return;
-            }
-        };
+        let Some(frame) = frame else { return };
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -414,6 +422,10 @@ impl App {
     /// run on this thread concurrently with the main loop — seen on macOS as
     /// `assertion failed: mutex->initialized` in qemu_mutex_lock_impl.
     fn join_qemu(&mut self) -> i32 {
+        self.closing = true;
+        if let Some(Source::Qemu { display, .. }) = &self.source {
+            display.release(); // no more calls from this thread: cleanup may free
+        }
         let Some(handle) = self.qemu_thread.take() else {
             return 0;
         };
@@ -608,6 +620,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => self.set_grab(false),
             WindowEvent::RedrawRequested => {
                 let Some(gpu) = self.gpu.as_mut() else { return };
+                let Some(frame) = gpu.acquire() else { return };
                 let mut published = None;
                 match self.source.as_mut() {
                     Some(Source::Pattern(p)) => {
@@ -625,7 +638,7 @@ impl ApplicationHandler for App {
                     }
                     None => {}
                 }
-                gpu.render();
+                gpu.render(Some(frame));
                 if let Some(t) = published {
                     // publish→present (measured after the present call) — doc 03 latency gate
                     self.latency.push(t.elapsed().as_secs_f32() * 1000.0);
@@ -652,7 +665,16 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, _ev: ()) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _ev: ()) {
+        // QEMU's main loop returned (guest power-off, `quit`): stop touching
+        // the handle and leave; main() then releases it for qemu_cleanup.
+        if let Some(Source::Qemu { display, .. }) = &self.source {
+            if display.stopped() && !self.closing {
+                self.closing = true;
+                event_loop.exit();
+                return;
+            }
+        }
         // QEMU published a frame (multiple wakes coalesce into one redraw)
         if let Some(gpu) = &self.gpu {
             gpu.window.request_redraw();
@@ -672,7 +694,7 @@ impl ApplicationHandler for App {
                 {
                     *last_seq = f.seq;
                     gpu.upload(&f.pixels, f.width as u32, f.height as u32);
-                    gpu.render();
+                    gpu.render(None);
                 }
             }
         }
