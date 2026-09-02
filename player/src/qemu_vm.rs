@@ -116,6 +116,8 @@ struct Shared {
     back: Vec<u32>,
     // published to the render thread
     front: Frame,
+    // wakes the render thread after each publish (event-loop proxy)
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 unsafe impl Send for Shared {}
 
@@ -182,11 +184,13 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
         front,
         vm,
         script,
+        waker,
         ..
     } = &mut *s;
     front.pixels.copy_from_slice(back);
     front.seq += 1;
     front.published = std::time::Instant::now();
+    let waker = waker.clone();
     if front.seq % 100 == 0 {
         eprintln!("[display] refresh #{}", front.seq);
     }
@@ -212,6 +216,10 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
         }
     }
     crate::maybe_dump(&front.pixels, front.width, front.height, front.seq);
+    drop(s);
+    if let Some(w) = waker {
+        w();
+    }
 }
 
 fn copy_rect(s: &mut Shared, x: usize, y: usize, w: usize, h: usize) {
@@ -237,6 +245,7 @@ fn copy_rect(s: &mut Shared, x: usize, y: usize, w: usize, h: usize) {
 pub fn start(
     mut args: Vec<String>,
     audio: Option<(Arc<crate::audio::Ring>, u32)>,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> (Qemu, Display, JoinHandle<i32>) {
     let ring_ptrs = audio.map(|(ring, rate)| {
         args.push("-audiodev".into());
@@ -262,6 +271,7 @@ pub fn start(
             seq: 0,
             published: std::time::Instant::now(),
         },
+        waker,
     }));
     // Leak one strong ref for the C side; the process holds one VM for life.
     let ud = Arc::into_raw(shared.clone()) as usize;

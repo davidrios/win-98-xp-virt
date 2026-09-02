@@ -18,7 +18,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
@@ -384,6 +384,8 @@ struct App {
     /// QEMU thread is about to destroy.
     closing: bool,
     qemu_thread: Option<std::thread::JoinHandle<i32>>,
+    /// Wakes the event loop from the QEMU thread when a frame is published.
+    proxy: Option<EventLoopProxy<()>>,
 }
 
 /// Exit without running atexit handlers. QEMU registers several
@@ -486,7 +488,15 @@ impl ApplicationHandler for App {
             }
             self.audio = audio_out;
             let audio_cfg = self.audio.as_ref().map(|o| (ring, o.sample_rate));
-            let (vm, display, join) = qemu_vm::start(self.qemu_args.clone(), audio_cfg);
+            // Render on publish, not on a free-running redraw: a frame that
+            // waits for the next loop iteration adds up to one host frame of
+            // latency before it even reaches the swapchain (doc 03).
+            let waker = self.proxy.clone().map(|p| {
+                Arc::new(move || {
+                    let _ = p.send_event(());
+                }) as Arc<dyn Fn() + Send + Sync>
+            });
+            let (vm, display, join) = qemu_vm::start(self.qemu_args.clone(), audio_cfg, waker);
             self.qemu_thread = Some(join);
             Source::Qemu {
                 vm,
@@ -634,9 +644,18 @@ impl ApplicationHandler for App {
                         self.latency.clear();
                     }
                 }
-                gpu.window.request_redraw();
+                if matches!(self.source, Some(Source::Pattern(_))) {
+                    gpu.window.request_redraw();
+                }
             }
             _ => {}
+        }
+    }
+
+    fn user_event(&mut self, _el: &ActiveEventLoop, _ev: ()) {
+        // QEMU published a frame (multiple wakes coalesce into one redraw)
+        if let Some(gpu) = &self.gpu {
+            gpu.window.request_redraw();
         }
     }
 
@@ -712,11 +731,12 @@ fn main() {
     if args.first().map(String::as_str) == Some("--") {
         args.remove(0);
     }
-    let event_loop = EventLoop::new().expect("event loop");
-    event_loop.set_control_flow(ControlFlow::Poll);
+    let event_loop = EventLoop::<()>::with_user_event().build().expect("event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
         qemu_args: args,
         shader,
+        proxy: Some(event_loop.create_proxy()),
         ..Default::default()
     };
     event_loop.run_app(&mut app).expect("run");

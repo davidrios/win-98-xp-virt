@@ -67,8 +67,17 @@ Target: **≤ 1 host frame added** between guest frame completion and photons at
 - **Occlusion:** an occluded/minimized window may get no presents (Wayland
   frame callbacks, macOS occlusion) — the render loop skips frames on
   `Occluded`/`Timeout` and must never let QEMU stall behind it.
+- **Publish-driven rendering:** the QEMU refresh tick wakes the event loop
+  (`EventLoopProxy`), which samples, uploads and presents immediately; no
+  free-running redraw. A free-running loop sampled a frame, then blocked a
+  full vblank in Metal's drawable acquire before presenting it — one extra
+  host frame (p50 24.5 ms on the M1 Air) that Wayland/mailbox did not show.
 - Instrumentation from day one: dirty→upload→present timestamps in a debug
-  HUD, so latency regressions are measured.
+  HUD, so latency regressions are measured. `PLAYER_LATENCY=1` reports
+  publish→present-return; with a vsync-throttled present its floor at 60 Hz
+  is uniform 0–16.7 ms (p50 ≈ 8, max ≈ 17). Photons follow at the next
+  scan-out. Guest-draw→publish (0–`PLAYER_REFRESH_MS`) is before the
+  measured window and does not show up in this number.
 
 ## Input path (same budget)
 
