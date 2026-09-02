@@ -62,7 +62,13 @@ MSVCRT_FLAGS="-D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os"
 ARCH_FLAGS="-march=pentium3 -mtune=generic"
 ensure_msvcrt_cc() {
   local bin="$ROOT/guest-tools/tools/bin" real
-  real="$(PATH="${PATH#"$bin:"}" command -v i686-w64-mingw32-gcc || true)"
+  # A shim from a previous run may already be on PATH (tools/bin gets
+  # prepended by the gendef/objdump steps): remove it first, or `command -v`
+  # would find the shim itself and it would exec itself forever
+  # ("argument list too long").
+  rm -f "$bin/i686-w64-mingw32-gcc"
+  real="$(command -v i686-w64-mingw32-gcc || true)"
+  case "$real" in "$bin"/*) echo "internal error: shim resolved to itself"; exit 1;; esac
   [ -n "$real" ] || { echo "need i686-w64-mingw32-gcc (mingw-w64)"; exit 1; }
   [ -f "$(dirname "$(dirname "$real")")/i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
   [ -f "$(dirname "$real")/../i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
