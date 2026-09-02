@@ -26,6 +26,21 @@ case "$(cat "$QEMU/VERSION")" in
   *) echo "QEMU $(cat "$QEMU/VERSION") is not 9.2.x — patch/version mismatch"; exit 1 ;;
 esac
 
+# qemu-3dfx's sign_commit rewrites hw/{3dfx,mesa}/meson.build with sed -i on
+# every run; a fresh mtime makes ninja regenerate the build. Snapshot the
+# meson files and restore their mtimes when the content is unchanged.
+SNAP="$(mktemp -d)"; trap 'rm -rf "$SNAP"' EXIT
+for f in meson.build hw/3dfx/meson.build hw/mesa/meson.build; do
+  [ -f "$QEMU/$f" ] && mkdir -p "$SNAP/$(dirname "$f")" && cp -p "$QEMU/$f" "$SNAP/$f"
+done
+restore_mtimes() {
+  for f in meson.build hw/3dfx/meson.build hw/mesa/meson.build; do
+    if [ -f "$SNAP/$f" ] && cmp -s "$SNAP/$f" "$QEMU/$f"; then
+      touch -r "$SNAP/$f" "$QEMU/$f"
+    fi
+  done
+}
+
 echo "==> overlaying hw/3dfx and hw/mesa"
 # -c: checksum compare so unchanged files (esp. meson.build) are not rewritten —
 # a touched meson.build makes ninja regenerate and reset configure options.
@@ -58,4 +73,5 @@ done
 echo "==> signing with qemu-3dfx commit"
 (cd "$QEMU" && bash "$FX/scripts/sign_commit" -git="$FX")
 
+restore_mtimes
 echo "==> done. Configure with: scripts/configure-qemu.sh  (uv-managed python, --disable-werror)"

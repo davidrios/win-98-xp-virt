@@ -36,3 +36,11 @@ fi
   -Db_staticpic=true \
   --target-list=i386-softmmu,x86_64-softmmu \
   "$@"
+
+# QEMU's configure writes `werror = true` into its native file for git
+# checkouts on Linux/Windows; meson re-applies native-file options on
+# auto-regeneration, overriding the -Dwerror=false from --disable-werror and
+# breaking the pinned 9.2.x build on new toolchains. Strip it.
+sed -i.bak '/^werror = true$/d' "$BUILD/config-meson.cross" && rm -f "$BUILD/config-meson.cross.bak"
+# keep the edited native file from looking newer than build.ninja (spurious regen)
+touch -r "$BUILD/build.ninja" "$BUILD/config-meson.cross"
