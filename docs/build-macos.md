@@ -13,14 +13,13 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh      # Rust toolc
 ```
 
 Why each of the odd ones:
-- **XQuartz** — build-time only: qemu-3dfx's GLX fallback backend compiles
-  on Darwin too, and the patched `meson.build` hardcodes
-  `-I/opt/X11/include` and links `-L/opt/X11/lib -lX11 -lXxf86vm -lGL
-  -framework OpenGL`. Without it: `GL/glcorearb.h not found`, then link
-  errors. At runtime the GL context is SDL2 → Apple's native OpenGL.
+- **XQuartz** — qemu-3dfx's Mesa pass-through uses its GLX backend on
+  macOS (it dlopens `/opt/X11/lib/libGL.dylib` at runtime); the patched
+  `meson.build` hardcodes `-I/opt/X11/include` and links
+  `-L/opt/X11/lib -lX11 -lXxf86vm -lGL -framework OpenGL`. Without it:
+  `GL/glcorearb.h not found`, then link errors, then no 3D at runtime.
 - **sdl2** — the patch makes SDL2 mandatory
-  (`error('Featuring qemu-3dfx required SDL2')`) and it is the actual GL
-  context provider on macOS.
+  (`error('Featuring qemu-3dfx required SDL2')`).
 - **gnu-sed** — `sign_commit` uses GNU `sed -i` syntax;
   `scripts/prepare-qemu.sh` puts Homebrew's `gsed` first on PATH when present.
 - The Khronos `GL/glcorearb.h` is additionally vendored in
@@ -50,7 +49,7 @@ no tearing. Resize the window: bars stay 4:3 and pixel-aligned.
 ## QEMU side (patched with qemu-3dfx) — ~10–15 min on an M1 Air
 
 ```sh
-scripts/prepare-qemu.sh        # overlay hw/3dfx + hw/mesa, apply patch, sign_commit
+scripts/prepare-qemu.sh        # overlay hw/3dfx + hw/mesa, apply 3dfx patch + our queue, sign_commit
 scripts/configure-qemu.sh      # uv-managed Python 3.12, --disable-werror
 ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
 ```

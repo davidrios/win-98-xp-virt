@@ -13,4 +13,12 @@ newest release qemu-3dfx's `00-qemu92x` patch supports; their reference is
 - Every patch is written upstream-style (see doc 02: upstream-first is the
   fork-maintenance exit strategy).
 
-Currently empty — M0 carries no patches of our own.
+Applied automatically by `scripts/prepare-qemu.sh` after the qemu-3dfx
+overlay (`git apply`, idempotent via reverse-check — fine as long as a patch
+doesn't touch files `sign_commit` edits: `hw/3dfx/g2xfuncs.h`,
+`hw/mesa/mglfuncs.h`, `system/vl.c`).
+
+Current queue:
+- `00-3dfx-darwin-contextalpha.patch` — upstream qemu-3dfx Darwin build
+  regression (`GL_CONTEXTALPHA` only defined under `CONFIG_LINUX`). Report
+  upstream; drop when fixed there.

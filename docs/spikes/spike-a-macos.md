@@ -10,22 +10,28 @@ qemu-3dfx renders guest Glide/GL with host OpenGL on QEMU's threads. Can that
 output land in a **wgpu texture** on the player's render thread — no CPU
 readback — so it goes through librashader like the 2D framebuffer does?
 
-## Finding (2026-09-02, from reading the patched tree)
+## Finding (2026-09-02, verified against the built objects)
 
-`hw/mesa` has two Unix context backends: `mglcntx_sdlgl.c` (SDL2 GL context,
-`MESAGL_SDLGL 1` on Linux and Darwin) and `mglcntx_linux.c` (GLX fallback).
-On Darwin the SDL backend loads Apple's **native**
-`OpenGL.framework/Libraries/libGL.dylib` — so at runtime guest 3D lands in
-an SDL2-created CGL context, not XQuartz. XQuartz is only a *build-time*
-requirement (the GLX file still compiles, and the patched `meson.build`
-links `/opt/X11/lib`).
+`hw/mesa` ships two Unix context backends, but the overlay's `meson.build`
+compiles **only `mglcntx_linux.c`** (GLX); `mglcntx_sdlgl.c` is dead code
+in this build. On Darwin that GLX backend dlopens
+`/opt/X11/lib/libGL.dylib` — so at runtime guest 3D lands in an **XQuartz
+GLX drawable**, and XQuartz is a hard runtime dependency, not just a
+build one. (SDL2 is still required by the patched build; the 3dfx Glide
+window path uses it.)
 
-Consequence for the interop: the context underneath is CGL, so the
-IOSurface route (GL texture backed by IOSurface ↔ `MTLTexture`) is direct.
-Open question for step 2: whether we render into qemu-3dfx's SDL window
-(and share its drawable) or hand `hw/mesa` an offscreen context/FBO of our
-own in the fork — the latter is cleaner for the player and drops the SDL
-window entirely.
+Consequences for the interop:
+- Step 2 must establish what XQuartz's libGL sits on (Apple's GLX bridge
+  over native OpenGL). IOSurface sharing via the underlying CGL context
+  may be reachable, but through an extra layer.
+- The cleaner path for us is likely a **native CGL (or SDL2) context
+  backend for `hw/mesa` on Darwin in our fork** — `mglcntx_sdlgl.c` already
+  exists as a starting point and targets `OpenGL.framework` directly —
+  which drops XQuartz entirely and makes the IOSurface route direct.
+  Scope after step 2.
+- Upstream Darwin support is evidently lightly maintained: the July 2026
+  sync broke the Darwin build (`GL_CONTEXTALPHA`), fixed in our queue by
+  `patches/qemu/00-3dfx-darwin-contextalpha.patch`.
 
 ## Sub-questions, cheapest first
 
