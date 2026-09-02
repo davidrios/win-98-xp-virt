@@ -23,6 +23,13 @@
 extern "C" {
 #endif
 
+/* Exported regardless of any -fvisibility setting in the host build. */
+#if defined(_WIN32)
+#define QEMU_EMBED_API __declspec(dllexport)
+#else
+#define QEMU_EMBED_API __attribute__((visibility("default")))
+#endif
+
 typedef struct qemu_embed qemu_embed_t;
 
 /* Pixel format of the surface handed to on_switch. v1 accepts only 32bpp
@@ -49,38 +56,38 @@ typedef struct qemu_embed_display_cb {
  * (argv[0] ignored); "-S" and "-display none" are appended. Fatal config
  * errors exit the process (QEMU semantics) — validate before calling.
  * Returns NULL only on argument errors. */
-qemu_embed_t *qemu_embed_new(int argc, char **argv,
+QEMU_EMBED_API qemu_embed_t *qemu_embed_new(int argc, char **argv,
                              const qemu_embed_display_cb *cb, void *ud);
 
 /* Run the main loop. Returns QEMU's exit status when the guest shuts down
  * or qemu_embed_vm_shutdown() was requested. */
-int qemu_embed_run(qemu_embed_t *e);
+QEMU_EMBED_API int qemu_embed_run(qemu_embed_t *e);
 
 /* Tear down. QEMU cleanup is incomplete upstream: one VM per process. */
-void qemu_embed_destroy(qemu_embed_t *e, int status);
+QEMU_EMBED_API void qemu_embed_destroy(qemu_embed_t *e, int status);
 
 /* --- VM control: async, any thread --- */
-void qemu_embed_vm_start(qemu_embed_t *e);      /* resume / first start */
-void qemu_embed_vm_pause(qemu_embed_t *e);
-void qemu_embed_vm_reset(qemu_embed_t *e);
-void qemu_embed_vm_powerdown(qemu_embed_t *e);  /* ACPI power button */
-void qemu_embed_vm_shutdown(qemu_embed_t *e);   /* hard stop of the loop */
-bool qemu_embed_vm_running(qemu_embed_t *e);
+QEMU_EMBED_API void qemu_embed_vm_start(qemu_embed_t *e);      /* resume / first start */
+QEMU_EMBED_API void qemu_embed_vm_pause(qemu_embed_t *e);
+QEMU_EMBED_API void qemu_embed_vm_reset(qemu_embed_t *e);
+QEMU_EMBED_API void qemu_embed_vm_powerdown(qemu_embed_t *e);  /* ACPI power button */
+QEMU_EMBED_API void qemu_embed_vm_shutdown(qemu_embed_t *e);   /* hard stop of the loop */
+QEMU_EMBED_API bool qemu_embed_vm_running(qemu_embed_t *e);
 
 /* --- Input: enqueue from any thread, then flush once per batch --- */
 /* qcode = QKeyCode (qapi enum value). See qemu_embed_atset1_to_qcode(). */
-void qemu_embed_key(qemu_embed_t *e, uint32_t qcode, bool down);
+QEMU_EMBED_API void qemu_embed_key(qemu_embed_t *e, uint32_t qcode, bool down);
 /* AT set-1 scancode (0xE0-prefixed codes as 0xE0xx) -> QKeyCode, 0 if none */
-uint32_t qemu_embed_atset1_to_qcode(uint32_t atset1);
-void qemu_embed_mouse_rel(qemu_embed_t *e, int dx, int dy);
+QEMU_EMBED_API uint32_t qemu_embed_atset1_to_qcode(uint32_t atset1);
+QEMU_EMBED_API void qemu_embed_mouse_rel(qemu_embed_t *e, int dx, int dy);
 /* x,y in [0,w) x [0,h): scaled to the guest's absolute range */
-void qemu_embed_mouse_abs(qemu_embed_t *e, int x, int y, int w, int h);
+QEMU_EMBED_API void qemu_embed_mouse_abs(qemu_embed_t *e, int x, int y, int w, int h);
 /* button: 0 left, 1 middle, 2 right, 3 wheel up, 4 wheel down, 5 side, 6 extra */
-void qemu_embed_mouse_btn(qemu_embed_t *e, uint32_t button, bool down);
+QEMU_EMBED_API void qemu_embed_mouse_btn(qemu_embed_t *e, uint32_t button, bool down);
 /* Whether the active guest pointer device wants absolute coordinates. */
-bool qemu_embed_mouse_is_absolute(qemu_embed_t *e);
+QEMU_EMBED_API bool qemu_embed_mouse_is_absolute(qemu_embed_t *e);
 /* Schedule delivery of everything enqueued (one sync). */
-void qemu_embed_input_flush(qemu_embed_t *e);
+QEMU_EMBED_API void qemu_embed_input_flush(qemu_embed_t *e);
 
 /* --- Audio: call BEFORE qemu_embed_new(); then pass
  *   -audiodev embed,id=snd0,out.frequency=48000,out.channels=2,out.format=s16
@@ -88,11 +95,11 @@ void qemu_embed_input_flush(qemu_embed_t *e);
  * audio thread consumes it. `bytes` must be a power of two. wr_idx is
  * written by QEMU (release), rd_idx by the consumer (release); both are byte
  * positions in [0, bytes). One byte is kept free. */
-void qemu_embed_set_audio_ring(void *base, size_t bytes,
+QEMU_EMBED_API void qemu_embed_set_audio_ring(void *base, size_t bytes,
                                uint32_t *wr_idx, const uint32_t *rd_idx);
 
 /* Library version of the embed API, for the bindings to sanity-check. */
-uint32_t qemu_embed_api_version(void);
+QEMU_EMBED_API uint32_t qemu_embed_api_version(void);
 #define QEMU_EMBED_API_VERSION 2
 
 #ifdef __cplusplus
