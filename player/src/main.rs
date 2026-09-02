@@ -8,6 +8,7 @@ mod audio;
 mod keymap;
 mod pattern;
 mod qemu_vm;
+mod shader;
 
 use pattern::Pattern;
 use qemu_embed::Qemu;
@@ -31,6 +32,9 @@ struct Gpu {
     sampler: wgpu::Sampler,
     pipeline: wgpu::RenderPipeline,
     fb_tex: Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)>,
+    adapter_info: wgpu::AdapterInfo,
+    chain: Option<shader::Chain>,
+    chain_bg: Option<(wgpu::BindGroup, u32, u32)>,
 }
 
 impl Gpu {
@@ -125,6 +129,7 @@ impl Gpu {
             cache: None,
         });
 
+        let adapter_info = adapter.get_info();
         Self {
             window,
             surface,
@@ -135,6 +140,25 @@ impl Gpu {
             sampler,
             pipeline,
             fb_tex: None,
+            adapter_info,
+            chain: None,
+            chain_bg: None,
+        }
+    }
+
+    fn load_shader(&mut self, path: &std::path::Path) {
+        match shader::Chain::load(
+            path,
+            &self.device,
+            &self.queue,
+            self.adapter_info.clone(),
+            self.config.format,
+        ) {
+            Ok(c) => {
+                eprintln!("[shader] loaded {}", path.display());
+                self.chain = Some(c);
+            }
+            Err(e) => eprintln!("[shader] failed to load {}: {e}", path.display()),
         }
     }
 
@@ -229,8 +253,67 @@ impl Gpu {
     }
 
     fn render(&mut self) {
-        let Some((_, bg, _, _)) = &self.fb_tex else {
+        if self.fb_tex.is_none() {
             return;
+        }
+        // CRT chain: guest texture → viewport-sized output texture (doc 03)
+        let (_, _, vw, vh) = self.viewport();
+        let (vw, vh) = (vw.max(1.0) as u32, vh.max(1.0) as u32);
+        let mut chain_enc = None;
+        if let Some(chain) = self.chain.as_mut() {
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("shader"),
+                });
+            let input = &self.fb_tex.as_ref().unwrap().0;
+            match chain.run(&self.device, &mut enc, input, vw, vh) {
+                Ok(out) => {
+                    let out_tex = out.clone();
+                    if !matches!(&self.chain_bg, Some((_, w, h)) if *w == vw && *h == vh) {
+                        let view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("chain bg"),
+                            layout: &self.bgl,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                },
+                            ],
+                        });
+                        self.chain_bg = Some((bg, vw, vh));
+                    }
+                    chain_enc = Some(enc);
+                    if let Ok(path) = std::env::var("PLAYER_DUMP_OUT") {
+                        let want: usize = std::env::var("PLAYER_DUMP_SEQ")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(60);
+                        if chain.frame_count() == want {
+                            self.queue.submit(Some(chain_enc.take().unwrap().finish()));
+                            shader::dump_texture(&self.device, &self.queue, &out_tex, &path);
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[shader] frame failed: {e}; disabling chain");
+                    self.chain = None;
+                    self.chain_bg = None;
+                }
+            }
+        }
+        if let Some(enc) = chain_enc {
+            self.queue.submit(Some(enc.finish()));
+        }
+        let bg: &wgpu::BindGroup = match (&self.chain, &self.chain_bg) {
+            (Some(_), Some((bg, _, _))) => bg,
+            _ => &self.fb_tex.as_ref().unwrap().1,
         };
         use wgpu::CurrentSurfaceTexture as Cst;
         let frame = match self.surface.get_current_texture() {
@@ -290,6 +373,7 @@ enum Source {
 #[derive(Default)]
 struct App {
     qemu_args: Vec<String>,
+    shader: Option<std::path::PathBuf>,
     gpu: Option<Gpu>,
     source: Option<Source>,
     audio: Option<audio::Output>,
@@ -346,7 +430,14 @@ impl ApplicationHandler for App {
             .with_title("win98-xp-virt player")
             .with_inner_size(LogicalSize::new(1280.0, 960.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        self.gpu = Some(Gpu::new(window));
+
+        let mut gpu = Gpu::new(window);
+
+        if let Some(p) = &self.shader {
+            gpu.load_shader(p);
+        }
+
+        self.gpu = Some(gpu);
         self.source = Some(if self.qemu_args.is_empty() {
             Source::Pattern(Pattern::new())
         } else {
@@ -490,6 +581,25 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+        // Headless verification (PLAYER_DUMP_OUT): an occluded window may never
+        // get RedrawRequested, but the shader chain renders into our own
+        // texture, so drive the frame from here in that mode.
+        if std::env::var("PLAYER_DUMP_OUT").is_ok() {
+            if let Some(Source::Qemu {
+                display, last_seq, ..
+            }) = self.source.as_mut()
+            {
+                if let (Some(gpu), Some(f)) = (self.gpu.as_mut(), display.take_if_newer(*last_seq))
+                {
+                    *last_seq = f.seq;
+                    gpu.upload(&f.pixels, f.width as u32, f.height as u32);
+                    gpu.render();
+                }
+            }
+        }
+    }
+
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             if !self.grabbed {
@@ -532,8 +642,14 @@ pub fn maybe_dump(pixels: &[u32], w: usize, h: usize, seq: u64) {
 }
 
 fn main() {
-    // player [--] <qemu-system-i386 args...>   (no args: test pattern)
+    // player [--shader <preset.slangp>] [--] <qemu-system-i386 args...>   (no args: test pattern)
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut shader: Option<std::path::PathBuf> =
+        std::env::var("PLAYER_SHADER").ok().map(Into::into);
+    if args.first().map(String::as_str) == Some("--shader") && args.len() >= 2 {
+        shader = Some(args[1].clone().into());
+        args.drain(0..2);
+    }
     if args.first().map(String::as_str) == Some("--") {
         args.remove(0);
     }
@@ -541,6 +657,7 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
         qemu_args: args,
+        shader,
         ..Default::default()
     };
     event_loop.run_app(&mut app).expect("run");

@@ -41,7 +41,14 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
   provided by the shim, an ld64 export list (QEMU's plugin
   `-exported_symbols_list` hid the API), sRGB-tagged guest texture (macOS
   swapchain is sRGB), and absolute-mode cursor handling.
-- Next: measured latency (HUD); XP boot + benchmark on the Air;
+- ✅ librashader chain: `player --shader <preset.slangp>` runs any
+  libretro slang preset (submodule `third_party/slang-shaders`) on wgpu
+  between the guest texture and the viewport; verified with crt-lottes on
+  FreeDOS (`PLAYER_DUMP_OUT` GPU readback). Pipeline cache disabled until
+  `Features::PIPELINE_CACHE` is requested.
+- Next: measured latency (HUD); XP boot + benchmark on the Air; then the
+  M3 window-less GL context provider is pulled forward (3D through the CRT
+  chain) ahead of M2's mode table.
   QMP over socketpair; librashader chain; latency HUD; macOS build of the
   embed lib (dylib) on the M1 Air.
 - librashader-wgpu chain with one CRT preset; keyboard/mouse injection; cpal

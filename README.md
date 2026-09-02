@@ -56,6 +56,9 @@ cargo build --release        # player links libqemu-embed (rpath into build/qemu
 target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
   -drive file=path/to/floppy.img,format=raw,if=floppy -boot a -vga std -net none
 # PLAYER_DUMP=frame.png PLAYER_DUMP_SEQ=150 dumps guest frame #150 and exits (headless check)
+# --shader <preset.slangp> (or PLAYER_SHADER=) runs a libretro slang preset, e.g.
+#   target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- ...
+# PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
 # PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test)
 # PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
 # audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.

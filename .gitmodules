@@ -4,3 +4,6 @@
 [submodule "third_party/qemu-3dfx"]
 	path = third_party/qemu-3dfx
 	url = https://github.com/kjliew/qemu-3dfx.git
+[submodule "third_party/slang-shaders"]
+	path = third_party/slang-shaders
+	url = https://github.com/libretro/slang-shaders.git

@@ -24,6 +24,11 @@ We ship a curated pack with 3–4 defaults ("Trinitron" calibrated against the
 reference CRT per doc 09, "shadow mask consumer", "clean sharp", "off") and
 accept any `.slangp`.
 
+Implementation status (2026-09-02): the chain runs in `player/src/shader.rs`
+— guest texture in, viewport-sized output texture out, then the blit pass;
+`PLAYER_DUMP_OUT` reads the shaded texture back for tests. Mode table and
+pixel-aspect handling (below) are M2.
+
 ## Pixel accuracy rules (all testable)
 
 1. **Never scale before the shader.** The shader input is the exact guest
