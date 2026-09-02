@@ -1,0 +1,12 @@
+[package]
+name = "player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone player: in-process QEMU + wgpu/librashader display (doc 02/03). M0: native window + test pattern."
+
+[dependencies]
+winit = "0.30"
+wgpu = "30"
+pollster = "1"
+bytemuck = "1"

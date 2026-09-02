@@ -48,3 +48,25 @@ All original code is Rust unless a hard boundary forces C:
 Consequence for doc 05: disc model is implemented in Rust; libmirage becomes
 a behavioral reference (readable GPL source, format documentation), not a
 linked dependency — this also drops its glib dependency problem.
+
+## ADR-005: Standalone player is the frontend; RetroArch/libretro dropped (2026-09-02)
+
+Supersedes ADR-003. After hands-on time with RetroArch the user judged it too
+buggy to build on ("the thing is so full of bugs it's not even worth it").
+The frontend returns to the original design: a **standalone Rust player**
+(winit + wgpu + librashader + egui + cpal) with in-process QEMU (ADR-002
+unchanged), plus the **launcher** for machine management — the two-process
+model from the first architecture draft. Consequences:
+
+- We own the whole presentation pipeline again (doc 03 fully in scope): CRT
+  shaders via librashader's wgpu runtime (Metal on macOS), frame pacing,
+  input grab, audio. More work than the core route, but no dependence on
+  RetroArch's quality or API constraints.
+- qemu-3dfx integration target becomes "guest GL output → wgpu texture"
+  (Spike A retargeted: docs/spikes/spike-a-macos.md) instead of a libretro
+  hw-render context. No libretro hw-render risk on macOS anymore; the
+  GL↔Metal interop question remains and is the spike.
+- Spike B (libretro crate choice) is void. The M0 libretro core validated in
+  RetroArch is deleted; its test pattern lives on in `player/`.
+- The embed API stays frontend-agnostic on principle; a libretro shell could
+  be re-added by a third party, we won't maintain one.

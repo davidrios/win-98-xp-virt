@@ -40,11 +40,11 @@ Known qemu-3dfx constraints we design around:
 - **Windowing:** 3dfx-era games love exclusive fullscreen and mode changes;
   interaction with our render pipeline needs explicit testing (see doc 03,
   "3D and the pipeline").
-- **libretro hw-render (ADR-003):** guest 3D must land in a libretro
-  hw-render GL context so it flows through RetroArch's shader chain. This is
-  the plan's riskiest integration — especially on macOS, where RetroArch is
-  Metal-first — and is validated by Spike A in M0 before anything depends on
-  it. Fallbacks in the roadmap risk table.
+- **Output interop (ADR-005):** qemu-3dfx draws with host GL on QEMU
+  threads; the player renders with wgpu (Metal/Vulkan/D3D12). Guest 3D must
+  reach a wgpu texture without CPU readback so it flows through the CRT
+  chain — IOSurface on macOS, dma-buf/external memory on Linux, shared
+  handles on Windows. Spike A validates this; fallbacks in the roadmap.
 
 ## Fallbacks and alternatives (documented, not primary)
 

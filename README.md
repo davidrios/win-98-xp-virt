@@ -16,8 +16,8 @@ first-class target.
 | x86 emulation/virtualization | Exists — QEMU (TCG on ARM hosts, KVM/WHPX on x86) |
 | Guest 3D acceleration | Exists — qemu-3dfx (integrate, package, test) |
 | Win9x guest GPU drivers | Exists — SoftGPU + qemu-3dfx guest wrappers (package) |
-| CRT shaders, frame pacing, input, packaging | Exists — RetroArch (we run inside it) |
-| **QEMU libretro core: in-process QEMU + pixel-accurate presentation** | **We build** (Rust) |
+| CRT shader ecosystem | Exists — libretro slang shaders via librashader (library, not RetroArch) |
+| **Player: in-process QEMU + pixel-accurate CRT-shaded display** | **We build** (Rust, wgpu + librashader) |
 | **Companion launcher (machine library, guided creation)** | **We build** (Rust) |
 | **Raw CD-ROM backend (cue/bin, subchannel, C2, CD-DA)** | **We build** (Rust "libdisc"; libmirage as reference) |
 
@@ -44,16 +44,13 @@ git clone --recurse-submodules <repo-url>   # submodules: qemu (gitlab.com, pinn
 cd win98-xp-virt                            #             third_party/qemu-3dfx (github.com)
 # already cloned without submodules? → git submodule update --init --depth 1
 
-cargo build --release        # libretro core + libdisc + launcher stub
-scripts/test-core.sh         # headless smoke test (needs retroarch installed)
+cargo build --release        # player + libdisc + launcher stub
+target/release/player        # M0: native window with test pattern (integer-scaled 4:3)
 
 scripts/prepare-qemu.sh      # overlay qemu-3dfx devices, patch, sign
 scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja, glib, pixman)
 ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
 ```
-
-Try the core in RetroArch: `retroarch -L target/release/libwin98xp_libretro.so`
-(M0 state: renders a test pattern — QEMU embedding lands in M1).
 
 CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
 Actions tab (`workflow_dispatch`).

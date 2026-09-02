@@ -19,8 +19,8 @@ rectangle in a window.
 3. **Pixel-accurate, period-accurate video.** The raw guest framebuffer is
    captured before any scaling, presented with correct aspect (including
    non-square-pixel modes like 320×200), integer/sharp scaling, and a
-   high-quality CRT shader chain (libretro "slang" shaders — native, since
-   the primary frontend is a RetroArch core, ADR-003).
+   high-quality CRT shader chain (libretro-format "slang" shaders via
+   librashader on wgpu).
 4. **Faithful CD-ROM drive emulation.** Raw dump formats (cue/bin, CCD, MDS,
    CHD) mount as a virtual drive that behaves like period hardware: CD-DA
    audio tracks, subchannel data, C2 error behavior, raw TOC. Era copy
@@ -31,9 +31,9 @@ rectangle in a window.
    (see doc 03).
 6. **UTM-style UX.** A machine library, guided machine creation for the two
    guest families, sane defaults, one-click driver/tools media. Nobody should
-   need to hand-write a 40-flag QEMU command line. Delivered as a libretro
-   core (play side, inside RetroArch) plus a companion launcher app
-   (manage side) — see docs 02/07.
+   need to hand-write a 40-flag QEMU command line. Delivered as a standalone
+   player (one machine per window) plus a companion launcher (library and
+   creation) — see docs 02/07.
 
 ## Non-goals
 
@@ -57,11 +57,9 @@ rectangle in a window.
 |---|---|---|
 | P1 | QEMU + qemu-3dfx builds and machine configs for Win98/XP on all three platforms | Integration |
 | P2 | Guest-side driver/tools packaging (SoftGPU, 3dfx wrappers, audio/net drivers) | Integration |
-| P3 | QEMU libretro core: in-process embed + pixel-accurate presentation in RetroArch, plus companion launcher | **Original work** |
+| P3 | Player: in-process embed + pixel-accurate CRT-shaded display pipeline (wgpu + librashader), plus companion launcher | **Original work** |
 | P4 | Raw CD-ROM ATAPI backend for QEMU (Rust "libdisc") | **Original work** |
 
 P3 and P4 are the contributions that don't exist anywhere today and are
 designed to be upstreamable / reusable by the wider retro-VM community.
-(P3 originally specified a fully custom display pipeline; superseded by the
-RetroArch-core decision, ADR-003 — RetroArch supplies shaders/pacing/input,
-we supply the core, correctness, and the launcher.)
+(A RetroArch-core variant of P3 was tried and dropped — ADR-003/ADR-005.)

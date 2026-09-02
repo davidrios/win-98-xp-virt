@@ -23,19 +23,9 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release
-      - name: RetroArch smoke test (linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update && sudo apt-get install -y retroarch
-          ./scripts/test-core.sh
-      - name: verify libretro exports (unix)
-        if: runner.os != 'Windows'
+      - name: player binary present
         shell: bash
-        run: |
-          lib=$(ls target/release/libwin98xp_libretro.* | head -1)
-          count=$(nm -gU "$lib" 2>/dev/null | grep -c 'retro_' || nm -D "$lib" | grep -c ' T retro_')
-          echo "exported retro_* symbols: $count"
-          test "$count" -ge 25
+        run: ls -la target/release/player*
 
   qemu-prepare:
     name: qemu prepare + configure (linux)
