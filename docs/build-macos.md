@@ -110,6 +110,13 @@ on the host terminal. For Glide, any Glide title works once
 `GLIDE2X.DLL` is in `SYSTEM`; for OpenGL games drop `OPENGL32.DLL` next to
 the game EXE (Quake 2 is the classic check).
 
+Known trap (fixed in our queue since 2026-09-02): stock QEMU 9.2.4 TCG
+blue-screens Win98 SE with `exception 0D` on the first boot after setup
+(upstream issue 2987, an LSS/IRQ-shadow regression). `prepare-qemu.sh`
+applies the upstream fix; if you built before that, `git pull`, re-run
+prepare → configure → ninja, and reboot the same disk image — the install
+itself is fine.
+
 Notes: `-cpu pentium3` is the compatibility-safe choice for Win9x under
 TCG; try `-cpu max` (qemu-3dfx's recommendation on Apple Silicon) once it
 works. Keep RAM ≤ 512 MB (Win9x VCache limit). Record renderer string + fps
