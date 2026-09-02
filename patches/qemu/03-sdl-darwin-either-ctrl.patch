@@ -1,0 +1,22 @@
+macOS: accept either Control key for the SDL grab/hotkey modifier.
+SDL on an M1 Air reported the left Control key as KMOD_RCTRL (mod=0x0181
+for Ctrl+Option+G), so get_mod_state() never matched KMOD_LCTRL|KMOD_LALT
+and all Ctrl+Alt hotkeys (grab release, fullscreen) were dead.
+
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -358,6 +358,14 @@
+ static int get_mod_state(void)
+ {
+     SDL_Keymod mod = SDL_GetModState();
++#ifdef CONFIG_DARWIN
++    /* win98-xp-virt: macOS/SDL can report the left Control key as RCTRL
++     * (seen on an M1 Air: Ctrl+Option+G arrives as LALT|RCTRL), which makes
++     * every Ctrl+Alt hotkey dead. Treat either Control as LCTRL here. */
++    if (mod & KMOD_RCTRL) {
++        mod |= KMOD_LCTRL;
++    }
++#endif
+ 
+     if (alt_grab) {
+         return (mod & (gui_grab_code | KMOD_LSHIFT)) ==

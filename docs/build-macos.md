@@ -142,14 +142,14 @@ absolute pointer SDL never grabs mouse or keyboard, so no release hotkey is
 needed (Win98 SE drives a USB HID tablet with in-box drivers). Relative
 (PS/2) mode is only needed for mouselook games.
 
-**Mouse/keyboard grab under `-display sdl`:** hotkey is left-Ctrl +
-left-Option + G (SDL `KMOD_LCTRL|KMOD_LALT`; the right-hand keys don't
-count). Alternatives: `-display sdl,grab-mod=lshift-lctrl-lalt`
-(Shift+Ctrl+Option+G) or `grab-mod=rctrl`. `Ctrl+Alt+G` deliberately does
-*not* release while the window is fullscreen (`sdl2.c` skips
-`sdl_grab_end` when `gui_fullscreen`) — qemu-3dfx switches the window to
-fullscreen for 3D titles, so leave fullscreen first (`Ctrl+Alt+F`), then
-release. qemu-3dfx's `fxui_grab` also re-grabs on focus while 3D is active.
+**Mouse/keyboard grab under `-display sdl`:** hotkey is Ctrl+Option+G
+(fullscreen: Ctrl+Option+F). On the Air, SDL reported the left Control key
+as *right* Control (`mod=0x0181`), which made every hotkey dead in stock
+QEMU; our queue patch `03-sdl-darwin-either-ctrl` accepts either Control on
+macOS. Without it, `-display sdl,grab-mod=rctrl` works as a fallback.
+`Ctrl+Alt+G` deliberately does not release while the window is fullscreen;
+qemu-3dfx's `fxui_grab` re-grabs on focus while 3D is active.
+`QEMU_SDL_KEYDEBUG=1` logs keydown/modifier state if this ever regresses.
 
 In the guest: copy `D:\WIN9X\*` to `C:\WINDOWS\SYSTEM`, copy `D:\GAMEDIR\*`
 to a folder like `C:\GLTEST`, reboot, run `C:\GLTEST\WGLGEARS.EXE`.

@@ -27,6 +27,11 @@ Current queue:
   Mesa backend (`mglcntx_sdlgl.c`) instead of GLX on macOS: with a Cocoa
   SDL window the GLX backend gets an `NSWindow*` as "X11 window" →
   BadDrawable. Linux keeps GLX.
+- `03-sdl-darwin-either-ctrl.patch` — SDL on macOS reported the left Control
+  key as `KMOD_RCTRL`, so `get_mod_state()` never matched and all Ctrl+Alt
+  hotkeys (grab release, fullscreen) were dead; accept either Control.
+- `90-debug-sdl-keydebug.patch` — `QEMU_SDL_KEYDEBUG=1` logs SDL keydowns
+  (temporary diagnostic; env-gated, harmless).
 - `00-3dfx-darwin-contextalpha.patch` — upstream qemu-3dfx Darwin build
   regression (`GL_CONTEXTALPHA` only defined under `CONFIG_LINUX`). Report
   upstream; drop when fixed there.
