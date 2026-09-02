@@ -79,14 +79,38 @@ Notes:
 - If configure complains about Python, it means uv isn't on PATH — the
   script never uses the system interpreter.
 
-## Spike A, step 1 (hand-run, ~20 min)
+## Spike A, step 1: Win98 + guest wrappers (hand-run)
 
-Goal: prove qemu-3dfx accelerates a guest on this Mac at all, independent of
-our code. Easiest path is the prebuilt arm64 package from
-https://github.com/startergo/qemu-3dfx-macos/releases (Homebrew-style
-tarball into /opt/homebrew) — or our own build above once it works. Boot a
-Win98 image, install the matching guest wrappers (built from the *same*
-qemu-3dfx commit as the host binary — for our build, that's
-`third_party/qemu-3dfx` at the stamped commit), run a GL/Glide title, and
-record the renderer string and rough fps in
-`docs/spikes/spike-a-macos.md` → Result.
+Goal: prove qemu-3dfx accelerates a guest on this Mac. You need your own
+Win98 SE install ISO; everything else comes from the repo.
+
+```sh
+# guest wrappers, built from the exact qemu-3dfx commit the host is signed with
+brew install mingw-w64 xorriso && guest-tools/build-wrappers.sh
+#   → guest-tools/out/guest-tools-3dfx-<rev>.iso   (or use one built on Linux — same commit)
+
+# 1. install Win98 (cirrus = in-box high-color driver, no extra guest driver needed)
+qemu-img create -f qcow2 ~/vms/win98.qcow2 4G
+build/qemu/qemu-system-i386 -machine pc -cpu pentium3 -m 256 \
+  -hda ~/vms/win98.qcow2 -cdrom ~/isos/Win98SE.iso -boot d \
+  -vga cirrus -display cocoa -net none \
+  -audiodev coreaudio,id=snd -device sb16,audiodev=snd
+# 2. after install, boot with the guest-tools ISO attached
+build/qemu/qemu-system-i386 -machine pc -cpu pentium3 -m 256 \
+  -hda ~/vms/win98.qcow2 -cdrom guest-tools/out/guest-tools-3dfx-*.iso \
+  -vga cirrus -display cocoa -net none \
+  -audiodev coreaudio,id=snd -device sb16,audiodev=snd
+```
+
+In the guest: copy `D:\WIN9X\*` to `C:\WINDOWS\SYSTEM`, copy `D:\GAMEDIR\*`
+to a folder like `C:\GLTEST`, reboot, run `C:\GLTEST\WGLGEARS.EXE`.
+Accelerated = a smooth gears window and a Mesa/host renderer string (not
+"GDI Generic") in the console/title; qemu-3dfx also prints context messages
+on the host terminal. For Glide, any Glide title works once
+`GLIDE2X.DLL` is in `SYSTEM`; for OpenGL games drop `OPENGL32.DLL` next to
+the game EXE (Quake 2 is the classic check).
+
+Notes: `-cpu pentium3` is the compatibility-safe choice for Win9x under
+TCG; try `-cpu max` (qemu-3dfx's recommendation on Apple Silicon) once it
+works. Keep RAM ≤ 512 MB (Win9x VCache limit). Record renderer string + fps
+under "Result" in `docs/spikes/spike-a-macos.md`.

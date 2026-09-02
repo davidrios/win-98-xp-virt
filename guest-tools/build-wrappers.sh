@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Build qemu-3dfx guest wrappers (Windows DLLs) from the SAME
+# third_party/qemu-3dfx commit our QEMU fork is signed with, and stage them
+# as a guest-tools ISO. Needs: i686-w64-mingw32-gcc, gendef, xxd, shasum,
+# git, make; xorriso or genisoimage/mkisofs for the ISO.
+#   Linux (Arch):  pacman -S mingw-w64-gcc mingw-w64-tools xorriso
+#   macOS:         brew install mingw-w64 xorriso
+# DOS-only pieces (GLIDE2X.OVL via Open Watcom, DJGPP DXEs) are skipped.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+FX="$ROOT/third_party/qemu-3dfx"
+OUT="$ROOT/guest-tools/out"
+REV="$(git -C "$FX" rev-parse --short HEAD)"
+
+build_wrapper() {  # $1 = 3dfx | mesa
+  local d="$FX/wrappers/$1/build"
+  rm -rf "$d" && mkdir -p "$d"
+  ( cd "$d" && bash "$FX/scripts/conf_wrapper" >/dev/null && make )   # serial: 'fxlib' step must precede objects
+}
+
+echo "==> qemu-3dfx commit $REV"
+build_wrapper 3dfx
+build_wrapper mesa
+
+rm -rf "$OUT" && mkdir -p "$OUT/iso/WIN9X" "$OUT/iso/WIN2KXP" "$OUT/iso/GAMEDIR"
+G="$FX/wrappers/3dfx/build"; M="$FX/wrappers/mesa/build"
+cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxmemmap.vxd "$OUT/iso/WIN9X/"
+cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxptl.sys "$G"/instdrv.exe "$OUT/iso/WIN2KXP/"
+cp "$M"/opengl32.dll "$OUT/iso/GAMEDIR/"
+# GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
+# OPENGL32.DLL inside the guest; the title/console shows the renderer.
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
+  -lopengl32 -lgdi32 -lglu32 -mwindows
+cat > "$OUT/iso/README.TXT" <<TXT
+qemu-3dfx guest wrappers, built from qemu-3dfx commit $REV
+(must match the host QEMU build's sign_commit stamp).
+
+WIN9X\   -> copy GLIDE.DLL GLIDE2X.DLL GLIDE3X.DLL FXMEMMAP.VXD to C:\WINDOWS\SYSTEM
+WIN2KXP\ -> copy GLIDE*.DLL to %SystemRoot%\system32, FXPTL.SYS to
+            %SystemRoot%\system32\drivers, then run INSTDRV.EXE as Administrator
+GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
+            WGLGEARS.EXE + OPENGL32.DLL in one folder = quick GL pass-through test
+
+Not included: GLIDE2X.OVL (DOS Glide games; needs Open Watcom to build).
+TXT
+# 8.3-safe upper-case names for Win9x
+( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/*; do mv "$f" "$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; done )
+
+ISO="$OUT/guest-tools-3dfx-$REV.iso"
+if command -v xorriso >/dev/null; then
+  xorriso -as mkisofs -o "$ISO" -V "GUESTTOOLS" -J -r "$OUT/iso" >/dev/null 2>&1
+elif command -v genisoimage >/dev/null; then
+  genisoimage -o "$ISO" -V "GUESTTOOLS" -J -r "$OUT/iso" >/dev/null 2>&1
+elif command -v mkisofs >/dev/null; then
+  mkisofs -o "$ISO" -V "GUESTTOOLS" -J -r "$OUT/iso" >/dev/null 2>&1
+else
+  echo "no ISO tool found; staged files are in $OUT/iso"; exit 0
+fi
+echo "==> $ISO"
