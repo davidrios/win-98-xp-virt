@@ -2,3 +2,20 @@ Debug aid: QEMU_SDL_KEYDEBUG=1 logs SDL keydown events (scancode, modifier
 mask, hotkey-modifier result, window/console match, grab state) to stderr.
 For diagnosing dead Ctrl+Alt hotkeys on macOS. Temporary.
 
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -374,6 +374,14 @@
+     int win;
+     struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+     int gui_key_modifier_pressed = get_mod_state();
++    /* win98-xp-virt debug: QEMU_SDL_KEYDEBUG=1 logs every keydown */
++    if (g_getenv("QEMU_SDL_KEYDEBUG")) {
++        fprintf(stderr, "sdl2 keydown: scancode=%d mod=0x%04x hotkeymod=%d "
++                "repeat=%d win=%u scon=%p ignore_hotkeys=%d grab=%d\n",
++                ev->key.keysym.scancode, (unsigned)ev->key.keysym.mod,
++                gui_key_modifier_pressed, ev->key.repeat, ev->key.windowID,
++                (void *)scon, scon ? scon->ignore_hotkeys : -1, gui_grab);
++    }
+ 
+     if (!scon) {
+         return;
