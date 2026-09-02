@@ -32,6 +32,25 @@ ensure_gendef() {
 }
 ensure_gendef
 
+# The wrapper Makefiles call bare `objdump` (exports-check counts PE export
+# entries) and lean on GNU sed. On macOS, `objdump` is Apple's LLVM one and
+# can't read PE the same way: route it to the mingw cross binutils' GNU
+# objdump, and prefer gnu-sed when installed.
+ensure_gnu_tools() {
+  local bin="$ROOT/guest-tools/tools/bin"; mkdir -p "$bin"
+  if ! objdump --version 2>/dev/null | grep -q 'GNU objdump'; then
+    local xd; xd="$(command -v i686-w64-mingw32-objdump || true)"
+    [ -n "$xd" ] || { echo "need GNU objdump (i686-w64-mingw32-objdump from mingw-w64)"; exit 1; }
+    ln -sf "$xd" "$bin/objdump"
+  fi
+  if [ "$(uname -s)" = Darwin ]; then
+    local g; g="$(brew --prefix gnu-sed 2>/dev/null || true)/libexec/gnubin"
+    [ -d "$g" ] && export PATH="$g:$PATH"
+  fi
+  export PATH="$bin:$PATH"
+}
+ensure_gnu_tools
+
 build_wrapper() {  # $1 = 3dfx | mesa
   local d="$FX/wrappers/$1/build"
   rm -rf "$d" && mkdir -p "$d"
