@@ -41,9 +41,16 @@ in the table.
 
 | Machine | CPU / config | Super PI 1M (s) | Boot to desktop (s) | Feel | Date |
 |---|---|---|---|---|---|
-| Rig (P4 + 6200), XP SP3 | fill in: P4 model, GHz, RAM | | | | |
-| M1 Air, XP SP3 in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | | | | |
-| Rig / Air | | = Air ÷ rig → **X % of the reference P4** | | | |
+| Rig (P4 + 6200), XP | fill in: P4 model, GHz, RAM | 122 (2:02) | ~30 | | 2026-09-02 |
+| M1 Air, XP in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | 589 (9:49) | ~30 | | 2026-09-02 |
+| Air ÷ rig | | **4.8× slower → 21 % of the reference P4** | parity (host SSD hides the gap) | | |
+
+Reading: Super PI is almost pure x87 FP, which TCG runs through 80-bit
+softfloat with no fast path — this is the worst case, not the typical one.
+Nine-fifty for 1M is Pentium II 300–400 MHz territory on real hardware.
+Integer/memory-bound code should fare better; capture a 7-Zip benchmark
+(Tools → Benchmark, 7-Zip 9.20 runs on XP and 98) on both machines to
+bracket the range before the in-app expectation text is written.
 
 Also record here anything the XP guest needed that Win98 did not
 (drivers, HAL, activation state is not recorded).

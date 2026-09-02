@@ -46,7 +46,11 @@ Done, all through the in-process embed path:
   runtime).
 
 Open before calling M1 closed:
-- XP boot + TCG benchmark on the Air against the rig baseline (doc 09).
+- ~~XP boot + TCG benchmark on the Air against the rig baseline (doc 09).~~
+  Done 2026-09-02: XP boots in the player (sound, tablet, clean power-off),
+  ~30 s to desktop on both; Super PI 1M 9:49 vs the rig's 2:02 → 21 % (x87
+  worst case). Integer bracket (7-Zip) still to capture —
+  `reference/benchmarks/README.md`.
 - QMP over socketpair (snapshots/media) — not started; design in doc 11.
 - Windows host untested throughout.
 
@@ -100,7 +104,7 @@ suspend/resume, upstreaming campaign (libdisc, embed API).
 | Spike A: GL→wgpu interop on macOS (IOSurface) | fallback: texture copy via CPU-free path, ANGLE/Zink under qemu-3dfx (doc 04); last resort 3D bypasses the shader chain on macOS |
 | qemu-3dfx maintenance/version coupling | pin QEMU to its cadence; wrappers built from our fork |
 | Apple GL deprecation | ANGLE/Zink escape hatch (doc 04) |
-| XP-on-TCG too slow for late-era titles | measured in M1 vs. rig baseline; scope claims to data |
+| XP-on-TCG too slow for late-era titles | measured in M1: x87 FP at 21 % of the rig P4 (Pentium II class); late-era titles are out of scope for Apple Silicon claims, early-XP/late-98 titles need per-title validation in M4 |
 | librashader/wgpu version coupling | follow librashader's wgpu pin |
 | Fork drift from upstream QEMU | patch-queue discipline; upstream-first style |
 | Protection checks needing dump features users' rips lack | loud UX messaging about required dump formats (doc 05) |

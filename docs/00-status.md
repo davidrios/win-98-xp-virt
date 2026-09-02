@@ -10,7 +10,7 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio. **Win98 runs in it on the M1 Air** with sound and tablet mouse. |
 | 3D | qemu-3dfx GL pass-through works **standalone** (`qemu-system-i386 -display sdl`, 500+ fps wglgears on the Air). **Not yet in the player** — needs the M3 window-less context provider (doc 12). Under the player a GL app is refused cleanly; a Glide app still exits QEMU (patch 04). |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
-| Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP install in progress on the Air. |
+| Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig); Super PI 1M 9:49 vs rig 2:02 = 21 % (x87 worst case, `reference/benchmarks/`). |
 | CD backend (libdisc) | vocabulary types + MSF/LBA only (M5). |
 | Launcher | stub (M6). |
 
@@ -59,8 +59,9 @@ macOS specifics: `docs/build-macos.md`.
 ## Next steps, in order
 
 1. M1 close-out: latency DONE (Air: p50 6–10 / p95 15–17 / max 18 ms,
-   the 60 Hz vsync-phase floor; Linux identical). Left: XP benchmark on the
-   Air; QMP over socketpair (doc 11 §QMP).
+   the 60 Hz vsync-phase floor; Linux identical); XP boot + Super PI DONE
+   (21 % of the rig, x87-bound). Left: 7-Zip integer bracket on both
+   machines; QMP over socketpair (doc 11 §QMP).
 2. **M3 (pulled forward, doc 12):** `30-3dfx-ui-vtable` patch →
    `embed/mglcntx_embed.c` (EGL pbuffer, compat profile) with readback
    bring-up → dma-buf import into wgpu → macOS CGL/IOSurface → Glide.
