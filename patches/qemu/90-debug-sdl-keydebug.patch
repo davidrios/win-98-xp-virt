@@ -1,0 +1,4 @@
+Debug aid: QEMU_SDL_KEYDEBUG=1 logs SDL keydown events (scancode, modifier
+mask, hotkey-modifier result, window/console match, grab state) to stderr.
+For diagnosing dead Ctrl+Alt hotkeys on macOS. Temporary.
+
