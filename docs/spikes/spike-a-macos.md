@@ -102,4 +102,6 @@ d. 3D bypasses the shader chain (own GL window) — last resort, 2D still
   Observed: frame presentation is janky unless the mouse keeps moving
   (presentation appears coupled to the SDL event/refresh cadence on the
   Darwin path — see build-macos notes); grab-release hotkey ineffective
-  while 3D is active. Steps 2–4 (output location, interop) next.
+  (cause: Caps→Ctrl remap reports RCTRL; fixed by patch 03). The Win98
+  guest was a PnP-BIOS install; repaired in place to PCI-Bus enumeration
+  (usb-tablet now detected). Steps 2–4 (output location, interop) next.
