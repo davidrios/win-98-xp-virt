@@ -13,7 +13,8 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
 - Repo scaffold per doc 02; QEMU submodule pinned v9.2.4 (qemu-3dfx cadence);
   qemu-3dfx submodule; `prepare-qemu.sh` (overlay + patch + sign) and
   `configure-qemu.sh` (uv-managed Python); patched QEMU builds and runs with
-  glidept/glidelfb/mesapt regions live.
+  glidept/glidelfb/mesapt regions live — verified on Linux x86_64 (Arch) and
+  **macOS Apple Silicon (M1 Air)**. Windows untested.
 - Rust workspace: `player` (winit + wgpu 30 window, XRGB8888 test pattern
   with integer 4:3 viewport, mailbox present), `libdisc` (MSF/LBA + types),
   `launcher` stub. CI (manual trigger) for Linux/Windows/macOS-arm64.

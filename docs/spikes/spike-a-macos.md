@@ -66,4 +66,8 @@ d. 3D bypasses the shader chain (own GL window) — last resort, 2D still
 
 ## Result
 
-_Not yet run._
+- **2026-09-02 — build validated on the M1 Air:** our patched QEMU 9.2.4
+  (qemu-3dfx overlay + `00-3dfx-darwin-contextalpha` patch, XQuartz + SDL2
+  from Homebrew, uv Python) compiles, runs, and exposes
+  `glidept`/`glidelfb`/`glideshm`/`mesapt` via `info mtree`. Steps 1–4
+  (guest 3D, interop) not yet run.
