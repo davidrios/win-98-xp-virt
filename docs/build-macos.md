@@ -126,11 +126,25 @@ loaded, no X server at runtime. (XQuartz stays a *build-time* link
 dependency until the link flags are patched.) Rebuild after `git pull`:
 prepare → configure → ninja.
 
+**Tuning knobs — `mesagl.cfg`:** qemu-3dfx reads `mesagl.cfg` from the
+*current working directory* at startup. Keys: `ExtensionsYear`,
+`ExtensionsLength`, `VertexCacheMB`, `DispTimerMS`, `BufOAccelEN`,
+`ContextMSAA`, `ContextSRGB`, `ContextVsyncOff`, `RenderScalerOff`,
+`FpsLimit`, `DumpShader`, `CheckError`, `FifoTrace`, `FuncTrace` (one
+`Key,value` per line). On macOS `DispTimerMS` (default 0) also selects the
+GL profile: 0 → core profile, non-zero → compatibility. Frame presentation
+on the SDL backend is `SDL_GL_SwapWindow` from the device handler; if it
+looks janky unless the mouse moves, try `DispTimerMS,16` and/or
+`ContextVsyncOff,1` / `FpsLimit,60` and report.
+
 **Mouse/keyboard grab under `-display sdl`:** hotkey is left-Ctrl +
 left-Option + G (SDL `KMOD_LCTRL|KMOD_LALT`; the right-hand keys don't
 count). Alternatives: `-display sdl,grab-mod=lshift-lctrl-lalt`
-(Shift+Ctrl+Option+G) or `grab-mod=rctrl`. While a 3D title runs
-fullscreen, qemu-3dfx's own window logic (`fxui_grab`) holds the grab.
+(Shift+Ctrl+Option+G) or `grab-mod=rctrl`. `Ctrl+Alt+G` deliberately does
+*not* release while the window is fullscreen (`sdl2.c` skips
+`sdl_grab_end` when `gui_fullscreen`) — qemu-3dfx switches the window to
+fullscreen for 3D titles, so leave fullscreen first (`Ctrl+Alt+F`), then
+release. qemu-3dfx's `fxui_grab` also re-grabs on focus while 3D is active.
 
 In the guest: copy `D:\WIN9X\*` to `C:\WINDOWS\SYSTEM`, copy `D:\GAMEDIR\*`
 to a folder like `C:\GLTEST`, reboot, run `C:\GLTEST\WGLGEARS.EXE`.

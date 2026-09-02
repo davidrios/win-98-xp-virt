@@ -37,6 +37,8 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
 - XP boots on Apple Silicon and is benchmarked against the rig baseline.
 - **Spike A (parallel, on the M1 Air + Linux):** qemu-3dfx host GL output →
   wgpu texture interop per platform (docs/spikes/spike-a-macos.md).
+  ✅ step 1 (2026-09-02): GL pass-through works on Apple Silicon, 500+ fps
+  in wglgears, via the SDL/native-OpenGL backend — no XQuartz at runtime.
 - **Exit:** Win98 desktop, CRT-shaded, mouse/keyboard/audio working on all
   three platforms; added display latency ≤ 1 host frame measured.
 

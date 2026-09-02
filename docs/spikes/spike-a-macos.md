@@ -95,5 +95,11 @@ d. 3D bypasses the shader chain (own GL window) — last resort, 2D still
 - **2026-09-02 — build validated on the M1 Air:** our patched QEMU 9.2.4
   (qemu-3dfx overlay + `00-3dfx-darwin-contextalpha` patch, XQuartz + SDL2
   from Homebrew, uv Python) compiles, runs, and exposes
-  `glidept`/`glidelfb`/`glideshm`/`mesapt` via `info mtree`. Steps 1–4
-  (guest 3D, interop) not yet run.
+  `glidept`/`glidelfb`/`glideshm`/`mesapt` via `info mtree`.
+- **2026-09-02 — step 1 PASSED on the M1 Air (Sequoia 15.7):** Win98 SE
+  guest, our msvcrt/pentium3 wrappers, `-display sdl`, SDL/native-OpenGL
+  Mesa backend (patch 02): `WGLGEARS.EXE` runs accelerated at **500+ fps**.
+  Observed: frame presentation is janky unless the mouse keeps moving
+  (presentation appears coupled to the SDL event/refresh cadence on the
+  Darwin path — see build-macos notes); grab-release hotkey ineffective
+  while 3D is active. Steps 2–4 (output location, interop) next.
