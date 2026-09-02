@@ -1,0 +1,4 @@
+# ld64 exported-symbols list for libqemu-embed (macOS). QEMU links its
+# emulators with -exported_symbols_list restricted to TCG plugin symbols;
+# this list is added alongside so the embed API stays visible.
+_qemu_embed_*

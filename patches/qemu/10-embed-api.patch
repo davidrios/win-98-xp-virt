@@ -6,7 +6,7 @@ linked directly so type_init constructors survive. Needs -fPIC
 
 --- a/meson.build
 +++ b/meson.build
-@@ -4232,6 +4232,19 @@
+@@ -4232,6 +4232,22 @@
                   c_args: c_args,
                   build_by_default: false)
  
@@ -19,7 +19,10 @@ linked directly so type_init constructors survive. Needs -fPIC
 +                   dependencies: arch_deps + [sdl],
 +                   objects: lib.extract_all_objects(recursive: true),
 +                   link_depends: [block_syms, qemu_syms],
-+                   link_args: link_args,
++                   # macOS: emulator_link_args carries -exported_symbols_list for the
++                   # TCG plugin API only; add ours (ld64 merges multiple lists).
++                   link_args: link_args + (host_os == 'darwin' ?
++                     ['-Wl,-exported_symbols_list,' + meson.current_source_dir() / 'embed/libqemu_embed.symbols'] : []),
 +                   install: true)
 +  endif
 +
