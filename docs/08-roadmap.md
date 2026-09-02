@@ -46,7 +46,11 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
   between the guest texture and the viewport; verified with crt-lottes on
   FreeDOS (`PLAYER_DUMP_OUT` GPU readback). Pipeline cache disabled until
   `Features::PIPELINE_CACHE` is requested.
-- Next: measured latency (HUD); XP boot + benchmark on the Air; then the
+- Latency instrumentation: `PLAYER_LATENCY=1` reports publish→present
+  p50/p95/max; refresh pull interval now 16 ms via `qemu_embed_set_refresh_ms`
+  (API v3) instead of QEMU's 30 ms. Numbers to be taken on the Air (this
+  Linux session's window is never presented).
+- Next: XP boot + benchmark on the Air; then the
   M3 window-less GL context provider is pulled forward (3D through the CRT
   chain) ahead of M2's mode table.
   QMP over socketpair; librashader chain; latency HUD; macOS build of the

@@ -98,9 +98,13 @@ QEMU_EMBED_API void qemu_embed_input_flush(qemu_embed_t *e);
 QEMU_EMBED_API void qemu_embed_set_audio_ring(void *base, size_t bytes,
                                uint32_t *wr_idx, const uint32_t *rd_idx);
 
+/* Display refresh pull interval in ms (QEMU default 30 → ~33 fps cadence).
+ * The player sets ~16 for 60 Hz hosts. Any thread. */
+QEMU_EMBED_API void qemu_embed_set_refresh_ms(qemu_embed_t *e, uint32_t ms);
+
 /* Library version of the embed API, for the bindings to sanity-check. */
 QEMU_EMBED_API uint32_t qemu_embed_api_version(void);
-#define QEMU_EMBED_API_VERSION 2
+#define QEMU_EMBED_API_VERSION 3
 
 #ifdef __cplusplus
 }

@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
 
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 pub const FMT_XRGB8888: u32 = 1;
 
 #[repr(C)]
@@ -49,6 +49,7 @@ extern "C" {
     fn qemu_embed_mouse_btn(e: *mut qemu_embed_t, button: u32, down: bool);
     fn qemu_embed_mouse_is_absolute(e: *mut qemu_embed_t) -> bool;
     fn qemu_embed_input_flush(e: *mut qemu_embed_t);
+    fn qemu_embed_set_refresh_ms(e: *mut qemu_embed_t, ms: u32);
     fn qemu_embed_set_audio_ring(
         base: *mut c_void,
         bytes: usize,
@@ -157,6 +158,10 @@ impl Qemu {
     }
     pub fn input_flush(&self) {
         unsafe { qemu_embed_input_flush(self.0) }
+    }
+    /// Display refresh pull interval (ms); QEMU's default is 30.
+    pub fn set_refresh_ms(&self, ms: u32) {
+        unsafe { qemu_embed_set_refresh_ms(self.0, ms) }
     }
 }
 

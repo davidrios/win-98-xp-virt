@@ -377,6 +377,7 @@ struct App {
     gpu: Option<Gpu>,
     source: Option<Source>,
     audio: Option<audio::Output>,
+    latency: Vec<f32>, // ms, publish→present per presented guest frame
     modifiers: ModifiersState,
     grabbed: bool,
 }
@@ -559,6 +560,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => self.set_grab(false),
             WindowEvent::RedrawRequested => {
                 let Some(gpu) = self.gpu.as_mut() else { return };
+                let mut published = None;
                 match self.source.as_mut() {
                     Some(Source::Pattern(p)) => {
                         p.render();
@@ -570,11 +572,30 @@ impl ApplicationHandler for App {
                         if let Some(f) = display.take_if_newer(*last_seq) {
                             *last_seq = f.seq;
                             gpu.upload(&f.pixels, f.width as u32, f.height as u32);
+                            published = Some(f.published);
                         }
                     }
                     None => {}
                 }
                 gpu.render();
+                if let Some(t) = published {
+                    // publish→present (measured after the present call) — doc 03 latency gate
+                    self.latency.push(t.elapsed().as_secs_f32() * 1000.0);
+                    if self.latency.len() >= 240 {
+                        if std::env::var("PLAYER_LATENCY").is_ok() {
+                            let mut v = self.latency.clone();
+                            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                            eprintln!(
+                                "[latency] publish→present p50 {:.1} ms  p95 {:.1} ms  max {:.1} ms (n={})",
+                                v[v.len() / 2],
+                                v[v.len() * 95 / 100],
+                                v[v.len() - 1],
+                                v.len()
+                            );
+                        }
+                        self.latency.clear();
+                    }
+                }
                 gpu.window.request_redraw();
             }
             _ => {}

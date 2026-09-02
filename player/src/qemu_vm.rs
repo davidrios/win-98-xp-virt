@@ -13,6 +13,8 @@ pub struct Frame {
     pub height: usize,
     pub pixels: Vec<u32>,
     pub seq: u64,
+    /// when the QEMU refresh tick published this frame
+    pub published: std::time::Instant,
 }
 
 /// Debug: `PLAYER_KEYS="90:enter,150:1"` presses named keys at guest frame
@@ -131,6 +133,7 @@ impl Display {
             height: s.front.height,
             pixels: s.front.pixels.clone(),
             seq: s.front.seq,
+            published: s.front.published,
         })
     }
 }
@@ -183,6 +186,7 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     } = &mut *s;
     front.pixels.copy_from_slice(back);
     front.seq += 1;
+    front.published = std::time::Instant::now();
     if front.seq % 100 == 0 {
         eprintln!("[display] refresh #{}", front.seq);
     }
@@ -256,6 +260,7 @@ pub fn start(
             height: 0,
             pixels: Vec::new(),
             seq: 0,
+            published: std::time::Instant::now(),
         },
     }));
     // Leak one strong ref for the C side; the process holds one VM for life.
@@ -292,6 +297,12 @@ pub fn start(
         })
         .expect("spawn qemu thread");
     let q = rx.recv().expect("qemu thread died during init");
+    // pull guest frames at ~60 Hz instead of QEMU's 30 ms default (doc 03)
+    let refresh_ms: u32 = std::env::var("PLAYER_REFRESH_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+    q.set_refresh_ms(refresh_ms);
     shared.lock().unwrap().vm = Some(q);
     (q, Display(shared), handle)
 }

@@ -61,6 +61,8 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 # PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
 # PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test)
 # PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
+# PLAYER_LATENCY=1 prints publish→present latency percentiles every 240 guest frames
+# PLAYER_REFRESH_MS=16 (default) is the guest frame pull interval (QEMU's own default is 30)
 # audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.
 #   -machine pc,pcspk-audiodev=embed0   or   -device sb16,audiodev=embed0
 ```

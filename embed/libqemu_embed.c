@@ -53,6 +53,7 @@ struct qemu_embed {
 
     int argc;
     char **argv;
+    uint32_t refresh_ms;
 };
 
 /* ---------------------------------------------------------------- display */
@@ -183,6 +184,18 @@ void qemu_embed_destroy(qemu_embed_t *e, int status)
     }
     g_free(e->argv);
     g_free(e);
+}
+
+static void bh_set_refresh(void *opaque)
+{
+    qemu_embed_t *e = opaque;
+    update_displaychangelistener(&e->dcl, e->refresh_ms);
+}
+
+void qemu_embed_set_refresh_ms(qemu_embed_t *e, uint32_t ms)
+{
+    e->refresh_ms = ms ? ms : 1;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), bh_set_refresh, e);
 }
 
 /* ------------------------------------------------------------- vm control */
