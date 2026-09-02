@@ -21,11 +21,17 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
 - Detour: a libretro core was built and validated in RetroArch, then dropped
   (ADR-005).
 
-## M1 — Architecture validation
+## M1 — Architecture validation  (in progress)
 
-- `10-embed-api` patch: `libqemu_embed.h`, QEMU built as a linkable library;
-  bindgen bindings; player boots FreeDOS then Win98 in-process with the
-  display listener feeding the wgpu texture.
+- ✅ 2026-09-02: `10-embed-api` patch builds `libqemu-embed-i386.so` from
+  QEMU's own meson (design: doc 11); `embed/libqemu_embed.{h,c}` shim
+  (lifecycle, display listener, input via bottom-half, VM control);
+  `qemu-embed` crate (hand-written FFI, rpath via `links` metadata);
+  **FreeDOS boots inside the player on Linux** — 720×400 text mode frames
+  through the embed display path (`PLAYER_DUMP` verification).
+- Next: Win98 boot; keyboard/mouse verified in-guest; audio backend patch;
+  QMP over socketpair; librashader chain; latency HUD; macOS build of the
+  embed lib (dylib) on the M1 Air.
 - librashader-wgpu chain with one CRT preset; keyboard/mouse injection; cpal
   audio; latency HUD (dirty→upload→present).
 - XP boots on Apple Silicon and is benchmarked against the rig baseline.

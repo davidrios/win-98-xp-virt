@@ -21,7 +21,8 @@ mkdir -p "$BUILD"
 cd "$BUILD"
 # --disable-werror: pinned 9.2.x trips new-toolchain warnings (glibc const strstr)
 # --extra-cflags: vendored Khronos GL headers (third_party/khronos/README.md)
-EXTRA_CFLAGS="-I$ROOT/third_party/khronos"
+# -fPIC: objects are also linked into libqemu-embed-<target> (shared)
+EXTRA_CFLAGS="-I$ROOT/third_party/khronos -fPIC"
 if [ "$(uname -s)" = Darwin ]; then
   # qemu-3dfx's Darwin path is GLX via XQuartz (patched meson.build hardcodes
   # /opt/X11) and the patch requires SDL2.
@@ -32,5 +33,6 @@ fi
   --python="$PYTHON" \
   --disable-werror \
   --extra-cflags="$EXTRA_CFLAGS" \
+  -Db_staticpic=true \
   --target-list=i386-softmmu,x86_64-softmmu \
   "$@"

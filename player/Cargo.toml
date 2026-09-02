@@ -6,7 +6,9 @@ license.workspace = true
 description = "Standalone player: in-process QEMU + wgpu/librashader display (doc 02/03). M0: native window + test pattern."
 
 [dependencies]
+qemu-embed = { path = "../qemu-embed" }
 winit = "0.30"
 wgpu = "30"
 pollster = "1"
 bytemuck = "1"
+png = "0.18"

@@ -31,6 +31,9 @@ echo "==> overlaying hw/3dfx and hw/mesa"
 # a touched meson.build makes ninja regenerate and reset configure options.
 rsync -rc "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
 
+echo "==> overlaying embed/ (libqemu_embed)"
+rsync -rc --delete "$ROOT/embed/" "$QEMU/embed/"
+
 # Applied-check: the patch wires glidept_mm_init() into pc.c; sign_commit
 # later edits vl.c, so a `git apply --reverse --check` would wrongly fail.
 if grep -q glidept_mm_init "$QEMU/hw/i386/pc.c"; then

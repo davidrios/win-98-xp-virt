@@ -63,7 +63,9 @@ Small stable C API on the QEMU fork, written upstream-style:
 - media: disc mount/eject (drives libdisc), floppy;
 - control: QMP-JSON channel over in-memory pipe for everything else.
 
-Rust bindings via bindgen; the player never reaches past this header.
+Rust bindings are hand-written in the `qemu-embed` crate (the API is ours
+and small; `qemu_embed_api_version()` guards drift — no libclang build
+dependency). The player never reaches past this header.
 
 ## Language policy (ADR-004 summary)
 

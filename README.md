@@ -47,9 +47,15 @@ cd win98-xp-virt                            #             third_party/qemu-3dfx 
 cargo build --release        # player + libdisc + launcher stub
 target/release/player        # M0: native window with test pattern (integer-scaled 4:3)
 
-scripts/prepare-qemu.sh      # overlay qemu-3dfx devices, patch, sign
-scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja, glib, pixman)
-ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
+scripts/prepare-qemu.sh      # overlay qemu-3dfx devices + embed/, patches, sign
+scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja, glib, pixman, SDL2)
+ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so
+cargo build --release        # player links libqemu-embed (rpath into build/qemu)
+
+# M1: boot something in-process (firmware path needed until machine bundles land)
+target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
+  -drive file=path/to/floppy.img,format=raw,if=floppy -boot a -vga std -net none
+# PLAYER_DUMP=frame.png PLAYER_DUMP_SEQ=150 dumps guest frame #150 and exits (headless check)
 ```
 
 macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
