@@ -61,7 +61,7 @@ decision later (MTTCG helps, XP-era games rarely do).
 | Host | Win98 | XP |
 |---|---|---|
 | Linux/Windows x86 (KVM/WHPX) | vastly faster than period hardware | near-native |
-| Apple Silicon (TCG) | comfortably faster than a period PC | usable; boots as fast as the rig, but x87-heavy code runs at ~21 % of the reference P4 (Super PI 1M 9:49 vs 2:02, M1 measurement 2026-09-02 — Pentium II-class FP); integer bracket pending (`reference/benchmarks/`) |
+| Apple Silicon (TCG) | comfortably faster than a period PC | usable; vs. the rig's P4 1.7 (M1 Air, 2026-09-02, `reference/benchmarks/`): boots as fast, integer 1.3–2× faster (7-Zip 0.996/1.511 vs 0.742/0.776 GIPS), x87 FP at 21 % (Super PI 1M 9:49 vs 2:02 — Pentium II class). State both in-app. |
 
 The XP-on-Apple-Silicon row is the one architectural risk in the guest story;
 it gets benchmarked in milestone M1, not discovered in M4. Baselines come from

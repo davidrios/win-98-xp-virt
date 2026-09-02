@@ -9,7 +9,8 @@ player presents qemu-3dfx output.
 
 | Test | Why | Record |
 |---|---|---|
-| Super PI mod 1.5 XS, 1M digits | single-thread integer/FPU, era-standard, runs on 98/XP | seconds (lower is better), 2 runs, best |
+| Super PI mod 1.5 XS, 1M digits | single-thread x87 FP, era-standard, runs on 98/XP | seconds (lower is better), 2 runs, best |
+| 7-Zip benchmark (Tools → Benchmark) | integer + memory, single thread in a 1-CPU guest | compress / decompress GIPS |
 | Boot to desktop | disk + interrupt-heavy; user-visible | seconds from power-on to a responsive Start menu |
 | Feel check | scrolling in Explorer, Notepad typing, Minesweeper, window drag | note anything that stutters |
 
@@ -39,18 +40,24 @@ in the table.
 
 ## Results
 
-| Machine | CPU / config | Super PI 1M (s) | Boot to desktop (s) | Feel | Date |
+| Machine | CPU / config | Super PI 1M (s) | 7-Zip 26.02 GIPS (comp / decomp) | Boot to desktop (s) | Date |
 |---|---|---|---|---|---|
-| Rig (P4 + 6200), XP | fill in: P4 model, GHz, RAM | 122 (2:02) | ~30 | | 2026-09-02 |
-| M1 Air, XP in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | 589 (9:49) | ~30 | | 2026-09-02 |
-| Air ÷ rig | | **4.8× slower → 21 % of the reference P4** | parity (host SSD hides the gap) | | |
+| Rig (P4 + 6200), XP | Pentium 4 1.7 GHz (Willamette), 512 MB | 122 (2:02) | 0.742 / 0.776 | ~30 | 2026-09-02 |
+| M1 Air, XP in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | 589 (9:49) | 0.996 / 1.511 | ~30 | 2026-09-02 |
+| Air ÷ rig | | **4.8× slower → 21 %** | **134 % / 195 %** | parity | |
 
-Reading: Super PI is almost pure x87 FP, which TCG runs through 80-bit
-softfloat with no fast path — this is the worst case, not the typical one.
-Nine-fifty for 1M is Pentium II 300–400 MHz territory on real hardware.
-Integer/memory-bound code should fare better; capture a 7-Zip benchmark
-(Tools → Benchmark, 7-Zip 9.20 runs on XP and 98) on both machines to
-bracket the range before the in-app expectation text is written.
+Reading: the two tests bracket TCG on the M1 against a real P4 1.7.
+- **Integer/memory (7-Zip):** the emulated XP is *faster* than the rig —
+  1.3–2× a P4 1.7, i.e. a 2.2–3 GHz P4 / early Athlon 64 class.
+- **x87 FP (Super PI):** 21 % of the rig. TCG runs every x87 op through
+  80-bit softfloat with no fast path; 9:49 for 1M is Pentium II 300–400 MHz
+  territory. This is the worst case, and it is what FP-heavy game code and
+  software renderers hit.
+- Boot time is disk/interrupt bound and the host SSD hides the rest.
+
+In-app expectation text should say both halves: "integer speed of a fast
+P4; floating-point speed of a Pentium II". Games mix the two; per-title
+validation in M4 decides which side dominates.
 
 Also record here anything the XP guest needed that Win98 did not
 (drivers, HAL, activation state is not recorded).
