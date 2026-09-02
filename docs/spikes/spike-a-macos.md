@@ -47,6 +47,14 @@ Consequences for the interop:
   context with SDL on QEMU's window and loads Apple's OpenGL.framework —
   no X server. This is also the backend we build our own context provider
   from (M3).
+- **2026-09-02, Air on macOS Sequoia 15.7:** GLX backend fails at
+  activation with `BadDrawable, Major opcode 129 (Apple-DRI)`. Root cause:
+  on a Cocoa SDL window `ui/sdl2.c` passes `wmi.info.cocoa.window`
+  (`NSWindow*`) to the Mesa backend, and `mglcntx_linux.c` uses it as an
+  X11 window id. Upstream macOS = X11-capable SDL2 on XQuartz. Switched
+  macOS to `mglcntx_sdlgl.c` (`patches/qemu/02-mesa-sdlgl-on-darwin`):
+  SDL GL context on the Cocoa window + Apple OpenGL.framework, no X server.
+  Same backend our own context provider (M3) grows from.
 - Upstream Darwin support is evidently lightly maintained: the July 2026
   sync broke the Darwin build (`GL_CONTEXTALPHA`), fixed in our queue by
   `patches/qemu/00-3dfx-darwin-contextalpha.patch`.

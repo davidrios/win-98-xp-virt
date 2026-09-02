@@ -94,8 +94,7 @@ Win98 SE install ISO; everything else comes from the repo.
 ```sh
 # guest wrappers, built from the exact qemu-3dfx commit the host is signed with
 brew install mingw-w64 xorriso && guest-tools/build-wrappers.sh
-#   (Homebrew's mingw-w64 has no gendef — the script builds it itself)
-#   → guest-tools/out/guest-tools-3dfx-<rev>.iso   (or use one built on Linux — same commit)
+#   → guest-tools/out/guest-tools-3dfx-<rev>.iso   (or one built on Linux — same commit)
 
 # 1. install Win98 (cirrus = in-box high-color driver, no extra guest driver needed)
 qemu-img create -f qcow2 ~/vms/win98.qcow2 4G
@@ -110,23 +109,44 @@ build/qemu/qemu-system-i386 -machine pc -cpu pentium3 -m 256 \
   -audiodev coreaudio,id=snd -device sb16,audiodev=snd
 ```
 
+**`-display sdl` is mandatory for 3D.** qemu-3dfx creates its host GL
+context on QEMU's SDL2 window: `sdl_display_valid()` in the patched
+`ui/sdl2.c` exits with `mesapt: invalid sdl display` otherwise, and
+`-display sdl,gl=on` is rejected too. Cocoa is fine for 2D-only sessions.
+
+**Why 3D died with `X Error … BadDrawable, Major opcode 129 (Apple-DRI)`
+(seen on Sequoia 15.7):** upstream's macOS path is GLX-on-XQuartz. On a
+Cocoa SDL window, `ui/sdl2.c` passes the `NSWindow*` to the Mesa backend,
+which the GLX backend uses as an X11 window id — XQuartz rejects it.
+Upstream needs an X11-capable SDL2 on XQuartz (not Homebrew's). Our queue
+patch `02-mesa-sdlgl-on-darwin` builds qemu-3dfx's SDL/native-OpenGL
+backend (`mglcntx_sdlgl.c`) on macOS instead: the context is created with
+`SDL_GL_CreateContext` on the Cocoa window, Apple's `OpenGL.framework` is
+loaded, no X server at runtime. (XQuartz stays a *build-time* link
+dependency until the link flags are patched.) Rebuild after `git pull`:
+prepare → configure → ninja.
+
+**Mouse/keyboard grab under `-display sdl`:** hotkey is left-Ctrl +
+left-Option + G (SDL `KMOD_LCTRL|KMOD_LALT`; the right-hand keys don't
+count). Alternatives: `-display sdl,grab-mod=lshift-lctrl-lalt`
+(Shift+Ctrl+Option+G) or `grab-mod=rctrl`. While a 3D title runs
+fullscreen, qemu-3dfx's own window logic (`fxui_grab`) holds the grab.
+
 In the guest: copy `D:\WIN9X\*` to `C:\WINDOWS\SYSTEM`, copy `D:\GAMEDIR\*`
 to a folder like `C:\GLTEST`, reboot, run `C:\GLTEST\WGLGEARS.EXE`.
 Accelerated = a smooth gears window and a Mesa/host renderer string (not
-"GDI Generic") in the console/title; qemu-3dfx also prints context messages
-on the host terminal. For Glide, any Glide title works once
-`GLIDE2X.DLL` is in `SYSTEM`; for OpenGL games drop `OPENGL32.DLL` next to
-the game EXE (Quake 2 is the classic check).
+"GDI Generic"); qemu-3dfx also prints context messages on the host
+terminal (`mesapt: DLL loaded`, `glcntx: …`). For Glide, any Glide title
+works once `GLIDE2X.DLL` is in `SYSTEM`; for OpenGL games drop
+`OPENGL32.DLL` next to the game EXE (Quake 2 is the classic check).
 
 Known trap (fixed in our queue since 2026-09-02): stock QEMU 9.2.4 TCG
 blue-screens Win98 SE with `exception 0D` on the first boot after setup
-(upstream issue 2987, an LSS/IRQ-shadow regression). `prepare-qemu.sh`
-applies the upstream fix; if you built before that, `git pull`, re-run
-prepare → configure → ninja, and reboot the same disk image — the install
-itself is fine.
+(upstream issue 2987); `prepare-qemu.sh` applies the upstream fix.
 
 Notes: `-cpu pentium3` is the compatibility-safe choice for Win9x under
-TCG and the floor our wrappers are built for (SSE1). qemu-3dfx's own
-`-cpu max` recommendation exists because *their* wrapper builds target
-x86-64-v2; ours don't need it. Keep RAM ≤ 512 MB (Win9x VCache limit). Record renderer string + fps
-under "Result" in `docs/spikes/spike-a-macos.md`.
+TCG and the floor our wrappers are built for (SSE1); qemu-3dfx's own
+`-cpu max` advice exists because *their* wrappers target x86-64-v2. Keep
+RAM ≤ 512 MB (Win9x VCache limit). Warm reboot currently freezes on the
+Air (under investigation — shut down and cold start instead). Record
+renderer string + fps under "Result" in `docs/spikes/spike-a-macos.md`.

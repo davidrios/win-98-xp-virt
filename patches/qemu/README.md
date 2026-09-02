@@ -24,9 +24,9 @@ Current queue:
   exception 0D on first boot after setup; 9.2.4 carries the regressing LSS
   change but not the fix). Drop at QEMU >= 10.1.
 - `02-mesa-sdlgl-on-darwin.patch` — build qemu-3dfx's SDL/native-OpenGL
-  Mesa context backend (`mglcntx_sdlgl.c`) instead of GLX on macOS.
-  XQuartz's GLX is broken on macOS Tahoe (XQuartz issue #446); the SDL
-  backend needs no X server at runtime. Linux keeps GLX.
+  Mesa backend (`mglcntx_sdlgl.c`) instead of GLX on macOS: with a Cocoa
+  SDL window the GLX backend gets an `NSWindow*` as "X11 window" →
+  BadDrawable. Linux keeps GLX.
 - `00-3dfx-darwin-contextalpha.patch` — upstream qemu-3dfx Darwin build
   regression (`GL_CONTEXTALPHA` only defined under `CONFIG_LINUX`). Report
   upstream; drop when fixed there.
