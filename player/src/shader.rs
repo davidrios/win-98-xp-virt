@@ -99,7 +99,7 @@ impl Chain {
 /// Debug readback of a texture to PNG (PLAYER_DUMP_OUT). Blocks on the GPU.
 pub fn dump_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, path: &str) {
     let (w, h) = (tex.width(), tex.height());
-    let bpr = ((w * 4 + 255) / 256) * 256;
+    let bpr = (w * 4).div_ceil(256) * 256;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
         size: (bpr * h) as u64,
