@@ -15,6 +15,12 @@ WIN2KXP\  GLIDE*.DLL FXPTL.SYS INSTDRV.EXE                 → system32 (+driver
 GAMEDIR\  OPENGL32.DLL WGLGEARS.EXE                        → next to each OpenGL game's EXE
 ```
 
+**CRT:** Win9x has no UCRT, and modern mingw-w64 (Homebrew, Arch) links the
+UCRT by default (`api-ms-win-crt-*.dll` imports → "required DLL not found"
+on Win98). The script forces classic `msvcrt.dll` through a compiler shim
+(`-D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os`) and refuses to package
+anything that still imports UCRT api-sets.
+
 Needs a mingw32 cross toolchain + gendef/xxd/shasum and an ISO tool
 (Arch: `mingw-w64-gcc mingw-w64-tools xorriso`; macOS: `brew install
 mingw-w64 xorriso`). Homebrew's mingw-w64 ships no `gendef`; the script

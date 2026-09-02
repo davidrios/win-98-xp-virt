@@ -51,6 +51,29 @@ ensure_gnu_tools() {
 }
 ensure_gnu_tools
 
+# Win9x has no UCRT. Modern mingw-w64 (Homebrew, Arch) defaults to UCRT, so
+# force classic msvcrt: msvcrt-mode headers + link msvcrt.dll (import lib
+# libmsvcrt-os.a on UCRT-default toolchains). Done via a compiler shim so
+# qemu-3dfx's Makefiles need no changes; the same flags build wglgears.
+MSVCRT_FLAGS="-D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os"
+ensure_msvcrt_cc() {
+  local bin="$ROOT/guest-tools/tools/bin" real
+  real="$(PATH="${PATH#"$bin:"}" command -v i686-w64-mingw32-gcc || true)"
+  [ -n "$real" ] || { echo "need i686-w64-mingw32-gcc (mingw-w64)"; exit 1; }
+  [ -f "$(dirname "$(dirname "$real")")/i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
+  [ -f "$(dirname "$real")/../i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
+    echo "warning: libmsvcrt-os.a not found next to the toolchain; msvcrt link may fail"
+  printf '#!/usr/bin/env bash\nexec "%s" %s "$@"\n' "$real" "$MSVCRT_FLAGS" > "$bin/i686-w64-mingw32-gcc"
+  chmod +x "$bin/i686-w64-mingw32-gcc"
+}
+ensure_msvcrt_cc
+
+check_crt() {  # fail loudly if anything still imports the UCRT api-sets
+  if objdump -p "$1" | grep -q 'api-ms-win-crt'; then
+    echo "ERROR: $1 links against the UCRT (not loadable on Win9x)"; exit 1
+  fi
+}
+
 build_wrapper() {  # $1 = 3dfx | mesa
   local d="$FX/wrappers/$1/build"
   rm -rf "$d" && mkdir -p "$d"
@@ -70,7 +93,10 @@ cp "$M"/opengl32.dll "$OUT/iso/GAMEDIR/"
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
   -lopengl32 -lgdi32 -lglu32 -mwindows
-cat > "$OUT/iso/README.TXT" <<TXT
+for f in "$OUT"/iso/*/*.dll "$OUT"/iso/*/*.exe; do check_crt "$f"; done
+# CRLF: Win9x Notepad shows LF-only text as one line
+crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }'; }
+crlf > "$OUT/iso/README.TXT" <<TXT
 qemu-3dfx guest wrappers, built from qemu-3dfx commit $REV
 (must match the host QEMU build's sign_commit stamp).
 
