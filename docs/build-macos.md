@@ -54,6 +54,11 @@ scripts/configure-qemu.sh      # uv-managed Python 3.12, --disable-werror
 ninja -C build/qemu qemu-system-i386 qemu-system-x86_64
 ```
 
+Order matters: if you re-run `prepare-qemu.sh` later (e.g. after pulling a
+patch-queue change), run `configure-qemu.sh` again before `ninja` — a
+refreshed overlay can make ninja regenerate the build with default options
+(notably `werror` back on).
+
 Smoke tests:
 
 ```sh

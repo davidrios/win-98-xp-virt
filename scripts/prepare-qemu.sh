@@ -27,7 +27,9 @@ case "$(cat "$QEMU/VERSION")" in
 esac
 
 echo "==> overlaying hw/3dfx and hw/mesa"
-rsync -r "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
+# -c: checksum compare so unchanged files (esp. meson.build) are not rewritten —
+# a touched meson.build makes ninja regenerate and reset configure options.
+rsync -rc "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
 
 # Applied-check: the patch wires glidept_mm_init() into pc.c; sign_commit
 # later edits vl.c, so a `git apply --reverse --check` would wrongly fail.
