@@ -79,10 +79,10 @@ git -C "$QEMU" apply "$PATCH"
 echo "==> applying our patch queue (patches/qemu/*.patch)"
 for p in "$ROOT"/patches/qemu/*.patch; do
   [ -e "$p" ] || continue
-  if git -C "$QEMU" apply --check "$p" 2>/dev/null; then
+  if git -C "$QEMU" apply --check "$p" 2>"$SNAP/apply.err"; then
     git -C "$QEMU" apply "$p" && echo "    $(basename "$p"): applied"
   else
-    echo "    $(basename "$p"): DOES NOT APPLY"; exit 1
+    echo "    $(basename "$p"): DOES NOT APPLY"; sed 's/^/      /' "$SNAP/apply.err"; exit 1
   fi
 done
 

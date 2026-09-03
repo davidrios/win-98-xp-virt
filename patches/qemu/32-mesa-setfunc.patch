@@ -3,13 +3,15 @@ dispatch table (returns the previous pointer). The embed backend on macOS
 uses it to redirect framebuffer binding 0 to the FBO that stands in for the
 window's default framebuffer.
 
-diff -Nru a/hw/mesa/mesagl_impl.c b/hw/mesa/mesagl_impl.c
---- a/hw/mesa/mesagl_impl.c	2026-09-02 22:57:17.529455067 -0300
-+++ b/hw/mesa/mesagl_impl.c	2026-09-02 22:57:17.515299596 -0300
-@@ -1796,3 +1796,15 @@
+diff --git a/hw/mesa/mesagl_impl.c b/hw/mesa/mesagl_impl.c
+index 7309197..dcb0eaf 100644
+--- a/hw/mesa/mesagl_impl.c
++++ b/hw/mesa/mesagl_impl.c
+@@ -1795,3 +1795,16 @@ void InitMesaGLExt(void)
+         }
      }
  }
- 
++
 +/* win98-xp-virt: let a context backend interpose a dispatch entry.
 + * Returns the previous pointer. Re-apply after InitMesaGL() (which reloads
 + * the table) -- SetMesaFuncPtr() is the hook for that. */
@@ -22,10 +24,11 @@ diff -Nru a/hw/mesa/mesagl_impl.c b/hw/mesa/mesagl_impl.c
 +    }
 +    return old;
 +}
-diff -Nru a/hw/mesa/mesagl_impl.h b/hw/mesa/mesagl_impl.h
---- a/hw/mesa/mesagl_impl.h	2026-09-02 22:57:17.529299133 -0300
-+++ b/hw/mesa/mesagl_impl.h	2026-09-02 22:57:17.515380899 -0300
-@@ -71,6 +71,8 @@
+diff --git a/hw/mesa/mesagl_impl.h b/hw/mesa/mesagl_impl.h
+index a1e5306..7643297 100644
+--- a/hw/mesa/mesagl_impl.h
++++ b/hw/mesa/mesagl_impl.h
+@@ -71,6 +71,8 @@ void FiniMesaGL(void);
  void ImplMesaGLReset(void);
  int InitMesaGL(void);
  void InitMesaGLExt(void);

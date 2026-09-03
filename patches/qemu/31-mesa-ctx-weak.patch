@@ -1,12 +1,13 @@
 Make the native Mesa context backends' exported functions weak (GLX on
-Linux, SDL/native on macOS, plus macOS's `dllname`) so the embed library can
+Linux, SDL/native on macOS, plus macOS's dllname) so the embed library can
 supply its own backend (embed/mglcntx_embed.c) in the same link while
 qemu-system keeps the native one. Never both strong: qemu-system links only
 the native file, libqemu-embed links both and the strong embed definitions win.
 
-diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
---- a/hw/mesa/mglcntx_linux.c	2026-09-02 22:57:17.490757733 -0300
-+++ b/hw/mesa/mglcntx_linux.c	2026-09-02 22:57:17.494506966 -0300
+diff --git a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
+index 1ac5aa5..4568b18 100644
+--- a/hw/mesa/mglcntx_linux.c
++++ b/hw/mesa/mglcntx_linux.c
 @@ -30,11 +30,14 @@
      if (cond) { fprintf(stderr, "glcntx: " fmt "\n" , ## __VA_ARGS__); }
  
@@ -23,7 +24,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  #endif
  #ifdef CONFIG_LINUX
  #include <linux/version.h>
-@@ -54,7 +57,7 @@
+@@ -54,7 +57,7 @@ static int bufo_accel_en(void)
      }
      return 0;
  }
@@ -32,7 +33,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      int ret = (GetBufOAccelEN()
              || (bufo_accel_en() &&
-@@ -281,9 +284,9 @@
+@@ -281,9 +284,9 @@ static struct {
      int has_mesa_exts;
  } xglFuncs;
  
@@ -44,7 +45,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  { return find_xstr(xstr, str); }
  
  #define MAX_RAMP_SIZE 0x800
-@@ -353,16 +356,16 @@
+@@ -353,16 +356,16 @@ static void TmpContextPurge(void)
      }
  }
  
@@ -64,7 +65,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      Display *tmpDisp = XOpenDisplay(NULL);
      xcstr = glXGetClientString(tmpDisp, GLX_VENDOR);
-@@ -374,7 +377,7 @@
+@@ -374,7 +377,7 @@ void MGLTmpContext(void)
      XCloseDisplay(tmpDisp);
  }
  
@@ -73,7 +74,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
      glXMakeContextCurrent(dpy, None, None, NULL);
-@@ -394,7 +397,7 @@
+@@ -394,7 +397,7 @@ void MGLDeleteContext(int level)
      }
  }
  
@@ -82,7 +83,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      if (win) {
          if (ctx[0]) {
-@@ -413,7 +416,7 @@
+@@ -413,7 +416,7 @@ void MGLWndRelease(void)
      }
  }
  
@@ -91,7 +92,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      int i, ret;
      if (!win) {
-@@ -439,7 +442,7 @@
+@@ -439,7 +442,7 @@ int MGLCreateContext(uint32_t gDC)
      return ret;
  }
  
@@ -100,7 +101,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      if (!win)
          return 0;
-@@ -469,7 +472,7 @@
+@@ -469,7 +472,7 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
      return 0;
  }
  
@@ -109,7 +110,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      MGLActivateHandler(1, 0);
      MesaBlitScale();
-@@ -511,7 +514,7 @@
+@@ -511,7 +514,7 @@ static int MGLPresetPixelFormat(void)
      return 1;
  }
  
@@ -118,7 +119,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      DPRINTF("ChoosePixelFormat()");
      if (xvi == 0)
-@@ -519,7 +522,7 @@
+@@ -519,7 +522,7 @@ int MGLChoosePixelFormat(void)
      return 1;
  }
  
@@ -127,7 +128,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      int ret;
      ret = (xvi == 0)? MGLPresetPixelFormat():1;
-@@ -528,7 +531,7 @@
+@@ -528,7 +531,7 @@ int MGLSetPixelFormat(int fmt, const void *p)
      return ret;
  }
  
@@ -136,7 +137,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      //DPRINTF("DescribePixelFormat()");
      if (xvi == 0)
-@@ -540,7 +543,7 @@
+@@ -540,7 +543,7 @@ int MGLDescribePixelFormat(int fmt, unsigned int sz, void *p)
      return 1;
  }
  
@@ -145,7 +146,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      int i, c;
      for (i = 0, c = 0; i < MAX_PBUFFER;)
-@@ -548,7 +551,7 @@
+@@ -548,7 +551,7 @@ int NumPbuffer(void)
      return c;
  }
  
@@ -154,7 +155,7 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      return (ctx[0] == glXGetCurrentContext());
  }
-@@ -620,7 +623,7 @@
+@@ -620,7 +623,7 @@ static int LookupAttribArray(const int *attrib, const int attr)
      return ret;
  }
  
@@ -163,9 +164,10 @@ diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
  {
      char fname[64];
      uint32_t *argsp = (uint32_t *)(name + ALIGNED((strnlen(name, sizeof(fname))+1)));
-diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
---- a/hw/mesa/mglcntx_sdlgl.c	2026-09-02 22:57:17.508382318 -0300
-+++ b/hw/mesa/mglcntx_sdlgl.c	2026-09-02 22:57:17.493405648 -0300
+diff --git a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
+index dce08da..0d92f09 100644
+--- a/hw/mesa/mglcntx_sdlgl.c
++++ b/hw/mesa/mglcntx_sdlgl.c
 @@ -30,6 +30,9 @@
      if (cond) { fprintf(stderr, "glcntx: " fmt "\n" , ## __VA_ARGS__); }
  
@@ -187,7 +189,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  #define GL_CONTEXTALPHA GetDispTimerMS()
  #define GL_RENDER_TEXTURE_STR
  #define GL_RENDER_TEXTURE_VAR
-@@ -87,7 +90,7 @@
+@@ -87,7 +90,7 @@ static int bufo_accel_en(void)
      }
      return 0;
  }
@@ -196,7 +198,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      int ret = (GetBufOAccelEN()
              || (bufo_accel_en() &&
-@@ -348,9 +351,9 @@
+@@ -348,9 +351,9 @@ static int wnd_ready, self_ctx;
  static int cAlphaBits, cDepthBits, cStencilBits;
  static int cAuxBuffers, cSampleBuf[2];
  
@@ -208,7 +210,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  { return find_xstr(xstr, str); }
  
  struct GammaRamp {
-@@ -393,20 +396,20 @@
+@@ -393,20 +396,20 @@ static void TmpContextPurge(void)
      }
  }
  
@@ -233,7 +235,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
      SDL_GL_MakeCurrent(window, NULL);
-@@ -424,7 +427,7 @@
+@@ -424,7 +427,7 @@ void MGLDeleteContext(int level)
      }
  }
  
@@ -242,7 +244,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      if (window) {
          if (self_ctx && ctx[0]) {
-@@ -440,7 +443,7 @@
+@@ -440,7 +443,7 @@ void MGLWndRelease(void)
      }
  }
  
@@ -251,7 +253,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      int i, ret;
      if (!window) {
-@@ -465,7 +468,7 @@
+@@ -465,7 +468,7 @@ int MGLCreateContext(uint32_t gDC)
      return ret;
  }
  
@@ -260,7 +262,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      if (!window)
          return 0;
-@@ -488,7 +491,7 @@
+@@ -488,7 +491,7 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
      return 0;
  }
  
@@ -269,7 +271,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      MGLActivateHandler(1, 0);
      MesaBlitScale();
-@@ -506,7 +509,7 @@
+@@ -506,7 +509,7 @@ static int MGLPresetPixelFormat(void)
      return 1;
  }
  
@@ -278,7 +280,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      DPRINTF("ChoosePixelFormat()");
      if (!window)
-@@ -514,7 +517,7 @@
+@@ -514,7 +517,7 @@ int MGLChoosePixelFormat(void)
      return 1;
  }
  
@@ -287,7 +289,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      int ret;
      if (!window)
-@@ -542,7 +545,7 @@
+@@ -542,7 +545,7 @@ int MGLSetPixelFormat(int fmt, const void *p)
      return ret;
  }
  
@@ -296,7 +298,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      //DPRINTF("DescribePixelFormat()");
      cDepthBits = pfd.cDepthBits;
-@@ -563,7 +566,7 @@
+@@ -563,7 +566,7 @@ int MGLDescribePixelFormat(int fmt, unsigned int sz, void *p)
      return 1;
  }
  
@@ -305,7 +307,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      int i, c;
      for (i = 0, c = 0; i < MAX_PBUFFER;)
-@@ -571,7 +574,7 @@
+@@ -571,7 +574,7 @@ int NumPbuffer(void)
      return c;
  }
  
@@ -314,7 +316,7 @@ diff -Nru a/hw/mesa/mglcntx_sdlgl.c b/hw/mesa/mglcntx_sdlgl.c
  {
      return SDL_GL_GetCurrentContext()? 1:0;
  }
-@@ -643,7 +646,7 @@
+@@ -643,7 +646,7 @@ static int LookupAttribArray(const int *attrib, const int attr)
      return ret;
  }
  

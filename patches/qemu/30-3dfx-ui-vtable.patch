@@ -8,10 +8,11 @@ defaults refuse Mesa contexts (cwnd_fn(NULL)) and report no Glide window
 instead of exit(1) -- the VM keeps running. Default cursor/warp/size
 implementations work on console 0 for any frontend.
 
-diff -Nru a/include/ui/console.h b/include/ui/console.h
---- a/include/ui/console.h	2026-09-02 22:23:54.127856509 -0300
-+++ b/include/ui/console.h	2026-09-02 22:23:54.147242686 -0300
-@@ -478,6 +478,34 @@
+diff --git a/include/ui/console.h b/include/ui/console.h
+index 4f0fd0e..4586648 100644
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -478,6 +478,34 @@ bool qemu_console_fill_device_address(QemuConsole *con,
                                        size_t size,
                                        Error **errp);
  
@@ -46,9 +47,11 @@ diff -Nru a/include/ui/console.h b/include/ui/console.h
  /* glidewnd.c */
  void glide_prepare_window(uint32_t, int, void *, void *);
  void glide_release_window(void *, void *);
-diff -Nru a/ui/fxui.c b/ui/fxui.c
---- a/ui/fxui.c	1969-12-31 21:00:00.000000000 -0300
-+++ b/ui/fxui.c	2026-09-02 22:23:54.148085606 -0300
+diff --git b/ui/fxui.c b/ui/fxui.c
+new file mode 100644
+index 0000000..452f04c
+--- /dev/null
++++ b/ui/fxui.c
 @@ -0,0 +1,214 @@
 +/*
 + * qemu-3dfx UI seam: provider dispatch (win98-xp-virt, patch 30).
@@ -264,10 +267,11 @@ diff -Nru a/ui/fxui.c b/ui/fxui.c
 +{
 +    return FX_OP(mesa_gui_fullscreen)(sizev);
 +}
-diff -Nru a/ui/meson.build b/ui/meson.build
---- a/ui/meson.build	2026-09-02 22:23:54.128701533 -0300
-+++ b/ui/meson.build	2026-09-02 22:23:54.148048176 -0300
-@@ -8,6 +8,7 @@
+diff --git a/ui/meson.build b/ui/meson.build
+index 35fb04c..622253d 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -8,6 +8,7 @@ system_ss.add(files(
    'console.c',
    'cursor.c',
    'dmabuf.c',
@@ -275,10 +279,11 @@ diff -Nru a/ui/meson.build b/ui/meson.build
    'input-keymap.c',
    'input-legacy.c',
    'input-barrier.c',
-diff -Nru a/ui/sdl2.c b/ui/sdl2.c
---- a/ui/sdl2.c	2026-09-02 22:23:54.128641249 -0300
-+++ b/ui/sdl2.c	2026-09-02 22:23:54.147983303 -0300
-@@ -997,7 +997,7 @@
+diff --git a/ui/sdl2.c b/ui/sdl2.c
+index 1a162e7..45fe1f4 100644
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -997,7 +997,7 @@ static void sdl_renderer_stat(const int activate, const char *feat)
      timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
  }
  
@@ -287,7 +292,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      int scr_w, scr_h;
      struct sdl_console_cb *s = &scon_cb;
-@@ -1028,7 +1028,7 @@
+@@ -1028,7 +1028,7 @@ void glide_prepare_window(uint32_t res, int msaa, void *opaque, void *cwnd_fn)
      }
  }
  
@@ -296,7 +301,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      struct sdl_console_cb *s = &scon_cb;
  
-@@ -1046,7 +1046,7 @@
+@@ -1046,7 +1046,7 @@ void glide_release_window(void *opaque, void *cwnd_fn)
      }
  }
  
@@ -305,7 +310,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      int stat;
      struct sdl_console_cb *s = &scon_cb;
-@@ -1074,7 +1074,7 @@
+@@ -1074,7 +1074,7 @@ int glide_window_stat(const int activate)
      return stat;
  }
  
@@ -314,7 +319,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      int ret, v[2];
      ret = sdl_gui_fullscreen(v, "glidept");
-@@ -1085,20 +1085,20 @@
+@@ -1085,20 +1085,20 @@ int glide_gui_fullscreen(int *width, int *height)
      return ret;
  }
  
@@ -339,7 +344,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      int scr_w, scr_h;
      struct sdl_console_cb *s = &scon_cb;
-@@ -1130,7 +1130,7 @@
+@@ -1130,7 +1130,7 @@ void mesa_prepare_window(int msaa, int alpha, int scale_x, void *cwnd_fn)
      timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
  }
  
@@ -348,7 +353,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      struct sdl_console_cb *s = &scon_cb;
  
-@@ -1151,7 +1151,7 @@
+@@ -1151,7 +1151,7 @@ void mesa_release_window(void)
          timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
  }
  
@@ -357,7 +362,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      struct sdl_console_cb *s = &scon_cb;
  
-@@ -1172,7 +1172,7 @@
+@@ -1172,7 +1172,7 @@ void mesa_cursor_define(int hot_x, int hot_y, int width, int height, const void
      }
  }
  
@@ -366,7 +371,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  {
      struct sdl_console_cb *s = &scon_cb;
  
-@@ -1187,11 +1187,26 @@
+@@ -1187,11 +1187,26 @@ void mesa_mouse_warp(int x, int y, const int on)
      }
  }
  
@@ -394,7 +399,7 @@ diff -Nru a/ui/sdl2.c b/ui/sdl2.c
  static const DisplayChangeListenerOps dcl_2d_ops = {
      .dpy_name             = "sdl2-2d",
      .dpy_gfx_update       = sdl2_2d_update,
-@@ -1361,6 +1376,7 @@
+@@ -1361,6 +1376,7 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
          sdl_grab_start(&sdl2_console[0]);
      }
  
