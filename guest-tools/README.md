@@ -49,9 +49,40 @@ the pinned commit, applied by the script after checkout):
   desktop stays at 24 (redundant when the size matches), and a failed 32-bpp
   switch is retried at 24. Worth sending upstream to JHRobotics.
 
+- `02-debug-log-flush`: Wine's log writer buffers; a crash loses the tail.
+  Flush per line (no effect on release builds, which compile logging out).
+
+**Debug build of the WineD3D set** (logs that survive a crash): a second
+checkout of wine9x with the same patches, built with `SPEED= WINED3D_SILENT=`
+and the same `CC`/`LD`/`LIBSTATIC` overrides as the script (see
+`build_wined3d`); its `wined3d.dll`/`winedd.dll`/`ddraw_xp.dll` write
+`proc_<pid>_dwine.log` and `proc_<pid>_wined3d.log` into the game folder
+(err/fixme/warn by default, `set WINEDEBUG=+ddraw,+d3d` for traces). On a
+shut-down guest the logs are read from the qcow2 on the host:
+`qemu-img convert -O raw` → `hdiutil attach -readonly -nomount
+-imagekey diskimage-class=CRawDiskImage` → `diskutil mount readOnly`
+(NTFS is read-only on macOS); Dr Watson's `drwtsn32.log` (UTF-16) names the
+faulting module. `guest-tools/out/wined3d-debug.iso` was such a set
+(2026-09-03); rebuild it the same way when needed.
+
 `MODETEST.EXE` (`guest-tools/src/modetest.c`) prints the current desktop
 mode, the driver's mode list and the result of the `ChangeDisplaySettingsEx`
 calls ddraw/wined3d make; run it when a fullscreen game dies at startup.
+
+**Reference workloads (doc 14 P0a):** `D3DGAME9.EXE` / `D3DGAME8.EXE`
+(`guest-tools/src/d3dgame9.c`, `d3dgame8.c`, shared scene in `d3dgame.h`)
+draw the same deterministic game-like scene on both APIs: checker ground
+with mipmaps, five lit indexed cubes with materials, a per-frame dynamic
+vertex buffer (waving grid, 565 texture), additive DXT1 particles via
+DrawPrimitiveUP, a render-to-texture monitor, a frame-time bar graph;
+windowed or `-fs` exclusive fullscreen (`-w -h -bpp16 -novsync`), keyboard
+camera (WASD/arrows/Q/E), F1 wireframe, Space pause, Esc quits; `-shader`
+adds a vs_1_1/ps_1_1 path on d3d9 when a d3dx9 DLL is present. `-frames N`
+runs a fixed-step sequence with an auto-orbiting camera and exits;
+`-dump N file.bmp` writes frame N. Procedure: run on the reference rig
+(P4 + GeForce 6200) first — it must be flawless there — keep its BMPs as
+golden images, then run the same command lines under each emulated path
+and diff. No commercial game, no disc, no crack involved.
 
 `D3D9TEST.EXE` (`guest-tools/src/d3d9test.c`) is the D3D9 counterpart of
 wglgears: prints the adapter identifier (WineD3D reports a GL-derived

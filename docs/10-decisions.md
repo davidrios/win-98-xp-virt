@@ -70,3 +70,52 @@ model from the first architecture draft. Consequences:
   RetroArch is deleted; its test pattern lives on in `player/`.
 - The embed API stays frontend-agnostic on principle; a libretro shell could
   be re-added by a third party, we won't maintain one.
+
+## ADR-006: Direct3D 8/9 for XP through our own paravirtual device (2026-09-03)
+
+**Decision.** Direct3D 8/9 acceleration for the XP guest is a paravirtual
+Direct3D device of our own: thin guest `d3d9.dll`/`d3d8.dll` that serialize
+the API into a shared-memory command stream, and a host-side executor that
+runs the same D3D9 semantics natively (DXVK's d3d9 over Vulkan, MoltenVK on
+macOS). Design in doc 14. Guest-side WineD3D (JHRobotics' wine9x build on
+the guest-tools ISO) stays as the fallback and as the only path for
+DirectDraw / Direct3D ≤7 until the device grows a ddraw layer.
+
+**Why now.** Two days with WineD3D-in-guest on XP (FIFA 2000, doc 00):
+
+- Every fix so far was in a 2015 fork with no upstream: 24-bit desktop
+  modes (`patches/wine9x/01`), front-buffer presentation on our FBO stand-in
+  (`embed/mglcntx_embed.c`), and the open ones (palettized/dynamic texture
+  corruption, per-flush flicker, DirectInput focus after the mode switch).
+  Each is diagnosable, none is the last.
+- The structural cost is unfixable there: WineD3D does all state tracking
+  and D3D→GL translation *inside the emulated x86 guest*, at TCG speed,
+  and then ships GL calls through the FIFO one by one. A paravirtual device
+  moves that translation to native host code; the guest only serializes.
+  On Apple Silicon that is the difference between "works" and "plays".
+- Doc 04 already listed "a community D3D9 paravirt device, if it
+  materializes" as the adoption target. None has (VirtualBox's WDDM/DX
+  path is Vista+, VMware's SVGA3D is closed and Win7+). We build it.
+
+**Alternatives rejected.** *Proton*: a different product (Windows games on a
+Linux host, no Windows guest, no macOS) — its components, not its shape, are
+relevant. *DXVK in the guest*: needs a Vulkan driver in XP; none exists.
+*Keep fixing WineD3D 1.7.55*: see above; it remains the fallback.
+
+**Licensing.** Wine is LGPL-2.1-or-later: copying Direct3D behaviour *and
+code* from current Wine (d3d9/d3d8 COM plumbing, d3d8→d3d9 mapping, format
+tables, tests) into the guest DLLs and the host executor is allowed; those
+components carry the LGPL, ship with source, keep their headers. DXVK is
+zlib. d3d8to9 is BSD-2. QEMU is GPL-2.0 and qemu-3dfx GPL-2.0; all of these
+combine (LGPL/zlib/BSD code inside a GPL-2.0 program is fine). Nothing from
+Microsoft's SDK ships: headers come from mingw-w64 (public domain / ZPL).
+
+**Consequences.** New milestone in doc 08 (M4 becomes the device). The
+qemu-3dfx FIFO/MMIO model, the FXPTL/MAPMEM guest driver, the embed frame
+path (IOSurface / dma-buf) and the player's 3D layer are reused as-is; the
+new pieces are the guest DLLs, a `d3dpt` device in QEMU, and a host executor
+linking DXVK. C++ enters the host side (DXVK) behind a C shim; guest DLLs
+are C. Apple Silicon depends on DXVK-over-MoltenVK being good enough for
+D3D9-era feature levels: spike first (doc 14 P0), fallback is a host-side
+WineD3D or a wgpu backend later. The x87 work (patch 06, doc 13) is
+unaffected: games still set PC=24 through our d3d9.dll's CreateDevice.

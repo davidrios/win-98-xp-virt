@@ -22,7 +22,7 @@ driver.
 | Glide (2x/3x) | qemu-3dfx guest stubs → host translation | same (fewer titles care) |
 | OpenGL | qemu-3dfx MESA GL pass-through | same |
 | Direct3D 5–7 | SoftGPU (DDraw/D3D → wrapper stack) | rarely needed; wrappers exist |
-| Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | WineD3D (wine9x build, on the guest-tools ISO) → GL pass-through |
+| Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | **our paravirtual D3D device (doc 14, ADR-006)**; WineD3D (wine9x build, guest-tools ISO) as fallback |
 | 2D/desktop | SoftGPU display driver (QEMU std VGA path) | XP inbox Cirrus GD5446 driver (`-vga cirrus`, as Win98); std VGA (Bochs VBE) has no XP driver and leaves the desktop at 640×480×16 |
 
 Known qemu-3dfx constraints we design around:
@@ -55,8 +55,8 @@ Known qemu-3dfx constraints we design around:
 - **86Box** for titles that demand a *real* emulated Voodoo (early Glide
   titles with driver-level tricks): out of scope for us; we document the
   recommendation.
-- Watch list: virgl/venus will never target 9x/XP guests; any future
-  community D3D9→native paravirt device would be adopted if it materializes.
+- Watch list: virgl/venus will never target 9x/XP guests. No community
+  D3D9 paravirt device materialized; we build our own (doc 14, ADR-006).
 
 ## Guest tools ISO (P2)
 

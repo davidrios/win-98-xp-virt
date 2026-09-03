@@ -24,6 +24,11 @@ backend later.
 - Rust wherever possible; C only inside QEMU/qemu-3dfx and guest-side
   era code. Python is uv-managed (3.12; 3.14 breaks QEMU's venv).
 - Everything open source; Apple Silicon must work (TCG), not just x86 hosts.
+- **Direct3D 8/9 on XP is our own paravirtual device** (doc 14, ADR-006):
+  guest serializer DLLs + native host executor (DXVK). WineD3D-in-guest is
+  the fallback/DX7 path only; don't sink more time into wine9x bugs. The
+  reference workload is `guest-tools/src/d3dgame9.c` / `d3dgame8.c`,
+  golden on the rig first.
 
 ## Conventions
 
@@ -75,6 +80,7 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 | `tools/x87-guest-test.py` | DOS program under TCG: results identical with the fast path on/off (needs nasm, mtools, FreeDOS floppy) |
 | `tools/embed-3d-test.c` | drives the window-less Mesa backend without a guest: context, frame, orientation, dma-buf ring (Linux) |
 | `tools/qmpc.py` | drives a guest over an extra `-qmp unix:…,server,nowait` socket: keys, typing, screendumps |
+| `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`; wglgears lives at

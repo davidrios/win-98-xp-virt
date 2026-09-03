@@ -160,6 +160,10 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3d9test.exe" "$ROOT/guest-tools/s
 # Display-mode probe (guest-tools/src/modetest.c): current mode, mode list,
 # ChangeDisplaySettingsEx results for the switches ddraw/wined3d make.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/modetest.exe" "$ROOT/guest-tools/src/modetest.c" -luser32
+# Reference workloads (doc 14 P0a): the same deterministic game-like scene on
+# Direct3D 9 and Direct3D 8; -frames N -dump N x.bmp for golden images.
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame9.exe" "$ROOT/guest-tools/src/d3dgame9.c" -ld3d9 -lgdi32 -luser32
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame8.exe" "$ROOT/guest-tools/src/d3dgame8.c" -ld3d8 -lgdi32 -luser32
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
@@ -187,6 +191,11 @@ GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
             D3D9TEST.EXE + D3D9.DLL + WINED3D.DLL + OPENGL32.DLL = D3D9 test
             MODETEST.EXE prints the display modes the driver accepts (run
             it when a fullscreen game fails to start).
+            D3DGAME9.EXE / D3DGAME8.EXE: the reference scene (doc 14). Run
+            on real hardware first: D3DGAME9 -frames 600 -dump 300 g9.bmp
+            (and -fs, -bpp16, -shader variants) gives the golden images the
+            emulated paths are compared against. WASD/arrows/Q/E camera,
+            F1 wireframe, Space pause, Esc quits; fps in the title/console.
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 

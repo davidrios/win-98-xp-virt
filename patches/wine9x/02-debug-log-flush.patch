@@ -1,0 +1,15 @@
+diff --git a/compact/debug.c b/compact/debug.c
+index 1ec7fc1..c3cf245 100644
+--- a/compact/debug.c
++++ b/compact/debug.c
+@@ -460,7 +460,9 @@ static int default_dbg_vprintf( const char *format, va_list args )
+ # ifdef LOG_FILE
+   if(log_file)
+   {
+-  	return vfprintf(log_file, format, args );
++  	int r = vfprintf(log_file, format, args );
++  	fflush(log_file);   /* crash-safe: the log must survive an access violation */
++  	return r;
+   }
+   return 0;
+ # else
