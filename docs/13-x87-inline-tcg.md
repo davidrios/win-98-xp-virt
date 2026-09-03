@@ -232,8 +232,11 @@ included PC=24 RNE and PC=24 up): 382,251 result lines identical on/off
 on the M1 Air. The bench now runs at both precisions; on the Air the
 7-op m64 loop is 0.38 s at PC=53 (10.4× softfloat) and 0.66 s at PC=24
 (6.0×): every m64 operand pays the rounding and its PE store, which
-float (m32) game code does not. Real-world check still to do: a D3D
-title in XP with `x87-fast=off` as the control.
+float (m32) game code does not. In XP, `D3D9TEST.EXE` (WineD3D from
+the guest-tools ISO) reports PC=24 after CreateDevice, so Direct3D code
+does land in mode 2; 377–504 fps for its triangle on the Air. Real-world
+check still to do: a D3D title in XP with `x87-fast=off` as the
+control.
 
 ## Follow-ups
 
