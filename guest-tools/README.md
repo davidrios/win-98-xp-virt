@@ -11,7 +11,7 @@ mismatch = no acceleration), and stages a `guest-tools-3dfx-<rev>.iso`:
 
 ```
 WIN9X\    GLIDE.DLL GLIDE2X.DLL GLIDE3X.DLL FXMEMMAP.VXD   → C:\WINDOWS\SYSTEM
-WIN2KXP\  GLIDE*.DLL FXPTL.SYS INSTDRV.EXE                 → system32 (+drivers), run INSTDRV as admin
+WIN2KXP\  GLIDE*.DLL FXPTL.SYS INSTDRV.EXE                 → system32 (+drivers), run INSTDRV as admin — needed for OPENGL32.DLL too (NT maps the device via FXPTL.SYS)
 GAMEDIR\  OPENGL32.DLL WGLGEARS.EXE                        → next to each OpenGL game's EXE
           D3D9.DLL D3D8.DLL WINED3D.DLL D3D9TEST.EXE       → next to each Direct3D 8/9 game's EXE (WineD3D)
 WINED3D\  the full WineD3D set + per-OS switcher DLLs       → system-wide install, see WINE9X.TXT

@@ -163,7 +163,11 @@ qemu-3dfx guest wrappers, built from qemu-3dfx commit $REV
 
 WIN9X\   -> copy GLIDE.DLL GLIDE2X.DLL GLIDE3X.DLL FXMEMMAP.VXD to C:\WINDOWS\SYSTEM
 WIN2KXP\ -> copy GLIDE*.DLL to %SystemRoot%\system32, FXPTL.SYS to
-            %SystemRoot%\system32\drivers, then run INSTDRV.EXE as Administrator
+            %SystemRoot%\system32\drivers, then run INSTDRV.EXE as Administrator.
+            REQUIRED FOR OPENGL32.DLL TOO on 2000/XP: the wrapper maps the
+            device through FXPTL.SYS (\\.\MAPMEM); without it OPENGL32.DLL
+            refuses to load and every GL/D3D program fails at startup
+            (0xc0000142 / "failed to initialize"). Win9x uses FXMEMMAP.VXD.
 GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
             WGLGEARS.EXE + OPENGL32.DLL in one folder = quick GL pass-through test
             Direct3D 8/9 games: also copy D3D8.DLL or D3D9.DLL + WINED3D.DLL
