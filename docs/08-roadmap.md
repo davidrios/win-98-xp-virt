@@ -21,7 +21,7 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
 - Detour: a libretro core was built and validated in RetroArch, then dropped
   (ADR-005).
 
-## M1 — Architecture validation  (essentially done, 2026-09-02)
+## M1 — Architecture validation  ✅ (2026-09-02; Windows host untested)
 
 Done, all through the in-process embed path:
 - `10-embed-api` builds `libqemu-embed-<target>` from QEMU's meson; shim
@@ -51,8 +51,13 @@ Open before calling M1 closed:
   ~30 s to desktop on both; vs. the rig's P4 1.7: integer 1.3–2× faster
   (7-Zip), x87 FP 21 % (Super PI 1M 9:49 vs 2:02), 31 % after patch 05's
   host-FPU fast path (6:33) — `reference/benchmarks/README.md`.
-- QMP over socketpair (snapshots/media) — not started; design in doc 11.
-- Windows host untested throughout.
+- ~~QMP over socketpair (snapshots/media).~~ Done 2026-09-02: `player/src/qmp.rs`
+  — socketpair, `-chardev socket,fd=N -mon mode=control`, id-matched
+  synchronous `execute`, event queue drained on the UI thread;
+  `PLAYER_QMP=1` logs every event, `PLAYER_QMP_EXEC='<json>'` runs
+  commands after the first guest frame (verified: query-version/status/
+  block, error classes, RTC_CHANGE events on FreeDOS).
+- Windows host untested throughout (stays open; not blocking M3).
 
 ## M2 — Pixel accuracy + input polish
 

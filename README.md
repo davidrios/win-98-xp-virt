@@ -66,6 +66,10 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 # PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
 # PLAYER_LATENCY=1 prints publish→present latency percentiles every 240 guest frames
 # PLAYER_REFRESH_MS=16 (default) is the guest frame pull interval (QEMU's own default is 30)
+# QMP: the player always attaches a control monitor over a socketpair (no socket file).
+#   PLAYER_QMP=1 logs every QMP event (SHUTDOWN/RESET/STOP/... are logged regardless)
+#   PLAYER_QMP_EXEC='{"execute":"query-status"}' (or a JSON array of requests) runs
+#   commands once the guest has drawn its first frame and prints the replies
 # audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.
 #   -machine pc,pcspk-audiodev=embed0   or   -device sb16,audiodev=embed0
 ```

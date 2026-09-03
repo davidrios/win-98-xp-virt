@@ -1,8 +1,9 @@
 # 11. M1 design: `libqemu_embed` — QEMU in-process
 
 Status 2026-09-02: implemented (API v3) — lifecycle, display, input, audio
-ring, refresh interval; verified on Linux and the M1 Air. QMP channel not
-yet wired (design below stands). Doc 00 has the cheat sheet.
+ring, refresh interval, and QMP over a socketpair (`player/src/qmp.rs`, no
+C changes: exactly the design below); verified on Linux and the M1 Air.
+Doc 00 has the cheat sheet.
 
 Derived from a source survey of QEMU v9.2.4 (patched tree). File:line refs
 are to `qemu/` as prepared.

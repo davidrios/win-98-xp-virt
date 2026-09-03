@@ -8,6 +8,7 @@ mod audio;
 mod keymap;
 mod pattern;
 mod qemu_vm;
+mod qmp;
 mod shader;
 
 use pattern::Pattern;
@@ -375,6 +376,9 @@ enum Source {
         vm: Qemu,
         display: qemu_vm::Display,
         last_seq: u64,
+        qmp: Option<Arc<qmp::Qmp>>,
+        /// PLAYER_QMP_EXEC ran (once, after the first guest frame)
+        qmp_exec_done: bool,
     },
 }
 
@@ -508,12 +512,15 @@ impl ApplicationHandler for App {
                     let _ = p.send_event(());
                 }) as Arc<dyn Fn() + Send + Sync>
             });
-            let (vm, display, join) = qemu_vm::start(self.qemu_args.clone(), audio_cfg, waker);
+            let (vm, display, join, qmp) =
+                qemu_vm::start(self.qemu_args.clone(), audio_cfg, waker);
             self.qemu_thread = Some(join);
             Source::Qemu {
                 vm,
                 display,
                 last_seq: 0,
+                qmp,
+                qmp_exec_done: false,
             }
         });
     }
@@ -673,6 +680,39 @@ impl ApplicationHandler for App {
                 self.closing = true;
                 event_loop.exit();
                 return;
+            }
+        }
+        if let Some(Source::Qemu {
+            qmp: Some(qmp),
+            qmp_exec_done,
+            last_seq,
+            ..
+        }) = &mut self.source
+        {
+            // QMP events: all of them under PLAYER_QMP=1, the notable ones always
+            let verbose = std::env::var("PLAYER_QMP").is_ok();
+            for ev in qmp.take_events() {
+                let name = ev["event"].as_str().unwrap_or("?");
+                if verbose || qmp::is_notable(name) {
+                    eprintln!("[qmp] event {name} {}", ev.get("data").unwrap_or(&serde_json::Value::Null));
+                }
+            }
+            // PLAYER_QMP_EXEC: one request object or an array of them, run once
+            // the guest has drawn — a shell-level way to try commands
+            // (eject, blockdev-change-medium, snapshot-save, ...).
+            if !*qmp_exec_done && *last_seq > 0 {
+                *qmp_exec_done = true;
+                if let Ok(spec) = std::env::var("PLAYER_QMP_EXEC") {
+                    match serde_json::from_str::<serde_json::Value>(&spec) {
+                        Ok(serde_json::Value::Array(reqs)) => {
+                            for r in &reqs {
+                                eprintln!("[qmp] {r} -> {:?}", qmp.execute_raw(r));
+                            }
+                        }
+                        Ok(r) => eprintln!("[qmp] {r} -> {:?}", qmp.execute_raw(&r)),
+                        Err(e) => eprintln!("[qmp] PLAYER_QMP_EXEC is not JSON: {e}"),
+                    }
+                }
             }
         }
         // QEMU published a frame (multiple wakes coalesce into one redraw)

@@ -9,6 +9,7 @@ description = "Standalone player: in-process QEMU + wgpu/librashader display (do
 qemu-embed = { path = "../qemu-embed" }
 winit = "0.30"
 libc = "0.2"
+serde_json = "1"
 wgpu = "30"
 pollster = "1"
 bytemuck = "1"

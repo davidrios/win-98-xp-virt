@@ -259,7 +259,18 @@ pub fn start(
     mut args: Vec<String>,
     audio: Option<(Arc<crate::audio::Ring>, u32)>,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> (Qemu, Display, JoinHandle<i32>) {
+) -> (Qemu, Display, JoinHandle<i32>, Option<Arc<crate::qmp::Qmp>>) {
+    // QMP monitor on a socketpair: our end stays here, QEMU gets the fd.
+    let qmp = match crate::qmp::Qmp::pair() {
+        Ok((q, fd)) => {
+            args.extend(crate::qmp::Qmp::qemu_args(fd));
+            Some(q)
+        }
+        Err(e) => {
+            eprintln!("[qmp] socketpair failed: {e}; no monitor");
+            None
+        }
+    };
     let ring_ptrs = audio.map(|(ring, rate)| {
         args.push("-audiodev".into());
         args.push(format!(
@@ -350,5 +361,18 @@ pub fn start(
         .unwrap_or(16);
     q.set_refresh_ms(refresh_ms);
     shared.lock().unwrap().vm = Some(q);
-    (q, Display(shared), handle)
+    if let Some(qmp) = &qmp {
+        // capabilities are negotiated by the reader thread on the greeting
+        if !qmp.wait_ready(std::time::Duration::from_secs(5)) {
+            eprintln!("[qmp] no greeting from the monitor");
+        }
+        match qmp.execute("query-version", serde_json::Value::Null) {
+            Ok(v) => {
+                let q = &v["qemu"];
+                eprintln!("[qmp] connected: QEMU {}.{}.{}", q["major"], q["minor"], q["micro"]);
+            }
+            Err(e) => eprintln!("[qmp] query-version: {e}"),
+        }
+    }
+    (q, Display(shared), handle, qmp)
 }

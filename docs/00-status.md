@@ -7,7 +7,7 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 | Area | State |
 |---|---|
 | QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI 1M on the Air 9:49 → 6:33. |
-| Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio. **Win98 runs in it on the M1 Air** with sound and tablet mouse. |
+| Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio, QMP over a socketpair (`PLAYER_QMP`, `PLAYER_QMP_EXEC`). **Win98 and XP run in it on the M1 Air** with sound and tablet mouse. |
 | 3D | qemu-3dfx GL pass-through works **standalone** (`qemu-system-i386 -display sdl`, 500+ fps wglgears on the Air). **Not yet in the player** — needs the M3 window-less context provider (doc 12). Under the player a GL app is refused cleanly; a Glide app still exits QEMU (patch 04). |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
 | Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % (Super PI 1M 9:49 vs 2:02) — `reference/benchmarks/`. |
@@ -34,7 +34,7 @@ target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -
 ```
 Player env knobs: `PLAYER_DUMP`, `PLAYER_DUMP_OUT`, `PLAYER_DUMP_SEQ`,
 `PLAYER_KEYS`, `PLAYER_AUDIO_NULL`, `PLAYER_LATENCY`, `PLAYER_REFRESH_MS`,
-`PLAYER_SHADER` (README). Firmware must be passed with `-L qemu/pc-bios`
+`PLAYER_SHADER`, `PLAYER_QMP`, `PLAYER_QMP_EXEC` (README). Firmware must be passed with `-L qemu/pc-bios`
 until machine bundles exist. Test image: FreeDOS 1.3 floppy
 (`build/images/144m/x86BOOT.img`, git-ignored; re-download from ibiblio).
 macOS specifics: `docs/build-macos.md`.
@@ -64,12 +64,11 @@ macOS specifics: `docs/build-macos.md`.
 
 ## Next steps, in order
 
-1. M1 close-out: latency DONE (Air: p50 6–10 / p95 15–17 / max 18 ms,
-   the 60 Hz vsync-phase floor; Linux identical); XP boot + Super PI DONE
-   + 7-Zip DONE (integer 1.3–2× the rig; x87 FP 21 % → 31 % with patch
-   05). Left: QMP over socketpair (doc 11 §QMP). Optional follow-up to 05:
-   fused memory-operand x87 helpers (`reference/benchmarks/README.md`).
-2. **M3 (pulled forward, doc 12):** `30-3dfx-ui-vtable` patch →
+1. ~~M1~~ closed 2026-09-02 (latency at the vsync floor, XP benchmarked,
+   patch 05 x87 fast path, QMP over socketpair). Only the Windows host
+   remains untested. Optional follow-up to patch 05: fused memory-operand
+   x87 helpers (`reference/benchmarks/README.md`).
+2. **M3 (doc 12), next:** `30-3dfx-ui-vtable` patch →
    `embed/mglcntx_embed.c` (EGL pbuffer, compat profile) with readback
    bring-up → dma-buf import into wgpu → macOS CGL/IOSurface → Glide.
 3. M2 mode table + pixel aspect; curated presets vs. rig CRT photos.
