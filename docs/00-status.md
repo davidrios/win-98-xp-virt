@@ -8,7 +8,7 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 |---|---|
 | QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI 1M on the Air 9:49 → 6:33. |
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio, QMP over a socketpair (`PLAYER_QMP`, `PLAYER_QMP_EXEC`). **Win98 and XP run in it on the M1 Air** with sound and tablet mouse. |
-| 3D | **GL pass-through runs inside the player on Linux** (doc 12 steps 1–2, 2026-09-02): patches 30/31 + `embed/mglcntx_embed.c` (EGL surfaceless pbuffer as FBO 0, `glReadPixels` on swap) + API v4. Win98 wglgears in the player: 420 fps at 800×600 with the readback path, desktop returns on exit. Standalone `-display sdl` still works (500+ fps on the Air). macOS: CGL backend written, untested on the Air (`build-macos.md` §3D). Glide: no window, reported cleanly. |
+| 3D | **GL pass-through runs inside the player on Linux** (doc 12 steps 1–2, 2026-09-02): patches 30/31 + `embed/mglcntx_embed.c` (EGL surfaceless pbuffer as FBO 0, `glReadPixels` on swap) + API v4. Win98 wglgears in the player: 420 fps at 800×600 with the readback path, desktop returns on exit. Standalone `-display sdl` still works (500+ fps on the Air). **macOS too** (CGL, no drawable, FBO stand-in; `GL 2.1 Metal / Apple M1`, wglgears in the player on the Air). Glide: no window, reported cleanly. |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
 | Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % (Super PI 1M 9:49 vs 2:02) — `reference/benchmarks/`. |
 | CD backend (libdisc) | vocabulary types + MSF/LBA only (M5). |
@@ -64,6 +64,10 @@ macOS specifics: `docs/build-macos.md`.
   surface only (frozen while 3D is active) — grab the player window with
   `grim` to see 3D frames. Win98 image copy: `~/vms/win98.qcow2`; wglgears
   at `C:\WINDOWS\Desktop\GAMEDIR`.
+- macOS embed backend: never call `gl*`/`CGL*` by link — the QEMU build
+  links XQuartz's Mesa libGL too and the symbol binds there (GLX library,
+  no CGL context → silent no-ops, NULL renderer). `dlsym` on the
+  OpenGL.framework handle, the same one the dispatch table uses.
 - The Mesa backend (`MGL*`) runs on the vCPU thread under the BQL and can
   be driven without a guest right after `qemu_embed_new` (BQL held):
   `tools/embed-3d-test.c`. Order: `InitMesaGL` → `MGLTmpContext` →
@@ -80,8 +84,8 @@ macOS specifics: `docs/build-macos.md`.
    remains untested. Optional follow-up to patch 05: fused memory-operand
    x87 helpers (`reference/benchmarks/README.md`).
 2. **M3 (doc 12), in progress:** ~~vtable patch → EGL backend with
-   readback → Win98 wglgears in the player on Linux → macOS CGL backend
-   written~~ → build + wglgears on the Air (`build-macos.md`) → dma-buf /
+   readback → Win98 wglgears in the player on Linux → macOS CGL backend →
+   wglgears in the player on the Air~~ (all done 2026-09-02) → dma-buf /
    IOSurface zero-copy import into wgpu → Glide.
 3. M2 mode table + pixel aspect; curated presets vs. rig CRT photos.
 4. M5 libdisc; M6 launcher.

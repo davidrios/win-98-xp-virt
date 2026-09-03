@@ -61,11 +61,13 @@ Open before calling M1 closed:
 
 ## M3 progress (2026-09-02)
 
-GL pass-through renders inside the player on Linux: qemu-3dfx UI seam
-behind a vtable (patch 30), window-less EGL backend in the embed library
-(patch 31 + `embed/mglcntx_embed.c`), embed API v4. Win98 wglgears through
-the player: 420 fps at 800×600 with the bring-up readback path. Remaining:
-macOS CGL/IOSurface backend, zero-copy import into wgpu, Glide (doc 12).
+GL pass-through renders inside the player on Linux **and macOS**: qemu-3dfx
+UI seam behind a vtable (patch 30), window-less backends in the embed
+library (patch 31/32 + `embed/mglcntx_embed.c`: EGL surfaceless pbuffer on
+Linux, CGL + FBO stand-in on macOS), embed API v4. Win98 wglgears through
+the player: 420–450 fps at 800×600 on Linux, `GL 2.1 Metal / Apple M1` on
+the Air, both with the bring-up readback path. Remaining: zero-copy import
+into wgpu (dma-buf / IOSurface), Glide (doc 12).
 
 ## M2 — Pixel accuracy + input polish
 

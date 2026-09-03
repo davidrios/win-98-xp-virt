@@ -8,12 +8,14 @@ Verified without a guest by `tools/embed-3d-test.c` (drives the backend in
 mesapt_mm.c's order: activation callbacks, 640×480 frame, correct
 orientation) and with the real thing: Win98 wglgears in the player on the
 Linux dev box — 420 fps at 800×600 through the readback, VGA desktop back
-on exit. macOS backend written (CGL context without a drawable + FBO stand-in for
-the default framebuffer, binding 0 redirected via patch 32's
-`MesaGLSetFunc`; WGL pbuffers emulated with FBOs in the same context) —
-**not yet compiled or run on a Mac**; instructions in `build-macos.md`.
-Next: validate on the Air, then dma-buf / IOSurface zero-copy import,
-Glide.
+on exit. macOS backend done and verified on the Air (CGL context without a
+drawable + FBO stand-in for the default framebuffer, binding 0 redirected
+via patch 32's `MesaGLSetFunc`; WGL pbuffers emulated with FBOs in the same
+context; all GL/CGL resolved through the framework handle because the
+build also links XQuartz's Mesa libGL): Win98 wglgears in the player,
+`GL 2.1 Metal / Apple M1`. **Steps 1–2 complete on both platforms.**
+Next: zero-copy import (dma-buf on Linux, IOSurface on macOS) into wgpu
+(§4), then Glide (§5).
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.

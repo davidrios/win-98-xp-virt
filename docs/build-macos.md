@@ -206,15 +206,19 @@ rustc links for 11.0 by default, while libqemu (configure-qemu.sh) and the
 cmake-built C++ deps (glslang, spirv-cross) target the running OS. They are
 warnings only; the link is fine either way.
 
-## 3D inside the player (M3, macOS backend — untested as of 2026-09-02)
+## 3D inside the player (M3, macOS backend — verified 2026-09-02 on the Air)
 
 The embed library carries a window-less Mesa backend for macOS
 (`embed/mglcntx_embed.c`, CGL section): a CGL context with no drawable, an
 FBO over shared renderbuffers standing in for the window's default
 framebuffer (framebuffer binding 0 is redirected to it, patch 32), and a
-`glReadPixels` of that FBO on every guest swap handed to the player. It
-was written on Linux against the CGL headers and has not been compiled on
-a Mac yet. To build and try it:
+`glReadPixels` of that FBO on every guest swap handed to the player.
+Verified with Win98 wglgears: `GL 2.1 Metal - 89.4 / Apple M1`, FBO
+complete, gears in the player, Esc returns the desktop. Every GL/CGL call
+the backend makes is resolved with `dlsym` on the OpenGL.framework handle:
+the macOS QEMU build also links XQuartz's Mesa libGL, and a plainly linked
+`gl*` symbol binds to that (a GLX library that sees no CGL context and
+silently does nothing — the first two runs failed exactly that way).
 
 ```sh
 git pull
@@ -228,12 +232,12 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 \
 ```
 
 Expected stderr: `glcntx: CGL (window-less)`, `drawable 800x600`,
-`config depth 24 stencil 8`, `[3d] pass-through on`, then wglgears' own
-`N frames in 5.0 seconds, X FPS` lines; Esc → `[3d] pass-through off` and
-the desktop back. If the build fails, the errors will be in the CGL section
-of `embed/mglcntx_embed.c` (names/casts) — send them over. If it builds but
-`MGLCreateContext` refuses or the FBO is reported incomplete, the stderr
-`glcntx:` lines say which call failed. Standalone `-display sdl` is
+`renderbuffers 1/2 800x600`, `GL 2.1 Metal … / Apple M1`,
+`default FBO 1 (bound 1) … complete`, `[3d] pass-through on`, then
+wglgears' own `N frames in 5.0 seconds, X FPS` lines; Esc →
+`[3d] pass-through off` and the desktop back. If the FBO is reported
+incomplete, frames are not published (desktop stays frozen) and the
+`glcntx:` lines name the failing call. Standalone `-display sdl` is
 unaffected (its backend stays, linked weak).
 
 Verified 2026-09-02: Win98 desktop with sound, keyboard, tablet mouse;
