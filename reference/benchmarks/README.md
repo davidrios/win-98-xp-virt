@@ -45,7 +45,8 @@ in the table.
 | Rig (P4 + 6200), XP | Pentium 4 1.7 GHz (Willamette), 512 MB | 122 (2:02) | 0.742 / 0.776 | ~30 | 2026-09-02 |
 | M1 Air, XP in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | 589 (9:49) | 0.996 / 1.511 | ~30 | 2026-09-02 |
 | M1 Air, same + patch 05 x87 fast path (`x87-fast=on`, default) | Apple M1, macOS 26 | 393 (6:33) — loop 1: 23 s vs 36 s off | | | 2026-09-02 |
-| Air ÷ rig | | **21 % → 31 % with patch 05** | **134 % / 195 %** | parity | |
+| M1 Air, same + **patch 06** (x87 stack as host doubles in TCG) | Apple M1, macOS 26 | 117 (1:57), both runs — loop 1 at 0:35 with `x87-fast=off` on the same build | | | 2026-09-03 |
+| Air ÷ rig | | **21 % → 31 % with patch 05 → 104 % with patch 06** | **134 % / 195 %** | parity | |
 
 Reading: the two tests bracket TCG on the M1 against a real P4 1.7.
 - **Integer/memory (7-Zip):** the emulated XP is *faster* than the rig —
@@ -58,16 +59,24 @@ Reading: the two tests bracket TCG on the M1 against a real P4 1.7.
 
 **Patch 05 (x87 host-FPU fast path, 2026-09-02):** Super PI 1M on the Air
 9:49 → 6:33 (1.5×; initial 8 s → 5 s, loop 1 36 s → 23 s, `x87-fast=off`
-reproduces the old numbers on the same build). What remains is TCG's
-per-instruction cost: every x87 op is still a helper call, and every
-memory-operand form (`fmul qword [m]`, the bulk of compiler output) is
-two helpers plus an 80-bit round trip. A fused `fop m64` helper that
-computes straight in host double is the next lever; inlining x87 into
-TCG ops is the only way past that.
+reproduces the old numbers on the same build). What remained was TCG's
+per-instruction cost: every x87 op still a helper call, and every
+memory-operand form (`fmul qword [m]`, the bulk of compiler output) two
+helpers plus an 80-bit round trip.
 
-In-app expectation text should say both halves: "integer speed of a fast
-P4; floating-point speed of a Pentium II". Games mix the two; per-title
-validation in M4 decides which side dominates.
+**Patch 06 (x87 stack as host doubles in TCG, 2026-09-03):** Super PI 1M
+on the Air 6:33 → 1:57 (two runs, identical), 5.0× over softfloat, and
+now edges the real P4 1.7 (2:02). Control: the same build with
+`-cpu pentium3,x87-fast=off` was at 0:35 after loop 1, i.e. softfloat
+pace, so the whole delta is the patch. Win98 boots and behaves in the
+player with patch 06 on. The "Pentium II floating point" caveat below
+no longer applies with patch 06 on. Not re-run: 7-Zip and boot (integer
+path untouched, expected unchanged).
+
+In-app expectation text: with patch 06 both halves are at or above a
+P4 1.7 ("integer speed of a fast P4; floating-point parity with the rig").
+Without it (softfloat) the FP half is Pentium II class. Games mix the two;
+per-title validation in M4 decides which side dominates.
 
 Also record here anything the XP guest needed that Win98 did not
 (drivers, HAL, activation state is not recorded).

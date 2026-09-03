@@ -8,7 +8,11 @@ the FreeDOS test floppy under our qemu-system-i386 twice, with
 `-cpu pentium3,x87-fast=on` and `=off`, and requires the two serial logs to
 be identical: the fast path must be indistinguishable from softfloat.
 
-    tools/x87-guest-test.py            # needs nasm, mtools, build/qemu, the FreeDOS floppy
+    tools/x87-guest-test.py            # needs nasm, mtools, build/qemu; fetches the FreeDOS floppy
+
+Prerequisites: `brew install nasm mtools` (macOS) or `pacman -S nasm mtools`
+(Arch). The FreeDOS 1.3 boot floppy (build/images/144m/x86BOOT.img,
+git-ignored) is downloaded from ibiblio on first use.
 
 The host-side oracle (tools/x87-fast-test.c) proves the fast path matches a
 real x87; this proves the helper glue in fpu_helper.c preserves values and
@@ -20,11 +24,41 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.request
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QEMU = os.path.join(ROOT, "build/qemu/qemu-system-i386")
 FLOPPY = os.path.join(ROOT, "build/images/144m/x86BOOT.img")
+FLOPPY_ZIP = os.path.join(ROOT, "build/images/FD13-FloppyEdition.zip")
+FLOPPY_URL = ("https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/"
+              "distributions/1.3/official/FD13-FloppyEdition.zip")
 OUT = os.path.join(ROOT, "build/x87-guest")
+
+
+def ensure_prereqs():
+    missing = [t for t in ("nasm", "mcopy") if shutil.which(t) is None]
+    if missing:
+        raise SystemExit("missing %s: brew install nasm mtools (macOS) / "
+                         "pacman -S nasm mtools (Arch)" % ", ".join(missing))
+    if not os.path.exists(QEMU):
+        raise SystemExit("%s not built (scripts/prepare-qemu.sh && "
+                         "scripts/configure-qemu.sh && ninja -C build/qemu "
+                         "qemu-system-i386)" % QEMU)
+
+
+def ensure_floppy():
+    """FreeDOS 1.3 floppy edition boot disk, fetched from ibiblio once."""
+    if os.path.exists(FLOPPY):
+        return
+    os.makedirs(os.path.dirname(FLOPPY_ZIP), exist_ok=True)
+    if not os.path.exists(FLOPPY_ZIP):
+        print("downloading %s (21 MB)" % FLOPPY_URL)
+        urllib.request.urlretrieve(FLOPPY_URL, FLOPPY_ZIP + ".part")
+        os.rename(FLOPPY_ZIP + ".part", FLOPPY_ZIP)
+    with zipfile.ZipFile(FLOPPY_ZIP) as z:
+        z.extract("144m/x86BOOT.img", os.path.dirname(FLOPPY_ZIP))
+    print("extracted", FLOPPY)
 
 # ---------------------------------------------------------------- pool
 
@@ -81,8 +115,8 @@ org 100h
 bits 16
 
 %define POOL_N {pool_n}
-%define NUM_BINOPS 14
-%define NUM_OPS 30
+%define NUM_BINOPS 37
+%define NUM_OPS 68
 
 start:
     mov si, cw_table
@@ -204,6 +238,123 @@ op_fcomip:  fld tword [bp + pool]
             pop word [res]
             fstp st0
             jmp store_sw
+; ---- more binary forms (inline TCG fast path coverage) ----
+op_fsub_m:  fld tword [bx + pool]
+            fsub qword [bp + pool]
+            jmp store80
+op_fsubr_m: fld tword [bx + pool]
+            fsubr qword [bp + pool]
+            jmp store80
+op_fmul_m:  fld tword [bx + pool]
+            fmul qword [bp + pool]
+            jmp store80
+op_fdivr_m: fld tword [bx + pool]
+            fdivr qword [bp + pool]
+            jmp store80
+op_fsub_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsub st0, st1
+            jmp store80
+op_fsubr_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsubr st0, st1
+            jmp store80
+op_fdiv_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdiv st0, st1
+            jmp store80
+op_fdivr_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdivr st0, st1
+            jmp store80
+op_fadd_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fadd st1, st0
+            fstp st0
+            jmp store80
+op_fsub_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsub st1, st0
+            fstp st0
+            jmp store80
+op_fsubr_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsubr st1, st0
+            fstp st0
+            jmp store80
+op_fmul_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fmul st1, st0
+            fstp st0
+            jmp store80
+op_fdiv_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdiv st1, st0
+            fstp st0
+            jmp store80
+op_fdivr_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdivr st1, st0
+            fstp st0
+            jmp store80
+op_fxch:    fld tword [bp + pool]
+            fld tword [bx + pool]
+            fxch st1
+            fadd st0, st1
+            jmp store80
+; ---- chains inside one block: shadows stay dirty across instructions ----
+op_chain1:  fld qword [bp + pool]           ; low 8 bytes as doubles
+            fld qword [bx + pool]
+            fadd st1, st0
+            fxch st1
+            fmulp st1, st0
+            jmp store80
+op_chain2:  fld qword [bx + pool]
+            fld st0
+            fmul st0, st1
+            fstp qword [res]
+            fld qword [res]
+            fsubrp st1, st0
+            fadd qword [bp + pool]
+            jmp store80
+op_chain3:  fld qword [bp + pool]
+            fld qword [bx + pool]
+            fdiv st0, st1
+            fst st1
+            fchs
+            fabs
+            fsqrt
+            faddp st1, st0
+            jmp store80
+op_fcmove:  fld tword [bp + pool]
+            fld tword [bx + pool]
+            xor ax, ax                      ; ZF = 1
+            fcmove st0, st1
+            fstp st1
+            jmp store80
+op_fcmovnb: fld tword [bp + pool]
+            fld tword [bx + pool]
+            cmp ax, 1                       ; CF = 1 -> not taken
+            fcmovnb st0, st1
+            fstp st1
+            jmp store80
+op_fucom:   fld tword [bp + pool]
+            fld tword [bx + pool]
+            fucom st1
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
+op_fucomp:  fld tword [bp + pool]
+            fld tword [bx + pool]
+            fucomp st1
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
+op_fcom_m:  fld tword [bx + pool]
+            fcom qword [bp + pool]
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
 ; ---- unary ops on a ----
 op_fsqrt:   fld tword [bx + pool]
             fsqrt
@@ -250,6 +401,80 @@ op_fscale:  fld tword [bp + pool]
             fld tword [bx + pool]
             fscale
             jmp store80
+op_fld_st:  fld tword [bx + pool]
+            fld1
+            fld st1
+            fmulp st1, st0
+            fstp st0
+            jmp store80
+op_fst_st:  fld tword [bx + pool]
+            fld1
+            fst st1
+            fmulp st1, st0
+            jmp store80
+op_fst_m:   fld tword [bx + pool]
+            fst qword [res]
+            fstp st0
+            jmp store_sw
+op_fsts_m:  fld tword [bx + pool]
+            fst dword [res]
+            fstp st0
+            jmp store_sw
+op_ftst:    fld tword [bx + pool]
+            ftst
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
+op_fabs:    fld tword [bx + pool]
+            fabs
+            jmp store80
+op_fldz:    fld tword [bx + pool]
+            fldz
+            faddp st1, st0
+            jmp store80
+op_incstp:  fld tword [bx + pool]
+            fld1
+            fincstp
+            fincstp
+            fdecstp
+            fnstsw ax
+            mov [res], ax
+            fstp st0
+            fstp st0
+            jmp store_sw
+op_ffree:   fld tword [bx + pool]
+            fld1
+            ffree st1
+            fnstsw ax
+            mov [res], ax
+            fstp st0
+            fstp st0
+            jmp store_sw
+op_fist_ch: fld qword [bx + pool]
+            fld1
+            faddp st1, st0
+            fistp dword [res]
+            jmp store_sw
+op_fild_ch: fild dword [bx + pool]
+            fild word [bx + pool + 4]
+            fmulp st1, st0
+            jmp store80
+op_frnd_ch: fld qword [bx + pool]
+            frndint
+            fld1
+            faddp st1, st0
+            jmp store80
+op_fnstsw:  fld tword [bx + pool]
+            fld1
+            fnstsw ax
+            mov [res], ax
+            fstp st0
+            fstp st0
+            jmp store_sw
+op_fstp_st: fld tword [bx + pool]
+            fld1
+            fstp st1
+            jmp store80
 
 store80:
     fstp tword [res]
@@ -262,9 +487,17 @@ op_table:
     dw op_faddp, op_fsubp, op_fsubrp, op_fmulp, op_fdivp, op_fdivrp
     dw op_fadd_st, op_fmul_st, op_fadd_m, op_fmul_ms, op_fdiv_m
     dw op_fcompp, op_fucompp, op_fcomip
+    dw op_fsub_m, op_fsubr_m, op_fmul_m, op_fdivr_m
+    dw op_fsub_st, op_fsubr_st, op_fdiv_st, op_fdivr_st
+    dw op_fadd_stn, op_fsub_stn, op_fsubr_stn, op_fmul_stn, op_fdiv_stn
+    dw op_fdivr_stn, op_fxch
+    dw op_chain1, op_chain2, op_chain3, op_fcmove, op_fcmovnb
+    dw op_fucom, op_fucomp, op_fcom_m
     dw op_fsqrt, op_frndint, op_fistw, op_fistl, op_fistq, op_fstl, op_fsts
     dw op_fildw, op_fildl, op_fildq, op_flds, op_fldl, op_fchs, op_fsin
-    dw op_fptan, op_fscale
+    dw op_fptan, op_fscale, op_fld_st, op_fst_st, op_fstp_st, op_fst_m
+    dw op_fsts_m, op_ftst, op_fabs, op_fldz, op_incstp, op_ffree
+    dw op_fist_ch, op_fild_ch, op_frnd_ch, op_fnstsw, op_fstp_st
 
 ; ---- output ----
 print_result:
@@ -339,6 +572,7 @@ cw_table:
     dw 0E3Fh        ; PC=53 trunc    (MSVC _ftol)
     dw 063Fh        ; PC=53 down
     dw 083Fh        ; PC=24 up
+    dw 021Fh        ; PC=53 RNE, PE unmasked (inline path must stay off)
     dw 0FFFFh
 
 cur_cw: dw 0
@@ -348,6 +582,101 @@ res_sw: dw 0
 align 2
 pool:
 {pool}
+"""
+
+
+# 64 x87 instructions in one basic block (patch 06 keeps the stack as
+# shadow doubles across all of them): the block must translate as one TB and
+# give the same value and status word with the fast path on and off.
+LONGBLK_ASM = r"""
+org 100h
+bits 16
+start:
+    fninit
+    fldcw [cw]
+    mov ecx, 1000
+    fld qword [x]
+.loop:
+%rep 16
+    fmul qword [y]
+    fadd qword [z]
+    fld st0
+    fsubp st1, st0
+    fadd qword [x]
+    fld qword [z]
+    fxch st1
+    fdivrp st1, st0
+%endrep
+    dec ecx
+    jnz .loop
+    fstp qword [w]
+    fnstsw [sw]
+    mov si, str_long
+    call puts
+    mov eax, [w + 4]
+    call put_hex32
+    mov eax, [w]
+    call put_hex32
+    mov al, ' '
+    call putc
+    mov ax, [sw]
+    call put_hex16
+    mov al, 10
+    call putc
+    int 20h
+
+putc:
+    push ax
+    push dx
+    mov dx, 3FDh
+.w: in al, dx
+    test al, 20h
+    jz .w
+    pop dx
+    pop ax
+    push dx
+    mov dx, 3F8h
+    out dx, al
+    pop dx
+    ret
+puts:
+    lodsb
+    test al, al
+    jz .d
+    call putc
+    jmp puts
+.d: ret
+put_hex32:
+    push eax
+    shr eax, 16
+    call put_hex16
+    pop eax
+put_hex16:
+    push ax
+    mov al, ah
+    call put_hex8
+    pop ax
+put_hex8:
+    push ax
+    shr al, 4
+    call put_nib
+    pop ax
+put_nib:
+    and al, 0Fh
+    add al, '0'
+    cmp al, '9'
+    jbe .o
+    add al, 'a' - '0' - 10
+.o: jmp putc
+
+str_long: db "LONG ", 0
+cw: dw 027Fh
+times (2000h - ($ - $$)) db 0
+x:  dq 1.0000001
+y:  dq 0.9999999
+z:  dq 0.5
+w:  dq 0.0
+sw: dw 0
 """
 
 
@@ -497,6 +826,8 @@ def run_qemu(fast, img, log):
 
 
 def main():
+    ensure_prereqs()
+    ensure_floppy()
     os.makedirs(OUT, exist_ok=True)
     entries = pool_entries()
     asm = os.path.join(OUT, "x87test.asm")
@@ -509,6 +840,11 @@ def main():
     with open(basm, "w") as f:
         f.write(BENCH_ASM)
     sh("nasm", "-O0", "-f", "bin", "-o", bcom, basm)
+    lasm = os.path.join(OUT, "longblk.asm")
+    lcom = os.path.join(OUT, "LONGBLK.COM")
+    with open(lasm, "w") as f:
+        f.write(LONGBLK_ASM)
+    sh("nasm", "-O0", "-f", "bin", "-o", lcom, lasm)
 
     img = os.path.join(OUT, "x87test.img")
     shutil.copy(FLOPPY, img)
@@ -518,11 +854,12 @@ def main():
                 "SHELL=\\FREEDOS\\BIN\\COMMAND.COM \\FREEDOS\\BIN /E:2048 /P=\\FDAUTO.BAT\r\n")
     bat = os.path.join(OUT, "FDAUTO.BAT")
     with open(bat, "w") as f:
-        f.write("@echo off\r\nX87BENCH.COM\r\nX87TEST.COM\r\n")
+        f.write("@echo off\r\nX87BENCH.COM\r\nLONGBLK.COM\r\nX87TEST.COM\r\n")
     sh("mcopy", "-o", "-i", img, cfg, "::FDCONFIG.SYS")
     sh("mcopy", "-o", "-i", img, bat, "::FDAUTO.BAT")
     sh("mcopy", "-o", "-i", img, com, "::X87TEST.COM")
     sh("mcopy", "-o", "-i", img, bcom, "::X87BENCH.COM")
+    sh("mcopy", "-o", "-i", img, lcom, "::LONGBLK.COM")
 
     logs = {}
     for fast in ("off", "on"):
@@ -539,9 +876,13 @@ def main():
                 ticks[fast] = (int(it, 16), int(tk, 16))
     if "off" in ticks and "on" in ticks:
         it = ticks["off"][0]
+        ratio = ticks["off"][1] / max(1, ticks["on"][1])
         print("bench: %d iterations x 7 x87 ops: off %.2f s, on %.2f s (%.1fx)" % (
-            it, ticks["off"][1] / 18.2, ticks["on"][1] / 18.2,
-            ticks["off"][1] / max(1, ticks["on"][1])))
+            it, ticks["off"][1] / 18.2, ticks["on"][1] / 18.2, ratio))
+        if ratio < 1.5:
+            print("WARNING: the fast path does not seem active (expected 5x or "
+                  "more): stale build/qemu/qemu-system-i386? re-run "
+                  "scripts/prepare-qemu.sh, configure, ninja")
     # the bench line is timing, not a result: compare everything else
     a = b"\n".join(l for l in a.split(b"\n") if not l.startswith(b"BENCH "))
     b = b"\n".join(l for l in b.split(b"\n") if not l.startswith(b"BENCH "))
