@@ -36,8 +36,10 @@ Player env knobs: `PLAYER_DUMP`, `PLAYER_DUMP_OUT`, `PLAYER_DUMP_SEQ`,
 `PLAYER_KEYS`, `PLAYER_AUDIO_NULL`, `PLAYER_LATENCY`, `PLAYER_REFRESH_MS`,
 `PLAYER_SHADER` (README). Firmware must be passed with `-L qemu/pc-bios`
 until machine bundles exist. Test image: FreeDOS 1.3 floppy
-(`build/images/144m/x86BOOT.img`, git-ignored; re-download from ibiblio).
-macOS specifics: `docs/build-macos.md`.
+(`build/images/144m/x86BOOT.img`, git-ignored; `tools/x87-guest-test.py`
+fetches FD13-FloppyEdition.zip from ibiblio and extracts it).
+macOS specifics: `docs/build-macos.md`. x87 tests need `brew install nasm
+mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 ## Known issues / open threads
 

@@ -150,7 +150,8 @@ helpers for the rest.
 
 ## Follow-ups
 
-- Run on the Air: `python3 tools/x87-guest-test.py`, then Super PI 1M in
+- Run on the Air: `brew install nasm mtools`, then
+  `python3 tools/x87-guest-test.py` (it fetches the FreeDOS floppy), then Super PI 1M in
   XP against `-cpu pentium3,x87-fast=off` (doc 00 §benchmarks). If the
   aarch64 lowering is wrong the guest test shows mismatches or QEMU
   aborts in `tcg_out_op`; `x87-fast=off` is the fallback.

@@ -8,7 +8,11 @@ the FreeDOS test floppy under our qemu-system-i386 twice, with
 `-cpu pentium3,x87-fast=on` and `=off`, and requires the two serial logs to
 be identical: the fast path must be indistinguishable from softfloat.
 
-    tools/x87-guest-test.py            # needs nasm, mtools, build/qemu, the FreeDOS floppy
+    tools/x87-guest-test.py            # needs nasm, mtools, build/qemu; fetches the FreeDOS floppy
+
+Prerequisites: `brew install nasm mtools` (macOS) or `pacman -S nasm mtools`
+(Arch). The FreeDOS 1.3 boot floppy (build/images/144m/x86BOOT.img,
+git-ignored) is downloaded from ibiblio on first use.
 
 The host-side oracle (tools/x87-fast-test.c) proves the fast path matches a
 real x87; this proves the helper glue in fpu_helper.c preserves values and
@@ -20,11 +24,41 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.request
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QEMU = os.path.join(ROOT, "build/qemu/qemu-system-i386")
 FLOPPY = os.path.join(ROOT, "build/images/144m/x86BOOT.img")
+FLOPPY_ZIP = os.path.join(ROOT, "build/images/FD13-FloppyEdition.zip")
+FLOPPY_URL = ("https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/"
+              "distributions/1.3/official/FD13-FloppyEdition.zip")
 OUT = os.path.join(ROOT, "build/x87-guest")
+
+
+def ensure_prereqs():
+    missing = [t for t in ("nasm", "mcopy") if shutil.which(t) is None]
+    if missing:
+        raise SystemExit("missing %s: brew install nasm mtools (macOS) / "
+                         "pacman -S nasm mtools (Arch)" % ", ".join(missing))
+    if not os.path.exists(QEMU):
+        raise SystemExit("%s not built (scripts/prepare-qemu.sh && "
+                         "scripts/configure-qemu.sh && ninja -C build/qemu "
+                         "qemu-system-i386)" % QEMU)
+
+
+def ensure_floppy():
+    """FreeDOS 1.3 floppy edition boot disk, fetched from ibiblio once."""
+    if os.path.exists(FLOPPY):
+        return
+    os.makedirs(os.path.dirname(FLOPPY_ZIP), exist_ok=True)
+    if not os.path.exists(FLOPPY_ZIP):
+        print("downloading %s (21 MB)" % FLOPPY_URL)
+        urllib.request.urlretrieve(FLOPPY_URL, FLOPPY_ZIP + ".part")
+        os.rename(FLOPPY_ZIP + ".part", FLOPPY_ZIP)
+    with zipfile.ZipFile(FLOPPY_ZIP) as z:
+        z.extract("144m/x86BOOT.img", os.path.dirname(FLOPPY_ZIP))
+    print("extracted", FLOPPY)
 
 # ---------------------------------------------------------------- pool
 
@@ -792,6 +826,8 @@ def run_qemu(fast, img, log):
 
 
 def main():
+    ensure_prereqs()
+    ensure_floppy()
     os.makedirs(OUT, exist_ok=True)
     entries = pool_entries()
     asm = os.path.join(OUT, "x87test.asm")
