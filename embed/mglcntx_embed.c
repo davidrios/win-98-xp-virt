@@ -1169,6 +1169,8 @@ static void plat_set_func_ptr(void *hdll)
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOSurface/IOSurface.h>
 
 /*
  * mesagl_impl.c dlopens this for the dispatch table; the framework umbrella
@@ -1218,7 +1220,60 @@ static struct {
     void (*FramebufferRenderbufferEXT)(GLenum, GLenum, GLenum, GLuint);
     void (*FramebufferTexture2DEXT)(GLenum, GLenum, GLenum, GLuint, GLint);
     GLenum (*CheckFramebufferStatusEXT)(GLenum);
+    void (*BlitFramebufferEXT)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
+    void (*Flush)(void);
+    void (*Finish)(void);
+    CGLError (*TexImageIOSurface2D)(CGLContextObj, GLenum, GLenum, GLsizei, GLsizei,
+                                    GLenum, GLenum, IOSurfaceRef, GLuint);
 } gl;
+
+/* IOSurface + CoreFoundation, resolved the same way (no link changes) */
+static struct {
+    IOSurfaceRef (*Create)(CFDictionaryRef);
+    CFDictionaryRef (*DictionaryCreate)(CFAllocatorRef, const void **, const void **, CFIndex,
+                                        const CFDictionaryKeyCallBacks *,
+                                        const CFDictionaryValueCallBacks *);
+    CFNumberRef (*NumberCreate)(CFAllocatorRef, CFNumberType, const void *);
+    void (*Release)(CFTypeRef);
+    CFStringRef kWidth, kHeight, kBytesPerElement, kPixelFormat;
+    const CFDictionaryKeyCallBacks *keycb;
+    const CFDictionaryValueCallBacks *valcb;
+    int loaded;
+} ios;
+
+static int ios_load(void)
+{
+    if (ios.loaded) {
+        return ios.loaded > 0;
+    }
+    void *hi = dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", RTLD_NOW);
+    void *hc = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_NOW);
+    if (!hi || !hc) {
+        DPRINTF("IOSurface/CoreFoundation: %s", dlerror());
+        ios.loaded = -1;
+        return 0;
+    }
+    ios.Create = dlsym(hi, "IOSurfaceCreate");
+    ios.DictionaryCreate = dlsym(hc, "CFDictionaryCreate");
+    ios.NumberCreate = dlsym(hc, "CFNumberCreate");
+    ios.Release = dlsym(hc, "CFRelease");
+    CFStringRef *k;
+    ios.kWidth = (k = dlsym(hi, "kIOSurfaceWidth")) ? *k : NULL;
+    ios.kHeight = (k = dlsym(hi, "kIOSurfaceHeight")) ? *k : NULL;
+    ios.kBytesPerElement = (k = dlsym(hi, "kIOSurfaceBytesPerElement")) ? *k : NULL;
+    ios.kPixelFormat = (k = dlsym(hi, "kIOSurfacePixelFormat")) ? *k : NULL;
+    ios.keycb = dlsym(hc, "kCFTypeDictionaryKeyCallBacks");
+    ios.valcb = dlsym(hc, "kCFTypeDictionaryValueCallBacks");
+    if (!ios.Create || !ios.DictionaryCreate || !ios.NumberCreate || !ios.Release
+        || !ios.kWidth || !ios.kHeight || !ios.kBytesPerElement || !ios.kPixelFormat
+        || !ios.keycb || !ios.valcb) {
+        DPRINTF("IOSurface symbols missing");
+        ios.loaded = -1;
+        return 0;
+    }
+    ios.loaded = 1;
+    return 1;
+}
 
 static int gl_load(void)
 {
@@ -1267,6 +1322,10 @@ static int gl_load(void)
     SYM(FramebufferRenderbufferEXT, "glFramebufferRenderbufferEXT");
     SYM(FramebufferTexture2DEXT, "glFramebufferTexture2DEXT");
     SYM(CheckFramebufferStatusEXT, "glCheckFramebufferStatusEXT");
+    SYM(BlitFramebufferEXT, "glBlitFramebufferEXT");
+    SYM(Flush, "glFlush");
+    SYM(Finish, "glFinish");
+    SYM(TexImageIOSurface2D, "CGLTexImageIOSurface2D");
 #undef SYM
     if (missing) {
         memset(&gl, 0, sizeof(gl));
@@ -1316,6 +1375,144 @@ static const char *gl_err_str(GLenum e)
 }
 #define GLCHK(what) do { GLenum e_ = gl.GetError(); \
     if (e_ != GL_NO_ERROR) DPRINTF("%s: GL error %s (0x%x)", what, gl_err_str(e_), e_); } while (0)
+
+/*
+ * Zero-copy presentation (doc 12 §4, macOS): a ring of IOSurfaces bound to
+ * GL_TEXTURE_RECTANGLE textures (CGLTexImageIOSurface2D); each swap blits
+ * the stand-in FBO into the next one (Y-flipped) and the frontend wraps the
+ * same IOSurface in a Metal texture. zc_state: -1 undecided, 0 off, 1 on.
+ */
+#define ZC_SLOTS 3
+#define kIOSurfacePixelFormatBGRA 0x42475241u   /* 'BGRA' */
+static int zc_state = -1;
+static struct {
+    IOSurfaceRef surf;
+    GLuint tex, fbo;
+    int w, h;
+} zc[ZC_SLOTS];
+static int zc_next;
+
+static void zc_slot_free(int i)
+{
+    /* GL names die with their context; delete only while one is current */
+    if (gl.GetCurrentContext()) {
+        if (zc[i].fbo) {
+            gl.DeleteFramebuffersEXT(1, &zc[i].fbo);
+        }
+        if (zc[i].tex) {
+            gl.DeleteTextures(1, &zc[i].tex);
+        }
+    }
+    if (zc[i].surf) {
+        ios.Release(zc[i].surf);
+    }
+    memset(&zc[i], 0, sizeof(zc[i]));
+}
+
+static void zc_off(const char *why)
+{
+    if (zc_state != 0) {
+        DPRINTF("zero-copy off: %s (readback path)", why);
+    }
+    zc_state = 0;
+    for (int i = 0; i < ZC_SLOTS; i++) {
+        zc_slot_free(i);
+    }
+}
+
+static int zc_slot_ensure(int i, int w, int h)
+{
+    if (zc[i].surf && zc[i].w == w && zc[i].h == h) {
+        return 1;
+    }
+    zc_slot_free(i);
+    int bpe = 4;
+    uint32_t fmt = kIOSurfacePixelFormatBGRA;
+    CFNumberRef vw = ios.NumberCreate(NULL, kCFNumberIntType, &w);
+    CFNumberRef vh = ios.NumberCreate(NULL, kCFNumberIntType, &h);
+    CFNumberRef vb = ios.NumberCreate(NULL, kCFNumberIntType, &bpe);
+    CFNumberRef vf = ios.NumberCreate(NULL, kCFNumberSInt32Type, &fmt);
+    const void *keys[] = { ios.kWidth, ios.kHeight, ios.kBytesPerElement, ios.kPixelFormat };
+    const void *vals[] = { vw, vh, vb, vf };
+    CFDictionaryRef d = ios.DictionaryCreate(NULL, keys, vals, 4, ios.keycb, ios.valcb);
+    zc[i].surf = ios.Create(d);
+    ios.Release(d);
+    ios.Release(vw); ios.Release(vh); ios.Release(vb); ios.Release(vf);
+    if (!zc[i].surf) {
+        zc_off("IOSurfaceCreate failed");
+        return 0;
+    }
+    zc[i].w = w;
+    zc[i].h = h;
+    GLint prev_tex = 0, prev_fb = 0;
+    gl.GetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &prev_tex);
+    gl.GetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &prev_fb);
+    while (gl.GetError() != GL_NO_ERROR);
+    gl.GenTextures(1, &zc[i].tex);
+    gl.BindTexture(GL_TEXTURE_RECTANGLE_ARB, zc[i].tex);
+    CGLError err = gl.TexImageIOSurface2D(gl.GetCurrentContext(), GL_TEXTURE_RECTANGLE_ARB,
+                                          GL_RGBA, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV,
+                                          zc[i].surf, 0);
+    gl.BindTexture(GL_TEXTURE_RECTANGLE_ARB, prev_tex);
+    if (err != kCGLNoError) {
+        DPRINTF("CGLTexImageIOSurface2D: %s", gl.ErrorString(err));
+        zc_off("IOSurface texture binding failed");
+        return 0;
+    }
+    gl.GenFramebuffersEXT(1, &zc[i].fbo);
+    gl.BindFramebufferEXT(GL_FRAMEBUFFER_EXT, zc[i].fbo);
+    gl.FramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+                               GL_TEXTURE_RECTANGLE_ARB, zc[i].tex, 0);
+    GLenum st = gl.CheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+    gl.BindFramebufferEXT(GL_FRAMEBUFFER_EXT, prev_fb ? prev_fb : cur_dfbo);
+    if (st != GL_FRAMEBUFFER_COMPLETE_EXT) {
+        DPRINTF("IOSurface FBO incomplete 0x%x", st);
+        zc_off("IOSurface FBO incomplete");
+        return 0;
+    }
+    if (!embed_fx_iosurface(i, zc[i].surf, w, h)) {
+        zc_off("frontend declined the IOSurface");
+        return 0;
+    }
+    DPRINTF("zero-copy slot %d: %dx%d IOSurface %p", i, w, h, (void *)zc[i].surf);
+    return 1;
+}
+
+static int zc_present(void)
+{
+    if (zc_state < 0) {
+        zc_state = ios_load() && gl.TexImageIOSurface2D && gl.BlitFramebufferEXT ? 1 : 0;
+        if (!zc_state) {
+            zc_off("IOSurface / blit support missing");
+        } else {
+            DPRINTF("zero-copy: IOSurface ring");
+        }
+    }
+    if (zc_state != 1 || !dfbo_ok) {
+        return 0;
+    }
+    int i = zc_next;
+    if (!zc_slot_ensure(i, win_w, win_h)) {
+        return 0;
+    }
+    GLint prev_read = 0, prev_draw = 0;
+    gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &prev_read);
+    gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_EXT, &prev_draw);
+    gl.BindFramebufferEXT(GL_READ_FRAMEBUFFER_EXT, cur_dfbo);
+    gl.BindFramebufferEXT(GL_DRAW_FRAMEBUFFER_EXT, zc[i].fbo);
+    gl.ReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
+    /* flip: the stand-in FBO is bottom-up, the IOSurface is read top-down */
+    gl.BlitFramebufferEXT(0, 0, win_w, win_h, 0, win_h, win_w, 0,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    gl.BindFramebufferEXT(GL_READ_FRAMEBUFFER_EXT, prev_read ? prev_read : cur_dfbo);
+    gl.BindFramebufferEXT(GL_DRAW_FRAMEBUFFER_EXT, prev_draw ? prev_draw : cur_dfbo);
+    /* bring-up sync: the GPU must be done before Metal samples the surface */
+    gl.Flush();
+    gl.Finish();
+    embed_fx_frame_ready(i);
+    zc_next = (i + 1) % ZC_SLOTS;
+    return 1;
+}
 
 static int plat_open(void)
 {
@@ -1446,6 +1643,18 @@ static void plat_ctx_destroy(void *c)
 {
     ctx_fbo_forget(c);
     if (c == ctx[0]) {
+        /* the ring's GL objects belong to this context: drop them while it
+         * can still be made current, then forget the shared names */
+        CGLContextObj cur = gl.GetCurrentContext();
+        if (!cur) {
+            gl.SetCurrentContext((CGLContextObj)c);
+        }
+        for (int i = 0; i < ZC_SLOTS; i++) {
+            zc_slot_free(i);
+        }
+        if (!cur) {
+            gl.SetCurrentContext(NULL);
+        }
         /* renderbuffers live in the share group rooted at ctx[0] */
         rb_color = rb_depth = 0;
         rb_w = rb_h = 0;
@@ -1580,7 +1789,7 @@ static void plat_drawable_release(void)
 
 static int plat_present_zero_copy(void)
 {
-    return 0;   /* IOSurface export: later */
+    return zc_present();
 }
 
 static int readback_warned;

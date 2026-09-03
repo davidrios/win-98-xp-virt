@@ -25,5 +25,6 @@ void embed_fx_frame(const uint32_t *px, int w, int h, int stride, int bottom_up)
 int embed_fx_dmabuf(int slot, int fd, int w, int h, int stride,
                     uint32_t fourcc, uint64_t modifier);
 void embed_fx_frame_ready(int slot);
+int embed_fx_iosurface(int slot, void *iosurface, int w, int h);
 
 #endif

@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
 
-pub const API_VERSION: u32 = 5;
+pub const API_VERSION: u32 = 6;
 pub const FMT_XRGB8888: u32 = 1;
 
 #[repr(C)]
@@ -30,6 +30,9 @@ pub struct RawDisplayCb {
     >,
     /// v5: the frame in the given slot is complete
     pub on_3d_frame_ready: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    /// v6 (macOS): a ring slot backed by an IOSurface (pointer stays valid while offered); return nonzero to accept
+    pub on_3d_iosurface:
+        Option<unsafe extern "C" fn(*mut c_void, c_int, *mut c_void, c_int, c_int) -> c_int>,
 }
 
 #[repr(C)]

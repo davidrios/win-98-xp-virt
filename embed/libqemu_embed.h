@@ -67,6 +67,11 @@ typedef struct qemu_embed_display_cb {
                         int stride, uint32_t fourcc, uint64_t modifier);
     /* v5: the frame in `slot` is complete (GPU work finished). */
     void (*on_3d_frame_ready)(void *ud, int slot);
+    /* v6 (macOS): zero-copy ring slot backed by an IOSurface (BGRA8,
+       top-down). `iosurface` is an IOSurfaceRef the backend keeps alive
+       until the slot is re-offered or 3D ends; wrap it in a Metal texture.
+       Return nonzero to accept; 0 keeps the readback path. vCPU thread. */
+    int (*on_3d_iosurface)(void *ud, int slot, void *iosurface, int width, int height);
 } qemu_embed_display_cb;
 
 /* Create + initialize QEMU. argv is a plain qemu-system command line
@@ -121,7 +126,7 @@ QEMU_EMBED_API void qemu_embed_set_refresh_ms(qemu_embed_t *e, uint32_t ms);
 
 /* Library version of the embed API, for the bindings to sanity-check. */
 QEMU_EMBED_API uint32_t qemu_embed_api_version(void);
-#define QEMU_EMBED_API_VERSION 5
+#define QEMU_EMBED_API_VERSION 6
 
 #ifdef __cplusplus
 }

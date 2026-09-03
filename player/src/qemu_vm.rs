@@ -8,7 +8,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-/// A backend dma-buf ring slot offered for zero-copy import (Linux).
+/// A backend ring slot offered for zero-copy import: a dma-buf (Linux,
+/// `fd` >= 0) or an IOSurface (macOS, `iosurface` non-null).
 pub struct DmaBuf {
     pub slot: usize,
     pub fd: i32,
@@ -17,6 +18,8 @@ pub struct DmaBuf {
     pub stride: u32,
     pub fourcc: u32,
     pub modifier: u64,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub iosurface: usize,
 }
 
 pub struct Frame {
@@ -261,6 +264,33 @@ unsafe extern "C" fn on_3d_dmabuf(
         stride: stride as u32,
         fourcc,
         modifier,
+        iosurface: 0,
+    });
+    1
+}
+
+/// macOS: the backend offers an IOSurface-backed ring slot.
+unsafe extern "C" fn on_3d_iosurface(
+    ud: *mut c_void,
+    slot: c_int,
+    iosurface: *mut c_void,
+    w: c_int,
+    h: c_int,
+) -> c_int {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    if !s.zero_copy || slot < 0 || iosurface.is_null() {
+        return 0;
+    }
+    s.dmabufs.push(DmaBuf {
+        slot: slot as usize,
+        fd: -1,
+        w: w as u32,
+        h: h as u32,
+        stride: 0,
+        fourcc: 0,
+        modifier: 0,
+        iosurface: iosurface as usize,
     });
     1
 }
@@ -422,6 +452,7 @@ pub fn start(
                 on_3d_frame: Some(on_3d_frame),
                 on_3d_dmabuf: Some(on_3d_dmabuf),
                 on_3d_frame_ready: Some(on_3d_frame_ready),
+                on_3d_iosurface: Some(on_3d_iosurface),
             };
             if let Some((r, _)) = ring_ptrs {
                 let ring = unsafe { &*(r as *const crate::audio::Ring) };

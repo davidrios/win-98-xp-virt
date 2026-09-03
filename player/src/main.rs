@@ -7,6 +7,8 @@
 mod audio;
 #[cfg(target_os = "linux")]
 mod dmabuf;
+#[cfg(target_os = "macos")]
+mod iosurface;
 mod keymap;
 mod pattern;
 mod qemu_vm;
@@ -71,7 +73,8 @@ impl Gpu {
             Some(t) => t,
             None => {
                 let (d, q) = pollster::block_on(adapter.request_device(&desc)).expect("request device");
-                (d, q, false)
+                // macOS: IOSurface-backed Metal textures need no extensions
+                (d, q, cfg!(target_os = "macos"))
             }
         };
         if zero_copy {
@@ -257,33 +260,37 @@ impl Gpu {
         })
     }
 
-    /// Import a backend dma-buf ring slot (Linux). Takes the fd.
-    #[allow(clippy::too_many_arguments)]
-    fn import_slot(&mut self, slot: usize, fd: i32, w: u32, h: u32, stride: u32, fourcc: u32, modifier: u64) {
+    /// Import a backend ring slot: a dma-buf (Linux, takes the fd) or an
+    /// IOSurface (macOS).
+    fn import_slot(&mut self, d: &qemu_vm::DmaBuf) {
+        let srgb = self.config.format.is_srgb();
+        let (slot, w, h) = (d.slot, d.w, d.h);
         #[cfg(target_os = "linux")]
-        {
-            let srgb = self.config.format.is_srgb();
-            match dmabuf::import(&self.device, fd, w, h, stride, fourcc, modifier, srgb) {
-                Ok(tex) => {
-                    let bg = self.make_bind_group(&tex);
-                    if self.ext.len() <= slot {
-                        self.ext.resize_with(slot + 1, || None);
-                    }
-                    self.ext[slot] = Some((tex, bg, w, h));
-                    eprintln!("[3d] slot {slot}: imported {w}x{h} stride {stride} modifier 0x{modifier:x}");
+        let r = dmabuf::import(&self.device, d.fd, w, h, d.stride, d.fourcc, d.modifier, srgb);
+        #[cfg(target_os = "macos")]
+        let r = iosurface::import(&self.device, d.iosurface as *mut std::ffi::c_void, w, h, srgb);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let r: Result<wgpu::Texture, String> = {
+            if d.fd >= 0 {
+                unsafe { libc::close(d.fd) };
+            }
+            Err("no zero-copy import on this platform".into())
+        };
+        match r {
+            Ok(tex) => {
+                let bg = self.make_bind_group(&tex);
+                if self.ext.len() <= slot {
+                    self.ext.resize_with(slot + 1, || None);
                 }
-                Err(e) => {
-                    eprintln!("[3d] slot {slot}: dma-buf import failed: {e}");
-                    if self.ext.len() > slot {
-                        self.ext[slot] = None;
-                    }
+                self.ext[slot] = Some((tex, bg, w, h));
+                eprintln!("[3d] slot {slot}: imported {w}x{h}");
+            }
+            Err(e) => {
+                eprintln!("[3d] slot {slot}: zero-copy import failed: {e}");
+                if self.ext.len() > slot {
+                    self.ext[slot] = None;
                 }
             }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (slot, w, h, stride, fourcc, modifier);
-            unsafe { libc::close(fd) };
         }
     }
 
@@ -500,7 +507,7 @@ fn present_guest_frame(
     last_seq: &mut u64,
 ) -> Option<std::time::Instant> {
     for d in display.take_dmabufs() {
-        gpu.import_slot(d.slot, d.fd, d.w, d.h, d.stride, d.fourcc, d.modifier);
+        gpu.import_slot(&d);
     }
     let f = display.take_if_newer(*last_seq)?;
     *last_seq = f.seq;
@@ -788,7 +795,7 @@ impl ApplicationHandler for App {
         // window gets no usable swapchain image but must still keep up
         if let (Some(gpu), Some(Source::Qemu { display, .. })) = (self.gpu.as_mut(), &self.source) {
             for d in display.take_dmabufs() {
-                gpu.import_slot(d.slot, d.fd, d.w, d.h, d.stride, d.fourcc, d.modifier);
+                gpu.import_slot(&d);
             }
         }
         // QEMU's main loop returned (guest power-off, `quit`): stop touching

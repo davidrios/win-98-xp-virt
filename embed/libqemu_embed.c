@@ -111,6 +111,15 @@ int embed_fx_dmabuf(int slot, int fd, int w, int h, int stride,
     return 1;
 }
 
+int embed_fx_iosurface(int slot, void *iosurface, int w, int h)
+{
+    qemu_embed_t *e = fx_instance;
+    if (!e || !e->cb.on_3d_iosurface || !e->cb.on_3d_frame_ready) {
+        return 0;
+    }
+    return e->cb.on_3d_iosurface(e->ud, slot, iosurface, w, h) ? 1 : 0;
+}
+
 void embed_fx_frame_ready(int slot)
 {
     qemu_embed_t *e = fx_instance;

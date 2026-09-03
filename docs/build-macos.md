@@ -240,6 +240,30 @@ incomplete, frames are not published (desktop stays frozen) and the
 `glcntx:` lines name the failing call. Standalone `-display sdl` is
 unaffected (its backend stays, linked weak).
 
+### Zero-copy (IOSurface) — written 2026-09-03, untested on the Air
+
+The macOS backend now offers a ring of three IOSurfaces (BGRA8) bound to
+`GL_TEXTURE_RECTANGLE` textures via `CGLTexImageIOSurface2D`; every swap
+blits the stand-in FBO into the next one (flipped) and the player wraps the
+same IOSurface in a Metal texture (`player/src/iosurface.rs`, wgpu-hal
+`texture_from_raw`). Embed API v6 (`on_3d_iosurface`). Readback stays the
+fallback: if anything in the ring fails the backend logs
+`zero-copy off: <reason>` and keeps rendering the old way.
+
+```sh
+git pull
+scripts/prepare-qemu.sh
+ninja -C build/qemu libqemu-embed-i386.dylib
+cargo build --release      # new deps: objc2, objc2-metal, objc2-io-surface
+```
+
+Expected stderr on wglgears: `glcntx: zero-copy: IOSurface ring`,
+`zero-copy slot 0: 800x600 IOSurface 0x…`, `[3d] slot 0: imported
+800x600` (then slots 1 and 2), gears in the window, higher fps than the
+readback run. Failure modes to send back: a Rust compile error in
+`iosurface.rs` (objc2 names), `zero-copy off: …` from the backend, or
+`[3d] slot N: zero-copy import failed: …` from the player.
+
 Verified 2026-09-02: Win98 desktop with sound, keyboard, tablet mouse;
 sRGB-correct. `PLAYER_LATENCY=1` prints publish→present percentiles; on the
 Air with Win98 + crt-lottes: p50 6–10 ms, p95 15–17 ms, max 18 ms (the
