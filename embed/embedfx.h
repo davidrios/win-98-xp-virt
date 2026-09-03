@@ -21,5 +21,9 @@ void embed_fx_register(void);
 /* libqemu_embed.c: deliver to the frontend (vCPU thread, BQL held) */
 void embed_fx_active(bool on);
 void embed_fx_frame(const uint32_t *px, int w, int h, int stride, int bottom_up);
+/* zero-copy: offer a ring slot's dma-buf (fd is dup'ed for the frontend) */
+int embed_fx_dmabuf(int slot, int fd, int w, int h, int stride,
+                    uint32_t fourcc, uint64_t modifier);
+void embed_fx_frame_ready(int slot);
 
 #endif

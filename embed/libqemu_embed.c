@@ -93,6 +93,32 @@ void embed_fx_frame(const uint32_t *px, int w, int h, int stride, int bottom_up)
     }
 }
 
+int embed_fx_dmabuf(int slot, int fd, int w, int h, int stride,
+                    uint32_t fourcc, uint64_t modifier)
+{
+    qemu_embed_t *e = fx_instance;
+    if (!e || !e->cb.on_3d_dmabuf || !e->cb.on_3d_frame_ready) {
+        return 0;
+    }
+    int dupfd = dup(fd);
+    if (dupfd < 0) {
+        return 0;
+    }
+    if (!e->cb.on_3d_dmabuf(e->ud, slot, dupfd, w, h, stride, fourcc, modifier)) {
+        close(dupfd);
+        return 0;
+    }
+    return 1;
+}
+
+void embed_fx_frame_ready(int slot)
+{
+    qemu_embed_t *e = fx_instance;
+    if (e && e->cb.on_3d_frame_ready) {
+        e->cb.on_3d_frame_ready(e->ud, slot);
+    }
+}
+
 /* ---------------------------------------------------------------- display */
 
 static void embed_dpy_refresh(DisplayChangeListener *dcl)

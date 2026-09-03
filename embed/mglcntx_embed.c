@@ -184,6 +184,7 @@ static void *plat_get_current(void);
 static int   plat_drawable(int w, int h);              /* (re)size FBO 0 */
 static void  plat_drawable_release(void);
 static int   plat_readback(uint32_t *dst);             /* FBO 0, bottom-up; 0 = no frame */
+static int   plat_present_zero_copy(void);             /* 1 = frame handed off as dma-buf */
 static int   plat_pbuffer_create(int i, int w, int h);
 static void  plat_pbuffer_destroy(int i);
 static void  plat_pbuffer_current(int i);
@@ -354,8 +355,10 @@ int MGLSwapBuffers(void)
 {
     MGLActivateHandler(1, 0);
     MesaBlitScale();
-    /* present = read FBO 0 back and hand it to the frontend (bottom-up) */
+    /* present: zero-copy into a dma-buf where available, else read FBO 0
+     * back and hand it to the frontend (bottom-up) */
     if (win_ready && readback && plat_get_current() == ctx[0]
+        && !plat_present_zero_copy()
         && plat_readback(readback)) {
         embed_fx_frame(readback, win_w, win_h, win_w * 4, /* bottom_up */ 1);
     }
@@ -677,6 +680,9 @@ void MGLFuncHandler(const char *name)
 #include <epoxy/gl.h>
 #include <linux/version.h>
 #include <sys/utsname.h>
+#include <gbm.h>
+#include "qemu/drm.h"
+#include "standard-headers/drm/drm_fourcc.h"
 #include "sysemu/kvm.h"
 
 static int bufo_accel_en(void)
@@ -717,6 +723,205 @@ static const EGLint ctx_compat[] = {
     EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
     EGL_NONE
 };
+
+/*
+ * Zero-copy presentation (doc 12 §4): a ring of GBM buffers (linear,
+ * ARGB8888) imported into GL as EGLImage-backed textures; each swap blits
+ * FBO 0 into the next one (Y-flipped, so the buffer is top-down) and the
+ * frontend, which imported the same dma-bufs into its own GPU API, samples
+ * it. zc_state: -1 undecided, 0 off (readback), 1 on.
+ */
+#define ZC_SLOTS 3
+static struct gbm_device *gbm_dev;
+static int drm_fd = -1;
+static int zc_state = -1;
+static int zc_have_modifiers;
+static struct {
+    struct gbm_bo *bo;
+    int fd;
+    EGLImageKHR img;
+    GLuint tex, fbo;
+    int w, h;
+    uint32_t stride;
+    uint64_t modifier;
+} zc[ZC_SLOTS];
+static int zc_next;
+
+static void zc_slot_free(int i)
+{
+    /*
+     * epoxy resolves GL/EGL extension entry points through the current
+     * context; teardown runs after MGLDeleteContext unbound it, so bind the
+     * main context for the duration when nothing is current.
+     */
+    bool rebound = false;
+    if (eglGetCurrentContext() == EGL_NO_CONTEXT && ctx[0] && win != EGL_NO_SURFACE) {
+        rebound = eglMakeCurrent(dpy, win, win, (EGLContext)ctx[0]);
+    }
+    bool have_ctx = eglGetCurrentContext() != EGL_NO_CONTEXT;
+    if (zc[i].fbo && have_ctx) {
+        glDeleteFramebuffers(1, &zc[i].fbo);
+    }
+    if (zc[i].tex && have_ctx) {
+        glDeleteTextures(1, &zc[i].tex);
+    }
+    if (zc[i].img && have_ctx) {
+        eglDestroyImageKHR(dpy, zc[i].img);
+    }
+    if (rebound) {
+        eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    if (zc[i].fd >= 0) {
+        close(zc[i].fd);
+    }
+    if (zc[i].bo) {
+        gbm_bo_destroy(zc[i].bo);
+    }
+    memset(&zc[i], 0, sizeof(zc[i]));
+    zc[i].fd = -1;
+}
+
+static void zc_off(const char *why)
+{
+    if (zc_state != 0) {
+        DPRINTF("zero-copy off: %s (readback path)", why);
+    }
+    zc_state = 0;
+    for (int i = 0; i < ZC_SLOTS; i++) {
+        zc_slot_free(i);
+    }
+}
+
+static int zc_init(void)
+{
+    if (zc_state >= 0) {
+        return zc_state;
+    }
+    for (int i = 0; i < ZC_SLOTS; i++) {
+        zc[i].fd = -1;
+    }
+    if (!epoxy_has_egl_extension(dpy, "EGL_EXT_image_dma_buf_import")
+        || !epoxy_has_gl_extension("GL_OES_EGL_image")) {
+        zc_off("EGL_EXT_image_dma_buf_import / GL_OES_EGL_image missing");
+        return 0;
+    }
+    zc_have_modifiers = epoxy_has_egl_extension(dpy, "EGL_EXT_image_dma_buf_import_modifiers");
+    drm_fd = qemu_drm_rendernode_open(NULL);
+    if (drm_fd < 0) {
+        zc_off("no DRM render node");
+        return 0;
+    }
+    gbm_dev = gbm_create_device(drm_fd);
+    if (!gbm_dev) {
+        zc_off("gbm_create_device failed");
+        return 0;
+    }
+    zc_state = 1;
+    DPRINTF("zero-copy: GBM on %s, %s modifiers", gbm_device_get_backend_name(gbm_dev),
+            zc_have_modifiers ? "with" : "without");
+    return 1;
+}
+
+/* (re)allocate slot i at w x h and offer it to the frontend */
+static int zc_slot_ensure(int i, int w, int h)
+{
+    if (zc[i].bo && zc[i].w == w && zc[i].h == h) {
+        return 1;
+    }
+    zc_slot_free(i);
+    zc[i].bo = gbm_bo_create(gbm_dev, w, h, GBM_FORMAT_ARGB8888,
+                             GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+    if (!zc[i].bo) {
+        zc_off("gbm_bo_create failed");
+        return 0;
+    }
+    zc[i].fd = gbm_bo_get_fd(zc[i].bo);
+    zc[i].stride = gbm_bo_get_stride(zc[i].bo);
+    zc[i].modifier = gbm_bo_get_modifier(zc[i].bo);
+    if (zc[i].modifier == DRM_FORMAT_MOD_INVALID) {
+        zc[i].modifier = DRM_FORMAT_MOD_LINEAR;   /* GBM_BO_USE_LINEAR */
+    }
+    zc[i].w = w;
+    zc[i].h = h;
+    if (zc[i].fd < 0) {
+        zc_off("gbm_bo_get_fd failed");
+        return 0;
+    }
+    EGLint attrs[32];
+    int n = 0;
+    attrs[n++] = EGL_WIDTH;                     attrs[n++] = w;
+    attrs[n++] = EGL_HEIGHT;                    attrs[n++] = h;
+    attrs[n++] = EGL_LINUX_DRM_FOURCC_EXT;      attrs[n++] = DRM_FORMAT_ARGB8888;
+    attrs[n++] = EGL_DMA_BUF_PLANE0_FD_EXT;     attrs[n++] = zc[i].fd;
+    attrs[n++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT; attrs[n++] = 0;
+    attrs[n++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;  attrs[n++] = zc[i].stride;
+    if (zc_have_modifiers && zc[i].modifier != DRM_FORMAT_MOD_INVALID) {
+        attrs[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT; attrs[n++] = (EGLint)(zc[i].modifier & 0xffffffffu);
+        attrs[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT; attrs[n++] = (EGLint)(zc[i].modifier >> 32);
+    }
+    attrs[n] = EGL_NONE;
+    zc[i].img = eglCreateImageKHR(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
+    if (!zc[i].img) {
+        DPRINTF("eglCreateImageKHR(dma-buf) failed 0x%x", eglGetError());
+        zc_off("dma-buf import into GL failed");
+        return 0;
+    }
+    GLint prev_tex = 0, prev_fbo = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGenTextures(1, &zc[i].tex);
+    glBindTexture(GL_TEXTURE_2D, zc[i].tex);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, zc[i].img);
+    glBindTexture(GL_TEXTURE_2D, prev_tex);
+    glGenFramebuffers(1, &zc[i].fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, zc[i].fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, zc[i].tex, 0);
+    GLenum st = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prev_fbo);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        DPRINTF("dma-buf FBO incomplete 0x%x", st);
+        zc_off("dma-buf FBO incomplete");
+        return 0;
+    }
+    if (!embed_fx_dmabuf(i, zc[i].fd, w, h, zc[i].stride, DRM_FORMAT_ARGB8888, zc[i].modifier)) {
+        zc_off("frontend declined the dma-buf");
+        return 0;
+    }
+    DPRINTF("zero-copy slot %d: %dx%d stride %u modifier 0x%llx fd %d", i, w, h,
+            zc[i].stride, (unsigned long long)zc[i].modifier, zc[i].fd);
+    return 1;
+}
+
+/* present FBO 0 into the next ring slot; 1 = handed off, 0 = use readback */
+static int zc_present(void)
+{
+    if (zc_state < 0) {
+        zc_init();
+    }
+    if (zc_state != 1) {
+        return 0;
+    }
+    int i = zc_next;
+    if (!zc_slot_ensure(i, win_w, win_h)) {
+        return 0;
+    }
+    GLint prev_read = 0, prev_draw = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, zc[i].fbo);
+    glReadBuffer(GL_BACK);
+    /* flip: GL's bottom-up FBO 0 becomes a top-down buffer */
+    glBlitFramebuffer(0, 0, win_w, win_h, 0, win_h, win_w, 0,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prev_read);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prev_draw);
+    /* bring-up sync: wait for the blit before publishing (fence fd later) */
+    glFinish();
+    embed_fx_frame_ready(i);
+    zc_next = (i + 1) % ZC_SLOTS;
+    return 1;
+}
 
 static int plat_open(void)
 {
@@ -819,6 +1024,12 @@ static void *plat_ctx_create(void *share, const int *wgl)
 
 static void plat_ctx_destroy(void *c)
 {
+    if (c == ctx[0]) {
+        /* the ring's GL objects belong to this context */
+        for (int i = 0; i < ZC_SLOTS; i++) {
+            zc_slot_free(i);
+        }
+    }
     eglDestroyContext(dpy, (EGLContext)c);
 }
 
@@ -863,10 +1074,18 @@ static int plat_drawable(int w, int h)
 
 static void plat_drawable_release(void)
 {
+    for (int i = 0; i < ZC_SLOTS; i++) {
+        zc_slot_free(i);
+    }
     if (win != EGL_NO_SURFACE) {
         eglDestroySurface(dpy, win);
         win = EGL_NO_SURFACE;
     }
+}
+
+static int plat_present_zero_copy(void)
+{
+    return zc_present();
 }
 
 static int plat_readback(uint32_t *dst)
@@ -1357,6 +1576,11 @@ static int plat_drawable(int w, int h)
 static void plat_drawable_release(void)
 {
     /* objects die with the share group in plat_ctx_destroy(ctx[0]) */
+}
+
+static int plat_present_zero_copy(void)
+{
+    return 0;   /* IOSurface export: later */
 }
 
 static int readback_warned;

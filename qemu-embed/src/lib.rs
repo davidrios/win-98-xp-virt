@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
 
-pub const API_VERSION: u32 = 4;
+pub const API_VERSION: u32 = 5;
 pub const FMT_XRGB8888: u32 = 1;
 
 #[repr(C)]
@@ -24,6 +24,12 @@ pub struct RawDisplayCb {
     /// v4: presented 3D frame (XRGB8888 top-down, stride bytes), valid during the call
     pub on_3d_frame:
         Option<unsafe extern "C" fn(*mut c_void, *const u8, c_int, c_int, c_int)>,
+    /// v5 (Linux): a ring slot's dma-buf is offered (fd owned by the callee); return nonzero to accept
+    pub on_3d_dmabuf: Option<
+        unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int, c_int, u32, u64) -> c_int,
+    >,
+    /// v5: the frame in the given slot is complete
+    pub on_3d_frame_ready: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
 }
 
 #[repr(C)]

@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include "libqemu_embed.h"
 
 /* backend entry points (exported by the .so on Linux; internal API) */
@@ -34,6 +35,51 @@ int glwnd_ready(void);
 
 static int actives, frames, fw, fh;
 static uint32_t px_tl, px_br, px_c;
+/* zero-copy: the dma-bufs the backend offered, mmap'ed for checking */
+static struct { int fd; int w, h, stride; void *map; size_t len; } slots[8];
+static int dmabufs, readies, last_slot = -1;
+
+static int on_3d_dmabuf(void *ud, int slot, int fd, int w, int h, int stride,
+                        uint32_t fourcc, uint64_t modifier)
+{
+    printf("on_3d_dmabuf(slot %d fd %d %dx%d stride %d fourcc %c%c%c%c modifier 0x%llx)\n",
+           slot, fd, w, h, stride, fourcc & 0xff, (fourcc >> 8) & 0xff,
+           (fourcc >> 16) & 0xff, (fourcc >> 24) & 0xff, (unsigned long long)modifier);
+    if (slot < 0 || slot >= 8) {
+        return 0;
+    }
+    if (slots[slot].map) {
+        munmap(slots[slot].map, slots[slot].len);
+        close(slots[slot].fd);
+    }
+    slots[slot].fd = fd;
+    slots[slot].w = w; slots[slot].h = h; slots[slot].stride = stride;
+    slots[slot].len = (size_t)stride * h;
+    slots[slot].map = mmap(NULL, slots[slot].len, PROT_READ, MAP_SHARED, fd, 0);
+    if (slots[slot].map == MAP_FAILED) {
+        printf("  mmap failed; declining zero-copy\n");
+        slots[slot].map = NULL;
+        return 0;
+    }
+    dmabufs++;
+    return 1;
+}
+
+static void on_3d_frame_ready(void *ud, int slot)
+{
+    readies++;
+    last_slot = slot;
+    if (slot >= 0 && slot < 8 && slots[slot].map) {
+        const uint8_t *p = slots[slot].map;
+        int w = slots[slot].w, h = slots[slot].h, st = slots[slot].stride;
+        frames++;
+        fw = w;
+        fh = h;
+        px_tl = *(const uint32_t *)(p + 10 * st + 10 * 4);
+        px_br = *(const uint32_t *)(p + (h - 10) * st + (w - 10) * 4);
+        px_c = *(const uint32_t *)(p + (h / 2) * st + (w / 2) * 4);
+    }
+}
 
 static void on_3d_active(void *ud, bool on)
 {
@@ -59,9 +105,12 @@ int main(int argc, char **argv)
         "qemu-system-i386", "-machine", "pc", "-m", "32", "-net", "none",
         "-L", (char *)bios, "-nodefaults", "-vga", "std",
     };
+    int want_zc = !(argc > 2 && !strcmp(argv[2], "readback"));
     qemu_embed_display_cb cb = {
         .on_3d_active = on_3d_active,
         .on_3d_frame = on_3d_frame,
+        .on_3d_dmabuf = want_zc ? on_3d_dmabuf : NULL,
+        .on_3d_frame_ready = want_zc ? on_3d_frame_ready : NULL,
     };
     if (qemu_embed_api_version() != QEMU_EMBED_API_VERSION) {
         printf("API version mismatch\n");
@@ -117,7 +166,9 @@ int main(int argc, char **argv)
     MGLDeleteContext(0);
     MGLWndRelease();
     FiniMesaGL();
-    printf("actives %d frames %d -> %s\n", actives, frames, ok ? "OK" : "FAIL");
+    printf("actives %d frames %d dmabufs %d ready %d (last slot %d) -> %s [%s]\n",
+           actives, frames, dmabufs, readies, last_slot, ok ? "OK" : "FAIL",
+           dmabufs ? "zero-copy" : "readback");
     fflush(stdout);
     /* one VM per process; cleanup is partial — exit without it */
     _exit(ok ? 0 : 1);

@@ -8,7 +8,20 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+/// A backend dma-buf ring slot offered for zero-copy import (Linux).
+pub struct DmaBuf {
+    pub slot: usize,
+    pub fd: i32,
+    pub w: u32,
+    pub h: u32,
+    pub stride: u32,
+    pub fourcc: u32,
+    pub modifier: u64,
+}
+
 pub struct Frame {
+    /// Some(slot): the frame lives in an imported dma-buf, `pixels` is empty
+    pub ext_slot: Option<usize>,
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<u32>,
@@ -120,6 +133,9 @@ struct Shared {
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
     // qemu-3dfx pass-through active: VGA updates stop, frames come from swaps
     three_d: bool,
+    // zero-copy: the GPU side can import dma-bufs; offered slots wait here
+    zero_copy: bool,
+    dmabufs: Vec<DmaBuf>,
     // QEMU's main loop has returned; the handle must not be used any more
     stopped: bool,
     // the UI thread promises no further calls; qemu_embed_destroy may run
@@ -146,12 +162,18 @@ impl Display {
             return None;
         }
         Some(Frame {
+            ext_slot: s.front.ext_slot,
             width: s.front.width,
             height: s.front.height,
-            pixels: s.front.pixels.clone(),
+            pixels: if s.front.ext_slot.is_some() { Vec::new() } else { s.front.pixels.clone() },
             seq: s.front.seq,
             published: s.front.published,
         })
+    }
+
+    /// dma-buf slots offered since the last call (import them on the GPU thread).
+    pub fn take_dmabufs(&self) -> Vec<DmaBuf> {
+        std::mem::take(&mut self.0.lock().unwrap().dmabufs)
     }
 }
 
@@ -204,6 +226,50 @@ unsafe extern "C" fn on_3d_frame(ud: *mut c_void, px: *const u8, w: c_int, h: c_
         let row = std::slice::from_raw_parts(px.add(y * stride) as *const u32, w);
         s.front.pixels[y * w..(y + 1) * w].copy_from_slice(row);
     }
+    s.front.ext_slot = None;
+    s.front.seq += 1;
+    s.front.published = std::time::Instant::now();
+    let waker = s.waker.clone();
+    drop(s);
+    if let Some(w) = waker {
+        w();
+    }
+}
+
+/// The backend offers a ring slot's dma-buf (vCPU thread). Accept only when
+/// the GPU side can import; the fd is ours from here on.
+unsafe extern "C" fn on_3d_dmabuf(
+    ud: *mut c_void,
+    slot: c_int,
+    fd: c_int,
+    w: c_int,
+    h: c_int,
+    stride: c_int,
+    fourcc: u32,
+    modifier: u64,
+) -> c_int {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    if !s.zero_copy || slot < 0 {
+        return 0;
+    }
+    s.dmabufs.push(DmaBuf {
+        slot: slot as usize,
+        fd,
+        w: w as u32,
+        h: h as u32,
+        stride: stride as u32,
+        fourcc,
+        modifier,
+    });
+    1
+}
+
+/// A ring slot holds a complete frame: publish by reference.
+unsafe extern "C" fn on_3d_frame_ready(ud: *mut c_void, slot: c_int) {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    s.front.ext_slot = Some(slot as usize);
     s.front.seq += 1;
     s.front.published = std::time::Instant::now();
     let waker = s.waker.clone();
@@ -235,6 +301,7 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
         ..
     } = &mut *s;
     front.pixels.copy_from_slice(back);
+    front.ext_slot = None;
     front.seq += 1;
     front.published = std::time::Instant::now();
     let waker = waker.clone();
@@ -293,6 +360,7 @@ pub fn start(
     mut args: Vec<String>,
     audio: Option<(Arc<crate::audio::Ring>, u32)>,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    zero_copy: bool,
 ) -> (Qemu, Display, JoinHandle<i32>, Option<Arc<crate::qmp::Qmp>>) {
     // QMP monitor on a socketpair: our end stays here, QEMU gets the fd.
     let qmp = match crate::qmp::Qmp::pair() {
@@ -323,6 +391,7 @@ pub fn start(
         height: 0,
         back: Vec::new(),
         front: Frame {
+            ext_slot: None,
             width: 0,
             height: 0,
             pixels: Vec::new(),
@@ -331,6 +400,8 @@ pub fn start(
         },
         waker,
         three_d: false,
+        zero_copy,
+        dmabufs: Vec::new(),
         stopped: false,
         released: false,
     }));
@@ -349,6 +420,8 @@ pub fn start(
                 on_mouse_set: None,
                 on_3d_active: Some(on_3d_active),
                 on_3d_frame: Some(on_3d_frame),
+                on_3d_dmabuf: Some(on_3d_dmabuf),
+                on_3d_frame_ready: Some(on_3d_frame_ready),
             };
             if let Some((r, _)) = ring_ptrs {
                 let ring = unsafe { &*(r as *const crate::audio::Ring) };

@@ -10,6 +10,7 @@ qemu-embed = { path = "../qemu-embed" }
 winit = "0.30"
 libc = "0.2"
 serde_json = "1"
+ash = "0.38"
 wgpu = "30"
 pollster = "1"
 bytemuck = "1"

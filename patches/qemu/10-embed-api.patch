@@ -16,7 +16,7 @@ linked directly so type_init constructors survive. Needs -fPIC
 +                   files('embed/libqemu_embed.c', 'embed/embedaudio.c', 'embed/embedfx.c', 'embed/mglcntx_embed.c'),
 +                   c_args: c_args,
 +                   include_directories: target_inc,
-+                   dependencies: arch_deps + [sdl] + (opengl.found() ? [opengl] : []),
++                   dependencies: arch_deps + [sdl] + (opengl.found() ? [opengl] : []) + (gbm.found() ? [gbm] : []),
 +                   objects: lib.extract_all_objects(recursive: true),
 +                   link_depends: [block_syms, qemu_syms],
 +                   # macOS: emulator_link_args carries -exported_symbols_list for the

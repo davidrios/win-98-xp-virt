@@ -14,8 +14,19 @@ via patch 32's `MesaGLSetFunc`; WGL pbuffers emulated with FBOs in the same
 context; all GL/CGL resolved through the framework handle because the
 build also links XQuartz's Mesa libGL): Win98 wglgears in the player,
 `GL 2.1 Metal / Apple M1`. **Steps 1–2 complete on both platforms.**
-Next: zero-copy import (dma-buf on Linux, IOSurface on macOS) into wgpu
-(§4), then Glide (§5).
+**Zero-copy on Linux done (2026-09-03):** the backend allocates a ring of
+three linear ARGB8888 GBM buffers, imports them into GL as EGLImage
+textures and blits FBO 0 into the next one (Y-flipped) on every swap;
+each buffer's dma-buf is offered once (embed API v5 `on_3d_dmabuf`) and
+the player imports it into wgpu through `wgpu-hal` Vulkan
+(`VK_EXT_external_memory_dma_buf` + `VK_EXT_image_drm_format_modifier`,
+`player/src/dmabuf.rs`); per frame only the slot index travels
+(`on_3d_frame_ready`). Frames are sampled straight from the guest's
+buffers: Win98 wglgears 575–600 fps (was 420–450 with readback). Sync is
+`glFinish` before the hand-off for now (a fence fd is the refinement).
+`tools/embed-3d-test.c` checks the ring by mmap'ing the dma-bufs; the
+readback path stays as the fallback (macOS, or no Vulkan extensions).
+Next: IOSurface on macOS (§4), then Glide (§5).
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.

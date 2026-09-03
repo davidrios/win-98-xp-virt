@@ -5,6 +5,8 @@
 //! keyboard and mouse are injected. No args → the M0 test pattern.
 
 mod audio;
+#[cfg(target_os = "linux")]
+mod dmabuf;
 mod keymap;
 mod pattern;
 mod qemu_vm;
@@ -33,6 +35,10 @@ struct Gpu {
     sampler: wgpu::Sampler,
     pipeline: wgpu::RenderPipeline,
     fb_tex: Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)>,
+    /// zero-copy 3D frames: imported dma-buf ring slots and the one on show
+    ext: Vec<Option<(wgpu::Texture, wgpu::BindGroup, u32, u32)>>,
+    ext_current: Option<usize>,
+    zero_copy: bool,
     adapter_info: wgpu::AdapterInfo,
     chain: Option<shader::Chain>,
     chain_bg: Option<(wgpu::BindGroup, u32, u32)>,
@@ -51,11 +57,26 @@ impl Gpu {
             ..Default::default()
         }))
         .expect("no suitable GPU adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let desc = wgpu::DeviceDescriptor {
             label: Some("player"),
             ..Default::default()
-        }))
-        .expect("request device");
+        };
+        // Linux: open the device with the dma-buf import extensions so 3D
+        // frames can be sampled straight from the backend's buffers.
+        #[cfg(target_os = "linux")]
+        let opened = dmabuf::create_device(&adapter, &desc);
+        #[cfg(not(target_os = "linux"))]
+        let opened: Option<(wgpu::Device, wgpu::Queue, bool)> = None;
+        let (device, queue, zero_copy) = match opened {
+            Some(t) => t,
+            None => {
+                let (d, q) = pollster::block_on(adapter.request_device(&desc)).expect("request device");
+                (d, q, false)
+            }
+        };
+        if zero_copy {
+            eprintln!("[3d] zero-copy dma-buf import available");
+        }
 
         let size = window.inner_size();
         let mut config = surface
@@ -141,6 +162,9 @@ impl Gpu {
             sampler,
             pipeline,
             fb_tex: None,
+            ext: Vec::new(),
+            ext_current: None,
+            zero_copy,
             adapter_info,
             chain: None,
             chain_bg: None,
@@ -215,6 +239,70 @@ impl Gpu {
         self.fb_tex = Some((tex, bg, w, h));
     }
 
+    fn make_bind_group(&self, tex: &wgpu::Texture) -> wgpu::BindGroup {
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blit bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
+    }
+
+    /// Import a backend dma-buf ring slot (Linux). Takes the fd.
+    #[allow(clippy::too_many_arguments)]
+    fn import_slot(&mut self, slot: usize, fd: i32, w: u32, h: u32, stride: u32, fourcc: u32, modifier: u64) {
+        #[cfg(target_os = "linux")]
+        {
+            let srgb = self.config.format.is_srgb();
+            match dmabuf::import(&self.device, fd, w, h, stride, fourcc, modifier, srgb) {
+                Ok(tex) => {
+                    let bg = self.make_bind_group(&tex);
+                    if self.ext.len() <= slot {
+                        self.ext.resize_with(slot + 1, || None);
+                    }
+                    self.ext[slot] = Some((tex, bg, w, h));
+                    eprintln!("[3d] slot {slot}: imported {w}x{h} stride {stride} modifier 0x{modifier:x}");
+                }
+                Err(e) => {
+                    eprintln!("[3d] slot {slot}: dma-buf import failed: {e}");
+                    if self.ext.len() > slot {
+                        self.ext[slot] = None;
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (slot, w, h, stride, fourcc, modifier);
+            unsafe { libc::close(fd) };
+        }
+    }
+
+    /// Show an imported slot (Some) or the CPU-uploaded framebuffer (None).
+    fn use_slot(&mut self, slot: Option<usize>) {
+        self.ext_current = match slot {
+            Some(s) if self.ext.get(s).map(|e| e.is_some()).unwrap_or(false) => Some(s),
+            _ => None,
+        };
+    }
+
+    /// The texture currently on show: an imported 3D slot or the upload.
+    fn current(&self) -> Option<&(wgpu::Texture, wgpu::BindGroup, u32, u32)> {
+        match self.ext_current {
+            Some(s) => self.ext[s].as_ref(),
+            None => self.fb_tex.as_ref(),
+        }
+    }
+
     fn upload(&mut self, pixels: &[u32], w: u32, h: u32) {
         self.ensure_texture(w, h);
         let (tex, _, _, _) = self.fb_tex.as_ref().unwrap();
@@ -242,7 +330,7 @@ impl Gpu {
     /// Largest integer-scaled 4:3 rect that fits the surface, centered
     /// (doc 03 geometry stage; pixel-aspect table comes in M2).
     fn viewport(&self) -> (f32, f32, f32, f32) {
-        let Some((_, _, tw, th)) = self.fb_tex.as_ref() else {
+        let Some((_, _, tw, th)) = self.current() else {
             return (0.0, 0.0, 1.0, 1.0);
         };
         let (tw, th) = (*tw, *th);
@@ -270,7 +358,7 @@ impl Gpu {
 
     /// Run the shader chain and, if `frame` is given, blit and present it.
     fn render(&mut self, frame: Option<wgpu::SurfaceTexture>) {
-        if self.fb_tex.is_none() {
+        if self.current().is_none() {
             return;
         }
         // CRT chain: guest texture → viewport-sized output texture (doc 03)
@@ -283,7 +371,11 @@ impl Gpu {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("shader"),
                 });
-            let input = &self.fb_tex.as_ref().unwrap().0;
+            // field-level borrows: `chain` is borrowed mutably above
+            let input: &wgpu::Texture = match self.ext_current {
+                Some(s) => &self.ext[s].as_ref().unwrap().0,
+                None => &self.fb_tex.as_ref().unwrap().0,
+            };
             match chain.run(&self.device, &mut enc, input, vw, vh) {
                 Ok(out) => {
                     let out_tex = out.clone();
@@ -330,7 +422,7 @@ impl Gpu {
         }
         let bg: &wgpu::BindGroup = match (&self.chain, &self.chain_bg) {
             (Some(_), Some((bg, _, _))) => bg,
-            _ => &self.fb_tex.as_ref().unwrap().1,
+            _ => &self.current().unwrap().1,
         };
         let Some(frame) = frame else { return };
         let view = frame
@@ -400,6 +492,28 @@ struct App {
     proxy: Option<EventLoopProxy<()>>,
 }
 
+/// Pull the newest guest frame into the GPU: an imported dma-buf slot is
+/// selected, a CPU frame is uploaded. Returns its publish time.
+fn present_guest_frame(
+    gpu: &mut Gpu,
+    display: &qemu_vm::Display,
+    last_seq: &mut u64,
+) -> Option<std::time::Instant> {
+    for d in display.take_dmabufs() {
+        gpu.import_slot(d.slot, d.fd, d.w, d.h, d.stride, d.fourcc, d.modifier);
+    }
+    let f = display.take_if_newer(*last_seq)?;
+    *last_seq = f.seq;
+    match f.ext_slot {
+        Some(s) => gpu.use_slot(Some(s)),
+        None => {
+            gpu.use_slot(None);
+            gpu.upload(&f.pixels, f.width as u32, f.height as u32);
+        }
+    }
+    Some(f.published)
+}
+
 /// Exit without running atexit handlers. QEMU registers several
 /// (`audio_cleanup`, `qemu_run_exit_notifiers`); running them on a thread
 /// other than the QEMU thread, or while that thread is still alive, is a
@@ -464,7 +578,7 @@ impl App {
     /// Window pixel → guest framebuffer coordinates (None outside the image).
     fn to_guest(&self, px: f64, py: f64) -> Option<(i32, i32, i32, i32)> {
         let gpu = self.gpu.as_ref()?;
-        let (_, _, tw, th) = gpu.fb_tex.as_ref()?;
+        let (_, _, tw, th) = gpu.current()?;
         let (tw, th) = (*tw, *th);
         let (x, y, w, h) = gpu.viewport();
         let gx = ((px as f32 - x) / w * tw as f32) as i32;
@@ -512,8 +626,9 @@ impl ApplicationHandler for App {
                     let _ = p.send_event(());
                 }) as Arc<dyn Fn() + Send + Sync>
             });
+            let zero_copy = self.gpu.as_ref().map(|g| g.zero_copy).unwrap_or(false);
             let (vm, display, join, qmp) =
-                qemu_vm::start(self.qemu_args.clone(), audio_cfg, waker);
+                qemu_vm::start(self.qemu_args.clone(), audio_cfg, waker, zero_copy);
             self.qemu_thread = Some(join);
             Source::Qemu {
                 vm,
@@ -637,11 +752,7 @@ impl ApplicationHandler for App {
                     Some(Source::Qemu {
                         display, last_seq, ..
                     }) => {
-                        if let Some(f) = display.take_if_newer(*last_seq) {
-                            *last_seq = f.seq;
-                            gpu.upload(&f.pixels, f.width as u32, f.height as u32);
-                            published = Some(f.published);
-                        }
+                        published = present_guest_frame(gpu, display, last_seq);
                     }
                     None => {}
                 }
@@ -673,6 +784,13 @@ impl ApplicationHandler for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _ev: ()) {
+        // dma-buf ring slots are imported here, not on redraw: an occluded
+        // window gets no usable swapchain image but must still keep up
+        if let (Some(gpu), Some(Source::Qemu { display, .. })) = (self.gpu.as_mut(), &self.source) {
+            for d in display.take_dmabufs() {
+                gpu.import_slot(d.slot, d.fd, d.w, d.h, d.stride, d.fourcc, d.modifier);
+            }
+        }
         // QEMU's main loop returned (guest power-off, `quit`): stop touching
         // the handle and leave; main() then releases it for qemu_cleanup.
         if let Some(Source::Qemu { display, .. }) = &self.source {
@@ -730,11 +848,10 @@ impl ApplicationHandler for App {
                 display, last_seq, ..
             }) = self.source.as_mut()
             {
-                if let (Some(gpu), Some(f)) = (self.gpu.as_mut(), display.take_if_newer(*last_seq))
-                {
-                    *last_seq = f.seq;
-                    gpu.upload(&f.pixels, f.width as u32, f.height as u32);
-                    gpu.render(None);
+                if let Some(gpu) = self.gpu.as_mut() {
+                    if present_guest_frame(gpu, display, last_seq).is_some() {
+                        gpu.render(None);
+                    }
                 }
             }
         }

@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Tiny QMP client: qmpc.py <socket> <cmd> [args...]
+  screendump <out.png>         -> PPM via QMP, converted to PNG (pure python)
+  keys <k1> <k2> ...           -> send-key one at a time (QKeyCode names; 'a+b' = chord)
+  type <text>                  -> types ASCII text (letters, digits, \\ : . space _ -)
+  json <json>                  -> raw request
+"""
+import json, socket, struct, sys, time, zlib
+
+def connect(path):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(path)
+    f = s.makefile("rwb", buffering=0)
+    greet = json.loads(f.readline())
+    assert "QMP" in greet
+    return f
+
+def cmd(f, execute, arguments=None):
+    req = {"execute": execute}
+    if arguments:
+        req["arguments"] = arguments
+    f.write((json.dumps(req) + "\n").encode())
+    while True:
+        line = json.loads(f.readline())
+        if "event" in line:
+            continue
+        return line
+
+def ppm_to_png(ppm, png):
+    data = open(ppm, "rb").read()
+    # P6\nW H\n255\n
+    parts = data.split(b"\n", 3)
+    assert parts[0] == b"P6", parts[0]
+    w, h = map(int, parts[1].split())
+    raw = parts[3]
+    rows = b"".join(b"\x00" + raw[y * w * 3:(y + 1) * w * 3] for y in range(h))
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    out += chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b"")
+    open(png, "wb").write(out)
+    return w, h
+
+KEYMAP = {" ": "spc", "\\": "backslash", ":": ("shift", "semicolon"), ".": "dot",
+          "_": ("shift", "minus"), "-": "minus", "/": "slash", "\n": "ret"}
+
+def send(f, names, hold=60):
+    keys = [{"type": "qcode", "data": n} for n in names]
+    r = cmd(f, "send-key", {"keys": keys, "hold-time": hold})
+    if "error" in r:
+        print("send-key", names, r["error"])
+    time.sleep(0.12)
+
+def main():
+    path, what = sys.argv[1], sys.argv[2]
+    f = connect(path)
+    cmd(f, "qmp_capabilities")
+    if what == "screendump":
+        ppm = sys.argv[3] + ".ppm"
+        r = cmd(f, "screendump", {"filename": ppm})
+        if "error" in r:
+            print(r); return 1
+        time.sleep(0.3)
+        print("screendump %dx%d -> %s" % (*ppm_to_png(ppm, sys.argv[3]), sys.argv[3]))
+    elif what == "keys":
+        for k in sys.argv[3:]:
+            send(f, k.split("+"))
+    elif what == "type":
+        for ch in sys.argv[3]:
+            k = KEYMAP.get(ch)
+            if k is None:
+                k = ch.lower()
+            send(f, list(k) if isinstance(k, tuple) else [k])
+    elif what == "json":
+        r = cmd(f, **json.loads(sys.argv[3]))
+        print(json.dumps(r))
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

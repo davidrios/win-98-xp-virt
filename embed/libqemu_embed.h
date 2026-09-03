@@ -57,6 +57,16 @@ typedef struct qemu_embed_display_cb {
        top-down, stride in bytes; valid only during the call. */
     void (*on_3d_frame)(void *ud, const uint8_t *pixels, int width, int height,
                         int stride);
+    /* v5 (Linux): zero-copy. The backend renders each presented frame into
+       one of a small ring of dma-buf backed buffers (DRM fourcc, linear
+       modifier, top-down). This is called once per ring slot (and again
+       when the slot is re-allocated at a new size) with a dup'ed fd the
+       frontend owns. Return nonzero to accept; returning 0 (or leaving the
+       callback NULL) keeps the readback path (on_3d_frame). vCPU thread. */
+    int (*on_3d_dmabuf)(void *ud, int slot, int fd, int width, int height,
+                        int stride, uint32_t fourcc, uint64_t modifier);
+    /* v5: the frame in `slot` is complete (GPU work finished). */
+    void (*on_3d_frame_ready)(void *ud, int slot);
 } qemu_embed_display_cb;
 
 /* Create + initialize QEMU. argv is a plain qemu-system command line
@@ -111,7 +121,7 @@ QEMU_EMBED_API void qemu_embed_set_refresh_ms(qemu_embed_t *e, uint32_t ms);
 
 /* Library version of the embed API, for the bindings to sanity-check. */
 QEMU_EMBED_API uint32_t qemu_embed_api_version(void);
-#define QEMU_EMBED_API_VERSION 4
+#define QEMU_EMBED_API_VERSION 5
 
 #ifdef __cplusplus
 }
