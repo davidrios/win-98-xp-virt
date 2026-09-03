@@ -79,7 +79,12 @@ windowed or `-fs` exclusive fullscreen (`-w -h -bpp16 -novsync`), keyboard
 camera (WASD/arrows/Q/E), F1 wireframe, Space pause, Esc quits; `-shader`
 adds a vs_1_1/ps_1_1 path on d3d9 when a d3dx9 DLL is present. `-frames N`
 runs a fixed-step sequence with an auto-orbiting camera and exits;
-`-dump N file.bmp` writes frame N. Procedure: run on the reference rig
+`-dump N file.bmp` writes frame N. Everything printed also goes to
+`d3dgame9.log` / `d3dgame8.log` next to the EXE (appended, flushed per
+line; `-log file` to choose): a dated header, the arguments, the Windows
+version, adapter and caps, the device configuration, shader compiler output,
+fps once a second, dumps and errors. Copy the log along with the BMPs.
+Procedure: run on the reference rig
 (P4 + GeForce 6200) first — it must be flawless there — keep its BMPs as
 golden images, then run the same command lines under each emulated path
 and diff. No commercial game, no disc, no crack involved.

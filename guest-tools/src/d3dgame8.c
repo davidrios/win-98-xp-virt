@@ -28,7 +28,7 @@ static struct game G;
 static struct gfx X;
 
 static const char *hr_str(HRESULT hr) { static char b[32]; sprintf(b, "0x%08lx", (unsigned long)hr); return b; }
-#define CHK(call) do { HRESULT hr_ = (call); if (FAILED(hr_)) { printf("d3dgame8: %s failed %s\n", #call, hr_str(hr_)); fflush(stdout); return 0; } } while (0)
+#define CHK(call) do { HRESULT hr_ = (call); if (FAILED(hr_)) { game_log("d3dgame8: %s failed %s", #call, hr_str(hr_)); return 0; } } while (0)
 
 static int make_textures(void)
 {
@@ -49,7 +49,7 @@ static int make_textures(void)
         tex_disc_dxt1(lr.pBits, lr.Pitch, 64, 64);
         IDirect3DTexture8_UnlockRect(X.tex_disc, 0);
     } else {
-        printf("d3dgame8: no DXT1 support, particles use the gradient texture\n");
+        game_log("d3dgame8: no DXT1 support, particles use the gradient texture");
         X.tex_disc = X.tex_grad;
         IDirect3DTexture8_AddRef(X.tex_grad);
     }
@@ -63,9 +63,10 @@ static int make_geometry(void)
     BYTE *p;
     struct vtx_pnt cube[24];
     WORD cidx[36];
+    /* strip order a, c, b, d: both triangles wind like the grid's, top face front */
     struct vtx_pnt ground[4] = {
-        { -12, -1, -9, 0, 1, 0, 0, 0 }, { 12, -1, -9, 0, 1, 0, 8, 0 },
-        { -12, -1, 15, 0, 1, 0, 0, 8 }, { 12, -1, 15, 0, 1, 0, 8, 8 } };
+        { -12, -1, -9, 0, 1, 0, 0, 0 }, { -12, -1, 15, 0, 1, 0, 0, 8 },
+        { 12, -1, -9, 0, 1, 0, 8, 0 }, { 12, -1, 15, 0, 1, 0, 8, 8 } };
     geo_cube(cube, cidx);
     CHK(IDirect3DDevice8_CreateVertexBuffer(X.dev, sizeof(cube), D3DUSAGE_WRITEONLY, FVF_PNT, D3DPOOL_MANAGED, &X.vb_cube));
     CHK(IDirect3DVertexBuffer8_Lock(X.vb_cube, 0, 0, &p, 0)); memcpy(p, cube, sizeof(cube)); IDirect3DVertexBuffer8_Unlock(X.vb_cube);
@@ -252,9 +253,9 @@ static void dump_frame(void)
         && SUCCEEDED(IDirect3DSurface8_LockRect(sys, &lr, NULL, D3DLOCK_READONLY))) {
         int ok = bmp_write(G.o.dump_file, lr.pBits, lr.Pitch, d.Width, d.Height, d.Format == D3DFMT_R5G6B5);
         IDirect3DSurface8_UnlockRect(sys);
-        printf("d3dgame8: frame %u -> %s (%s)\n", G.frame, G.o.dump_file, ok ? "written" : "write failed");
+        game_log("d3dgame8: frame %u -> %s (%s)", G.frame, G.o.dump_file, ok ? "written" : "write failed");
     } else {
-        printf("d3dgame8: dump failed (CopyRects)\n");
+        game_log("d3dgame8: dump failed (CopyRects)");
     }
     if (sys) IDirect3DSurface8_Release(sys);
     if (bb) IDirect3DSurface8_Release(bb);
@@ -270,13 +271,14 @@ int main(int argc, char **argv)
     HRESULT hr;
 
     game_init(&G, argc, argv);
+    game_log_open(G.o.log_file[0] ? G.o.log_file : "d3dgame8.log", argc, argv);
     hwnd = game_window(&G, "d3dgame8");
     X.d3d = Direct3DCreate8(D3D_SDK_VERSION);
-    if (!X.d3d) { printf("d3dgame8: Direct3DCreate8 failed\n"); return 1; }
+    if (!X.d3d) { game_log("d3dgame8: Direct3DCreate8 failed"); return 1; }
     IDirect3D8_GetAdapterIdentifier(X.d3d, D3DADAPTER_DEFAULT, D3DENUM_NO_WHQL_LEVEL, &id);
     IDirect3D8_GetDeviceCaps(X.d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, &caps);
     IDirect3D8_GetAdapterDisplayMode(X.d3d, D3DADAPTER_DEFAULT, &mode);
-    printf("d3dgame8: adapter \"%s\" driver \"%s\" vs %lu.%lu ps %lu.%lu maxtex %lu\n", id.Description, id.Driver,
+    game_log("d3dgame8: adapter \"%s\" driver \"%s\" vs %lu.%lu ps %lu.%lu maxtex %lu", id.Description, id.Driver,
            (unsigned long)D3DSHADER_VERSION_MAJOR(caps.VertexShaderVersion), (unsigned long)D3DSHADER_VERSION_MINOR(caps.VertexShaderVersion),
            (unsigned long)D3DSHADER_VERSION_MAJOR(caps.PixelShaderVersion), (unsigned long)D3DSHADER_VERSION_MINOR(caps.PixelShaderVersion),
            (unsigned long)caps.MaxTextureWidth);
@@ -286,7 +288,10 @@ int main(int argc, char **argv)
     X.pp.BackBufferHeight = G.o.h;
     X.pp.BackBufferFormat = G.o.fullscreen ? (G.o.bpp16 ? D3DFMT_R5G6B5 : D3DFMT_X8R8G8B8) : mode.Format;
     X.pp.BackBufferCount = 1;
-    X.pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    /* D3D8 has no windowed presentation interval: COPY_VSYNC is the way to
+     * pace a windowed swap chain at the refresh rate, like d3dgame9's
+     * D3DPRESENT_INTERVAL_ONE. -novsync gives DISCARD / immediate on both. */
+    X.pp.SwapEffect = (!G.o.fullscreen && !G.o.novsync) ? D3DSWAPEFFECT_COPY_VSYNC : D3DSWAPEFFECT_DISCARD;
     X.pp.hDeviceWindow = hwnd;
     X.pp.Windowed = !G.o.fullscreen;
     X.pp.EnableAutoDepthStencil = TRUE;
@@ -298,10 +303,10 @@ int main(int argc, char **argv)
                                                                                  : D3DCREATE_SOFTWARE_VERTEXPROCESSING,
                                  &X.pp, &X.dev);
     if (FAILED(hr)) {
-        printf("d3dgame8: CreateDevice failed %s\n", hr_str(hr));
+        game_log("d3dgame8: CreateDevice failed %s", hr_str(hr));
         return 1;
     }
-    printf("d3dgame8: device %dx%d %s %s, %s vertex processing\n", G.o.w, G.o.h, G.o.fullscreen ? "fullscreen" : "windowed",
+    game_log("d3dgame8: device %dx%d %s %s, %s vertex processing", G.o.w, G.o.h, G.o.fullscreen ? "fullscreen" : "windowed",
            G.o.bpp16 ? "565" : "8888", (caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) ? "hardware" : "software");
     fflush(stdout);
     if (!make_textures() || !make_geometry()) return 1;
@@ -313,7 +318,7 @@ int main(int argc, char **argv)
         if (G.o.dump_frame >= 0 && (int)G.frame == G.o.dump_frame) dump_frame();
         hr = IDirect3DDevice8_Present(X.dev, NULL, NULL, NULL, NULL);
         if (hr == D3DERR_DEVICELOST) {
-            printf("d3dgame8: device lost, resetting\n");
+            game_log("d3dgame8: device lost, resetting");
             while (IDirect3DDevice8_TestCooperativeLevel(X.dev) == D3DERR_DEVICELOST) Sleep(50);
             IDirect3DDevice8_Reset(X.dev, &X.pp);
             set_states();
@@ -322,13 +327,14 @@ int main(int argc, char **argv)
             char title[96];
             snprintf(title, sizeof(title), "d3dgame8: %.1f fps, frame %u", G.fps, G.frame);
             SetWindowTextA(hwnd, title);
-            printf("%s\n", title);
+            game_log("%s", title);
             fflush(stdout);
         }
         if (G.o.frames && (int)G.frame >= G.o.frames) break;
     }
-    printf("d3dgame8: %u frames, %lu ms\n", G.frame, (unsigned long)(GetTickCount() - G.t0_ms));
+    game_log("d3dgame8: %u frames, %lu ms", G.frame, (unsigned long)(GetTickCount() - G.t0_ms));
     if (X.dev) IDirect3DDevice8_Release(X.dev);
     if (X.d3d) IDirect3D8_Release(X.d3d);
+    game_log("d3dgame8: exit");
     return 0;
 }

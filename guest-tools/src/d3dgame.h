@@ -15,7 +15,8 @@
  * -bpp16      16-bit back buffer (565) instead of X8R8G8B8
  * -novsync    D3DPRESENT_INTERVAL_IMMEDIATE
  * -shader     (d3d9) SM1.1 vs/ps for the cubes when D3DX is available
- * -noaa       don't request a multisampled back buffer (default: none anyway)
+ * -log f      log file (default d3dgame9.log / d3dgame8.log next to the EXE,
+ *             appended); everything printed to the console goes there too
  */
 #ifndef D3DGAME_H
 #define D3DGAME_H
@@ -25,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 #define GAME_W_DEFAULT 640
 #define GAME_H_DEFAULT 480
@@ -40,7 +42,44 @@ struct opts {
     int w, h, fullscreen, bpp16, novsync, shader, frames;
     int dump_frame;
     char dump_file[MAX_PATH];
+    char log_file[MAX_PATH];
 };
+
+/* ---- logging: console + file, flushed per line (a crash keeps the tail) ---- */
+
+static FILE *g_log;
+
+static void game_log(const char *fmt, ...)
+{
+    va_list ap;
+    char line[512];
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    printf("%s\n", line);
+    fflush(stdout);
+    if (g_log) {
+        fprintf(g_log, "%s\n", line);
+        fflush(g_log);
+    }
+}
+
+static void game_log_open(const char *path, int argc, char **argv)
+{
+    SYSTEMTIME st;
+    int i;
+    g_log = fopen(path, "at");
+    GetLocalTime(&st);
+    game_log("---- %04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    for (i = 0; i < argc; i++) game_log("arg[%d] %s", i, argv[i]);
+    {
+        OSVERSIONINFOA v;
+        memset(&v, 0, sizeof(v));
+        v.dwOSVersionInfoSize = sizeof(v);
+        GetVersionExA(&v);
+        game_log("windows %lu.%lu build %lu %s", v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber, v.szCSDVersion);
+    }
+}
 
 struct vtx_pnt { float x, y, z, nx, ny, nz; float u, v; };            /* XYZ|NORMAL|TEX1 */
 struct vtx_pct { float x, y, z; DWORD color; float u, v; };            /* XYZ|DIFFUSE|TEX1 */
@@ -67,6 +106,7 @@ static void opts_parse(struct opts *o, int argc, char **argv)
             o->dump_frame = atoi(argv[++i]);
             strncpy(o->dump_file, argv[++i], MAX_PATH - 1);
         }
+        else if (!strcmp(argv[i], "-log") && i + 1 < argc) strncpy(o->log_file, argv[++i], MAX_PATH - 1);
     }
 }
 
