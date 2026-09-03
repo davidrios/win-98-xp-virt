@@ -63,12 +63,8 @@ constraint is the vector class:
   `CPUINFO_FMA`).
 - aarch64: `fadd/fsub/fmul/fdiv/fnmsub/fsqrt/fcvt` (scalar D),
   `C_O1_I2(w, w, w)` etc., plus `tcg_out_movi` into a V register.
-  First real run on the M1 Air (2026-09-03) hit an upstream latent bug:
-  `tcg_out_mov` vector→general emitted `UMOV` with a zero element-size
-  field (unallocated encoding, SIGILL) because nothing upstream ever
-  keeps an i64 temp in a vector register; fixed (imm5 = 4 << type). The
-  guest test had passed earlier only because it ran a stale binary; it
-  now warns when the on/off ratio shows the fast path inactive.
+  See "Bring-up on the Air" below: two aarch64-only bugs found so far,
+  both in code paths upstream never executes.
 - Other hosts / TCI: `TCG_TARGET_HAS_f64` is 0, the translator emits the
   helper calls as before.
 
@@ -153,13 +149,51 @@ reversed forms, `fld/fst/fstp st(i)`, `fxch`, `fcmovcc`, `fld1`,
 `fwait`. A TB with more than 94 inlined x87 instructions falls back to
 helpers for the rest.
 
+## Bring-up on the Air (state on 2026-09-03, resume here)
+
+Everything above is verified on x86-64. On the M1 the patch has run
+twice so far; each run found one aarch64 backend path that upstream
+QEMU never executes because nothing upstream keeps an i64 temp in a
+vector register. Both are host-side illegal instructions (SIGILL in the
+vCPU thread, `cpu_tb_exec` at the top of the crash report); the
+exception code in the macOS crash report is the instruction word, which
+identifies the emitter.
+
+1. XP in the player: `0x4e003c19` = `UMOV x25, v0.d[0]` with a zero
+   element-size field. `tcg_out_mov` vector→general passed 0 for imm5.
+   Fixed (`4 << type`), encoding checked against llvm-mc. Commit e70f92e.
+2. Rebuilt correctly (`scripts/prepare-qemu.sh`, configure, ninja for
+   both `qemu-system-i386` and the dylib), `tools/x87-guest-test.py` now
+   runs inline code and dies at result index 1422 (reported as "line
+   1424", the LONG and CW lines count): `op_fld_st` with a = +0, i.e.
+   `fld tword [pool]; fld1; fld st1; fmulp st1, st0`. Every binop with
+   every operand pair and the unary ops before it passed, so arithmetic,
+   reloads, compares, fxch and fcmov are fine on aarch64. What is new in
+   this sequence is `fld1`: it puts a TCG constant into a shadow and
+   `fmulp` is the first f64 opcode fed a constant operand, which goes
+   through the `tcg_out_movi`-into-a-V-register fallback I added (it
+   used `tcg_out_dupi_vec`). That fallback is now replaced by "movi into
+   `TCG_REG_TMP0`, then `INS Vd.D[0], Xtmp`" whose encoding is checked
+   against llvm-mc (`mov v0.d[0], x25` = `4e081f20`). Untested on the Air.
+   If the next run still dies there, get the instruction word from the
+   crash report (or run `qemu-system-i386 ... -d out_asm -D log` on the
+   test floppy and look at the TB for `fld1`).
+
+The earlier "guest test passes on the Air" was a stale
+`qemu-system-i386`; the script now prints a warning when the on/off
+bench ratio is under 1.5x (fast path inactive). Expect ~5x or more.
+
+Order on the Mac: `git pull`, prepare → configure → ninja (both
+targets) → `cargo build --release`; `python3 tools/x87-guest-test.py`
+(must end with "... identical" and no warning); the linux-user unwind
+test cannot run on macOS (skip it); then XP in the player, Super PI 1M
+twice (also with `-cpu pentium3,x87-fast=off`), Win98 boot and feel
+check; fill in `reference/benchmarks/README.md`; merge to main.
+
 ## Follow-ups
 
-- Run on the Air: `brew install nasm mtools`, then
-  `python3 tools/x87-guest-test.py` (it fetches the FreeDOS floppy), then Super PI 1M in
-  XP against `-cpu pentium3,x87-fast=off` (doc 00 §benchmarks). If the
-  aarch64 lowering is wrong the guest test shows mismatches or QEMU
-  aborts in `tcg_out_op`; `x87-fast=off` is the fallback.
+- Finish the Air bring-up above; `-cpu pentium3,x87-fast=off` is the
+  fallback if something still misbehaves in a Windows guest.
 - Per-op cost (~45 host instructions) can still drop: defer FIP/FCS to
   flush points with the pc in the insn_start word (~4), keep FDP eager;
   PC=24 (Direct3D) mode with binary32 shadows is the same design.

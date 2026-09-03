@@ -310,21 +310,29 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  static void tcg_out_insn_3605(TCGContext *s, AArch64Insn insn, bool q,
                                TCGReg rd, TCGReg rn, int dst_idx, int src_idx)
  {
-@@ -1091,7 +1113,12 @@
+@@ -1091,7 +1113,20 @@
      switch (type) {
      case TCG_TYPE_I32:
      case TCG_TYPE_I64:
 -        tcg_debug_assert(rd < 32);
 +        if (rd >= 32) {
-+            /* an integer temp allocated to a vector register (f64 ops) */
-+            tcg_out_dupi_vec(s, TCG_TYPE_V64, MO_64, rd,
-+                             type == TCG_TYPE_I32 ? (uint32_t)value : value);
++            /*
++             * An integer temp allocated to a vector register (f64 ops
++             * with a constant operand, e.g. fld1 then fmul): build the
++             * value in the scratch register and INS Vd.D[0], Xtmp
++             * (encoding checked against llvm-mc: 4e08 1c00 | Rn<<5 | Rd).
++             */
++            if (type == TCG_TYPE_I32) {
++                value = (uint32_t)value;
++            }
++            tcg_out_movi(s, TCG_TYPE_I64, TCG_REG_TMP0, value);
++            tcg_out_insn(s, 3605, INS, 0, rd, TCG_REG_TMP0, 8, 0);
 +            return;
 +        }
          break;
      default:
          g_assert_not_reached();
-@@ -1221,7 +1248,12 @@
+@@ -1221,7 +1256,12 @@
              tcg_out_movr(s, type, ret, arg);
              break;
          } else if (ret < 32) {
@@ -338,7 +346,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
              break;
          } else if (arg < 32) {
              tcg_out_insn(s, 3605, INS, 0, ret, arg, 4 << type, 0);
-@@ -2482,6 +2514,28 @@
+@@ -2482,6 +2522,28 @@
          tcg_out_insn(s, 3508, SMULH, TCG_TYPE_I64, a0, a1, a2);
          break;
  
@@ -367,7 +375,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      case INDEX_op_mb:
          tcg_out_mb(s, a0);
          break;
-@@ -2957,6 +3011,17 @@
+@@ -2957,6 +3019,17 @@
      case INDEX_op_goto_ptr:
          return C_O0_I1(r);
  
