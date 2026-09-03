@@ -551,6 +551,101 @@ pool:
 """
 
 
+# 64 x87 instructions in one basic block (patch 06 keeps the stack as
+# shadow doubles across all of them): the block must translate as one TB and
+# give the same value and status word with the fast path on and off.
+LONGBLK_ASM = r"""
+org 100h
+bits 16
+start:
+    fninit
+    fldcw [cw]
+    mov ecx, 1000
+    fld qword [x]
+.loop:
+%rep 16
+    fmul qword [y]
+    fadd qword [z]
+    fld st0
+    fsubp st1, st0
+    fadd qword [x]
+    fld qword [z]
+    fxch st1
+    fdivrp st1, st0
+%endrep
+    dec ecx
+    jnz .loop
+    fstp qword [w]
+    fnstsw [sw]
+    mov si, str_long
+    call puts
+    mov eax, [w + 4]
+    call put_hex32
+    mov eax, [w]
+    call put_hex32
+    mov al, ' '
+    call putc
+    mov ax, [sw]
+    call put_hex16
+    mov al, 10
+    call putc
+    int 20h
+
+putc:
+    push ax
+    push dx
+    mov dx, 3FDh
+.w: in al, dx
+    test al, 20h
+    jz .w
+    pop dx
+    pop ax
+    push dx
+    mov dx, 3F8h
+    out dx, al
+    pop dx
+    ret
+puts:
+    lodsb
+    test al, al
+    jz .d
+    call putc
+    jmp puts
+.d: ret
+put_hex32:
+    push eax
+    shr eax, 16
+    call put_hex16
+    pop eax
+put_hex16:
+    push ax
+    mov al, ah
+    call put_hex8
+    pop ax
+put_hex8:
+    push ax
+    shr al, 4
+    call put_nib
+    pop ax
+put_nib:
+    and al, 0Fh
+    add al, '0'
+    cmp al, '9'
+    jbe .o
+    add al, 'a' - '0' - 10
+.o: jmp putc
+
+str_long: db "LONG ", 0
+cw: dw 027Fh
+times (2000h - ($ - $$)) db 0
+x:  dq 1.0000001
+y:  dq 0.9999999
+z:  dq 0.5
+w:  dq 0.0
+sw: dw 0
+"""
+
+
 BENCH_ASM = r"""
 org 100h
 bits 16
@@ -709,6 +804,11 @@ def main():
     with open(basm, "w") as f:
         f.write(BENCH_ASM)
     sh("nasm", "-O0", "-f", "bin", "-o", bcom, basm)
+    lasm = os.path.join(OUT, "longblk.asm")
+    lcom = os.path.join(OUT, "LONGBLK.COM")
+    with open(lasm, "w") as f:
+        f.write(LONGBLK_ASM)
+    sh("nasm", "-O0", "-f", "bin", "-o", lcom, lasm)
 
     img = os.path.join(OUT, "x87test.img")
     shutil.copy(FLOPPY, img)
@@ -718,11 +818,12 @@ def main():
                 "SHELL=\\FREEDOS\\BIN\\COMMAND.COM \\FREEDOS\\BIN /E:2048 /P=\\FDAUTO.BAT\r\n")
     bat = os.path.join(OUT, "FDAUTO.BAT")
     with open(bat, "w") as f:
-        f.write("@echo off\r\nX87BENCH.COM\r\nX87TEST.COM\r\n")
+        f.write("@echo off\r\nX87BENCH.COM\r\nLONGBLK.COM\r\nX87TEST.COM\r\n")
     sh("mcopy", "-o", "-i", img, cfg, "::FDCONFIG.SYS")
     sh("mcopy", "-o", "-i", img, bat, "::FDAUTO.BAT")
     sh("mcopy", "-o", "-i", img, com, "::X87TEST.COM")
     sh("mcopy", "-o", "-i", img, bcom, "::X87BENCH.COM")
+    sh("mcopy", "-o", "-i", img, lcom, "::LONGBLK.COM")
 
     logs = {}
     for fast in ("off", "on"):

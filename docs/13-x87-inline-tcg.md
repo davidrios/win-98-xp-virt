@@ -42,8 +42,9 @@ multiply + result check with the underflow test folded in 9, FMA residual
 Correctness: `tools/x87-guest-test.py` (68 instruction sequences × 44²
 operand pairs × 7 control words, incl. multi-instruction chains, fcmov,
 compares, integer and float conversions), 382,250 result lines identical
-with the fast path on and off. A linux-user SIGSEGV test with two dirty
-shadows outstanding at the fault verified the unwind repair (saved FPU
+with the fast path on and off, plus a 64-instruction block that must stay
+one TB. `tools/x87-unwind-test.asm` (linux-user) faults with two dirty
+shadows outstanding and verified the unwind repair (saved FPU
 state in the signal frame identical to the helper path).
 
 ## What "inline in TCG" needed (both levels)
