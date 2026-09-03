@@ -40,8 +40,9 @@ pub fn import(
         .raw_device()
         .newTextureWithDescriptor_iosurface_plane(&desc, surface, 0)
         .ok_or("newTextureWithDescriptor:iosurface:plane: returned nil")?;
+    // an associated function on the Metal backend (no receiver)
     let hal_tex = unsafe {
-        hal.texture_from_raw(
+        wgpu::hal::metal::Device::texture_from_raw(
             raw,
             wgpu_format,
             MTLTextureType::Type2D,
