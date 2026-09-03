@@ -1,0 +1,36 @@
+MesaGLSetFunc(): let a context backend interpose one entry of the guest GL
+dispatch table (returns the previous pointer). The embed backend on macOS
+uses it to redirect framebuffer binding 0 to the FBO that stands in for the
+window's default framebuffer.
+
+diff -Nru a/hw/mesa/mesagl_impl.c b/hw/mesa/mesagl_impl.c
+--- a/hw/mesa/mesagl_impl.c	2026-09-02 22:57:17.529455067 -0300
++++ b/hw/mesa/mesagl_impl.c	2026-09-02 22:57:17.515299596 -0300
+@@ -1796,3 +1796,15 @@
+     }
+ }
+ 
++/* win98-xp-virt: let a context backend interpose a dispatch entry.
++ * Returns the previous pointer. Re-apply after InitMesaGL() (which reloads
++ * the table) -- SetMesaFuncPtr() is the hook for that. */
++void *MesaGLSetFunc(int fenum, void *fn)
++{
++    void *old = NULL;
++    if (fenum >= 0 && fenum < FEnum_zzMGLFuncEnum_max) {
++        old = tblMesaGL[fenum].ptr;
++        tblMesaGL[fenum].ptr = fn;
++    }
++    return old;
++}
+diff -Nru a/hw/mesa/mesagl_impl.h b/hw/mesa/mesagl_impl.h
+--- a/hw/mesa/mesagl_impl.h	2026-09-02 22:57:17.529299133 -0300
++++ b/hw/mesa/mesagl_impl.h	2026-09-02 22:57:17.515380899 -0300
+@@ -71,6 +71,8 @@
+ void ImplMesaGLReset(void);
+ int InitMesaGL(void);
+ void InitMesaGLExt(void);
++/* win98-xp-virt: swap a dispatch entry (embed backend redirects FBO 0) */
++void *MesaGLSetFunc(int fenum, void *fn);
+ 
+ #include "mesagl_pfn.h"
+ void MesaContextAttest(const char *, int *);

@@ -206,6 +206,36 @@ rustc links for 11.0 by default, while libqemu (configure-qemu.sh) and the
 cmake-built C++ deps (glslang, spirv-cross) target the running OS. They are
 warnings only; the link is fine either way.
 
+## 3D inside the player (M3, macOS backend — untested as of 2026-09-02)
+
+The embed library carries a window-less Mesa backend for macOS
+(`embed/mglcntx_embed.c`, CGL section): a CGL context with no drawable, an
+FBO over shared renderbuffers standing in for the window's default
+framebuffer (framebuffer binding 0 is redirected to it, patch 32), and a
+`glReadPixels` of that FBO on every guest swap handed to the player. It
+was written on Linux against the CGL headers and has not been compiled on
+a Mac yet. To build and try it:
+
+```sh
+git pull
+scripts/prepare-qemu.sh && scripts/configure-qemu.sh     # patches 30/31/32 + meson changes
+ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.dylib
+cargo build --release
+target/release/player -- -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 \
+  -hda ~/vms/win98.qcow2 -vga cirrus -net none -usb -device usb-tablet \
+  -device sb16,audiodev=embed0
+# in the guest: C:\WINDOWS\Desktop\GAMEDIR\WGLGEARS.EXE
+```
+
+Expected stderr: `glcntx: CGL (window-less)`, `drawable 800x600`,
+`config depth 24 stencil 8`, `[3d] pass-through on`, then wglgears' own
+`N frames in 5.0 seconds, X FPS` lines; Esc → `[3d] pass-through off` and
+the desktop back. If the build fails, the errors will be in the CGL section
+of `embed/mglcntx_embed.c` (names/casts) — send them over. If it builds but
+`MGLCreateContext` refuses or the FBO is reported incomplete, the stderr
+`glcntx:` lines say which call failed. Standalone `-display sdl` is
+unaffected (its backend stays, linked weak).
+
 Verified 2026-09-02: Win98 desktop with sound, keyboard, tablet mouse;
 sRGB-correct. `PLAYER_LATENCY=1` prints publish→present percentiles; on the
 Air with Win98 + crt-lottes: p50 6–10 ms, p95 15–17 ms, max 18 ms (the

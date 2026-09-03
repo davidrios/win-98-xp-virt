@@ -8,9 +8,12 @@ Verified without a guest by `tools/embed-3d-test.c` (drives the backend in
 mesapt_mm.c's order: activation callbacks, 640×480 frame, correct
 orientation) and with the real thing: Win98 wglgears in the player on the
 Linux dev box — 420 fps at 800×600 through the readback, VGA desktop back
-on exit. On the Air the embed lib still refuses GL until the CGL port.
-Next: macOS CGL/IOSurface (pulled ahead of §4 so the Air shows 3D), then
-dma-buf / IOSurface zero-copy import, Glide.
+on exit. macOS backend written (CGL context without a drawable + FBO stand-in for
+the default framebuffer, binding 0 redirected via patch 32's
+`MesaGLSetFunc`; WGL pbuffers emulated with FBOs in the same context) —
+**not yet compiled or run on a Mac**; instructions in `build-macos.md`.
+Next: validate on the Air, then dma-buf / IOSurface zero-copy import,
+Glide.
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
@@ -75,9 +78,14 @@ refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
      drawable at guest resolution so FBO 0 stays valid; after
      `MesaBlitScale`, blit into an exportable texture and
      `egl_get_fd_for_texture()` → dma-buf.
-   - macOS: CGL (not NSOpenGL — no main-thread requirement) with a pbuffer
-     or an IOSurface-backed `GL_TEXTURE_RECTANGLE` drawable; export the
-     IOSurface. Keep the `DispTimerMS` core/compat knob.
+   - macOS: CGL (not NSOpenGL — no main-thread requirement). Implemented
+     without a drawable at all: an FBO over shared renderbuffers plays the
+     default framebuffer and `glBindFramebuffer(…, 0)` is redirected to it
+     in the dispatch table (CGL pbuffers are deprecated; `FBO 0 = the
+     screen` semantics survive because the scaler is inert at equal sizes).
+     Legacy (2.1 compatibility) profile by default; core 3.2/4.1 when the
+     guest asks via `wglCreateContextAttribsARB`. The IOSurface export
+     attaches an IOSurface-backed texture to that FBO later.
    - `MGLSwapBuffers` = flush + fence + publish handle + notify; never block
      the vCPU on the consumer. 2–3 buffer ring with fences.
    - Delete `XOpenDisplay(NULL)`; `MesaGLGetProc` → `eglGetProcAddress` /

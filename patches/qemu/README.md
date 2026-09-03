@@ -24,11 +24,12 @@ lost the 3dfx meson hunk (symptom: `unknown type 'glidept'`).
 | `10-embed-api` | meson: `shared_library('qemu-embed-<target>')` per softmmu target from the existing static lib + `embed/libqemu_embed.c`, `embedaudio.c`, `embedfx.c`, `mglcntx_embed.c` (+ epoxy when found); ld64 export list (`embed/libqemu_embed.symbols`) because QEMU's plugin `-exported_symbols_list` hides everything else on macOS | upstreamed embed API (aspirational) |
 | `20-embed-audio` | register the `embed` audiodev: QAPI enum/union entry, `audio_template.h` per-direction case, **and `audio/audio.c` `audio_create_pdos` CASE** (missing → NULL pdo segfault) | with 10 |
 | `30-3dfx-ui-vtable` | the 11 qemu-3dfx UI entry points (`mesa_*`, `glide_*`) dispatch through a `QemuFxUiOps` table (`ui/fxui.c`); SDL registers its implementations at display init, the embed library its window-less provider (`embed/embedfx.c`); no provider = contexts refused / no Glide window, VM keeps running (supersedes the spirit of 04) | upstream qemu-3dfx grows a provider seam |
-| `31-mesa-ctx-weak` | `hw/mesa/mglcntx_linux.c` exports weak so `embed/mglcntx_embed.c` (EGL surfaceless + pbuffer as FBO 0, readback on swap) overrides it inside libqemu-embed while qemu-system keeps GLX | a per-consumer backend selection in meson |
+| `31-mesa-ctx-weak` | `hw/mesa/mglcntx_linux.c` (GLX) and `mglcntx_sdlgl.c` (macOS, incl. `dllname`) export weak so `embed/mglcntx_embed.c` overrides them inside libqemu-embed while qemu-system keeps the native backend. Embed backend: Linux = EGL surfaceless + pbuffer as FBO 0; macOS = CGL context without a drawable + an FBO standing in for the default framebuffer; both read FBO 0 back on swap (bring-up) | a per-consumer backend selection in meson |
+| `32-mesa-setfunc` | `MesaGLSetFunc(fenum, fn)`: swap one guest-dispatch entry. The macOS embed backend redirects `glBindFramebuffer(…, 0)` to its stand-in FBO | upstream exposes the table |
 | `90-debug-sdl-keydebug` | `QEMU_SDL_KEYDEBUG=1` logs SDL keydown/modifier state (diagnostic) | any time |
 
-Planned: macOS CGL/IOSurface backend (`mglcntx_sdlgl.c` weak like 31),
-dma-buf export instead of readback, Glide offscreen path (doc 12).
+Planned: dma-buf / IOSurface export instead of readback, Glide offscreen
+path (doc 12).
 
 Regenerating a patch: apply the queue, edit the file(s) in `qemu/`, produce
 `diff -u` against a copy of the pre-edit state with `a/`/`b/` paths, then

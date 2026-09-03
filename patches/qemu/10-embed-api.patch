@@ -22,7 +22,7 @@ linked directly so type_init constructors survive. Needs -fPIC
 +                   # macOS: emulator_link_args carries -exported_symbols_list for the
 +                   # TCG plugin API only; add ours (ld64 merges multiple lists).
 +                   link_args: link_args + (host_os == 'darwin' ?
-+                     ['-Wl,-exported_symbols_list,' + meson.current_source_dir() / 'embed/libqemu_embed.symbols'] : []),
++                     ['-Wl,-exported_symbols_list,' + meson.current_source_dir() / 'embed/libqemu_embed.symbols', '-Wl,-framework,OpenGL'] : []),
 +                   install: true)
 +  endif
 +
