@@ -1,4 +1,4 @@
-# 0. Status and how to resume (updated 2026-09-02)
+# 0. Status and how to resume (updated 2026-09-03)
 
 Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 
@@ -40,6 +40,16 @@ until machine bundles exist. Test image: FreeDOS 1.3 floppy
 macOS specifics: `docs/build-macos.md`.
 
 ## Known issues / open threads
+
+- **Parallel branch `worktree-x87-inline-tcg`** (another session, pushed to
+  origin; local checkout under `.claude/worktrees/`): patch 06 lowers x87
+  arithmetic to inline TCG host-float ops (Super PI 1M on the Air 2:31 vs
+  6:33 with patch 05 alone). Pending its own XP/Win98 checks before merging
+  into main. Do not renumber patches around 06; rebase that branch on main
+  (main gained patches 30/31/32 and embed API v6 since it forked).
+- 3D sync is `glFinish` before every hand-off (both platforms); a shared
+  fence would let the vCPU continue while the blit drains. Glide (doc 12
+  §5) is the last M3 item.
 
 - Warm reboot of Win98 freezes on the Air (cold start works; Linux reboot
   paths verified fine). Untriaged: needs `-monitor stdio` → `info registers`
