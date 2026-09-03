@@ -50,6 +50,13 @@ typedef struct qemu_embed_display_cb {
                       int hot_x, int hot_y);
     /* Guest-driven cursor position / visibility. */
     void (*on_mouse_set)(void *ud, int x, int y, bool visible);
+    /* v4: qemu-3dfx pass-through went on/off. While on, the VGA surface is
+       not updated; frames arrive through on_3d_frame instead. */
+    void (*on_3d_active)(void *ud, bool active);
+    /* v4: a 3D frame was presented (vCPU thread, BQL held). XRGB8888,
+       top-down, stride in bytes; valid only during the call. */
+    void (*on_3d_frame)(void *ud, const uint8_t *pixels, int width, int height,
+                        int stride);
 } qemu_embed_display_cb;
 
 /* Create + initialize QEMU. argv is a plain qemu-system command line
@@ -104,7 +111,7 @@ QEMU_EMBED_API void qemu_embed_set_refresh_ms(qemu_embed_t *e, uint32_t ms);
 
 /* Library version of the embed API, for the bindings to sanity-check. */
 QEMU_EMBED_API uint32_t qemu_embed_api_version(void);
-#define QEMU_EMBED_API_VERSION 3
+#define QEMU_EMBED_API_VERSION 4
 
 #ifdef __cplusplus
 }

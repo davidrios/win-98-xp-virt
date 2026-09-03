@@ -1,0 +1,404 @@
+qemu-3dfx UI seam behind a provider vtable (doc 12, step 1).
+
+The 11 window/activation entry points hw/3dfx and hw/mesa call were defined
+only in ui/sdl2.c. They now dispatch through a QemuFxUiOps table
+(ui/fxui.c): the SDL display registers its implementations at init, the
+embed library registers a window-less provider, and with no provider the
+defaults refuse Mesa contexts (cwnd_fn(NULL)) and report no Glide window
+instead of exit(1) -- the VM keeps running. Default cursor/warp/size
+implementations work on console 0 for any frontend.
+
+diff -Nru a/include/ui/console.h b/include/ui/console.h
+--- a/include/ui/console.h	2026-09-02 22:23:54.127856509 -0300
++++ b/include/ui/console.h	2026-09-02 22:23:54.147242686 -0300
+@@ -478,6 +478,34 @@
+                                       size_t size,
+                                       Error **errp);
+ 
++/*
++ * qemu-3dfx UI seam (win98-xp-virt): the 11 entry points hw/3dfx and
++ * hw/mesa call are dispatched through a provider registered by the active
++ * display (ui/sdl2.c) or an embedding frontend (embed/). Without a provider
++ * the defaults in ui/fxui.c refuse 3D cleanly instead of exiting.
++ */
++typedef struct QemuFxUiOps {
++    void (*glide_prepare_window)(uint32_t res, int msaa, void *opaque, void *cwnd_fn);
++    void (*glide_release_window)(void *opaque, void *cwnd_fn);
++    int (*glide_window_stat)(const int activate);
++    int (*glide_gui_fullscreen)(int *width, int *height);
++    void (*glide_renderer_stat)(const int activate);
++    void (*mesa_renderer_stat)(const int activate);
++    void (*mesa_prepare_window)(int msaa, int alpha, int scale_x, void *cwnd_fn);
++    void (*mesa_release_window)(void);
++    void (*mesa_cursor_define)(int hot_x, int hot_y, int w, int h, const void *data);
++    void (*mesa_mouse_warp)(int x, int y, const int on);
++    int (*mesa_gui_fullscreen)(int *sizev);
++} QemuFxUiOps;
++
++/* ui/fxui.c: NULL restores the no-provider defaults; NULL members of a
++ * registered table fall back to the defaults individually. */
++void qemu_fx_ui_register(const QemuFxUiOps *ops);
++/* default implementations, for providers that only override some entries */
++void fx_ui_default_cursor_define(int, int, int, int, const void *);
++void fx_ui_default_mouse_warp(int, int, const int);
++int fx_ui_default_mesa_gui_fullscreen(int *);
++
+ /* glidewnd.c */
+ void glide_prepare_window(uint32_t, int, void *, void *);
+ void glide_release_window(void *, void *);
+diff -Nru a/ui/fxui.c b/ui/fxui.c
+--- a/ui/fxui.c	1969-12-31 21:00:00.000000000 -0300
++++ b/ui/fxui.c	2026-09-02 22:23:54.148085606 -0300
+@@ -0,0 +1,214 @@
++/*
++ * qemu-3dfx UI seam: provider dispatch (win98-xp-virt, patch 30).
++ *
++ * hw/3dfx (glidewnd.c) and hw/mesa (mglcntx_*.c, mesagl_blit.c) call the
++ * 11 functions below from the vCPU thread (BQL held) to get a window /
++ * GL drawable, report 3D activation and drive cursor and size queries.
++ * Upstream qemu-3dfx defines them in ui/sdl2.c only. Here the active
++ * display registers a QemuFxUiOps table; the embed library registers its
++ * window-less provider. With no provider, Mesa contexts are refused (the
++ * guest's wglCreateContext fails) and Glide reports no window, and the VM
++ * keeps running.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/timer.h"
++#include "ui/console.h"
++
++static const QemuFxUiOps *fx_ops;
++
++static void warn_no_provider(const char *feat)
++{
++    static bool warned;
++    if (!warned) {
++        warned = true;
++        error_report("%s: no 3D UI provider (need '-display sdl' or an "
++                     "embedding frontend with a context provider); "
++                     "refusing 3D pass-through", feat);
++    }
++}
++
++static QemuConsole *con0(void)
++{
++    return qemu_console_lookup_by_index(0);
++}
++
++static void surface_size(int *w, int *h)
++{
++    QemuConsole *con = con0();
++    DisplaySurface *s = con ? qemu_console_surface(con) : NULL;
++    *w = s ? surface_width(s) : 640;
++    *h = s ? surface_height(s) : 480;
++}
++
++/* ---- defaults ---- */
++
++static void def_glide_prepare_window(uint32_t res, int msaa, void *opaque,
++                                     void *cwnd_fn)
++{
++    warn_no_provider("glidept");
++}
++
++static void def_glide_release_window(void *opaque, void *cwnd_fn)
++{
++}
++
++static int def_glide_window_stat(const int activate)
++{
++    /* activate: 1 = "no window" (grSstWinOpen fails); deactivate: 0 = ok */
++    return activate ? 1 : 0;
++}
++
++static int def_glide_gui_fullscreen(int *width, int *height)
++{
++    int w, h;
++    surface_size(&w, &h);
++    if (width) {
++        *width = w;
++    }
++    if (height) {
++        *height = h;
++    }
++    return 0;
++}
++
++static void def_renderer_stat(const int activate)
++{
++}
++
++static void def_mesa_prepare_window(int msaa, int alpha, int scale_x,
++                                    void *cwnd_fn)
++{
++    warn_no_provider("mesapt");
++    /* NULL window: the backend refuses the context (patch 04) */
++    ((void (*)(void *, void *, void *))cwnd_fn)(NULL, NULL, NULL);
++}
++
++static void def_mesa_release_window(void)
++{
++}
++
++void fx_ui_default_cursor_define(int hot_x, int hot_y, int width, int height,
++                                 const void *data)
++{
++    QemuConsole *con = con0();
++    if (con) {
++        QEMUCursor *c = cursor_alloc(width, (height & 1) ? (height >> 1) : height);
++        c->hot_x = hot_x;
++        c->hot_y = hot_y;
++        if (height & 1) {
++            uint8_t *and_mask = (uint8_t *)data,
++                    *xor_mask = and_mask + cursor_get_mono_bpl(c) * c->height;
++            cursor_set_mono(c, 0xffffff, 0x000000, xor_mask, 1, and_mask);
++        } else {
++            memcpy(c->data, data, (width * height * sizeof(uint32_t)));
++        }
++        dpy_cursor_define(con, c);
++        cursor_unref(c);
++    }
++}
++
++void fx_ui_default_mouse_warp(int x, int y, const int on)
++{
++    QemuConsole *con = con0();
++    if (con) {
++        static int64_t last_update;
++        int64_t curr_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++        if (!on || (curr_time >= (last_update + GUI_REFRESH_INTERVAL_DEFAULT))) {
++            last_update = curr_time;
++            dpy_mouse_set(con, x, y, on);
++        }
++    }
++}
++
++int fx_ui_default_mesa_gui_fullscreen(int *sizev)
++{
++    if (sizev) {
++        surface_size(&sizev[0], &sizev[1]);
++        /* target == guest size: the in-QEMU scaler stays inert */
++        sizev[2] = sizev[0];
++        sizev[3] = sizev[1];
++    }
++    return 0;
++}
++
++static const QemuFxUiOps fx_default_ops = {
++    .glide_prepare_window = def_glide_prepare_window,
++    .glide_release_window = def_glide_release_window,
++    .glide_window_stat    = def_glide_window_stat,
++    .glide_gui_fullscreen = def_glide_gui_fullscreen,
++    .glide_renderer_stat  = def_renderer_stat,
++    .mesa_renderer_stat   = def_renderer_stat,
++    .mesa_prepare_window  = def_mesa_prepare_window,
++    .mesa_release_window  = def_mesa_release_window,
++    .mesa_cursor_define   = fx_ui_default_cursor_define,
++    .mesa_mouse_warp      = fx_ui_default_mouse_warp,
++    .mesa_gui_fullscreen  = fx_ui_default_mesa_gui_fullscreen,
++};
++
++void qemu_fx_ui_register(const QemuFxUiOps *ops)
++{
++    fx_ops = ops;
++}
++
++#define FX_OP(name) ((fx_ops && fx_ops->name) ? fx_ops->name : fx_default_ops.name)
++
++/* ---- the 11 entry points ---- */
++
++void glide_prepare_window(uint32_t res, int msaa, void *opaque, void *cwnd_fn)
++{
++    FX_OP(glide_prepare_window)(res, msaa, opaque, cwnd_fn);
++}
++
++void glide_release_window(void *opaque, void *cwnd_fn)
++{
++    FX_OP(glide_release_window)(opaque, cwnd_fn);
++}
++
++int glide_window_stat(const int activate)
++{
++    return FX_OP(glide_window_stat)(activate);
++}
++
++int glide_gui_fullscreen(int *width, int *height)
++{
++    return FX_OP(glide_gui_fullscreen)(width, height);
++}
++
++void glide_renderer_stat(const int activate)
++{
++    FX_OP(glide_renderer_stat)(activate);
++}
++
++void mesa_renderer_stat(const int activate)
++{
++    FX_OP(mesa_renderer_stat)(activate);
++}
++
++void mesa_prepare_window(int msaa, int alpha, int scale_x, void *cwnd_fn)
++{
++    FX_OP(mesa_prepare_window)(msaa, alpha, scale_x, cwnd_fn);
++}
++
++void mesa_release_window(void)
++{
++    FX_OP(mesa_release_window)();
++}
++
++void mesa_cursor_define(int hot_x, int hot_y, int width, int height,
++                        const void *data)
++{
++    FX_OP(mesa_cursor_define)(hot_x, hot_y, width, height, data);
++}
++
++void mesa_mouse_warp(int x, int y, const int on)
++{
++    FX_OP(mesa_mouse_warp)(x, y, on);
++}
++
++int mesa_gui_fullscreen(int *sizev)
++{
++    return FX_OP(mesa_gui_fullscreen)(sizev);
++}
+diff -Nru a/ui/meson.build b/ui/meson.build
+--- a/ui/meson.build	2026-09-02 22:23:54.128701533 -0300
++++ b/ui/meson.build	2026-09-02 22:23:54.148048176 -0300
+@@ -8,6 +8,7 @@
+   'console.c',
+   'cursor.c',
+   'dmabuf.c',
++  'fxui.c',
+   'input-keymap.c',
+   'input-legacy.c',
+   'input-barrier.c',
+diff -Nru a/ui/sdl2.c b/ui/sdl2.c
+--- a/ui/sdl2.c	2026-09-02 22:23:54.128641249 -0300
++++ b/ui/sdl2.c	2026-09-02 22:23:54.147983303 -0300
+@@ -997,7 +997,7 @@
+     timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
+ }
+ 
+-void glide_prepare_window(uint32_t res, int msaa, void *opaque, void *cwnd_fn)
++static void sdlfx_glide_prepare_window(uint32_t res, int msaa, void *opaque, void *cwnd_fn)
+ {
+     int scr_w, scr_h;
+     struct sdl_console_cb *s = &scon_cb;
+@@ -1028,7 +1028,7 @@
+     }
+ }
+ 
+-void glide_release_window(void *opaque, void *cwnd_fn)
++static void sdlfx_glide_release_window(void *opaque, void *cwnd_fn)
+ {
+     struct sdl_console_cb *s = &scon_cb;
+ 
+@@ -1046,7 +1046,7 @@
+     }
+ }
+ 
+-int glide_window_stat(const int activate)
++static int sdlfx_glide_window_stat(const int activate)
+ {
+     int stat;
+     struct sdl_console_cb *s = &scon_cb;
+@@ -1074,7 +1074,7 @@
+     return stat;
+ }
+ 
+-int glide_gui_fullscreen(int *width, int *height)
++static int sdlfx_glide_gui_fullscreen(int *width, int *height)
+ {
+     int ret, v[2];
+     ret = sdl_gui_fullscreen(v, "glidept");
+@@ -1085,20 +1085,20 @@
+     return ret;
+ }
+ 
+-void glide_renderer_stat(const int activate)
++static void sdlfx_glide_renderer_stat(const int activate)
+ {
+     sdl_renderer_stat(activate, "glidept");
+ }
+ 
+-void mesa_renderer_stat(const int activate)
++static void sdlfx_mesa_renderer_stat(const int activate)
+ {
+     struct sdl_console_cb *s = &scon_cb;
+     sdl_renderer_stat(activate, "mesapt");
+     if (s->glide_on_mesa && !activate)
+-        glide_renderer_stat(1);
++        sdlfx_glide_renderer_stat(1);
+ }
+ 
+-void mesa_prepare_window(int msaa, int alpha, int scale_x, void *cwnd_fn)
++static void sdlfx_mesa_prepare_window(int msaa, int alpha, int scale_x, void *cwnd_fn)
+ {
+     int scr_w, scr_h;
+     struct sdl_console_cb *s = &scon_cb;
+@@ -1130,7 +1130,7 @@
+     timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
+ }
+ 
+-void mesa_release_window(void)
++static void sdlfx_mesa_release_window(void)
+ {
+     struct sdl_console_cb *s = &scon_cb;
+ 
+@@ -1151,7 +1151,7 @@
+         timer_mod(s->ts, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
+ }
+ 
+-void mesa_cursor_define(int hot_x, int hot_y, int width, int height, const void *data)
++static void sdlfx_mesa_cursor_define(int hot_x, int hot_y, int width, int height, const void *data)
+ {
+     struct sdl_console_cb *s = &scon_cb;
+ 
+@@ -1172,7 +1172,7 @@
+     }
+ }
+ 
+-void mesa_mouse_warp(int x, int y, const int on)
++static void sdlfx_mesa_mouse_warp(int x, int y, const int on)
+ {
+     struct sdl_console_cb *s = &scon_cb;
+ 
+@@ -1187,11 +1187,26 @@
+     }
+ }
+ 
+-int mesa_gui_fullscreen(int *sizev)
++static int sdlfx_mesa_gui_fullscreen(int *sizev)
+ {
+     return sdl_gui_fullscreen(sizev, "mesapt");
+ }
+ 
++/* win98-xp-virt: provider table for ui/fxui.c, registered at display init */
++static const QemuFxUiOps sdl_fx_ui_ops = {
++    .glide_prepare_window = sdlfx_glide_prepare_window,
++    .glide_release_window = sdlfx_glide_release_window,
++    .glide_window_stat    = sdlfx_glide_window_stat,
++    .glide_gui_fullscreen = sdlfx_glide_gui_fullscreen,
++    .glide_renderer_stat  = sdlfx_glide_renderer_stat,
++    .mesa_renderer_stat   = sdlfx_mesa_renderer_stat,
++    .mesa_prepare_window  = sdlfx_mesa_prepare_window,
++    .mesa_release_window  = sdlfx_mesa_release_window,
++    .mesa_cursor_define   = sdlfx_mesa_cursor_define,
++    .mesa_mouse_warp      = sdlfx_mesa_mouse_warp,
++    .mesa_gui_fullscreen  = sdlfx_mesa_gui_fullscreen,
++};
++
+ static const DisplayChangeListenerOps dcl_2d_ops = {
+     .dpy_name             = "sdl2-2d",
+     .dpy_gfx_update       = sdl2_2d_update,
+@@ -1361,6 +1376,7 @@
+         sdl_grab_start(&sdl2_console[0]);
+     }
+ 
++    qemu_fx_ui_register(&sdl_fx_ui_ops);
+     atexit(sdl_cleanup);
+ }
+ 

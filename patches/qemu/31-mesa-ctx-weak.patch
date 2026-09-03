@@ -1,0 +1,164 @@
+Make the GLX Mesa context backend's exported functions weak so the embed
+library can supply its own backend (embed/mglcntx_embed.c, EGL pbuffer) in
+the same link while qemu-system keeps GLX. The two are never both strong:
+qemu-system links only this file, libqemu-embed links both.
+
+diff -Nru a/hw/mesa/mglcntx_linux.c b/hw/mesa/mglcntx_linux.c
+--- a/hw/mesa/mglcntx_linux.c	2026-09-02 22:31:35.925479984 -0300
++++ b/hw/mesa/mglcntx_linux.c	2026-09-02 22:31:35.941871462 -0300
+@@ -30,11 +30,14 @@
+     if (cond) { fprintf(stderr, "glcntx: " fmt "\n" , ## __VA_ARGS__); }
+ 
+ #if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
++/* win98-xp-virt: weak so libqemu-embed's window-less backend
++ * (embed/mglcntx_embed.c) overrides these; qemu-system keeps GLX. */
++#define MGL_API __attribute__((weak))
+ #include <GL/glx.h>
+ #include <X11/extensions/xf86vmode.h>
+ #ifdef CONFIG_DARWIN
+ const char dllname[] = "/opt/X11/lib/libGL.dylib";
+-int MGLUpdateGuestBufo(mapbufo_t *bufo, int add) { return 0; }
++MGL_API int MGLUpdateGuestBufo(mapbufo_t *bufo, int add) { return 0; }
+ #endif
+ #ifdef CONFIG_LINUX
+ #include <linux/version.h>
+@@ -54,7 +57,7 @@
+     }
+     return 0;
+ }
+-int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
++MGL_API int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
+ {
+     int ret = (GetBufOAccelEN()
+             || (bufo_accel_en() &&
+@@ -281,9 +284,9 @@
+     int has_mesa_exts;
+ } xglFuncs;
+ 
+-int glwnd_ready(void) { return qatomic_read(&wnd_ready); }
++MGL_API int glwnd_ready(void) { return qatomic_read(&wnd_ready); }
+ 
+-int MGLExtIsAvail(const char *xstr, const char *str)
++MGL_API int MGLExtIsAvail(const char *xstr, const char *str)
+ { return find_xstr(xstr, str); }
+ 
+ #define MAX_RAMP_SIZE 0x800
+@@ -353,16 +356,16 @@
+     }
+ }
+ 
+-void SetMesaFuncPtr(void *p)
++MGL_API void SetMesaFuncPtr(void *p)
+ {
+ }
+ 
+-void *MesaGLGetProc(const char *proc)
++MGL_API void *MesaGLGetProc(const char *proc)
+ {
+     return (void *)glXGetProcAddress((const GLubyte *)proc);
+ }
+ 
+-void MGLTmpContext(void)
++MGL_API void MGLTmpContext(void)
+ {
+     Display *tmpDisp = XOpenDisplay(NULL);
+     xcstr = glXGetClientString(tmpDisp, GLX_VENDOR);
+@@ -374,7 +377,7 @@
+     XCloseDisplay(tmpDisp);
+ }
+ 
+-void MGLDeleteContext(int level)
++MGL_API void MGLDeleteContext(int level)
+ {
+     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
+     glXMakeContextCurrent(dpy, None, None, NULL);
+@@ -394,7 +397,7 @@
+     }
+ }
+ 
+-void MGLWndRelease(void)
++MGL_API void MGLWndRelease(void)
+ {
+     if (win) {
+         if (ctx[0]) {
+@@ -413,7 +416,7 @@
+     }
+ }
+ 
+-int MGLCreateContext(uint32_t gDC)
++MGL_API int MGLCreateContext(uint32_t gDC)
+ {
+     int i, ret;
+     if (!win) {
+@@ -439,7 +442,7 @@
+     return ret;
+ }
+ 
+-int MGLMakeCurrent(uint32_t cntxRC, int level)
++MGL_API int MGLMakeCurrent(uint32_t cntxRC, int level)
+ {
+     if (!win)
+         return 0;
+@@ -469,7 +472,7 @@
+     return 0;
+ }
+ 
+-int MGLSwapBuffers(void)
++MGL_API int MGLSwapBuffers(void)
+ {
+     MGLActivateHandler(1, 0);
+     MesaBlitScale();
+@@ -511,7 +514,7 @@
+     return 1;
+ }
+ 
+-int MGLChoosePixelFormat(void)
++MGL_API int MGLChoosePixelFormat(void)
+ {
+     DPRINTF("ChoosePixelFormat()");
+     if (xvi == 0)
+@@ -519,7 +522,7 @@
+     return 1;
+ }
+ 
+-int MGLSetPixelFormat(int fmt, const void *p)
++MGL_API int MGLSetPixelFormat(int fmt, const void *p)
+ {
+     int ret;
+     ret = (xvi == 0)? MGLPresetPixelFormat():1;
+@@ -528,7 +531,7 @@
+     return ret;
+ }
+ 
+-int MGLDescribePixelFormat(int fmt, unsigned int sz, void *p)
++MGL_API int MGLDescribePixelFormat(int fmt, unsigned int sz, void *p)
+ {
+     //DPRINTF("DescribePixelFormat()");
+     if (xvi == 0)
+@@ -540,7 +543,7 @@
+     return 1;
+ }
+ 
+-int NumPbuffer(void)
++MGL_API int NumPbuffer(void)
+ {
+     int i, c;
+     for (i = 0, c = 0; i < MAX_PBUFFER;)
+@@ -548,7 +551,7 @@
+     return c;
+ }
+ 
+-int DrawableContext(void)
++MGL_API int DrawableContext(void)
+ {
+     return (ctx[0] == glXGetCurrentContext());
+ }
+@@ -620,7 +623,7 @@
+     return ret;
+ }
+ 
+-void MGLFuncHandler(const char *name)
++MGL_API void MGLFuncHandler(const char *name)
+ {
+     char fname[64];
+     uint32_t *argsp = (uint32_t *)(name + ALIGNED((strnlen(name, sizeof(fname))+1)));

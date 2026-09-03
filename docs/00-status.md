@@ -8,7 +8,7 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 |---|---|
 | QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI 1M on the Air 9:49 → 6:33. |
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio, QMP over a socketpair (`PLAYER_QMP`, `PLAYER_QMP_EXEC`). **Win98 and XP run in it on the M1 Air** with sound and tablet mouse. |
-| 3D | qemu-3dfx GL pass-through works **standalone** (`qemu-system-i386 -display sdl`, 500+ fps wglgears on the Air). **Not yet in the player** — needs the M3 window-less context provider (doc 12). Under the player a GL app is refused cleanly; a Glide app still exits QEMU (patch 04). |
+| 3D | qemu-3dfx GL pass-through works **standalone** (`qemu-system-i386 -display sdl`, 500+ fps wglgears on the Air). **In the player on Linux** (doc 12 steps 1–2, 2026-09-02): patches 30/31 + `embed/mglcntx_embed.c` (EGL surfaceless pbuffer, readback on swap) + API v4; verified by `tools/embed-3d-test.c`, not yet with a Windows guest on Linux. macOS: still refused until the CGL/IOSurface port. Glide: no window, reported cleanly (no exit any more). |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
 | Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % (Super PI 1M 9:49 vs 2:02) — `reference/benchmarks/`. |
 | CD backend (libdisc) | vocabulary types + MSF/LBA only (M5). |
@@ -58,6 +58,11 @@ macOS specifics: `docs/build-macos.md`.
   `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
   mtools, the FreeDOS floppy). Benchmarks inside a .COM must keep data on
   a separate page from code or QEMU's SMC invalidation dominates.
+- The Mesa backend (`MGL*`) runs on the vCPU thread under the BQL and can
+  be driven without a guest right after `qemu_embed_new` (BQL held):
+  `tools/embed-3d-test.c`. Order: `InitMesaGL` → `MGLTmpContext` →
+  Choose/SetPixelFormat → `MGLCreateContext(MESAGL_MAGIC)` →
+  `MGLMakeCurrent(MESAGL_MAGIC, 0)` → draw → `MGLSwapBuffers`.
 - Embed API bump (header `QEMU_EMBED_API_VERSION` + `qemu-embed` crate
   `API_VERSION`) ⇒ every machine must re-run prepare + ninja the dylib
   before `cargo build`, or the link fails on the new symbol.
@@ -68,9 +73,10 @@ macOS specifics: `docs/build-macos.md`.
    patch 05 x87 fast path, QMP over socketpair). Only the Windows host
    remains untested. Optional follow-up to patch 05: fused memory-operand
    x87 helpers (`reference/benchmarks/README.md`).
-2. **M3 (doc 12), next:** `30-3dfx-ui-vtable` patch →
-   `embed/mglcntx_embed.c` (EGL pbuffer, compat profile) with readback
-   bring-up → dma-buf import into wgpu → macOS CGL/IOSurface → Glide.
+2. **M3 (doc 12), in progress:** ~~vtable patch → EGL backend with
+   readback~~ (done, Linux) → run a Windows guest on the dev box (copy
+   `~/vms/win98.qcow2` from the Air, wglgears from the guest-tools ISO) →
+   dma-buf import into wgpu → macOS CGL/IOSurface → Glide.
 3. M2 mode table + pixel aspect; curated presets vs. rig CRT photos.
 4. M5 libdisc; M6 launcher.
 

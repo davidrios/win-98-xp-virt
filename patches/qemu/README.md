@@ -21,12 +21,14 @@ lost the 3dfx meson hunk (symptom: `unknown type 'glidept'`).
 | `03-sdl-darwin-either-ctrl` | macOS Caps-Lock→Control remap reports `KMOD_RCTRL`; accept either Control for SDL hotkeys | — |
 | `04-3dfx-graceful-no-display` | without an SDL display (player: `-display none`) GL activation refused the context cleanly instead of `exit(1)`; Glide still exits | M3 vtable/provider |
 | `05-x87-fast` | x87 on the host FPU when the guest runs at 53/24-bit precision with round-to-nearest (Windows default / Direct3D): bit-exact vs. softfloat, falls back for everything else; `-cpu …,x87-fast=off` disables. Tests: `tools/x87-fast-test.c` (host oracle vs. real x87), `tools/x87-guest-test.py` (on/off identical under TCG). Super PI 1M on the M1 Air 9:49 → 6:33 | upstream QEMU grows a floatx80 hardfloat path |
-| `10-embed-api` | meson: `shared_library('qemu-embed-<target>')` per softmmu target from the existing static lib + `embed/libqemu_embed.c` + `embed/embedaudio.c`; ld64 export list (`embed/libqemu_embed.symbols`) because QEMU's plugin `-exported_symbols_list` hides everything else on macOS | upstreamed embed API (aspirational) |
+| `10-embed-api` | meson: `shared_library('qemu-embed-<target>')` per softmmu target from the existing static lib + `embed/libqemu_embed.c`, `embedaudio.c`, `embedfx.c`, `mglcntx_embed.c` (+ epoxy when found); ld64 export list (`embed/libqemu_embed.symbols`) because QEMU's plugin `-exported_symbols_list` hides everything else on macOS | upstreamed embed API (aspirational) |
 | `20-embed-audio` | register the `embed` audiodev: QAPI enum/union entry, `audio_template.h` per-direction case, **and `audio/audio.c` `audio_create_pdos` CASE** (missing → NULL pdo segfault) | with 10 |
+| `30-3dfx-ui-vtable` | the 11 qemu-3dfx UI entry points (`mesa_*`, `glide_*`) dispatch through a `QemuFxUiOps` table (`ui/fxui.c`); SDL registers its implementations at display init, the embed library its window-less provider (`embed/embedfx.c`); no provider = contexts refused / no Glide window, VM keeps running (supersedes the spirit of 04) | upstream qemu-3dfx grows a provider seam |
+| `31-mesa-ctx-weak` | `hw/mesa/mglcntx_linux.c` exports weak so `embed/mglcntx_embed.c` (EGL surfaceless + pbuffer as FBO 0, readback on swap) overrides it inside libqemu-embed while qemu-system keeps GLX | a per-consumer backend selection in meson |
 | `90-debug-sdl-keydebug` | `QEMU_SDL_KEYDEBUG=1` logs SDL keydown/modifier state (diagnostic) | any time |
 
-Planned: `30-3dfx-ui-vtable` (11 UI entry points behind a registered
-vtable; doc 12), then the embed context provider backend.
+Planned: macOS CGL/IOSurface backend (`mglcntx_sdlgl.c` weak like 31),
+dma-buf export instead of readback, Glide offscreen path (doc 12).
 
 Regenerating a patch: apply the queue, edit the file(s) in `qemu/`, produce
 `diff -u` against a copy of the pre-edit state with `a/`/`b/` paths, then

@@ -15,6 +15,7 @@
 #include "ui/input.h"
 #include "qemu-main.h"
 #include "libqemu_embed.h"
+#include "embedfx.h"
 
 /*
  * system/main.c is not part of the library, but ui/cocoa.m (macOS) still
@@ -54,7 +55,43 @@ struct qemu_embed {
     int argc;
     char **argv;
     uint32_t refresh_ms;
+    uint32_t *flip;         /* row-flipped copy of a bottom-up 3D frame */
+    size_t flip_len;
 };
+
+/* one VM per process: the 3D backend reports through this instance */
+static qemu_embed_t *fx_instance;
+
+void embed_fx_active(bool on)
+{
+    qemu_embed_t *e = fx_instance;
+    if (e && e->cb.on_3d_active) {
+        e->cb.on_3d_active(e->ud, on);
+    }
+}
+
+void embed_fx_frame(const uint32_t *px, int w, int h, int stride, int bottom_up)
+{
+    qemu_embed_t *e = fx_instance;
+    if (!e || !e->cb.on_3d_frame) {
+        return;
+    }
+    if (bottom_up) {
+        size_t need = (size_t)w * h;
+        if (e->flip_len < need) {
+            e->flip = g_realloc(e->flip, need * sizeof(uint32_t));
+            e->flip_len = need;
+        }
+        const uint8_t *src = (const uint8_t *)px;
+        for (int y = 0; y < h; y++) {
+            memcpy(e->flip + (size_t)y * w, src + (size_t)(h - 1 - y) * stride,
+                   (size_t)w * 4);
+        }
+        e->cb.on_3d_frame(e->ud, (const uint8_t *)e->flip, w, h, w * 4);
+    } else {
+        e->cb.on_3d_frame(e->ud, (const uint8_t *)px, w, h, stride);
+    }
+}
 
 /* ---------------------------------------------------------------- display */
 
@@ -165,6 +202,9 @@ qemu_embed_t *qemu_embed_new(int argc, char **argv,
     e->dcl.con = e->con;
     /* Fires on_switch/on_update/on_cursor synchronously before returning. */
     register_displaychangelistener(&e->dcl);
+    /* qemu-3dfx: window-less context provider (doc 12) */
+    fx_instance = e;
+    embed_fx_register();
     return e;
 }
 
@@ -176,8 +216,10 @@ int qemu_embed_run(qemu_embed_t *e)
 
 void qemu_embed_destroy(qemu_embed_t *e, int status)
 {
+    fx_instance = NULL;
     unregister_displaychangelistener(&e->dcl);
     qemu_cleanup(status);
+    g_free(e->flip);
     qemu_mutex_destroy(&e->in_lock);
     for (int i = 0; i < e->argc; i++) {
         g_free(e->argv[i]);

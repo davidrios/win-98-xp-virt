@@ -13,10 +13,10 @@ linked directly so type_init constructors survive. Needs -fPIC
 +  # win98-xp-virt: QEMU as an embeddable shared library (embed/libqemu_embed.h)
 +  if target.endswith('-softmmu')
 +    shared_library('qemu-embed-' + target_name,
-+                   files('embed/libqemu_embed.c', 'embed/embedaudio.c'),
++                   files('embed/libqemu_embed.c', 'embed/embedaudio.c', 'embed/embedfx.c', 'embed/mglcntx_embed.c'),
 +                   c_args: c_args,
 +                   include_directories: target_inc,
-+                   dependencies: arch_deps + [sdl],
++                   dependencies: arch_deps + [sdl] + (opengl.found() ? [opengl] : []),
 +                   objects: lib.extract_all_objects(recursive: true),
 +                   link_depends: [block_syms, qemu_syms],
 +                   # macOS: emulator_link_args carries -exported_symbols_list for the

@@ -1,5 +1,15 @@
 # 12. M3 design: window-less GL context provider for qemu-3dfx
 
+Status 2026-09-02: steps 1–2 done on Linux — patch 30 (vtable), patch 31
+(weak native backend), `embed/mglcntx_embed.c` (EGL surfaceless, pbuffer =
+FBO 0, glReadPixels on swap), `embed/embedfx.c` (provider), embed API v4
+(`on_3d_active`, `on_3d_frame`), player publishes 3D frames on swap.
+Verified without a guest by `tools/embed-3d-test.c` (drives the backend in
+mesapt_mm.c's order: activation callbacks, 640×480 frame, correct
+orientation). Not yet run with a Windows guest on Linux (no image on the
+dev box); on the Air the embed lib still refuses GL until the CGL port.
+Next: dma-buf import (§4), macOS CGL/IOSurface, Glide.
+
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
 

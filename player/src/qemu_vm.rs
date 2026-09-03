@@ -118,6 +118,8 @@ struct Shared {
     front: Frame,
     // wakes the render thread after each publish (event-loop proxy)
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    // qemu-3dfx pass-through active: VGA updates stop, frames come from swaps
+    three_d: bool,
     // QEMU's main loop has returned; the handle must not be used any more
     stopped: bool,
     // the UI thread promises no further calls; qemu_embed_destroy may run
@@ -180,10 +182,42 @@ unsafe extern "C" fn on_update(ud: *mut c_void, x: c_int, y: c_int, w: c_int, h:
     copy_rect(&mut s, x as usize, y as usize, w as usize, h as usize);
 }
 
+unsafe extern "C" fn on_3d_active(ud: *mut c_void, active: bool) {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    s.three_d = active;
+    eprintln!("[3d] pass-through {}", if active { "on" } else { "off" });
+}
+
+/// A presented 3D frame (vCPU thread): publish it directly, this is the
+/// guest's vsync point, not the refresh tick.
+unsafe extern "C" fn on_3d_frame(ud: *mut c_void, px: *const u8, w: c_int, h: c_int, stride: c_int) {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    let (w, h, stride) = (w as usize, h as usize, stride as usize);
+    if s.front.width != w || s.front.height != h {
+        s.front.width = w;
+        s.front.height = h;
+        s.front.pixels = vec![0; w * h];
+    }
+    for y in 0..h {
+        let row = std::slice::from_raw_parts(px.add(y * stride) as *const u32, w);
+        s.front.pixels[y * w..(y + 1) * w].copy_from_slice(row);
+    }
+    s.front.seq += 1;
+    s.front.published = std::time::Instant::now();
+    let waker = s.waker.clone();
+    drop(s);
+    if let Some(w) = waker {
+        w();
+    }
+}
+
 unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
-    if s.width == 0 {
+    if s.width == 0 || s.three_d {
+        // 3D active: the VGA back buffer is stale, swaps publish instead
         return;
     }
     let (w, h) = (s.width, s.height);
@@ -296,6 +330,7 @@ pub fn start(
             published: std::time::Instant::now(),
         },
         waker,
+        three_d: false,
         stopped: false,
         released: false,
     }));
@@ -312,6 +347,8 @@ pub fn start(
                 on_refresh_done: Some(on_refresh_done),
                 on_cursor: None,
                 on_mouse_set: None,
+                on_3d_active: Some(on_3d_active),
+                on_3d_frame: Some(on_3d_frame),
             };
             if let Some((r, _)) = ring_ptrs {
                 let ring = unsafe { &*(r as *const crate::audio::Ring) };
