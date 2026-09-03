@@ -141,6 +141,7 @@ cp "$M"/opengl32.dll "$OUT/iso/GAMEDIR/"
 W="$OUT/wine9x"
 cp "$W"/wined9.dll "$OUT/iso/GAMEDIR/d3d9.dll"
 cp "$W"/wined8.dll "$OUT/iso/GAMEDIR/d3d8.dll"
+cp "$W"/winedd.dll "$OUT/iso/GAMEDIR/ddraw.dll"
 cp "$W"/wined3d.dll "$OUT/iso/GAMEDIR/"
 cp "$W"/wined3d.dll "$W"/winedd.dll "$W"/wined8.dll "$W"/wined9.dll \
    "$W"/ddraw_xp.dll "$W"/d3d8_xp.dll "$W"/d3d9_xp.dll \
@@ -172,6 +173,8 @@ GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
             WGLGEARS.EXE + OPENGL32.DLL in one folder = quick GL pass-through test
             Direct3D 8/9 games: also copy D3D8.DLL or D3D9.DLL + WINED3D.DLL
             (WineD3D, renders through OPENGL32.DLL) next to the game's EXE.
+            DirectX 5/6/7 games (DirectDraw + Direct3D up to 7): DDRAW.DLL +
+            WINED3D.DLL instead. Never copy DDRAW.DLL into system32 this way.
             D3D9TEST.EXE + D3D9.DLL + WINED3D.DLL + OPENGL32.DLL = D3D9 test
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.

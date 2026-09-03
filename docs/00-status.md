@@ -120,7 +120,12 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
    D3D9TEST runs on XP (2026-09-03) and reports PC=24, so Direct3D on
    XP does run in inline mode 2. Next on x87: a Direct3D title in XP
    with and without `-cpu pentium3,x87-fast=off` for the real-world
-   number.
+   number. It has to be a D3D8/9 title: Wine 1.7.55's ddraw does not
+   implement DDSCL_FPUSETUP ("unhandled, harmless"), so DirectX 5–7
+   games through WineD3D stay at PC=53 unless the game sets the control
+   word itself (candidate DDRAW.DLL patch: setup_fpu() on FPUSETUP
+   without FPUPRESERVE, as native does). FIFA 2000 (DX7, SafeDisc,
+   D3D/Glide/software EXEs) tests the DDraw path and Glide, not mode 2.
 2. **M3 (doc 12), in progress:** ~~vtable patch → EGL backend with
    readback → Win98 wglgears in the player on Linux → macOS CGL backend →
    wglgears in the player on the Air → dma-buf zero-copy on Linux~~ (done)
