@@ -81,8 +81,8 @@ org 100h
 bits 16
 
 %define POOL_N {pool_n}
-%define NUM_BINOPS 14
-%define NUM_OPS 30
+%define NUM_BINOPS 29
+%define NUM_OPS 49
 
 start:
     mov si, cw_table
@@ -204,6 +204,70 @@ op_fcomip:  fld tword [bp + pool]
             pop word [res]
             fstp st0
             jmp store_sw
+; ---- more binary forms (inline TCG fast path coverage) ----
+op_fsub_m:  fld tword [bx + pool]
+            fsub qword [bp + pool]
+            jmp store80
+op_fsubr_m: fld tword [bx + pool]
+            fsubr qword [bp + pool]
+            jmp store80
+op_fmul_m:  fld tword [bx + pool]
+            fmul qword [bp + pool]
+            jmp store80
+op_fdivr_m: fld tword [bx + pool]
+            fdivr qword [bp + pool]
+            jmp store80
+op_fsub_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsub st0, st1
+            jmp store80
+op_fsubr_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsubr st0, st1
+            jmp store80
+op_fdiv_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdiv st0, st1
+            jmp store80
+op_fdivr_st: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdivr st0, st1
+            jmp store80
+op_fadd_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fadd st1, st0
+            fstp st0
+            jmp store80
+op_fsub_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsub st1, st0
+            fstp st0
+            jmp store80
+op_fsubr_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fsubr st1, st0
+            fstp st0
+            jmp store80
+op_fmul_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fmul st1, st0
+            fstp st0
+            jmp store80
+op_fdiv_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdiv st1, st0
+            fstp st0
+            jmp store80
+op_fdivr_stn: fld tword [bp + pool]
+            fld tword [bx + pool]
+            fdivr st1, st0
+            fstp st0
+            jmp store80
+op_fxch:    fld tword [bp + pool]
+            fld tword [bx + pool]
+            fxch st1
+            fadd st0, st1
+            jmp store80
 ; ---- unary ops on a ----
 op_fsqrt:   fld tword [bx + pool]
             fsqrt
@@ -250,6 +314,25 @@ op_fscale:  fld tword [bp + pool]
             fld tword [bx + pool]
             fscale
             jmp store80
+op_fld_st:  fld tword [bx + pool]
+            fld1
+            fld st1
+            fmulp st1, st0
+            fstp st0
+            jmp store80
+op_fst_st:  fld tword [bx + pool]
+            fld1
+            fst st1
+            fmulp st1, st0
+            jmp store80
+op_fstp_st: fld tword [bx + pool]
+            fld1
+            fstp st1
+            jmp store80
+op_fst_m:   fld tword [bx + pool]
+            fst qword [res]
+            fstp st0
+            jmp store_sw
 
 store80:
     fstp tword [res]
@@ -262,9 +345,13 @@ op_table:
     dw op_faddp, op_fsubp, op_fsubrp, op_fmulp, op_fdivp, op_fdivrp
     dw op_fadd_st, op_fmul_st, op_fadd_m, op_fmul_ms, op_fdiv_m
     dw op_fcompp, op_fucompp, op_fcomip
+    dw op_fsub_m, op_fsubr_m, op_fmul_m, op_fdivr_m
+    dw op_fsub_st, op_fsubr_st, op_fdiv_st, op_fdivr_st
+    dw op_fadd_stn, op_fsub_stn, op_fsubr_stn, op_fmul_stn, op_fdiv_stn
+    dw op_fdivr_stn, op_fxch
     dw op_fsqrt, op_frndint, op_fistw, op_fistl, op_fistq, op_fstl, op_fsts
     dw op_fildw, op_fildl, op_fildq, op_flds, op_fldl, op_fchs, op_fsin
-    dw op_fptan, op_fscale
+    dw op_fptan, op_fscale, op_fld_st, op_fst_st, op_fstp_st, op_fst_m
 
 ; ---- output ----
 print_result:
@@ -339,6 +426,7 @@ cw_table:
     dw 0E3Fh        ; PC=53 trunc    (MSVC _ftol)
     dw 063Fh        ; PC=53 down
     dw 083Fh        ; PC=24 up
+    dw 021Fh        ; PC=53 RNE, PE unmasked (inline path must stay off)
     dw 0FFFFh
 
 cur_cw: dw 0

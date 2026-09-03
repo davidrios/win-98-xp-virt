@@ -53,7 +53,10 @@ macOS specifics: `docs/build-macos.md`.
 - `prepare-qemu.sh` must be followed by `configure-qemu.sh` when meson
   files change; the script keeps `werror` off and unchanged mtimes stable.
 - x87 under TCG is all helper calls into 80-bit softfloat; patch 05 does
-  the 53/24-bit-precision common case on the host FPU. Test any change to
+  the 53/24-bit-precision common case on the host FPU. Branch
+  `worktree-x87-inline-tcg` (patch 06, doc 13) goes further and generates
+  the ops inline in TCG: 10.6 → 6.9 ns/op on x86-64, aarch64 lowering
+  written but not yet run — test on the Air before merging. Test any change to
   it with `tools/x87-fast-test.c` (x86-64 host oracle) and
   `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
   mtools, the FreeDOS floppy). Benchmarks inside a .COM must keep data on
