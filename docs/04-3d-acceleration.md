@@ -23,7 +23,7 @@ driver.
 | OpenGL | qemu-3dfx MESA GL pass-through | same |
 | Direct3D 5–7 | SoftGPU (DDraw/D3D → wrapper stack) | rarely needed; wrappers exist |
 | Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | WineD3D-based wrapper DLLs → GL pass-through |
-| 2D/desktop | SoftGPU display driver (QEMU std VGA path) | XP inbox VGA/vendor-neutral driver |
+| 2D/desktop | SoftGPU display driver (QEMU std VGA path) | XP inbox Cirrus GD5446 driver (`-vga cirrus`, as Win98); std VGA (Bochs VBE) has no XP driver and leaves the desktop at 640×480×16 |
 
 Known qemu-3dfx constraints we design around:
 

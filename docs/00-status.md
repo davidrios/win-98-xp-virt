@@ -54,6 +54,9 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   (`SDL_GL_SwapWindow` from the vCPU thread; try `mesagl.cfg`
   `DispTimerMS,16`). Not relevant once M3 lands.
 - Display Properties in Win98 under TCG faults RUNDLL32 (upstream 1964).
+- XP has no driver for `-vga std` (Bochs VBE): basic 640×480×16. Run XP
+  with `-vga cirrus` like Win98 (inbox GD5446 driver, PnP picks it up on
+  the next boot). Docs 04/06 said otherwise until 2026-09-03.
 - Pixel aspect / mode table not implemented (720×400 shows 9:5) — M2.
 - `enable_cache` for librashader off (needs `Features::PIPELINE_CACHE`).
 - `prepare-qemu.sh` must be followed by `configure-qemu.sh` when meson

@@ -21,9 +21,12 @@ Run everything twice and take the best. Nothing else running on the host.
 ```sh
 PLAYER_LATENCY=1 target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- \
   -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 512 -hda ~/vms/xp.qcow2 \
-  -vga std -net none -usb -device usb-tablet -device AC97,audiodev=embed0 \
+  -vga cirrus -net none -usb -device usb-tablet -device AC97,audiodev=embed0 \
   -cdrom ~/vms/bench.iso
 ```
+
+(The XP runs up to 2026-09-03 used `-vga std`, for which XP has no driver:
+basic 640×480×16 VGA. Irrelevant to Super PI and 7-Zip; cirrus from now on.)
 
 Get the benchmark binary into the guest on an ISO (no network in the
 reference machine):

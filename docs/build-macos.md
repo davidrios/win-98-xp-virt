@@ -190,7 +190,7 @@ ninja -C build/qemu libqemu-embed-i386.dylib && cargo build --release
 PLAYER_LATENCY=1 target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- \
   -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 -hda ~/vms/win98.qcow2 \
   -vga cirrus -net none -usb -device usb-tablet -device sb16,audiodev=embed0
-# XP: -m 512 -vga std -device AC97,audiodev=embed0
+# XP: -m 512 -vga cirrus -device AC97,audiodev=embed0   (std VGA has no XP driver: 640x480x16)
 ```
 After `git pull`, always `scripts/prepare-qemu.sh && scripts/configure-qemu.sh`
 before that `ninja`: `qemu/embed/` is a copy of `embed/`, so a pull that

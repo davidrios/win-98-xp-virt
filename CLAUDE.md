@@ -103,6 +103,8 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   code, or QEMU's self-modifying-code invalidation dominates.
 - Win98 must be an ACPI install (`SETUP /p j`) or PCI hot-adds are never
   seen; guest wrappers must be msvcrt-linked and `-march=pentium3`.
+- Both guests run `-vga cirrus` (inbox drivers). XP has no driver for
+  `-vga std`: basic 640×480×16 only.
 - x87 under TCG is helper calls into 80-bit softfloat; patch 05 does the
   53/24-bit common case on the host FPU and patch 06 (doc 13) keeps the
   stack as host doubles inside TCG at PC=53 and PC=24. Test any change
