@@ -45,6 +45,9 @@ in the table.
 | Rig (P4 + 6200), XP | Pentium 4 1.7 GHz (Willamette), 512 MB | 122 (2:02) | 0.742 / 0.776 | ~30 | 2026-09-02 |
 | M1 Air, XP in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | 589 (9:49) | 0.996 / 1.511 | ~30 | 2026-09-02 |
 | Air ÷ rig | | **4.8× slower → 21 %** | **134 % / 195 %** | parity | |
+| M1 Air, XP in player, TCG `-cpu pentium3 -m 512`, **patch 06** (x87 stack as host doubles) | Apple M1, macOS 26 | 117 (1:57), both runs | | | 2026-09-03 |
+| M1 Air, same build, `-cpu pentium3,x87-fast=off` (control) | Apple M1, macOS 26 | loop 1 at 0:35, aborted (softfloat pace, ~9:49 projected) | | | 2026-09-03 |
+| Air (patch 06) ÷ rig | | **104 %** (5.0× over softfloat) | | | |
 
 Reading: the two tests bracket TCG on the M1 against a real P4 1.7.
 - **Integer/memory (7-Zip):** the emulated XP is *faster* than the rig —
@@ -55,14 +58,19 @@ Reading: the two tests bracket TCG on the M1 against a real P4 1.7.
   software renderers hit.
 - Boot time is disk/interrupt bound and the host SSD hides the rest.
 
-**Patch 05 (x87 host-FPU fast path, 2026-09-02):** re-measure Super PI on
-the Air with it (default on) and with `-cpu pentium3,x87-fast=off` to
-confirm the delta; add a row here. Expected: a large share of the 4.8× gap
-closes, the helper-call floor remains.
+**Patch 06 (x87 stack as host doubles in TCG, measured 2026-09-03):**
+Super PI 1M on the Air went 9:49 → 1:57 (two runs, identical), a 5.0×
+gain, and now edges the real P4 1.7 (2:02). Control: the same build with
+`-cpu pentium3,x87-fast=off` was at 0:35 after loop 1, i.e. back at the
+softfloat pace, so the whole delta is the patch. Win98 boots and behaves
+in the player with patch 06 on. The "Pentium II floating point" caveat
+below no longer applies with patch 06 on. Not re-run: 7-Zip and boot
+(integer path untouched, expected unchanged).
 
-In-app expectation text should say both halves: "integer speed of a fast
-P4; floating-point speed of a Pentium II". Games mix the two; per-title
-validation in M4 decides which side dominates.
+In-app expectation text: with patch 06 both halves are at or above a
+P4 1.7 ("integer speed of a fast P4; floating-point parity with the rig").
+Without it (softfloat) the FP half is Pentium II class. Games mix the two;
+per-title validation in M4 decides which side dominates.
 
 Also record here anything the XP guest needed that Win98 did not
 (drivers, HAL, activation state is not recorded).

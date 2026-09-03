@@ -6,11 +6,11 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 
 | Area | State |
 |---|---|
-| QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI on the Air pending. Patch 06 (branch `worktree-x87-inline-tcg`, doc 13): x87 stack as host doubles in TCG, 7.4× vs softfloat on x86-64, Air bring-up in progress. |
+| QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop. Patch 06 (branch `worktree-x87-inline-tcg`, doc 13): x87 stack as host doubles in TCG, 7.4× vs softfloat on x86-64; **on the Air, XP Super PI 1M 9:49 → 1:57 (2026-09-03), faster than the rig's 2:02**. Not yet merged. |
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio. **Win98 runs in it on the M1 Air** with sound and tablet mouse. |
 | 3D | qemu-3dfx GL pass-through works **standalone** (`qemu-system-i386 -display sdl`, 500+ fps wglgears on the Air). **Not yet in the player** — needs the M3 window-less context provider (doc 12). Under the player a GL app is refused cleanly; a Glide app still exits QEMU (patch 04). |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
-| Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % (Super PI 1M 9:49 vs 2:02) — `reference/benchmarks/`. |
+| Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % on softfloat (Super PI 1M 9:49 vs 2:02), 104 % with patch 06 (1:57) — `reference/benchmarks/`. |
 | CD backend (libdisc) | vocabulary types + MSF/LBA only (M5). |
 | Launcher | stub (M6). |
 
@@ -58,11 +58,12 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   the 53/24-bit-precision common case on the host FPU. Branch
   `worktree-x87-inline-tcg` (patch 06, doc 13) keeps the x87 stack as host
   doubles across instructions in TCG: 21.6 (softfloat) / 10.6 (patch 05) /
-  2.9 ns per op on x86-64. Air bring-up in progress (doc 13 §"Bring-up
+  2.9 ns per op on x86-64. Air bring-up done 2026-09-03 (doc 13 §"Bring-up
   on the Air"): two aarch64 backend paths upstream never runs needed
-  fixes (UMOV element size, constant into a V register); the second fix
-  is untested — rerun `tools/x87-guest-test.py` on the Air, then XP/Win98
-  + Super PI, then merge to main. Not merged: main still has patch 05 only. Test any change to
+  fixes (UMOV element size, constant into a V register); with both, XP
+  Super PI 1M is 1:57 twice (9:49 on softfloat, `x87-fast=off` control
+  confirms) and Win98 boots fine. Ready to merge; main still has patch 05
+  only. Test any change to
   it with `tools/x87-fast-test.c` (x86-64 host oracle) and
   `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
   mtools, the FreeDOS floppy). Benchmarks inside a .COM must keep data on
@@ -75,10 +76,10 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 1. M1 close-out: latency DONE (Air: p50 6–10 / p95 15–17 / max 18 ms,
    the 60 Hz vsync-phase floor; Linux identical); XP boot + Super PI DONE
-   + 7-Zip DONE (integer 1.3–2× the rig, x87 FP 21 %). Re-run Super PI on
-   the Air with patch 05 (prepare → configure → ninja → cargo; compare
-   `-cpu pentium3,x87-fast=off`) and fill in `reference/benchmarks/`. Left:
-   QMP over socketpair (doc 11 §QMP).
+   + 7-Zip DONE (integer 1.3–2× the rig, x87 FP 21 % on softfloat, 104 %
+   with patch 06: Super PI 1M 1:57 twice on 2026-09-03; `x87-fast=off`
+   control back at softfloat pace; Win98 boots fine). Left: merge patch 06
+   to main; QMP over socketpair (doc 11 §QMP).
 2. **M3 (pulled forward, doc 12):** `30-3dfx-ui-vtable` patch →
    `embed/mglcntx_embed.c` (EGL pbuffer, compat profile) with readback
    bring-up → dma-buf import into wgpu → macOS CGL/IOSurface → Glide.

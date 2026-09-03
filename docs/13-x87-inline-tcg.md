@@ -190,10 +190,15 @@ test cannot run on macOS (skip it); then XP in the player, Super PI 1M
 twice (also with `-cpu pentium3,x87-fast=off`), Win98 boot and feel
 check; fill in `reference/benchmarks/README.md`; merge to main.
 
+Result (2026-09-03, both aarch64 fixes in): XP Super PI 1M on the Air
+1:57, twice (9:49 on softfloat; the `x87-fast=off` control was at 0:35
+after loop 1, softfloat pace). That beats the rig's real P4 1.7 (2:02).
+Win98 boots and feels fine. Recorded in `reference/benchmarks/README.md`.
+
 ## Follow-ups
 
-- Finish the Air bring-up above; `-cpu pentium3,x87-fast=off` is the
-  fallback if something still misbehaves in a Windows guest.
+- Merge to main. `-cpu pentium3,x87-fast=off` stays as the fallback if
+  something misbehaves in a Windows guest.
 - Per-op cost (~45 host instructions) can still drop: defer FIP/FCS to
   flush points with the pc in the insn_start word (~4), keep FDP eager;
   PC=24 (Direct3D) mode with binary32 shadows is the same design.
