@@ -360,10 +360,18 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
  */
 static void present_frame(void)
 {
+    int w, h;
+
     if (win_ready && readback && plat_get_current() == ctx[0]
         && !plat_present_zero_copy()
         && plat_readback(readback)) {
         embed_fx_frame(readback, win_w, win_h, win_w * 4, /* bottom_up */ 1);
+    }
+    /* size follows the guest's 2D mode for the next frame (a fullscreen
+     * game switches to 640x480 while the stand-in was the desktop's size) */
+    guest_size(&w, &h);
+    if (w != win_w || h != win_h) {
+        drawable_resize(w, h);
     }
 }
 
@@ -372,12 +380,6 @@ int MGLSwapBuffers(void)
     MGLActivateHandler(1, 0);
     MesaBlitScale();
     present_frame();
-    /* size follows the guest's 2D mode for the next frame */
-    int w, h;
-    guest_size(&w, &h);
-    if (w != win_w || h != win_h) {
-        drawable_resize(w, h);
-    }
     return 1;
 }
 
