@@ -81,8 +81,8 @@ org 100h
 bits 16
 
 %define POOL_N {pool_n}
-%define NUM_BINOPS 29
-%define NUM_OPS 49
+%define NUM_BINOPS 37
+%define NUM_OPS 68
 
 start:
     mov si, cw_table
@@ -268,6 +268,59 @@ op_fxch:    fld tword [bp + pool]
             fxch st1
             fadd st0, st1
             jmp store80
+; ---- chains inside one block: shadows stay dirty across instructions ----
+op_chain1:  fld qword [bp + pool]           ; low 8 bytes as doubles
+            fld qword [bx + pool]
+            fadd st1, st0
+            fxch st1
+            fmulp st1, st0
+            jmp store80
+op_chain2:  fld qword [bx + pool]
+            fld st0
+            fmul st0, st1
+            fstp qword [res]
+            fld qword [res]
+            fsubrp st1, st0
+            fadd qword [bp + pool]
+            jmp store80
+op_chain3:  fld qword [bp + pool]
+            fld qword [bx + pool]
+            fdiv st0, st1
+            fst st1
+            fchs
+            fabs
+            fsqrt
+            faddp st1, st0
+            jmp store80
+op_fcmove:  fld tword [bp + pool]
+            fld tword [bx + pool]
+            xor ax, ax                      ; ZF = 1
+            fcmove st0, st1
+            fstp st1
+            jmp store80
+op_fcmovnb: fld tword [bp + pool]
+            fld tword [bx + pool]
+            cmp ax, 1                       ; CF = 1 -> not taken
+            fcmovnb st0, st1
+            fstp st1
+            jmp store80
+op_fucom:   fld tword [bp + pool]
+            fld tword [bx + pool]
+            fucom st1
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
+op_fucomp:  fld tword [bp + pool]
+            fld tword [bx + pool]
+            fucomp st1
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
+op_fcom_m:  fld tword [bx + pool]
+            fcom qword [bp + pool]
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
 ; ---- unary ops on a ----
 op_fsqrt:   fld tword [bx + pool]
             fsqrt
@@ -325,14 +378,69 @@ op_fst_st:  fld tword [bx + pool]
             fst st1
             fmulp st1, st0
             jmp store80
-op_fstp_st: fld tword [bx + pool]
-            fld1
-            fstp st1
-            jmp store80
 op_fst_m:   fld tword [bx + pool]
             fst qword [res]
             fstp st0
             jmp store_sw
+op_fsts_m:  fld tword [bx + pool]
+            fst dword [res]
+            fstp st0
+            jmp store_sw
+op_ftst:    fld tword [bx + pool]
+            ftst
+            fnstsw ax
+            mov [res], ax
+            jmp store_sw
+op_fabs:    fld tword [bx + pool]
+            fabs
+            jmp store80
+op_fldz:    fld tword [bx + pool]
+            fldz
+            faddp st1, st0
+            jmp store80
+op_incstp:  fld tword [bx + pool]
+            fld1
+            fincstp
+            fincstp
+            fdecstp
+            fnstsw ax
+            mov [res], ax
+            fstp st0
+            fstp st0
+            jmp store_sw
+op_ffree:   fld tword [bx + pool]
+            fld1
+            ffree st1
+            fnstsw ax
+            mov [res], ax
+            fstp st0
+            fstp st0
+            jmp store_sw
+op_fist_ch: fld qword [bx + pool]
+            fld1
+            faddp st1, st0
+            fistp dword [res]
+            jmp store_sw
+op_fild_ch: fild dword [bx + pool]
+            fild word [bx + pool + 4]
+            fmulp st1, st0
+            jmp store80
+op_frnd_ch: fld qword [bx + pool]
+            frndint
+            fld1
+            faddp st1, st0
+            jmp store80
+op_fnstsw:  fld tword [bx + pool]
+            fld1
+            fnstsw ax
+            mov [res], ax
+            fstp st0
+            fstp st0
+            jmp store_sw
+op_fstp_st: fld tword [bx + pool]
+            fld1
+            fstp st1
+            jmp store80
 
 store80:
     fstp tword [res]
@@ -349,9 +457,13 @@ op_table:
     dw op_fsub_st, op_fsubr_st, op_fdiv_st, op_fdivr_st
     dw op_fadd_stn, op_fsub_stn, op_fsubr_stn, op_fmul_stn, op_fdiv_stn
     dw op_fdivr_stn, op_fxch
+    dw op_chain1, op_chain2, op_chain3, op_fcmove, op_fcmovnb
+    dw op_fucom, op_fucomp, op_fcom_m
     dw op_fsqrt, op_frndint, op_fistw, op_fistl, op_fistq, op_fstl, op_fsts
     dw op_fildw, op_fildl, op_fildq, op_flds, op_fldl, op_fchs, op_fsin
     dw op_fptan, op_fscale, op_fld_st, op_fst_st, op_fstp_st, op_fst_m
+    dw op_fsts_m, op_ftst, op_fabs, op_fldz, op_incstp, op_ffree
+    dw op_fist_ch, op_fild_ch, op_frnd_ch, op_fnstsw, op_fstp_st
 
 ; ---- output ----
 print_result:

@@ -1,10 +1,12 @@
-# 13. x87 inline TCG fast path (exploration, 2026-09-02)
+# 13. x87 shadow doubles: the FPU stack as host doubles in TCG (2026-09-02)
 
-Question: patch 05 (doc 00, `patches/qemu/README.md`) moved the common x87
-case onto the host FPU but still pays a helper call per instruction. How
-much of the remaining gap closes if the float ops are generated inline in
-TCG instead, and what does that take? This doc records the prototype on
-branch `worktree-x87-inline-tcg` (patch `06-x87-inline-tcg`).
+Patch 05 (doc 00, `patches/qemu/README.md`) moved the common x87 case onto
+the host FPU but still paid a helper call and an 80-bit round trip through
+`env->fpregs[]` per instruction. This doc records the two steps taken past
+it on branch `worktree-x87-inline-tcg`, patch `06-x87-inline-tcg`:
+first an inline-per-instruction prototype (kept as the "level 2" data
+point below), then the design that shipped in the patch: the translator
+keeps the x87 stack as doubles across instructions.
 
 ## Where the time went with patch 05
 
@@ -15,125 +17,145 @@ fmul m64, fadd m64, fstp m64, fld m64, fdiv m64, fistp m32), x86-64 host:
 |---|---|
 | `x87_binop` (the host-FPU body incl. checks and TwoSum) | 33 % |
 | `merge_exception_flags` | 11 % |
-| individual `helper_f*` (call frame, `save_exception_flags`, FT0/ST0 round trip) | 45 % |
+| individual `helper_f*` (call frame, flag save, FT0/ST0 round trip) | 45 % |
 | translated code (TLB lookups, FIP/FDP stores, calls) | ~2 % |
 
-98 % in helpers. Forcing the body and the flag merge to inline into the
-helpers (`always_inline`) only gave 10 %: the cost is the structure, not
-the body. Every x87 op is one or two calls, the value passes through
-`env->ft0` and `env->fpregs[]` as 80-bit floatx80, and each helper saves
-and merges `fp_status` flags.
-
-## What "inline in TCG" needed
-
-TCG had no float opcodes, but it already has everything around them: the
-register allocator handles vector registers (used by gvec), `tcg_out_mov`
-in both backends moves i64 values between general and vector registers,
-`tcg_out_ld/st` accept an i64 temp living in a vector register, and x86's
-`tcg_out_movi` already handles it. So a scalar float op is an ordinary
-opcode on i64 temps whose operand constraint is the vector class:
-
-- `include/tcg/tcg-opc.h`: `add_f64`, `sub_f64`, `mul_f64`, `div_f64`,
-  `fmsub_f64` (a·b − c, fused), gated by `TCG_TARGET_HAS_f64`.
-- x86-64 backend: `vaddsd/vsubsd/vmulsd/vdivsd/vfmsub213sd`, constraints
-  `C_O1_I2(x, x, x)` / `C_O1_I3(x, 0, x, x)`; requires AVX + FMA3 (new
-  `CPUINFO_FMA`).
-- aarch64 backend: `fadd/fsub/fmul/fdiv/fnmsub` (scalar D), constraints
-  `C_O1_I2(w, w, w)` / `C_O1_I3(w, w, w, w)`; plus `tcg_out_movi` into a
-  V register via `tcg_out_dupi_vec`. Encodings checked against llvm-mc;
-  **not yet executed** (needs the M1 Air).
-- TCI and other hosts: `TCG_TARGET_HAS_f64` is 0, the translator keeps
-  emitting the helper calls.
-
-About 200 lines of TCG core/backend change. The larger part is the i386
-translator (`target/i386/tcg/x87-inline.c.inc`, ~450 lines): for each
-inlined instruction it loads the operands from `env->fpregs[]`, runs the
-same admissibility checks as `x87f_binop()` in x87-fast.h (exact double,
-exponent window ±2^900, result normal, no underflow, divisor nonzero),
-does the op, recovers the inexact flag from the TwoSum / FMA residual and
-ORs `PE` into `fpus`, converts back and stores. All checks are branchless
-(`setcond`/`movcond`) so the fast path has no labels: values are EBB temps
-that never get synced to the stack at a branch. Any failed check branches
-to the unmodified helper sequence before any state is written, so the
-result is by construction identical to the helper path (which is
-identical to softfloat, doc 00 / patch 05).
-
-Gate: `env->x87_fast_mode` (1 byte, derived from `fpuc` by
-`update_fp_status()`: PC=53, RC=nearest, PE masked, property `x87-fast`
-on). One load + compare per instruction; `fldcw` changes it through the
-existing helper.
-
-Inlined: `fld/fst/fstp m64`, `fadd/fsub/fsubr/fmul/fdiv/fdivr` with m64 and
-with `st(i)` in both directions incl. the popping forms, `fld st(i)`,
-`fxch`, `fst/fstp st(i)`. Still helpers: `fist*`, `fcom*`, m32/m16/int
-operands, transcendentals, PC=24 (Direct3D) mode.
+98 % in helpers; forcing the body to inline into them gave 10 %. The cost
+is the structure: every x87 op is a call, the value passes through
+`env->ft0` / `env->fpregs[]` as floatx80, flags are saved and merged.
 
 ## Results (x86-64, Ryzen 7 5700X; ns per x87 op in the loop above)
 
 | Configuration | ns/op | vs softfloat |
 |---|---|---|
-| softfloat (`x87-fast=off`) | 22.8 | 1.0× |
-| patch 05 (helpers on the host FPU) | 10.6 | 2.2× |
-| patch 05 + `always_inline` of the helper body | 9.5 | 2.4× |
-| **patch 06 (inline TCG)** | **6.9** | **3.3×** |
-| 06 without FIP/FDP stores (experiment, not kept) | 6.4 | 3.6× |
-| 06 without inexact-flag recovery (experiment, not kept) | 6.2 | 3.7× |
+| softfloat (`x87-fast=off`) | 21.6 | 1.0× |
+| patch 05 (helpers on the host FPU) | 10.6 | 2.0× |
+| level 2: ops inline, x80 round trip per instruction (prototype) | 6.9 | 3.1× |
+| **patch 06: shadow doubles across instructions** | **3.3** | **6.5×** |
 
-Correctness: `tools/x87-guest-test.py`, extended to every inlined form and
-a PE-unmasked control word, 298,460 result lines identical on/off.
+With patch 06, 93 % of the time is in translated code; the remaining
+helper is nothing in this loop (fistp is inlined too). The fast path of
+`fmul m64` is ~53 host instructions: TLB lookup 9, operand window check 8,
+multiply + result check 10, underflow check 8, FMA residual + PE 9,
+FIP/FDP 7, one sync store of the shadow global.
 
-With the inline path 85 % of the time is in translated code and the one
-remaining helper in the loop (`fistp`) is 12 %. The 7-op TB grew from
-1208 to 3720 bytes of host code (~130 host instructions per x87 op).
+Correctness: `tools/x87-guest-test.py` (68 instruction sequences × 44²
+operand pairs × 7 control words, incl. multi-instruction chains, fcmov,
+compares, integer and float conversions), 382,250 result lines identical
+with the fast path on and off. A linux-user SIGSEGV test with two dirty
+shadows outstanding at the fault verified the unwind repair (saved FPU
+state in the signal frame identical to the helper path).
 
-## Why it stops at ~7 ns, and what the next level is
+## What "inline in TCG" needed (both levels)
 
-Two things bound the inline design, and the toggles above show the
-bookkeeping (FIP/FDP, PE) is not one of them:
+TCG had no float opcodes, but everything around them exists: the
+register allocator handles vector registers (gvec), `tcg_out_mov` moves
+i64 values between general and vector registers in both backends,
+`tcg_out_ld/st` accept an i64 temp living in a vector register. A scalar
+float op is therefore an ordinary opcode on i64 temps whose operand
+constraint is the vector class:
 
-1. **Instruction count.** Each x87 op still converts floatx80 → double
-   (window and exactness checks, ~20 integer ops), crosses to the FP
-   domain and back, converts the result, and does the TLB lookup for a
-   memory operand. ~130 host instructions per op at ~4 IPC is ~7 ns.
-2. **The serial chain through memory.** Every result is written to
-   `env->fpregs[]` as x80 and reloaded by the next instruction, so a
-   dependent chain pays store-forwarding plus both conversions per op
-   (~30 cycles). The DOS loop is such a chain; real x87 code has more ILP
-   but the instruction count still caps it.
+- `include/tcg/tcg-opc.h`: `add/sub/mul/div_f64`, `fmsub_f64` (a·b − c,
+  fused), `sqrt_f64`, `cvt_f64_f32`, gated by `TCG_TARGET_HAS_f64`.
+- x86-64: `vaddsd/vsubsd/vmulsd/vdivsd/vfmsub213sd/vsqrtsd/vcvtsd2ss`,
+  constraints `C_O1_I2(x, x, x)` etc.; requires AVX + FMA3 (new
+  `CPUINFO_FMA`).
+- aarch64: `fadd/fsub/fmul/fdiv/fnmsub/fsqrt/fcvt` (scalar D),
+  `C_O1_I2(w, w, w)` etc., plus `tcg_out_movi` into a V register.
+  Encodings checked against llvm-mc; **not yet executed** (M1 Air).
+- Other hosts / TCI: `TCG_TARGET_HAS_f64` is 0, the translator emits the
+  helper calls as before.
 
-Both disappear only if the translator keeps x87 values as doubles across
-instructions: track the stack top statically (3 bits of `fpstt` in the TB
-flags, `fldcw`/`fninit`/`fldenv`/`frstor` end the TB), keep a per-slot
-"exact double" shadow (`st_d[8]` TCG globals plus a valid mask) and only
-materialize the x80 form at TB exit and before any helper. Then
-`fld m64; fmul m64; fadd m64; fstp m64` is four host FP instructions plus
-the residuals off the critical path, i.e. ~1–2 ns per op. That is the
-"much larger project": a lazy-state JIT for the x87 stack with correct
-materialization on every exit path (exceptions, helpers, `fxsave`, TB
-end) and a TB-flag change that touches the i386 translator core; estimate
-1500–2500 lines and a long tail of validation. Not started.
+## The shadow-double design (`target/i386/tcg/x87-shadow.c.inc`)
 
-## Cheaper follow-ups inside the current design
+**Mode.** Inline mode is a TB flag (`TB_FLAG_X87_INLINE`, bit 29 of
+`tb->flags`, from `env->x87_fast_mode`: PC=53, RC=nearest, PE masked,
+property `x87-fast` on). Everything that can change the control word
+(`fldcw`, `fldenv`, `frstor`, `fninit`, `fnsave`, `fxrstor`, `xrstor`)
+ends the TB in both modes. A one-load runtime guard at the first inlined
+instruction of each TB protects against a missed case by exiting to the
+same instruction (the lookup then finds the right variant). PC=24
+(Direct3D) and PC=64 code runs the patch 05 helpers.
 
-- Inline `fist/fistp` (the remaining helper in FP loops): needs an
-  f64 → int conversion; doable with `add_f64`/`sub_f64` (the 2^52 trick)
-  and integer extraction, or a `cvt_f64_i64` opcode (`cvtsd2si`/`fcvtns`).
-- PC=24 (Direct3D) mode: same code with binary32 opcodes.
-- Drop the per-op FIP/FDP stores in favour of one store per TB (7 %);
-  needs care around `fnstenv` after a mid-TB exception.
-- Keep the double in a vector register across a dependent pair by having
-  the x80 store forwarded by TCG (no: TCG does no memory forwarding, this
-  is the level-3 design again).
+**Stack model.** The translator addresses the stack relative to the top
+at the first x87 instruction of the TB (a runtime `entry_top` loaded
+once): relative slot r is physical register `(entry_top + r) & 7`, and
+`ST(i)` is slot `(delta + i) & 7` where `delta` counts pushes and pops.
+This costs no TB-flag bits and no TB variants per stack depth. Each slot
+is statically MEM (only `fpregs[]` holds it), CLEAN (shadow equals
+memory) or DIRTY (shadow newer). Shadows are eight TCG globals
+(`cpu_x87_sd[]`, backed by `env->x87_sd[]`). `env->fpstt` and
+`env->fptags` stay current in memory (one store per push/pop), so
+helpers and the unwinder always see the real stack layout.
 
-## How to test on the Air
+**Invariants.** No DIRTY slot at any TB exit or before any helper that
+may read `fpregs[]`; helpers that may write `fpregs[]` or move the top
+(all non-inlined x87 instructions, MMX entry, `fxrstor`/`xrstor`) get a
+boundary: flush, forget shadows, reset the frame. Exit hooks live in
+`gen_eob`, `gen_jmp_rel`, `gen_exception`, `gen_interrupt` and the
+`hlt`/`pause`/`mwait`/`vmrun`/`icebp`/`rdpmc` sites (flush code emitted
+without touching the static state, so conditional exits inside a TB
+stay correct).
 
-```sh
-git fetch && git checkout worktree-x87-inline-tcg
-scripts/prepare-qemu.sh && scripts/configure-qemu.sh
-ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.dylib && cargo build --release
-python3 tools/x87-guest-test.py            # must print "... identical"
-# Super PI 1M in XP, then with -cpu pentium3,x87-fast=off (doc 00 §benchmarks)
-```
+**Faults mid-TB.** A guest load or store can fault with DIRTY shadows.
+TCG already syncs globals to memory before every `qemu_ld/st`, so the
+shadow values are in `env->x87_sd[]`; the insn_start word (a third
+`TARGET_INSN_START_EXTRA_WORDS` word: dirty mask + delta) lets
+`x86_restore_state_to_opc()` convert them back into `fpregs[]` during
+unwind. Inlined memory instructions do their guest access before any
+architectural change, so the word for the faulting instruction describes
+exactly the state to repair.
 
-If the aarch64 lowering is wrong the guest test will show mismatches or
-QEMU will abort in `tcg_out_op`; the fallback is `-cpu …,x87-fast=off`.
+**Fast path.** Shadows hold only zero or normal doubles with exponents
+within ±900 (the patch 05 window), so arithmetic operands need no checks
+and results are checked once (window; underflow for mul/div; divisor
+nonzero). The inexact flag comes from the TwoSum/FMA residual and is
+ORed into `fpus`. Everything is branchless except the branches to the
+slow block, and the fast path contains no labels, so TCG keeps its
+globals (and the shadows) in registers across instructions.
+
+**Slow blocks.** Every instruction records one out-of-line block
+(`X87SlowBlock`: static stack state at instruction start, pc/cc state,
+operands as TB temps). At `tb_stop` the blocks are emitted after the
+normal exit: write back all dirty shadows, run the unmodified helper
+sequence (including the store and pop for `fist`/`fst`), update FIP/FDP,
+exit the TB to the next instruction. Guest code that hits a slow case in
+a hot loop (NaN/inf/denormal operands, values outside ±2^900, 64-bit
+mantissas from `fldpi`/`fsin` results, `fst m32` overflow, `fist` out of
+range) pays a TB exit per occurrence: bounded (a helper plus a TB
+transition) but worth knowing.
+
+**Deviation, on purpose.** A popped register keeps its previous
+`fpregs[]` content instead of the popped value: materializing every
+popped slot would cost ~20 host instructions per `fstp` for something
+only observable by reading an empty register (which QEMU never faults
+on, and real hardware answers with an indefinite NaN). `fxsave` images of
+empty registers can differ from patch 05's; round trips through
+`fxsave`/`fxrstor` (context switches) are unaffected.
+
+## Coverage and fallbacks
+
+Inlined: `fld/fst/fstp m32/m64`, `fild/fist/fistp m16/m32`, all six
+arithmetic ops with m32/m64/st(i) operands including the popping and
+reversed forms, `fld/fst/fstp st(i)`, `fxch`, `fcmovcc`, `fld1`,
+`fldz`, `fchs`, `fabs`, `fsqrt`, `frndint`, `fcom/fcomp/fcompp`,
+`fucom/fucomp/fucompp`, `fcomi/fucomi(p)`, `ftst`, `ffree(p)`,
+`fincstp/fdecstp`, `fnstsw ax`. Helpers with a boundary: `fld/fstp m80`,
+`fild/fistp m64`, `fisttp`, `fbld/fbstp`, transcendentals, `fscale`,
+`fprem`, `fxtract`, `fxam`, the other constants, `fnsave/frstor`,
+`fnstenv/fldenv`. No boundary needed: `fnstcw`, `fnstsw m16`, `fnclex`,
+`fwait`. A TB with more than 94 inlined x87 instructions falls back to
+helpers for the rest.
+
+## Follow-ups
+
+- Run on the Air: `python3 tools/x87-guest-test.py`, then Super PI 1M in
+  XP against `-cpu pentium3,x87-fast=off` (doc 00 §benchmarks). If the
+  aarch64 lowering is wrong the guest test shows mismatches or QEMU
+  aborts in `tcg_out_op`; `x87-fast=off` is the fallback.
+- Per-op cost (~53 host instructions) can still drop: fold the underflow
+  test into the result window check (~8), a `movcond`-based window check
+  (~3), defer FIP/FCS to flush points with the pc in the insn_start word
+  (~4). PC=24 (Direct3D) mode with binary32 shadows is the same design.
+- Slow-path frequency counters (`-d` or a trace) would tell whether any
+  real workload exits often enough to matter.
