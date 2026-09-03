@@ -67,8 +67,8 @@ library (patch 31/32 + `embed/mglcntx_embed.c`: EGL surfaceless pbuffer on
 Linux, CGL + FBO stand-in on macOS), embed API v4. Win98 wglgears through
 the player: 420–450 fps at 800×600 on Linux, `GL 2.1 Metal / Apple M1` on
 the Air with the readback path; **zero-copy on Linux** (dma-buf ring →
-Vulkan import, API v5): 575–600 fps. Remaining: IOSurface zero-copy on
-macOS, Glide (doc 12).
+Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
+→ Metal, API v6) verified on the Air. Remaining: Glide (doc 12).
 
 ## M2 — Pixel accuracy + input polish
 

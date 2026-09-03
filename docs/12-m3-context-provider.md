@@ -26,12 +26,12 @@ buffers: Win98 wglgears 575–600 fps (was 420–450 with readback). Sync is
 `glFinish` before the hand-off for now (a fence fd is the refinement).
 `tools/embed-3d-test.c` checks the ring by mmap'ing the dma-bufs; the
 readback path stays as the fallback (macOS, or no Vulkan extensions).
-**macOS zero-copy written (2026-09-03), untested on the Air:** IOSurface
-ring bound to rectangle textures with `CGLTexImageIOSurface2D`, flipped
-blit from the stand-in FBO, embed API v6 `on_3d_iosurface`; the player
-wraps the surface in a Metal texture (`player/src/iosurface.rs`). Steps in
-`build-macos.md` §Zero-copy. Then Glide (§5), and fence-based sync on both
-platforms instead of `glFinish`.
+**macOS zero-copy done, verified on the Air (2026-09-03):** IOSurface ring
+bound to rectangle textures with `CGLTexImageIOSurface2D`, flipped blit
+from the stand-in FBO, embed API v6 `on_3d_iosurface`; the player wraps
+the surface in a Metal texture (`player/src/iosurface.rs`). **§4 complete
+on both platforms.** Left in M3: Glide (§5); refinement: fence-based sync
+on both platforms instead of `glFinish`.
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.

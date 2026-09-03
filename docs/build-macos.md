@@ -240,7 +240,7 @@ incomplete, frames are not published (desktop stays frozen) and the
 `glcntx:` lines name the failing call. Standalone `-display sdl` is
 unaffected (its backend stays, linked weak).
 
-### Zero-copy (IOSurface) — written 2026-09-03, untested on the Air
+### Zero-copy (IOSurface) — verified 2026-09-03 on the Air
 
 The macOS backend now offers a ring of three IOSurfaces (BGRA8) bound to
 `GL_TEXTURE_RECTANGLE` textures via `CGLTexImageIOSurface2D`; every swap
@@ -257,7 +257,7 @@ ninja -C build/qemu libqemu-embed-i386.dylib
 cargo build --release      # new deps: objc2, objc2-metal, objc2-io-surface
 ```
 
-Expected stderr on wglgears: `glcntx: zero-copy: IOSurface ring`,
+Stderr on wglgears: `glcntx: zero-copy: IOSurface ring`,
 `zero-copy slot 0: 800x600 IOSurface 0x…`, `[3d] slot 0: imported
 800x600` (then slots 1 and 2), gears in the window, higher fps than the
 readback run. Failure modes to send back: a Rust compile error in
