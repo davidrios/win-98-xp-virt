@@ -28,8 +28,9 @@ Measured on a Ryzen 7 5700X, DOS 7-op loop (ns per x87 op): softfloat
 21.6, patch 05 helpers 10.6, patch 06 2.9. tools/x87-guest-test.py
 (68 op sequences x 44 operands^2 x 7 control words): 382,250 result
 lines identical with the fast path on and off. A linux-user SIGSEGV test
-with two dirty shadows verified the unwind repair. The aarch64 lowering
-is written against llvm-mc encodings but has not run yet (M1 Air).
+with two dirty shadows verified the unwind repair. 
+The aarch64 backend also needed a fix upstream never exercised: tcg_out_mov
+vector->general emitted UMOV with a zero element-size field (SIGILL).
 --- a/include/tcg/tcg-opc.h
 +++ b/include/tcg/tcg-opc.h
 @@ -188,6 +188,19 @@
@@ -323,7 +324,21 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
          break;
      default:
          g_assert_not_reached();
-@@ -2482,6 +2509,28 @@
+@@ -1221,7 +1248,12 @@
+             tcg_out_movr(s, type, ret, arg);
+             break;
+         } else if (ret < 32) {
+-            tcg_out_insn(s, 3605, UMOV, type, ret, arg, 0, 0);
++            /*
++             * UMOV Xd, Vn.D[0] / Wd, Vn.S[0]: imm5 encodes the element
++             * size (01000 for D, 00100 for S); 0 is an unallocated
++             * encoding (SIGILL). Upstream never emitted this move.
++             */
++            tcg_out_insn(s, 3605, UMOV, type, ret, arg, 4 << type, 0);
+             break;
+         } else if (arg < 32) {
+             tcg_out_insn(s, 3605, INS, 0, ret, arg, 4 << type, 0);
+@@ -2482,6 +2514,28 @@
          tcg_out_insn(s, 3508, SMULH, TCG_TYPE_I64, a0, a1, a2);
          break;
  
@@ -352,7 +367,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
      case INDEX_op_mb:
          tcg_out_mb(s, a0);
          break;
-@@ -2957,6 +3006,17 @@
+@@ -2957,6 +3011,17 @@
      case INDEX_op_goto_ptr:
          return C_O0_I1(r);
  

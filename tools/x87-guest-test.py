@@ -876,9 +876,13 @@ def main():
                 ticks[fast] = (int(it, 16), int(tk, 16))
     if "off" in ticks and "on" in ticks:
         it = ticks["off"][0]
+        ratio = ticks["off"][1] / max(1, ticks["on"][1])
         print("bench: %d iterations x 7 x87 ops: off %.2f s, on %.2f s (%.1fx)" % (
-            it, ticks["off"][1] / 18.2, ticks["on"][1] / 18.2,
-            ticks["off"][1] / max(1, ticks["on"][1])))
+            it, ticks["off"][1] / 18.2, ticks["on"][1] / 18.2, ratio))
+        if ratio < 1.5:
+            print("WARNING: the fast path does not seem active (expected 5x or "
+                  "more): stale build/qemu/qemu-system-i386? re-run "
+                  "scripts/prepare-qemu.sh, configure, ninja")
     # the bench line is timing, not a result: compare everything else
     a = b"\n".join(l for l in a.split(b"\n") if not l.startswith(b"BENCH "))
     b = b"\n".join(l for l in b.split(b"\n") if not l.startswith(b"BENCH "))

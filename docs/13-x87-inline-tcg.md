@@ -63,8 +63,12 @@ constraint is the vector class:
   `CPUINFO_FMA`).
 - aarch64: `fadd/fsub/fmul/fdiv/fnmsub/fsqrt/fcvt` (scalar D),
   `C_O1_I2(w, w, w)` etc., plus `tcg_out_movi` into a V register.
-  Verified on the M1 Air (2026-09-03): the guest test passes, 382,251
-  lines identical.
+  First real run on the M1 Air (2026-09-03) hit an upstream latent bug:
+  `tcg_out_mov` vector→general emitted `UMOV` with a zero element-size
+  field (unallocated encoding, SIGILL) because nothing upstream ever
+  keeps an i64 temp in a vector register; fixed (imm5 = 4 << type). The
+  guest test had passed earlier only because it ran a stale binary; it
+  now warns when the on/off ratio shows the fast path inactive.
 - Other hosts / TCI: `TCG_TARGET_HAS_f64` is 0, the translator emits the
   helper calls as before.
 
