@@ -447,7 +447,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  void helper_fldcw(CPUX86State *env, uint32_t val)
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
-@@ -79,6 +79,28 @@
+@@ -79,6 +79,29 @@
  static TCGv cpu_seg_base[6];
  static TCGv_i64 cpu_bndl[4];
  static TCGv_i64 cpu_bndu[4];
@@ -473,10 +473,11 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    int fdp_seg;
 +} X87SlowBlock;
 +#define X87S_MAX_SLOW 96
++#define X87S_MAX_TMPS 96
  
  typedef struct DisasContext {
      DisasContextBase base;
-@@ -127,6 +149,17 @@
+@@ -127,6 +150,19 @@
      int cpuid_7_1_eax_features;
      int cpuid_xsave_features;
  
@@ -488,13 +489,15 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    uint8_t x87s_state[8];      /* per relative slot */
 +    X87SlowBlock x87s_slow[X87S_MAX_SLOW];
 +    int x87s_nslow;
++    TCGTemp *x87s_tmps[X87S_MAX_TMPS];  /* EBB temps of the current insn */
++    int x87s_ntmps;
 +    TCGv x87_fdp_addr;          /* last x87 memory operand (FDP), or NULL */
 +    int x87_fdp_seg;
 +
      /* TCG local temps */
      TCGv cc_srcT;
      TCGv A0;
-@@ -257,6 +290,10 @@
+@@ -257,6 +293,10 @@
  #endif
  
  static void gen_jmp_rel(DisasContext *s, MemOp ot, int diff, int tb_num);
@@ -505,7 +508,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  static void gen_jmp_rel_csize(DisasContext *s, int diff, int tb_num);
  static void gen_exception_gpf(DisasContext *s);
  
-@@ -1406,6 +1443,7 @@
+@@ -1406,6 +1446,7 @@
  
  static void gen_exception(DisasContext *s, int trapno)
  {
@@ -513,7 +516,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
      gen_update_cc_op(s);
      gen_update_eip_cur(s);
      gen_helper_raise_exception(tcg_env, tcg_constant_i32(trapno));
-@@ -2109,6 +2147,7 @@
+@@ -2109,6 +2150,7 @@
     privilege checks */
  static void gen_interrupt(DisasContext *s, uint8_t intno)
  {
@@ -521,7 +524,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
      gen_update_cc_op(s);
      gen_update_eip_cur(s);
      gen_helper_raise_interrupt(tcg_env, tcg_constant_i32(intno),
-@@ -2179,6 +2218,7 @@
+@@ -2179,6 +2221,7 @@
  {
      bool inhibit_reset;
  
@@ -529,7 +532,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
      gen_update_cc_op(s);
  
      /* If several instructions disable interrupts, only the first does it.  */
-@@ -2218,6 +2258,7 @@
+@@ -2218,6 +2261,7 @@
      target_ulong new_eip = new_pc - s->cs_base;
  
      assert(!s->cc_op_dirty);
@@ -537,7 +540,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  
      /* In 64-bit mode, operand size is fixed at 64 bits. */
      if (!CODE64(s)) {
-@@ -2339,6 +2380,7 @@
+@@ -2339,6 +2383,7 @@
  }
  
  #include "emit.c.inc"
@@ -545,7 +548,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  
  static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
  {
-@@ -2356,14 +2398,37 @@
+@@ -2356,14 +2401,37 @@
      mod = (modrm >> 6) & 3;
      rm = modrm & 7;
      op = ((b & 7) << 3) | ((modrm >> 3) & 7);
@@ -584,7 +587,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  
          switch (op) {
          case 0x00 ... 0x07: /* fxxxs */
-@@ -2556,16 +2621,8 @@
+@@ -2556,16 +2624,8 @@
              goto illegal_op;
          }
  
@@ -603,7 +606,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
          }
      } else {
          /* register float ops */
-@@ -2889,12 +2946,7 @@
+@@ -2889,12 +2949,7 @@
      }
  
      if (update_fip) {
@@ -617,7 +620,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
      }
      return;
  
-@@ -2902,6 +2954,25 @@
+@@ -2902,6 +2957,25 @@
      gen_illegal_opcode(s);
  }
  
@@ -643,7 +646,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  static void gen_multi0F(DisasContext *s, X86DecodedInsn *decode)
  {
      int prefixes = s->prefix;
-@@ -3055,6 +3126,7 @@
+@@ -3055,6 +3129,7 @@
              if (!(s->cpuid_ext_features & CPUID_EXT_MONITOR) || CPL(s) != 0) {
                  goto illegal_op;
              }
@@ -651,7 +654,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
              gen_update_cc_op(s);
              gen_update_eip_cur(s);
              gen_helper_mwait(tcg_env, cur_insn_len_i32(s));
-@@ -3130,6 +3202,7 @@
+@@ -3130,6 +3205,7 @@
              if (!check_cpl0(s)) {
                  break;
              }
@@ -659,7 +662,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
              gen_update_cc_op(s);
              gen_update_eip_cur(s);
              /*
-@@ -3147,6 +3220,7 @@
+@@ -3147,6 +3223,7 @@
              if (!SVME(s)) {
                  goto illegal_op;
              }
@@ -667,7 +670,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
              gen_update_cc_op(s);
              gen_update_eip_cur(s);
              gen_helper_vmmcall(tcg_env);
-@@ -3621,6 +3695,15 @@
+@@ -3621,6 +3698,15 @@
                                   seg_base_names[i]);
      }
  
@@ -683,7 +686,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
      for (i = 0; i < 4; ++i) {
          cpu_bndl[i]
              = tcg_global_mem_new_i64(tcg_env,
-@@ -3665,6 +3748,12 @@
+@@ -3665,6 +3751,13 @@
  
      dc->cc_op = CC_OP_DYNAMIC;
      dc->cc_op_dirty = false;
@@ -691,12 +694,13 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        && !(flags & (HF_TF_MASK | HF_INHIBIT_IRQ_MASK));
 +    dc->x87s_guarded = false;
 +    dc->x87s_nslow = 0;
++    dc->x87s_ntmps = 0;
 +    x87s_reset(dc);
 +    dc->x87_fdp_addr = NULL;
      /* select memory access functions */
      dc->mem_index = cpu_mmu_index(cpu, false);
      dc->cpuid_features = env->features[FEAT_1_EDX];
-@@ -3718,7 +3807,7 @@
+@@ -3718,7 +3811,7 @@
      if (tb_cflags(dcbase->tb) & CF_PCREL) {
          pc_arg &= ~TARGET_PAGE_MASK;
      }
@@ -705,7 +709,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  }
  
  static void i386_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
-@@ -3817,6 +3906,7 @@
+@@ -3817,6 +3910,7 @@
      default:
          g_assert_not_reached();
      }
@@ -883,7 +887,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  #ifndef CONFIG_USER_ONLY
 --- /dev/null
 +++ b/target/i386/tcg/x87-shadow.c.inc
-@@ -0,0 +1,1481 @@
+@@ -0,0 +1,1544 @@
 +/*
 + * x87 shadow-double translation: keep the FPU stack as host doubles
 + * across instructions.
@@ -965,6 +969,54 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +
 +#define X87S_SLOT(s, i)  (((s)->x87s_delta + (i)) & 7)
 +
++/*
++ * Temporaries. TCG allows 512 temps per TB and an inlined instruction
++ * uses a few dozen; EBB temps can be returned to the allocator, so every
++ * one created here is tracked and freed at the end of the instruction
++ * (or slow block). Only TB temps (operands kept for the slow block, the
++ * frame's entry top) and the globals live across instructions.
++ */
++static void x87s_track(DisasContext *s, TCGTemp *ts)
++{
++    if (s->x87s_ntmps < X87S_MAX_TMPS) {
++        s->x87s_tmps[s->x87s_ntmps++] = ts;
++    }
++}
++
++static TCGv_i64 x87s_tmp_i64(DisasContext *s)
++{
++    TCGv_i64 t = tcg_temp_ebb_new_i64();
++
++    x87s_track(s, tcgv_i64_temp(t));
++    return t;
++}
++
++static TCGv_i32 x87s_tmp_i32(DisasContext *s)
++{
++    TCGv_i32 t = tcg_temp_ebb_new_i32();
++
++    x87s_track(s, tcgv_i32_temp(t));
++    return t;
++}
++
++static TCGv_ptr x87s_tmp_ptr(DisasContext *s)
++{
++    TCGv_ptr t = tcg_temp_ebb_new_ptr();
++
++    x87s_track(s, tcgv_ptr_temp(t));
++    return t;
++}
++
++static void x87s_free_tmps(DisasContext *s)
++{
++    int i;
++
++    for (i = 0; i < s->x87s_ntmps; i++) {
++        tcg_temp_free_internal(s->x87s_tmps[i]);
++    }
++    s->x87s_ntmps = 0;
++}
++
 +/* ------------------------------------------------------------------ */
 +/* frame and static state                                              */
 +
@@ -1005,7 +1057,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +/* (entry_top + k) & 7 */
 +static TCGv_i32 x87s_phys(DisasContext *s, int k)
 +{
-+    TCGv_i32 t = tcg_temp_ebb_new_i32();
++    TCGv_i32 t = x87s_tmp_i32(s);
 +
 +    if (k & 7) {
 +        tcg_gen_addi_i32(t, s->x87s_top, k & 7);
@@ -1020,7 +1072,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +static TCGv_ptr x87s_slot_ptr(DisasContext *s, int r)
 +{
 +    TCGv_i32 ph = x87s_phys(s, r);
-+    TCGv_ptr p = tcg_temp_ebb_new_ptr();
++    TCGv_ptr p = x87s_tmp_ptr(s);
 +
 +    tcg_gen_shli_i32(ph, ph, 4);
 +    tcg_gen_ext_i32_ptr(p, ph);
@@ -1039,7 +1091,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +static void x87s_set_tag(DisasContext *s, int r, int tag)
 +{
 +    TCGv_i32 ph = x87s_phys(s, r);
-+    TCGv_ptr p = tcg_temp_ebb_new_ptr();
++    TCGv_ptr p = x87s_tmp_ptr(s);
 +
 +    tcg_gen_ext_i32_ptr(p, ph);
 +    tcg_gen_add_ptr(p, p, tcg_env);
@@ -1090,15 +1142,15 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 + * [-win, win] (x87f_x80_to_d). Branchless apart from the exit; `out` is
 + * only written after the branch.
 + */
-+static void x87s_x80_to_f64(TCGv_i64 out, TCGv_i64 low, TCGv_i32 high,
-+                            int win, TCGLabel *slow)
++static void x87s_x80_to_f64(DisasContext *s, TCGv_i64 out, TCGv_i64 low,
++                            TCGv_i32 high, int win, TCGLabel *slow)
 +{
 +    TCGv_i64 zero = tcg_constant_i64(0);
-+    TCGv_i64 e = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i64 bad = tcg_temp_ebb_new_i64();
-+    TCGv_i64 iszero = tcg_temp_ebb_new_i64();
-+    TCGv_i64 sign = tcg_temp_ebb_new_i64();
++    TCGv_i64 e = x87s_tmp_i64(s);
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 bad = x87s_tmp_i64(s);
++    TCGv_i64 iszero = x87s_tmp_i64(s);
++    TCGv_i64 sign = x87s_tmp_i64(s);
 +
 +    tcg_gen_extu_i32_i64(e, high);
 +    tcg_gen_andi_i64(sign, e, 0x8000);
@@ -1128,12 +1180,13 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +}
 +
 +/* binary64 (zero or normal) -> x80, exact (x87f_d_to_x80). */
-+static void x87s_f64_to_x80(TCGv_i64 low, TCGv_i32 high, TCGv_i64 d)
++static void x87s_f64_to_x80(DisasContext *s, TCGv_i64 low, TCGv_i32 high,
++                            TCGv_i64 d)
 +{
 +    TCGv_i64 zero = tcg_constant_i64(0);
-+    TCGv_i64 e = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i64 h = tcg_temp_ebb_new_i64();
++    TCGv_i64 e = x87s_tmp_i64(s);
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 h = x87s_tmp_i64(s);
 +
 +    tcg_gen_shri_i64(e, d, 52);
 +    tcg_gen_andi_i64(e, e, 0x7ff);
@@ -1154,11 +1207,12 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 + * Branch to slow unless d is zero or a normal whose biased exponent is
 + * in [lo, lo + range].
 + */
-+static void x87s_f64_check(TCGv_i64 d, int lo, int range, TCGLabel *slow)
++static void x87s_f64_check(DisasContext *s, TCGv_i64 d, int lo, int range,
++                           TCGLabel *slow)
 +{
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i64 bad = tcg_temp_ebb_new_i64();
-+    TCGv_i64 iszero = tcg_temp_ebb_new_i64();
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 bad = x87s_tmp_i64(s);
++    TCGv_i64 iszero = x87s_tmp_i64(s);
 +
 +    tcg_gen_shli_i64(t, d, 1);
 +    tcg_gen_setcondi_i64(TCG_COND_EQ, iszero, t, 0);
@@ -1169,23 +1223,24 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    tcg_gen_brcondi_i64(TCG_COND_NE, bad, 0, slow);
 +}
 +
-+static void x87s_f64_check_win(TCGv_i64 d, TCGLabel *slow)
++static void x87s_f64_check_win(DisasContext *s, TCGv_i64 d, TCGLabel *slow)
 +{
-+    x87s_f64_check(d, X87S_BIAS_F64 - X87S_WIN, 2 * X87S_WIN, slow);
++    x87s_f64_check(s, d, X87S_BIAS_F64 - X87S_WIN, 2 * X87S_WIN, slow);
 +}
 +
 +/*
 + * binary32 bits (in the low half of m) -> binary64, exact; zero or
 + * normal only (x87f_from_f32), which is always inside the window.
 + */
-+static void x87s_f32_to_f64(TCGv_i64 out, TCGv_i64 m, TCGLabel *slow)
++static void x87s_f32_to_f64(DisasContext *s, TCGv_i64 out, TCGv_i64 m,
++                            TCGLabel *slow)
 +{
 +    TCGv_i64 zero = tcg_constant_i64(0);
-+    TCGv_i64 e = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i64 bad = tcg_temp_ebb_new_i64();
-+    TCGv_i64 iszero = tcg_temp_ebb_new_i64();
-+    TCGv_i64 sign = tcg_temp_ebb_new_i64();
++    TCGv_i64 e = x87s_tmp_i64(s);
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 bad = x87s_tmp_i64(s);
++    TCGv_i64 iszero = x87s_tmp_i64(s);
++    TCGv_i64 sign = x87s_tmp_i64(s);
 +
 +    tcg_gen_andi_i64(t, m, 0x7fffffff);
 +    tcg_gen_setcondi_i64(TCG_COND_EQ, iszero, t, 0);
@@ -1214,11 +1269,11 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +}
 +
 +/* fpus |= PE if the residual err is nonzero */
-+static void x87s_set_pe(TCGv_i64 err)
++static void x87s_set_pe(DisasContext *s, TCGv_i64 err)
 +{
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i32 pe = tcg_temp_ebb_new_i32();
-+    TCGv_i32 fpus = tcg_temp_ebb_new_i32();
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i32 pe = x87s_tmp_i32(s);
++    TCGv_i32 fpus = x87s_tmp_i32(s);
 +
 +    tcg_gen_shli_i64(t, err, 1);
 +    tcg_gen_setcondi_i64(TCG_COND_NE, t, t, 0);
@@ -1230,12 +1285,12 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +}
 +
 +/* fpus |= PE if a != b (bit patterns; a sign-only difference is exact) */
-+static void x87s_set_pe_ne(TCGv_i64 a, TCGv_i64 b)
++static void x87s_set_pe_ne(DisasContext *s, TCGv_i64 a, TCGv_i64 b)
 +{
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
++    TCGv_i64 t = x87s_tmp_i64(s);
 +
 +    tcg_gen_xor_i64(t, a, b);
-+    x87s_set_pe(t);
++    x87s_set_pe(s, t);
 +}
 +
 +/*
@@ -1244,13 +1299,14 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 + * whose rounded result is finite, else slow (denormal or overflow: the
 + * helper raises UE/OE).
 + */
-+static void x87s_f64_to_f32(TCGv_i32 out, TCGv_i64 d, TCGLabel *slow)
++static void x87s_f64_to_f32(DisasContext *s, TCGv_i32 out, TCGv_i64 d,
++                            TCGLabel *slow)
 +{
-+    TCGv_i64 e = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i64 bad = tcg_temp_ebb_new_i64();
-+    TCGv_i64 iszero = tcg_temp_ebb_new_i64();
-+    TCGv_i64 f = tcg_temp_ebb_new_i64();
++    TCGv_i64 e = x87s_tmp_i64(s);
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 bad = x87s_tmp_i64(s);
++    TCGv_i64 iszero = x87s_tmp_i64(s);
++    TCGv_i64 f = x87s_tmp_i64(s);
 +
 +    tcg_gen_shli_i64(t, d, 1);
 +    tcg_gen_setcondi_i64(TCG_COND_EQ, iszero, t, 0);
@@ -1265,7 +1321,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    tcg_gen_brcondi_i64(TCG_COND_EQ, t, 0x7f800000, slow);   /* overflow */
 +    tcg_gen_extrl_i64_i32(out, f);
 +    tcg_gen_andi_i64(t, d, (1 << 29) - 1);
-+    x87s_set_pe(t);
++    x87s_set_pe(s, t);
 +}
 +
 +/* ------------------------------------------------------------------ */
@@ -1277,11 +1333,11 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    int r = X87S_SLOT(s, i);
 +
 +    if (s->x87s_state[r] == X87S_MEM) {
-+        TCGv_i64 low = tcg_temp_ebb_new_i64();
-+        TCGv_i32 high = tcg_temp_ebb_new_i32();
++        TCGv_i64 low = x87s_tmp_i64(s);
++        TCGv_i32 high = x87s_tmp_i32(s);
 +
 +        x87s_ld_x80(low, high, x87s_slot_ptr(s, r));
-+        x87s_x80_to_f64(cpu_x87_sd[r], low, high, X87S_WIN, slow);
++        x87s_x80_to_f64(s, cpu_x87_sd[r], low, high, X87S_WIN, slow);
 +        s->x87s_state[r] = X87S_CLEAN;
 +    }
 +    return cpu_x87_sd[r];
@@ -1299,10 +1355,10 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +
 +static void x87s_materialize_slot(DisasContext *s, int r)
 +{
-+    TCGv_i64 low = tcg_temp_ebb_new_i64();
-+    TCGv_i32 high = tcg_temp_ebb_new_i32();
++    TCGv_i64 low = x87s_tmp_i64(s);
++    TCGv_i32 high = x87s_tmp_i32(s);
 +
-+    x87s_f64_to_x80(low, high, cpu_x87_sd[r]);
++    x87s_f64_to_x80(s, low, high, cpu_x87_sd[r]);
 +    x87s_st_x80(x87s_slot_ptr(s, r), low, high);
 +}
 +
@@ -1405,7 +1461,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    }
 +    s->x87s_guarded = true;
 +    b = x87s_new_slow(s, X87S_SLOW_GUARD);
-+    m = tcg_temp_ebb_new_i32();
++    m = x87s_tmp_i32(s);
 +    tcg_gen_ld8u_i32(m, tcg_env, offsetof(CPUX86State, x87_fast_mode));
 +    tcg_gen_brcondi_i32(TCG_COND_NE, m, 1, b->label);
 +}
@@ -1441,6 +1497,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +
 +        if (b->kind == X87S_SLOW_GUARD) {
 +            x87s_exit_to(s, b->pc_insn);
++            x87s_free_tmps(s);
 +            continue;
 +        }
 +        x87s_flush_code(s);
@@ -1449,7 +1506,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +            if (b->m64) {
 +                gen_helper_fldl_FT0(tcg_env, b->m);
 +            } else {
-+                TCGv_i32 m32 = tcg_temp_ebb_new_i32();
++                TCGv_i32 m32 = x87s_tmp_i32(s);
 +                tcg_gen_extrl_i64_i32(m32, b->m);
 +                gen_helper_flds_FT0(tcg_env, m32);
 +            }
@@ -1473,14 +1530,14 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +            if (b->m64) {
 +                gen_helper_fldl_ST0(tcg_env, b->m);
 +            } else {
-+                TCGv_i32 m32 = tcg_temp_ebb_new_i32();
++                TCGv_i32 m32 = x87s_tmp_i32(s);
 +                tcg_gen_extrl_i64_i32(m32, b->m);
 +                gen_helper_flds_ST0(tcg_env, m32);
 +            }
 +            break;
 +        case X87S_SLOW_FIST:
 +            {
-+                TCGv_i32 v = tcg_temp_ebb_new_i32();
++                TCGv_i32 v = x87s_tmp_i32(s);
 +                if (b->m16) {
 +                    gen_helper_fist_ST0(v, tcg_env);
 +                    tcg_gen_qemu_st_i32(v, b->a0, s->mem_index, MO_LEUW);
@@ -1495,11 +1552,11 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +            break;
 +        case X87S_SLOW_FST_MEM:
 +            if (b->m64) {
-+                TCGv_i64 v = tcg_temp_ebb_new_i64();
++                TCGv_i64 v = x87s_tmp_i64(s);
 +                gen_helper_fstl_ST0(v, tcg_env);
 +                tcg_gen_qemu_st_i64(v, b->a0, s->mem_index, MO_LEUQ);
 +            } else {
-+                TCGv_i32 v = tcg_temp_ebb_new_i32();
++                TCGv_i32 v = x87s_tmp_i32(s);
 +                gen_helper_fsts_ST0(v, tcg_env);
 +                tcg_gen_qemu_st_i32(v, b->a0, s->mem_index, MO_LEUL);
 +            }
@@ -1558,6 +1615,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        }
 +        gen_x87_fip_fdp(s);
 +        x87s_exit_to(s, b->pc_next);
++        x87s_free_tmps(s);
 +    }
 +    s->x87s_nslow = 0;
 +    s->base.pc_next = saved_pc_next;
@@ -1573,13 +1631,13 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 + * recovered from the residual (x87f_binop_d). op: 0 add, 1 mul,
 + * 4 sub (a - b), 5 subr (b - a), 6 div (a / b), 7 divr (b / a).
 + */
-+static void x87s_binop(TCGv_i64 r, int op, TCGv_i64 a, TCGv_i64 b,
-+                       TCGLabel *slow)
++static void x87s_binop(DisasContext *s, TCGv_i64 r, int op, TCGv_i64 a,
++                       TCGv_i64 b, TCGLabel *slow)
 +{
-+    TCGv_i64 err = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t1 = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t2 = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t3 = tcg_temp_ebb_new_i64();
++    TCGv_i64 err = x87s_tmp_i64(s);
++    TCGv_i64 t1 = x87s_tmp_i64(s);
++    TCGv_i64 t2 = x87s_tmp_i64(s);
++    TCGv_i64 t3 = x87s_tmp_i64(s);
 +
 +    if (op == 5 || op == 7) {
 +        TCGv_i64 x = a;
@@ -1592,12 +1650,12 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    case 0:
 +    case 4:
 +        if (op == 4) {
-+            TCGv_i64 nb = tcg_temp_ebb_new_i64();
++            TCGv_i64 nb = x87s_tmp_i64(s);
 +            tcg_gen_xori_i64(nb, b, 1ULL << 63);
 +            b = nb;
 +        }
 +        tcg_gen_add_f64(r, a, b);
-+        x87s_f64_check_win(r, slow);
++        x87s_f64_check_win(s, r, slow);
 +        /* TwoSum: bb = r - a; err = (a - (r - bb)) + (b - bb) */
 +        tcg_gen_sub_f64(t1, r, a);
 +        tcg_gen_sub_f64(t2, r, t1);
@@ -1607,7 +1665,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        break;
 +    case 1:
 +        tcg_gen_mul_f64(r, a, b);
-+        x87s_f64_check_win(r, slow);
++        x87s_f64_check_win(s, r, slow);
 +        x87s_iszero(t1, r);
 +        x87s_iszero(t2, a);
 +        x87s_iszero(t3, b);
@@ -1620,7 +1678,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        x87s_iszero(t1, b);                       /* ZE / IE */
 +        tcg_gen_brcondi_i64(TCG_COND_NE, t1, 0, slow);
 +        tcg_gen_div_f64(r, a, b);
-+        x87s_f64_check_win(r, slow);
++        x87s_f64_check_win(s, r, slow);
 +        x87s_iszero(t1, r);
 +        x87s_iszero(t2, a);
 +        tcg_gen_andc_i64(t1, t1, t2);             /* underflow */
@@ -1630,15 +1688,15 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    default:
 +        g_assert_not_reached();
 +    }
-+    x87s_set_pe(err);
++    x87s_set_pe(s, err);
 +}
 +
 +/* total-order key of a finite double: -0 -> +0, negatives flipped */
-+static void x87s_cmp_key(TCGv_i64 k, TCGv_i64 d)
++static void x87s_cmp_key(DisasContext *s, TCGv_i64 k, TCGv_i64 d)
 +{
 +    TCGv_i64 zero = tcg_constant_i64(0);
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
-+    TCGv_i64 n = tcg_temp_ebb_new_i64();
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 n = x87s_tmp_i64(s);
 +
 +    tcg_gen_shli_i64(t, d, 1);
 +    tcg_gen_movcond_i64(TCG_COND_EQ, n, t, zero, zero, d);
@@ -1651,19 +1709,20 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 + * Ordered compare of two shadows: cc = C0 (less), C3 (equal) or 0 in the
 + * x87 status-word form, or CC_C / CC_Z when eflags.
 + */
-+static void x87s_compare(TCGv_i32 cc, TCGv_i64 a, TCGv_i64 b, bool eflags)
++static void x87s_compare(DisasContext *s, TCGv_i32 cc, TCGv_i64 a,
++                         TCGv_i64 b, bool eflags)
 +{
-+    TCGv_i64 ka = tcg_temp_ebb_new_i64();
-+    TCGv_i64 kb = tcg_temp_ebb_new_i64();
-+    TCGv_i64 lt = tcg_temp_ebb_new_i64();
-+    TCGv_i64 eq = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
++    TCGv_i64 ka = x87s_tmp_i64(s);
++    TCGv_i64 kb = x87s_tmp_i64(s);
++    TCGv_i64 lt = x87s_tmp_i64(s);
++    TCGv_i64 eq = x87s_tmp_i64(s);
++    TCGv_i64 t = x87s_tmp_i64(s);
 +    TCGv_i64 zero = tcg_constant_i64(0);
 +    int c_lt = eflags ? CC_C : 0x0100;
 +    int c_eq = eflags ? CC_Z : 0x4000;
 +
-+    x87s_cmp_key(ka, a);
-+    x87s_cmp_key(kb, b);
++    x87s_cmp_key(s, ka, a);
++    x87s_cmp_key(s, kb, b);
 +    tcg_gen_setcond_i64(TCG_COND_LT, lt, ka, kb);
 +    tcg_gen_setcond_i64(TCG_COND_EQ, eq, ka, kb);
 +    tcg_gen_movcond_i64(TCG_COND_NE, t, eq, zero, tcg_constant_i64(c_eq), zero);
@@ -1671,9 +1730,9 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    tcg_gen_extrl_i64_i32(cc, t);
 +}
 +
-+static void x87s_fpus_cc(TCGv_i32 cc)
++static void x87s_fpus_cc(DisasContext *s, TCGv_i32 cc)
 +{
-+    TCGv_i32 fpus = tcg_temp_ebb_new_i32();
++    TCGv_i32 fpus = x87s_tmp_i32(s);
 +
 +    tcg_gen_ld16u_i32(fpus, tcg_env, offsetof(CPUX86State, fpus));
 +    tcg_gen_andi_i32(fpus, fpus, ~0x4500);
@@ -1692,7 +1751,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +{
 +    X87SlowBlock *b;
 +    TCGv_i64 m = tcg_temp_new_i64();
-+    TCGv_i64 v = tcg_temp_ebb_new_i64();
++    TCGv_i64 v = x87s_tmp_i64(s);
 +    TCGv_i64 a, r;
 +
 +    tcg_gen_mov_i64(m, s->tmp1_i64);
@@ -1702,22 +1761,22 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    b->m64 = m64;
 +    b->op1 = op1;
 +    if (m64) {
-+        x87s_f64_check_win(m, b->label);
++        x87s_f64_check_win(s, m, b->label);
 +        v = m;
 +    } else {
-+        x87s_f32_to_f64(v, m, b->label);
++        x87s_f32_to_f64(s, v, m, b->label);
 +    }
 +    a = x87s_get(s, 0, b->label);
 +    if (op1 == 2 || op1 == 3) {
-+        TCGv_i32 cc = tcg_temp_ebb_new_i32();
-+        x87s_compare(cc, a, v, false);
-+        x87s_fpus_cc(cc);
++        TCGv_i32 cc = x87s_tmp_i32(s);
++        x87s_compare(s, cc, a, v, false);
++        x87s_fpus_cc(s, cc);
 +        if (op1 == 3) {
 +            x87s_pop(s);
 +        }
 +    } else {
-+        r = tcg_temp_ebb_new_i64();
-+        x87s_binop(r, op1, a, v, b->label);
++        r = x87s_tmp_i64(s);
++        x87s_binop(s, r, op1, a, v, b->label);
 +        x87s_set(s, 0, r);
 +    }
 +}
@@ -1740,19 +1799,19 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    b->opreg = opreg;
 +    b->stn = stn_form;
 +    b->pop = pop;
-+    r = tcg_temp_ebb_new_i64();
++    r = x87s_tmp_i64(s);
 +    if (stn_form) {
 +        a = x87s_get(s, opreg, b->label);
 +        v = x87s_get(s, 0, b->label);
 +        if (op >= 4) {
 +            op ^= 1;
 +        }
-+        x87s_binop(r, op, a, v, b->label);
++        x87s_binop(s, r, op, a, v, b->label);
 +        x87s_set(s, opreg, r);
 +    } else {
 +        a = x87s_get(s, 0, b->label);
 +        v = x87s_get(s, opreg, b->label);
-+        x87s_binop(r, op, a, v, b->label);
++        x87s_binop(s, r, op, a, v, b->label);
 +        x87s_set(s, 0, r);
 +    }
 +    if (pop) {
@@ -1765,7 +1824,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +{
 +    X87SlowBlock *b;
 +    TCGv_i64 m = tcg_temp_new_i64();
-+    TCGv_i64 v = tcg_temp_ebb_new_i64();
++    TCGv_i64 v = x87s_tmp_i64(s);
 +
 +    tcg_gen_mov_i64(m, s->tmp1_i64);
 +    x87s_begin(s);
@@ -1773,10 +1832,10 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    b->m = m;
 +    b->m64 = m64;
 +    if (m64) {
-+        x87s_f64_check_win(m, b->label);
++        x87s_f64_check_win(s, m, b->label);
 +        v = m;
 +    } else {
-+        x87s_f32_to_f64(v, m, b->label);
++        x87s_f32_to_f64(s, v, m, b->label);
 +    }
 +    x87s_push(s);
 +    x87s_set(s, 0, v);
@@ -1785,8 +1844,8 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +/* fild m32 / m16: exact, no slow path. Value sign-extended in s->tmp2_i32. */
 +static void gen_x87s_fild(DisasContext *s)
 +{
-+    TCGv_i64 v = tcg_temp_ebb_new_i64();
-+    TCGv_i64 t = tcg_temp_ebb_new_i64();
++    TCGv_i64 v = x87s_tmp_i64(s);
++    TCGv_i64 t = x87s_tmp_i64(s);
 +    TCGv_i64 k = tcg_constant_i64(0x4330000080000000ULL);  /* 2^52 + 2^31 */
 +
 +    x87s_begin(s);
@@ -1816,11 +1875,11 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    b->pop = pop;
 +    b->a0 = x87s_a0_copy(s);
 +    v = x87s_get(s, 0, b->label);
-+    c = tcg_temp_ebb_new_i64();
-+    r = tcg_temp_ebb_new_i64();
-+    t = tcg_temp_ebb_new_i64();
-+    u = tcg_temp_ebb_new_i64();
-+    bad = tcg_temp_ebb_new_i64();
++    c = x87s_tmp_i64(s);
++    r = x87s_tmp_i64(s);
++    t = x87s_tmp_i64(s);
++    u = x87s_tmp_i64(s);
++    bad = x87s_tmp_i64(s);
 +
 +    /* |v| < 2^52, else the helper */
 +    tcg_gen_shli_i64(t, v, 1);
@@ -1838,7 +1897,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    tcg_gen_brcondi_i64(TCG_COND_NE, bad, 0, b->label);
 +    tcg_gen_xori_i64(t, t, xmask);
 +    tcg_gen_extrl_i64_i32(s->tmp2_i32, t);
-+    x87s_set_pe_ne(r, v);
++    x87s_set_pe_ne(s, r, v);
 +    tcg_gen_qemu_st_i32(s->tmp2_i32, s->A0, s->mem_index,
 +                        m16 ? MO_LEUW : MO_LEUL);
 +    if (pop) {
@@ -1861,7 +1920,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    if (m64) {
 +        tcg_gen_qemu_st_i64(v, s->A0, s->mem_index, MO_LEUQ);
 +    } else {
-+        x87s_f64_to_f32(s->tmp2_i32, v, b->label);
++        x87s_f64_to_f32(s, s->tmp2_i32, v, b->label);
 +        tcg_gen_qemu_st_i32(s->tmp2_i32, s->A0, s->mem_index, MO_LEUL);
 +    }
 +    if (pop) {
@@ -1897,7 +1956,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    sa = s->x87s_state[ra];
 +    sb = s->x87s_state[rb];
 +    if (sa != X87S_MEM && sb != X87S_MEM) {
-+        TCGv_i64 t = tcg_temp_ebb_new_i64();
++        TCGv_i64 t = x87s_tmp_i64(s);
 +        tcg_gen_mov_i64(t, cpu_x87_sd[ra]);
 +        tcg_gen_mov_i64(cpu_x87_sd[ra], cpu_x87_sd[rb]);
 +        tcg_gen_mov_i64(cpu_x87_sd[rb], t);
@@ -1914,10 +1973,10 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    {
 +        TCGv_ptr pa = x87s_slot_ptr(s, ra);
 +        TCGv_ptr pb = x87s_slot_ptr(s, rb);
-+        TCGv_i64 lowa = tcg_temp_ebb_new_i64();
-+        TCGv_i32 higha = tcg_temp_ebb_new_i32();
-+        TCGv_i64 lowb = tcg_temp_ebb_new_i64();
-+        TCGv_i32 highb = tcg_temp_ebb_new_i32();
++        TCGv_i64 lowa = x87s_tmp_i64(s);
++        TCGv_i32 higha = x87s_tmp_i32(s);
++        TCGv_i64 lowb = x87s_tmp_i64(s);
++        TCGv_i32 highb = x87s_tmp_i32(s);
 +
 +        x87s_ld_x80(lowa, higha, pa);
 +        x87s_ld_x80(lowb, highb, pb);
@@ -1965,7 +2024,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    b->cond = cond;
 +    a = x87s_get(s, 0, b->label);
 +    v = x87s_get(s, opreg, b->label);
-+    c64 = tcg_temp_ebb_new_i64();
++    c64 = x87s_tmp_i64(s);
 +    tcg_gen_extu_tl_i64(c64, cond);
 +    tcg_gen_movcond_i64(TCG_COND_NE, a, c64, tcg_constant_i64(0), v, a);
 +    s->x87s_state[X87S_SLOT(s, 0)] = X87S_DIRTY;
@@ -1995,7 +2054,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        s->x87s_state[r] = X87S_DIRTY;
 +    } else {
 +        TCGv_ptr p = x87s_slot_ptr(s, r);
-+        TCGv_i32 high = tcg_temp_ebb_new_i32();
++        TCGv_i32 high = x87s_tmp_i32(s);
 +
 +        tcg_gen_ld16u_i32(high, p, offsetof(FPReg, d.high));
 +        if (chs) {
@@ -2016,7 +2075,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +{
 +    X87SlowBlock *b;
 +    TCGv_i64 a, v;
-+    TCGv_i32 cc = tcg_temp_ebb_new_i32();
++    TCGv_i32 cc = x87s_tmp_i32(s);
 +
 +    if (eflags) {
 +        gen_update_cc_op(s);
@@ -2030,7 +2089,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    b->pops = pops;
 +    a = x87s_get(s, 0, b->label);
 +    v = zero_operand ? tcg_constant_i64(0) : x87s_get(s, opreg, b->label);
-+    x87s_compare(cc, a, v, eflags);
++    x87s_compare(s, cc, a, v, eflags);
 +    if (eflags) {
 +        TCGv t = tcg_temp_new();
 +
@@ -2040,7 +2099,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        tcg_gen_extu_i32_tl(t, cc);
 +        tcg_gen_or_tl(cpu_cc_src, cpu_cc_src, t);
 +    } else {
-+        x87s_fpus_cc(cc);
++        x87s_fpus_cc(s, cc);
 +    }
 +    while (pops--) {
 +        x87s_pop(s);
@@ -2056,14 +2115,14 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    x87s_begin(s);
 +    b = x87s_new_slow(s, X87S_SLOW_FSQRT);
 +    v = x87s_get(s, 0, b->label);
-+    r = tcg_temp_ebb_new_i64();
-+    err = tcg_temp_ebb_new_i64();
++    r = x87s_tmp_i64(s);
++    err = x87s_tmp_i64(s);
 +    /* negative, -0 included (the helper sets C2 for it): helper */
 +    tcg_gen_brcondi_i64(TCG_COND_LT, v, 0, b->label);
 +    tcg_gen_sqrt_f64(r, v);
-+    x87s_f64_check_win(r, b->label);
++    x87s_f64_check_win(s, r, b->label);
 +    tcg_gen_fmsub_f64(err, r, r, v);
-+    x87s_set_pe(err);
++    x87s_set_pe(s, err);
 +    x87s_set(s, 0, r);
 +}
 +
@@ -2076,10 +2135,10 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    x87s_begin(s);
 +    b = x87s_new_slow(s, X87S_SLOW_FRNDINT);
 +    v = x87s_get(s, 0, b->label);
-+    c = tcg_temp_ebb_new_i64();
-+    r = tcg_temp_ebb_new_i64();
-+    t = tcg_temp_ebb_new_i64();
-+    big = tcg_temp_ebb_new_i64();
++    c = x87s_tmp_i64(s);
++    r = x87s_tmp_i64(s);
++    t = x87s_tmp_i64(s);
++    big = x87s_tmp_i64(s);
 +    tcg_gen_andi_i64(c, v, 1ULL << 63);
 +    tcg_gen_ori_i64(c, c, 0x4330000000000000ULL);
 +    tcg_gen_add_f64(r, v, c);
@@ -2093,7 +2152,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    tcg_gen_shri_i64(t, t, 53);
 +    tcg_gen_setcondi_i64(TCG_COND_GEU, big, t, X87S_BIAS_F64 + 52);
 +    tcg_gen_movcond_i64(TCG_COND_NE, r, big, tcg_constant_i64(0), v, r);
-+    x87s_set_pe_ne(r, v);
++    x87s_set_pe_ne(s, r, v);
 +    x87s_set(s, 0, r);
 +}
 +
@@ -2132,7 +2191,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 + * Dispatch. Returns true when the instruction was generated here; the
 + * caller then updates FIP/FDP. op/mod/rm as decoded by gen_x87().
 + */
-+static bool gen_x87s_insn(DisasContext *s, int op, int mod, int rm)
++static bool gen_x87s_insn_1(DisasContext *s, int op, int mod, int rm)
 +{
 +    int op1 = op & 7;
 +    int opreg = rm;
@@ -2329,6 +2388,14 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    default:
 +        return false;
 +    }
++}
++
++static bool gen_x87s_insn(DisasContext *s, int op, int mod, int rm)
++{
++    bool done = gen_x87s_insn_1(s, op, mod, rm);
++
++    x87s_free_tmps(s);
++    return done;
 +}
 +
 +/*
