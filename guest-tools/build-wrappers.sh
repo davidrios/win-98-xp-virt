@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Build qemu-3dfx guest wrappers (Windows DLLs) from the SAME
-# third_party/qemu-3dfx commit our QEMU fork is signed with, and stage them
-# as a guest-tools ISO. Needs: i686-w64-mingw32-gcc, gendef, xxd, shasum,
-# git, make; xorriso or genisoimage/mkisofs for the ISO.
+# third_party/qemu-3dfx commit our QEMU fork is signed with, plus the
+# WineD3D wrapper set (JHRobotics' wine9x, a Wine 1.7.55 port for
+# 95/98/Me/XP, LGPL) and a Direct3D 9 smoke test, and stage them as a
+# guest-tools ISO. Needs: i686-w64-mingw32-gcc, gendef, xxd, shasum,
+# git, make, nasm; xorriso or genisoimage/mkisofs for the ISO.
 #   Linux (Arch):  pacman -S mingw-w64-gcc mingw-w64-tools xorriso
 #   macOS:         brew install mingw-w64 xorriso
 # DOS-only pieces (GLIDE2X.OVL via Open Watcom, DJGPP DXEs) are skipped.
@@ -70,6 +72,7 @@ ensure_msvcrt_cc() {
   real="$(command -v i686-w64-mingw32-gcc || true)"
   case "$real" in "$bin"/*) echo "internal error: shim resolved to itself"; exit 1;; esac
   [ -n "$real" ] || { echo "need i686-w64-mingw32-gcc (mingw-w64)"; exit 1; }
+  REAL_CC="$real"
   [ -f "$(dirname "$(dirname "$real")")/i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
   [ -f "$(dirname "$real")/../i686-w64-mingw32/lib/libmsvcrt-os.a" ] || \
     echo "warning: libmsvcrt-os.a not found next to the toolchain; msvcrt link may fail"
@@ -88,6 +91,34 @@ check_crt() {  # fail loudly if anything still imports the UCRT api-sets
   fi
 }
 
+# WineD3D for the guests: wine9x builds wined3d.dll (Wine 1.7.55 with the
+# 9x/XP fixes) plus the DX interfaces wined8/wined9/winedd and per-OS
+# "switcher" ddraw/d3d8/d3d9 DLLs for a system-wide install. wined3d links
+# the CRT, so it gets the msvcrt flags; not the shim's -march=pentium3
+# though, with which GCC emits a memset call inside the CRT-less switcher
+# DLLs (wine9x's own -march=pentium2 is below our floor anyway, and the
+# ISA check below covers the result). Its pthread9x sub-build hardcodes
+# the host `ar`, which is BSD ar on macOS.
+WINE9X_URL="https://github.com/JHRobotics/wine9x.git"
+WINE9X_REF="8ab16c6c0930efc1f9138eddda7b3114d7f31e62"   # main, 2026-09 (v1.7.55.45 + tray/HAL change)
+build_wined3d() {
+  local d="$OUT/wine9x"
+  if [ ! -d "$d/.git" ]; then
+    echo "==> cloning wine9x @ ${WINE9X_REF:0:7}"
+    git clone -q "$WINE9X_URL" "$d"
+  fi
+  ( cd "$d" && git fetch -q origin && git checkout -q "$WINE9X_REF" \
+    && git submodule update --init -q )
+  cp "$d/config.mk-sample" "$d/config.mk"
+  echo "==> building wine9x (wined3d + DX interfaces + switchers)"
+  ( cd "$d" && make clean >/dev/null 2>&1; make -C pthread9x clean >/dev/null 2>&1
+    make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" \
+      all d3d8_xp.dll d3d9_xp.dll ddraw_xp.dll d3d8_98.dll d3d9_98.dll ddraw_98.dll \
+      CC="$REAL_CC $MSVCRT_FLAGS" LD="$REAL_CC -mcrtdll=msvcrt-os" \
+      LIBSTATIC='i686-w64-mingw32-ar rcs -o $@' > "$d/build.log" 2>&1 ) \
+    || { echo "wine9x build failed, see $d/build.log"; tail -20 "$d/build.log"; exit 1; }
+}
+
 build_wrapper() {  # $1 = 3dfx | mesa
   local d="$FX/wrappers/$1/build"
   rm -rf "$d" && mkdir -p "$d"
@@ -97,12 +128,28 @@ build_wrapper() {  # $1 = 3dfx | mesa
 echo "==> qemu-3dfx commit $REV"
 build_wrapper 3dfx
 build_wrapper mesa
+build_wined3d
 
-rm -rf "$OUT" && mkdir -p "$OUT/iso/WIN9X" "$OUT/iso/WIN2KXP" "$OUT/iso/GAMEDIR"
+rm -rf "$OUT/iso" && mkdir -p "$OUT/iso/WIN9X" "$OUT/iso/WIN2KXP" "$OUT/iso/GAMEDIR" "$OUT/iso/WINED3D"
 G="$FX/wrappers/3dfx/build"; M="$FX/wrappers/mesa/build"
 cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxmemmap.vxd "$OUT/iso/WIN9X/"
 cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxptl.sys "$G"/instdrv.exe "$OUT/iso/WIN2KXP/"
 cp "$M"/opengl32.dll "$OUT/iso/GAMEDIR/"
+# WineD3D: per-game copies under the names games load (the Wine DX
+# interfaces export the real entry points and import wined3d.dll by name),
+# and the full set + switchers for a system-wide install per wine9x README.
+W="$OUT/wine9x"
+cp "$W"/wined9.dll "$OUT/iso/GAMEDIR/d3d9.dll"
+cp "$W"/wined8.dll "$OUT/iso/GAMEDIR/d3d8.dll"
+cp "$W"/wined3d.dll "$OUT/iso/GAMEDIR/"
+cp "$W"/wined3d.dll "$W"/winedd.dll "$W"/wined8.dll "$W"/wined9.dll \
+   "$W"/ddraw_xp.dll "$W"/d3d8_xp.dll "$W"/d3d9_xp.dll \
+   "$W"/ddraw_98.dll "$W"/d3d8_98.dll "$W"/d3d9_98.dll "$OUT/iso/WINED3D/"
+cp "$W"/README.md "$OUT/iso/WINED3D/WINE9X.TXT"
+# D3D9 smoke test (guest-tools/src/d3d9test.c): adapter string, HAL caps,
+# x87 control word after CreateDevice, spinning triangle with fps.
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3d9test.exe" "$ROOT/guest-tools/src/d3d9test.c" \
+  -ld3d9 -lgdi32 -luser32
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
@@ -119,11 +166,16 @@ WIN2KXP\ -> copy GLIDE*.DLL to %SystemRoot%\system32, FXPTL.SYS to
             %SystemRoot%\system32\drivers, then run INSTDRV.EXE as Administrator
 GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
             WGLGEARS.EXE + OPENGL32.DLL in one folder = quick GL pass-through test
+            Direct3D 8/9 games: also copy D3D8.DLL or D3D9.DLL + WINED3D.DLL
+            (WineD3D, renders through OPENGL32.DLL) next to the game's EXE.
+            D3D9TEST.EXE + D3D9.DLL + WINED3D.DLL + OPENGL32.DLL = D3D9 test
+WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
+            system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 
 Not included: GLIDE2X.OVL (DOS Glide games; needs Open Watcom to build).
 TXT
 # 8.3-safe upper-case names for Win9x
-( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/*; do mv "$f" "$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; done )
+( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/*; do mv "$f" "$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; done )
 
 ISO="$OUT/guest-tools-3dfx-$REV.iso"
 if command -v xorriso >/dev/null; then

@@ -22,7 +22,7 @@ driver.
 | Glide (2x/3x) | qemu-3dfx guest stubs → host translation | same (fewer titles care) |
 | OpenGL | qemu-3dfx MESA GL pass-through | same |
 | Direct3D 5–7 | SoftGPU (DDraw/D3D → wrapper stack) | rarely needed; wrappers exist |
-| Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | WineD3D-based wrapper DLLs → GL pass-through |
+| Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | WineD3D (wine9x build, on the guest-tools ISO) → GL pass-through |
 | 2D/desktop | SoftGPU display driver (QEMU std VGA path) | XP inbox Cirrus GD5446 driver (`-vga cirrus`, as Win98); std VGA (Bochs VBE) has no XP driver and leaves the desktop at 640×480×16 |
 
 Known qemu-3dfx constraints we design around:
@@ -65,8 +65,9 @@ One ISO per guest family, built by `/guest-tools/` scripts, containing:
 - **Win98:** SoftGPU release (pinned), qemu-3dfx wrappers built from our fork
   commit, audio driver (AC97), network driver, USB/tablet support notes,
   unattended-friendly installer (batch/INF) where possible.
-- **XP:** qemu-3dfx wrappers + D3D8/9 wrapper DLL set, AC97/HDA driver,
-  network driver, tablet driver.
+- **XP:** qemu-3dfx wrappers + WineD3D D3D8/9 wrapper DLL set (built
+  from JHRobotics/wine9x since 2026-09-03, `guest-tools/README.md`),
+  AC97/HDA driver, network driver, tablet driver.
 - A tiny in-guest `verify.exe`/batch that reports which APIs are accelerated
   (renderer strings, triangle smoke test) — our acceptance test hook.
 

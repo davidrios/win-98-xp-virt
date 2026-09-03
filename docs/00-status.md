@@ -9,7 +9,7 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 | QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI 1M on the Air 9:49 → 6:33. Patch 06 (2026-09-03, doc 13): x87 stack as host doubles in TCG, 7.4× vs softfloat on x86-64; **XP Super PI 1M on the Air 1:57, faster than the rig's real P4 1.7 (2:02)**. |
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio, QMP over a socketpair (`PLAYER_QMP`, `PLAYER_QMP_EXEC`). **Win98 and XP run in it on the M1 Air** with sound and tablet mouse. |
 | 3D | **GL pass-through runs inside the player on Linux** (doc 12 steps 1–2, 2026-09-02): patches 30/31 + `embed/mglcntx_embed.c` (EGL surfaceless pbuffer as FBO 0, `glReadPixels` on swap) + API v4. Win98 wglgears in the player: 420 fps at 800×600 with the readback path, desktop returns on exit. Standalone `-display sdl` still works (500+ fps on the Air). **macOS too** (CGL, no drawable, FBO stand-in; `GL 2.1 Metal / Apple M1`, wglgears in the player on the Air). **Linux zero-copy** (GBM dma-buf ring → Vulkan import, API v5, 2026-09-03): 575–600 fps wglgears, nothing copied per frame. **macOS zero-copy** (IOSurface ring → Metal, API v6) verified on the Air. Glide: no window, reported cleanly. |
-| Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
+| Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) and, since 2026-09-03, the WineD3D set from JHRobotics/wine9x (Wine 1.7.55 for 9x/XP: per-game D3D8/D3D9/WINED3D DLLs + system-wide switchers) with a D3D9 smoke test (`D3D9TEST.EXE`) into an ISO. Must match the host's qemu-3dfx commit. Not yet run in a guest. |
 | Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % on softfloat (Super PI 1M 9:49 vs 2:02), 104 % with patch 06 (1:57) — `reference/benchmarks/`. |
 | CD backend (libdisc) | vocabulary types + MSF/LBA only (M5). |
 | Launcher | stub (M6). |
@@ -108,7 +108,9 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
    patch 05 x87 fast path, QMP over socketpair). Patch 06 merged
    2026-09-03 (XP Super PI 1M 1:57 on the Air, doc 13); PC=24 inline
    mode added the same day. Only the Windows host remains untested.
-   Next on x87: run a Direct3D title in XP with and without
+   Next on x87: in XP, `D3D9TEST.EXE` from the guest-tools ISO next to
+   D3D9.DLL + WINED3D.DLL + OPENGL32.DLL (expect PC=24 in its output and
+   a WineD3D adapter string), then a Direct3D title with and without
    `x87-fast=off` (the PC=24 path's real-world check).
 2. **M3 (doc 12), in progress:** ~~vtable patch → EGL backend with
    readback → Win98 wglgears in the player on Linux → macOS CGL backend →
