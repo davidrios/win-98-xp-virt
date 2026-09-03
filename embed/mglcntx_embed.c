@@ -183,7 +183,7 @@ static int   plat_make_current(void *c);               /* + main drawable */
 static void *plat_get_current(void);
 static int   plat_drawable(int w, int h);              /* (re)size FBO 0 */
 static void  plat_drawable_release(void);
-static void  plat_readback(uint32_t *dst);             /* FBO 0, bottom-up */
+static int   plat_readback(uint32_t *dst);             /* FBO 0, bottom-up; 0 = no frame */
 static int   plat_pbuffer_create(int i, int w, int h);
 static void  plat_pbuffer_destroy(int i);
 static void  plat_pbuffer_current(int i);
@@ -355,8 +355,8 @@ int MGLSwapBuffers(void)
     MGLActivateHandler(1, 0);
     MesaBlitScale();
     /* present = read FBO 0 back and hand it to the frontend (bottom-up) */
-    if (win_ready && readback && plat_get_current() == ctx[0]) {
-        plat_readback(readback);
+    if (win_ready && readback && plat_get_current() == ctx[0]
+        && plat_readback(readback)) {
         embed_fx_frame(readback, win_w, win_h, win_w * 4, /* bottom_up */ 1);
     }
     /* size follows the guest's 2D mode for the next frame */
@@ -869,7 +869,7 @@ static void plat_drawable_release(void)
     }
 }
 
-static void plat_readback(uint32_t *dst)
+static int plat_readback(uint32_t *dst)
 {
     GLint prev_fbo = 0, prev_pack = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_fbo);
@@ -882,6 +882,7 @@ static void plat_readback(uint32_t *dst)
     glReadPixels(0, 0, win_w, win_h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, dst);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, prev_pack);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, prev_fbo);
+    return 1;
 }
 
 static int plat_pbuffer_create(int i, int w, int h)
@@ -970,17 +971,39 @@ static GLuint   cur_dfbo;                   /* FBO of the current context */
 static int      rb_w, rb_h;
 /* WGL pbuffer emulation: FBO + texture in the main context */
 static GLuint   pb_fbo[MAX_PBUFFER], pb_tex[MAX_PBUFFER], pb_depth[MAX_PBUFFER];
+static int      dfbo_ok;                    /* current stand-in is complete */
 static void (*real_bind_fb)(GLenum, GLuint);
 static void (*real_bind_fb_ext)(GLenum, GLuint);
 
+/* our own binds go straight to the framework (never through the table) */
+static void bind_fb(GLenum target, GLuint fb)
+{
+    glBindFramebufferEXT(target, fb);
+}
+
 static void fx_glBindFramebuffer(GLenum target, GLuint fb)
 {
-    real_bind_fb(target, fb ? fb : cur_dfbo);
+    (real_bind_fb ? real_bind_fb : glBindFramebufferEXT)(target, fb ? fb : cur_dfbo);
 }
 static void fx_glBindFramebufferEXT(GLenum target, GLuint fb)
 {
-    real_bind_fb_ext(target, fb ? fb : cur_dfbo);
+    (real_bind_fb_ext ? real_bind_fb_ext : glBindFramebufferEXT)(target, fb ? fb : cur_dfbo);
 }
+
+static const char *gl_err_str(GLenum e)
+{
+    switch (e) {
+    case GL_NO_ERROR: return "ok";
+    case GL_INVALID_ENUM: return "INVALID_ENUM";
+    case GL_INVALID_VALUE: return "INVALID_VALUE";
+    case GL_INVALID_OPERATION: return "INVALID_OPERATION";
+    case GL_INVALID_FRAMEBUFFER_OPERATION_EXT: return "INVALID_FRAMEBUFFER_OPERATION";
+    case GL_OUT_OF_MEMORY: return "OUT_OF_MEMORY";
+    default: return "?";
+    }
+}
+#define GLCHK(what) do { GLenum e_ = glGetError(); \
+    if (e_ != GL_NO_ERROR) DPRINTF("%s: GL error %s (0x%x)", what, gl_err_str(e_), e_); } while (0)
 
 static int plat_open(void)
 {
@@ -1142,11 +1165,15 @@ static int rb_ensure(int w, int h)
         rb_w = rb_h = 0;
     }
     if (rb_w != w || rb_h != h) {
+        while (glGetError() != GL_NO_ERROR);
         glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, rb_color);
         glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_RGBA8, w, h);
+        GLCHK("color renderbuffer storage");
         glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, rb_depth);
         glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT, w, h);
+        GLCHK("depth/stencil renderbuffer storage");
         glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
+        DPRINTF("renderbuffers %u/%u %dx%d", rb_color, rb_depth, w, h);
         rb_w = w;
         rb_h = h;
     }
@@ -1165,7 +1192,7 @@ static int dfbo_ensure(void)
     for (int i = 0; i < MAX_LVLCNTX; i++) {
         if (dfbo_ctx[i] == c && dfbo[i]) {
             cur_dfbo = dfbo[i];
-            real_bind_fb_ext(GL_FRAMEBUFFER_EXT, cur_dfbo);
+            bind_fb(GL_FRAMEBUFFER_EXT, cur_dfbo);
             return 1;
         }
         if (slot < 0 && !dfbo[i]) {
@@ -1175,19 +1202,35 @@ static int dfbo_ensure(void)
     if (slot < 0) {
         return 0;
     }
+    {
+        static int once;
+        if (!once) {
+            once = 1;
+            DPRINTF("GL %s / %s", (const char *)glGetString(GL_VERSION),
+                    (const char *)glGetString(GL_RENDERER));
+        }
+    }
+    while (glGetError() != GL_NO_ERROR);
     glGenFramebuffersEXT(1, &dfbo[slot]);
+    GLCHK("glGenFramebuffersEXT");
     dfbo_ctx[slot] = c;
-    real_bind_fb_ext(GL_FRAMEBUFFER_EXT, dfbo[slot]);
+    bind_fb(GL_FRAMEBUFFER_EXT, dfbo[slot]);
+    GLCHK("glBindFramebufferEXT");
+    GLint bound = -1;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &bound);
     glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                                  GL_RENDERBUFFER_EXT, rb_color);
+    GLCHK("attach color");
     glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
                                  GL_RENDERBUFFER_EXT, rb_depth);
     glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT,
                                  GL_RENDERBUFFER_EXT, rb_depth);
+    GLCHK("attach depth/stencil");
     GLenum st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
-    if (st != GL_FRAMEBUFFER_COMPLETE_EXT) {
-        DPRINTF("default FBO incomplete 0x%x", st);
-    }
+    GLCHK("glCheckFramebufferStatusEXT");
+    dfbo_ok = (st == GL_FRAMEBUFFER_COMPLETE_EXT);
+    DPRINTF("default FBO %u (bound %d) rb %u/%u: %s (0x%x)", dfbo[slot], bound,
+            rb_color, rb_depth, dfbo_ok ? "complete" : "INCOMPLETE", st);
     cur_dfbo = dfbo[slot];
     glViewport(0, 0, rb_w, rb_h);
     return 1;
@@ -1217,19 +1260,32 @@ static void plat_drawable_release(void)
     /* objects die with the share group in plat_ctx_destroy(ctx[0]) */
 }
 
-static void plat_readback(uint32_t *dst)
+static int readback_warned;
+static int plat_readback(uint32_t *dst)
 {
     GLint prev_read = 0, prev_pack = 0;
+    if (!dfbo_ok || !cur_dfbo) {
+        if (!readback_warned++) {
+            DPRINTF("no complete default FBO: frames not published");
+        }
+        return 0;
+    }
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &prev_read);
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prev_pack);
-    real_bind_fb_ext(GL_READ_FRAMEBUFFER_EXT, cur_dfbo);
+    bind_fb(GL_READ_FRAMEBUFFER_EXT, cur_dfbo);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
     glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
+    while (glGetError() != GL_NO_ERROR);
     glReadPixels(0, 0, win_w, win_h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, dst);
+    GLenum e = glGetError();
+    if (e != GL_NO_ERROR && !readback_warned++) {
+        DPRINTF("glReadPixels: %s (0x%x)", gl_err_str(e), e);
+    }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, prev_pack);
-    real_bind_fb_ext(GL_READ_FRAMEBUFFER_EXT, prev_read ? prev_read : cur_dfbo);
+    bind_fb(GL_READ_FRAMEBUFFER_EXT, prev_read ? prev_read : cur_dfbo);
+    return e == GL_NO_ERROR;
 }
 
 /* WGL pbuffers: FBO + texture in the current (main) context */
@@ -1251,12 +1307,12 @@ static int plat_pbuffer_create(int i, int w, int h)
     glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT, w, h);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
     glGenFramebuffersEXT(1, &pb_fbo[i]);
-    real_bind_fb_ext(GL_FRAMEBUFFER_EXT, pb_fbo[i]);
+    bind_fb(GL_FRAMEBUFFER_EXT, pb_fbo[i]);
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, pb_tex[i], 0);
     glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, pb_depth[i]);
     glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, pb_depth[i]);
     GLenum st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
-    real_bind_fb_ext(GL_FRAMEBUFFER_EXT, prev_fb ? prev_fb : cur_dfbo);
+    bind_fb(GL_FRAMEBUFFER_EXT, prev_fb ? prev_fb : cur_dfbo);
     glBindTexture(GL_TEXTURE_2D, prev_tex);
     if (st != GL_FRAMEBUFFER_COMPLETE_EXT) {
         DPRINTF("pbuffer FBO incomplete 0x%x", st);
@@ -1284,7 +1340,7 @@ static void plat_pbuffer_current(int i)
 {
     /* same context: "making the pbuffer current" = drawing into its FBO */
     if (pb_fbo[i]) {
-        real_bind_fb_ext(GL_FRAMEBUFFER_EXT, pb_fbo[i]);
+        bind_fb(GL_FRAMEBUFFER_EXT, pb_fbo[i]);
         glViewport(0, 0, hPbuffer[i].width, hPbuffer[i].height);
     }
 }
@@ -1295,11 +1351,11 @@ static void plat_pbuffer_bind_tex(int i, int wgl_target, int wgl_format)
     GLint prev_read = 0, prev_tex = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &prev_read);
     glGetIntegerv(PbufferGLBinding(wgl_target), &prev_tex);
-    real_bind_fb_ext(GL_READ_FRAMEBUFFER_EXT, pb_fbo[i]);
+    bind_fb(GL_READ_FRAMEBUFFER_EXT, pb_fbo[i]);
     glBindTexture(PbufferGLAttrib(wgl_target), prev_tex);
     glCopyTexImage2D(PbufferGLAttrib(wgl_target), hPbuffer[i].level,
         PbufferGLAttrib(wgl_format), 0, 0, hPbuffer[i].width, hPbuffer[i].height, 0);
-    real_bind_fb_ext(GL_READ_FRAMEBUFFER_EXT, prev_read ? prev_read : cur_dfbo);
+    bind_fb(GL_READ_FRAMEBUFFER_EXT, prev_read ? prev_read : cur_dfbo);
 }
 
 static void *hdll;
@@ -1317,11 +1373,13 @@ static void plat_set_func_ptr(void *h)
     /* redirect framebuffer 0 to the stand-in FBO in the guest's dispatch */
     real_bind_fb = MesaGLSetFunc(FEnum_glBindFramebuffer, (void *)fx_glBindFramebuffer);
     real_bind_fb_ext = MesaGLSetFunc(FEnum_glBindFramebufferEXT, (void *)fx_glBindFramebufferEXT);
-    if (!real_bind_fb) {
-        real_bind_fb = (void (*)(GLenum, GLuint))glBindFramebufferEXT;
+    DPRINTF("FBO 0 redirect installed (table had %p / %p; framework %p)",
+            (void *)real_bind_fb, (void *)real_bind_fb_ext, (void *)glBindFramebufferEXT);
+    if (real_bind_fb == (void *)fx_glBindFramebuffer) {
+        real_bind_fb = NULL;      /* re-entered after a DLL reload */
     }
-    if (!real_bind_fb_ext) {
-        real_bind_fb_ext = (void (*)(GLenum, GLuint))glBindFramebufferEXT;
+    if (real_bind_fb_ext == (void *)fx_glBindFramebufferEXT) {
+        real_bind_fb_ext = NULL;
     }
 }
 
