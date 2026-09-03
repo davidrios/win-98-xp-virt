@@ -351,17 +351,27 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
     return 0;
 }
 
-int MGLSwapBuffers(void)
+/*
+ * Hand the current FBO 0 to the frontend: zero-copy into a dma-buf /
+ * IOSurface where available, else read it back (bottom-up). Called on every
+ * swap and, for front-buffer rendering, on glFlush/glFinish (see the
+ * glDrawBuffer hook): WineD3D's ddraw presents by drawing the primary
+ * surface into GL_FRONT and flushing, it never calls SwapBuffers.
+ */
+static void present_frame(void)
 {
-    MGLActivateHandler(1, 0);
-    MesaBlitScale();
-    /* present: zero-copy into a dma-buf where available, else read FBO 0
-     * back and hand it to the frontend (bottom-up) */
     if (win_ready && readback && plat_get_current() == ctx[0]
         && !plat_present_zero_copy()
         && plat_readback(readback)) {
         embed_fx_frame(readback, win_w, win_h, win_w * 4, /* bottom_up */ 1);
     }
+}
+
+int MGLSwapBuffers(void)
+{
+    MGLActivateHandler(1, 0);
+    MesaBlitScale();
+    present_frame();
     /* size follows the guest's 2D mode for the next frame */
     int w, h;
     guest_size(&w, &h);
@@ -1361,6 +1371,64 @@ static void fx_glBindFramebufferEXT(GLenum target, GLuint fb)
     (real_bind_fb_ext ? real_bind_fb_ext : gl.BindFramebufferEXT)(target, fb ? fb : cur_dfbo);
 }
 
+/*
+ * A window has front and back buffers; the stand-in has one colour
+ * attachment. A GL_FRONT or GL_BACK variant selected while framebuffer 0 (the
+ * stand-in) is bound become GL_COLOR_ATTACHMENT0; passing them through is
+ * GL_INVALID_OPERATION on an FBO, which is what WineD3D got. While the
+ * front buffer is the selected draw buffer, glFlush/glFinish present the
+ * frame, since that is the moment a real window would show it (ddraw's
+ * primary-surface path draws into GL_FRONT and flushes, never swaps).
+ */
+static void (*real_draw_buffer)(GLenum);
+static void (*real_read_buffer)(GLenum);
+static void (*real_flush)(void);
+static void (*real_finish)(void);
+static int front_selected;
+
+static GLenum dfbo_attachment(GLenum buf, GLenum binding, int *front)
+{
+    GLint fb = 0;
+
+    switch (buf) {
+    case GL_FRONT: case GL_FRONT_LEFT: case GL_FRONT_AND_BACK: case GL_LEFT:
+    case GL_BACK: case GL_BACK_LEFT:
+        gl.GetIntegerv(binding, &fb);
+        if (cur_dfbo && (GLuint)fb == cur_dfbo) {
+            if (front) {
+                *front = (buf != GL_BACK && buf != GL_BACK_LEFT);
+            }
+            return GL_COLOR_ATTACHMENT0_EXT;
+        }
+        break;
+    default:
+        break;
+    }
+    return buf;
+}
+static void fx_glDrawBuffer(GLenum buf)
+{
+    real_draw_buffer(dfbo_attachment(buf, GL_DRAW_FRAMEBUFFER_BINDING_EXT, &front_selected));
+}
+static void fx_glReadBuffer(GLenum buf)
+{
+    real_read_buffer(dfbo_attachment(buf, GL_READ_FRAMEBUFFER_BINDING_EXT, NULL));
+}
+static void fx_glFlush(void)
+{
+    real_flush();
+    if (front_selected) {
+        present_frame();
+    }
+}
+static void fx_glFinish(void)
+{
+    real_finish();
+    if (front_selected) {
+        present_frame();
+    }
+}
+
 static const char *gl_err_str(GLenum e)
 {
     switch (e) {
@@ -1913,6 +1981,19 @@ static void plat_set_func_ptr(void *h)
     if (real_bind_fb_ext == (void *)fx_glBindFramebufferEXT) {
         real_bind_fb_ext = NULL;
     }
+    /* front/back buffer selection and front-buffer presentation, see above */
+#define HOOK(var, fenum, fn, name) do { \
+        var = MesaGLSetFunc(fenum, (void *)fn); \
+        if (!var || var == (void *)fn) var = plat_get_proc(name); \
+    } while (0)
+    HOOK(real_draw_buffer, FEnum_glDrawBuffer, fx_glDrawBuffer, "glDrawBuffer");
+    HOOK(real_read_buffer, FEnum_glReadBuffer, fx_glReadBuffer, "glReadBuffer");
+    HOOK(real_flush, FEnum_glFlush, fx_glFlush, "glFlush");
+    HOOK(real_finish, FEnum_glFinish, fx_glFinish, "glFinish");
+#undef HOOK
+    front_selected = 0;
+    DPRINTF("draw/read buffer + flush hooks installed (%p %p %p %p)", (void *)real_draw_buffer,
+            (void *)real_read_buffer, (void *)real_flush, (void *)real_finish);
 }
 
 #else /* neither: no embed backend, the native (weak) one stays */

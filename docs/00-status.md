@@ -64,10 +64,23 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   (qemu-img convert → hdiutil attach → Dr Watson + Wine logs, the logs need
   the flushing debug build): wined3d asked cirrus for 800×600×32 because it
   maps the 24-bit desktop to B8G8R8X8, the driver refused, Wine 1.7.55
-  crashed in the init_3d error path. Fixed in `patches/wine9x/01`; not yet
-  re-tested in the guest. The stock software renderer also crashed once at
-  match start with Microsoft's DDraw (NULL surface in softdrawz.dll), so the
-  game may have a second, unrelated problem on this XP.
+  crashed in the init_3d error path. Fixed in `patches/wine9x/01` (verified:
+  the game runs, sound plays). Next symptom, white screen: wined3d logs show
+  `glDrawBuffer` → GL_INVALID_OPERATION, and ddraw presents the primary
+  surface by drawing into GL_FRONT + glFlush, never SwapBuffers; our embed
+  backend's FBO stand-in has no front buffer and only presented on swaps.
+  Fixed 2026-09-03 in `embed/mglcntx_embed.c` (macOS section): GL_FRONT/
+  GL_BACK on framebuffer 0 → GL_COLOR_ATTACHMENT0, glFlush/glFinish present
+  while the front buffer is selected. Not yet re-tested. Linux (EGL pbuffer)
+  has the same swap-only presentation and will need the flush path too. The
+  host also reports an ARB program failing to assemble ("out of range
+  indirect offset +65", 9× per run): unexplained, may matter later. The
+  stock software renderer also crashed once at match start with Microsoft's
+  DDraw (NULL surface in softdrawz.dll), so the game may have a second,
+  unrelated problem on this XP.
+- Player: keys held in the guest are lifted on focus loss (2026-09-03):
+  Cmd+Tab delivered the Windows-key press to the player and its release to
+  the next app, leaving the guest with Win held down.
 - Win98: after wglgears / D3D9TEST exit, the mouse stops working in the
   guest (2026-09-03, untriaged: wrapper hook/cursor state vs the
   player's tablet? check whether keyboard still works and whether a

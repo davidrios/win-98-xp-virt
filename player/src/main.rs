@@ -491,6 +491,11 @@ struct App {
     latency: Vec<f32>, // ms, publish→present per presented guest frame
     modifiers: ModifiersState,
     grabbed: bool,
+    /// Keys currently held in the guest (QEMU qcodes). Lifted when the window
+    /// loses focus: a host shortcut (Cmd+Tab on macOS) delivers the modifier's
+    /// press to us and its release to the app that took over, and the guest
+    /// would otherwise keep the Windows key down forever.
+    keys_down: Vec<u32>,
     /// Set on CloseRequested: no further calls into the VM handle, which the
     /// QEMU thread is about to destroy.
     closing: bool,
@@ -563,6 +568,20 @@ impl App {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         handle.join().unwrap_or(1)
+    }
+
+    /// Release every key the guest still sees as held (focus loss).
+    fn lift_all_keys(&mut self) {
+        let keys = std::mem::take(&mut self.keys_down);
+        if keys.is_empty() {
+            return;
+        }
+        if let Some(vm) = self.vm() {
+            for qcode in keys {
+                vm.key(qcode, false);
+            }
+            vm.input_flush();
+        }
     }
 
     fn set_grab(&mut self, on: bool) {
@@ -681,6 +700,13 @@ impl ApplicationHandler for App {
                     if qcode != 0 {
                         vm.key(qcode, down);
                         vm.input_flush();
+                        if down {
+                            if !self.keys_down.contains(&qcode) {
+                                self.keys_down.push(qcode);
+                            }
+                        } else {
+                            self.keys_down.retain(|&k| k != qcode);
+                        }
                     }
                 }
             }
@@ -746,7 +772,10 @@ impl ApplicationHandler for App {
                     vm.input_flush();
                 }
             }
-            WindowEvent::Focused(false) => self.set_grab(false),
+            WindowEvent::Focused(false) => {
+                self.set_grab(false);
+                self.lift_all_keys();
+            }
             WindowEvent::RedrawRequested => {
                 let Some(gpu) = self.gpu.as_mut() else { return };
                 let Some(frame) = gpu.acquire() else { return };
