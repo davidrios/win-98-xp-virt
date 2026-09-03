@@ -59,6 +59,14 @@ Open before calling M1 closed:
   block, error classes, RTC_CHANGE events on FreeDOS).
 - Windows host untested throughout (stays open; not blocking M3).
 
+## M3 progress (2026-09-02)
+
+GL pass-through renders inside the player on Linux: qemu-3dfx UI seam
+behind a vtable (patch 30), window-less EGL backend in the embed library
+(patch 31 + `embed/mglcntx_embed.c`), embed API v4. Win98 wglgears through
+the player: 420 fps at 800×600 with the bring-up readback path. Remaining:
+macOS CGL/IOSurface backend, zero-copy import into wgpu, Glide (doc 12).
+
 ## M2 — Pixel accuracy + input polish
 
 - Mode analysis table (doc 03): pixel aspect, double-scan shader params, text

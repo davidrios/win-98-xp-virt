@@ -6,9 +6,11 @@ FBO 0, glReadPixels on swap), `embed/embedfx.c` (provider), embed API v4
 (`on_3d_active`, `on_3d_frame`), player publishes 3D frames on swap.
 Verified without a guest by `tools/embed-3d-test.c` (drives the backend in
 mesapt_mm.c's order: activation callbacks, 640×480 frame, correct
-orientation). Not yet run with a Windows guest on Linux (no image on the
-dev box); on the Air the embed lib still refuses GL until the CGL port.
-Next: dma-buf import (§4), macOS CGL/IOSurface, Glide.
+orientation) and with the real thing: Win98 wglgears in the player on the
+Linux dev box — 420 fps at 800×600 through the readback, VGA desktop back
+on exit. On the Air the embed lib still refuses GL until the CGL port.
+Next: macOS CGL/IOSurface (pulled ahead of §4 so the Air shows 3D), then
+dma-buf / IOSurface zero-copy import, Glide.
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
