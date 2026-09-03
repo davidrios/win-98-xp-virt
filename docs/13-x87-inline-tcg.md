@@ -57,11 +57,12 @@ float op is therefore an ordinary opcode on i64 temps whose operand
 constraint is the vector class:
 
 - `include/tcg/tcg-opc.h`: `add/sub/mul/div_f64`, `fmsub_f64` (a·b − c,
-  fused), `sqrt_f64`, `cvt_f64_f32`, gated by `TCG_TARGET_HAS_f64`.
-- x86-64: `vaddsd/vsubsd/vmulsd/vdivsd/vfmsub213sd/vsqrtsd/vcvtsd2ss`,
+  fused), `sqrt_f64`, `cvt_f64_f32`, `cvt_f32_f64`, gated by
+  `TCG_TARGET_HAS_f64`.
+- x86-64: `vaddsd/vsubsd/vmulsd/vdivsd/vfmsub213sd/vsqrtsd/vcvtsd2ss/vcvtss2sd`,
   constraints `C_O1_I2(x, x, x)` etc.; requires AVX + FMA3 (new
   `CPUINFO_FMA`).
-- aarch64: `fadd/fsub/fmul/fdiv/fnmsub/fsqrt/fcvt` (scalar D),
+- aarch64: `fadd/fsub/fmul/fdiv/fnmsub/fsqrt/fcvt` (scalar D, fcvt both ways),
   `C_O1_I2(w, w, w)` etc., plus `tcg_out_movi` into a V register.
   See "Bring-up on the Air" below: two aarch64-only bugs found so far,
   both in code paths upstream never executes.
@@ -70,14 +71,15 @@ constraint is the vector class:
 
 ## The shadow-double design (`target/i386/tcg/x87-shadow.c.inc`)
 
-**Mode.** Inline mode is a TB flag (`TB_FLAG_X87_INLINE`, bit 29 of
-`tb->flags`, from `env->x87_fast_mode`: PC=53, RC=nearest, PE masked,
-property `x87-fast` on). Everything that can change the control word
+**Mode.** Inline mode is a TB flag (`TB_FLAG_X87_MODE`, bits 29–30 of
+`tb->flags`, from `env->x87_fast_mode`: 1 for PC=53, 2 for PC=24, both
+with RC=nearest, PE masked, property `x87-fast` on). Everything that can change the control word
 (`fldcw`, `fldenv`, `frstor`, `fninit`, `fnsave`, `fxrstor`, `xrstor`)
 ends the TB in both modes. A one-load runtime guard at the first inlined
 instruction of each TB protects against a missed case by exiting to the
-same instruction (the lookup then finds the right variant). PC=24
-(Direct3D) and PC=64 code runs the patch 05 helpers.
+same instruction (the lookup then finds the right variant). PC=64 code
+and other rounding modes run the patch 05 helpers; PC=24 is mode 2, see
+"PC=24 mode" below.
 
 **Stack model.** The translator addresses the stack relative to the top
 at the first x87 instruction of the TB (a runtime `entry_top` loaded
@@ -195,12 +197,51 @@ Result (2026-09-03, both aarch64 fixes in): XP Super PI 1M on the Air
 after loop 1, softfloat pace). That beats the rig's real P4 1.7 (2:02).
 Win98 boots and feels fine. Recorded in `reference/benchmarks/README.md`.
 
+## PC=24 mode (2026-09-03)
+
+Direct3D sets precision control to 24 bits when it creates a device
+(unless the app passes the preserve-FPU flag), so most D3D-era game code
+runs the whole frame at PC=24. Until now those TBs fell back to the
+patch 05 helpers. Mode 2 of the inline path covers them with the same
+shadows, not binary32 ones:
+
+- `env->x87_fast_mode` is 0, 1 (PC=53) or 2 (PC=24, RC=nearest, PE
+  masked); it is a 2-bit TB flag (`TB_FLAG_X87_MODE`, bits 29–30) and
+  the runtime guard compares against the TB's mode.
+- Shadows stay binary64 but hold only values with a 24-bit significand
+  inside the float window (`X87S_WIN24`, exponent ±126). A reload from
+  `fpregs[]` requires the low 40 mantissa bits clear (as `x87f_x80_to_f`),
+  m32 loads and the constants have it, and every arithmetic result is
+  rounded to it by `x87s_round24`: convert the host binary64 result to
+  binary32 and back (new opcode `cvt_f32_f64`: `vcvtss2sd` / `fcvt d, s`).
+  For 24-bit operands that double rounding equals the correctly rounded
+  24-bit result of +, −, ×, ÷ and sqrt (53 ≥ 2·24+2), so the arithmetic
+  code is shared and the rounding step is the only addition. PE is the
+  residual test ORed with "rounding changed the bits".
+- Softfloat rounds m64 operands to 24 bits at that precision and raises
+  PE (`float64_to_floatx80`; real hardware never rounds loads, patch 05
+  already defers to softfloat there): `fld/fxxx/fcom m64` round the
+  operand the same way inline. Integer loads stay exact in both paths,
+  so an `fild m32` whose value needs more than 24 bits takes a new slow
+  block (`X87S_SLOW_FILD`); `fild m16` always fits.
+- Flush, unwind repair (`x87f_d_to_x80`), fist, frndint, fst m32/m64,
+  compares, fxch, fcmov are unchanged: they see ordinary doubles.
+
+Verified with `tools/x87-guest-test.py` (the control-word sweep already
+included PC=24 RNE and PC=24 up): 382,251 result lines identical on/off
+on the M1 Air. The bench now runs at both precisions; on the Air the
+7-op m64 loop is 0.38 s at PC=53 (10.4× softfloat) and 0.66 s at PC=24
+(6.0×): every m64 operand pays the rounding and its PE store, which
+float (m32) game code does not. Real-world check still to do: a D3D
+title in XP with `x87-fast=off` as the control.
+
 ## Follow-ups
 
-- Merge to main. `-cpu pentium3,x87-fast=off` stays as the fallback if
-  something misbehaves in a Windows guest.
+- `-cpu pentium3,x87-fast=off` stays as the fallback if something
+  misbehaves in a Windows guest.
 - Per-op cost (~45 host instructions) can still drop: defer FIP/FCS to
-  flush points with the pc in the insn_start word (~4), keep FDP eager;
-  PC=24 (Direct3D) mode with binary32 shadows is the same design.
+  flush points with the pc in the insn_start word (~4), keep FDP eager.
+  At PC=24, native binary32 opcodes would save the two conversions per
+  op if a profile of a D3D game says the x87 share still matters.
 - Slow-path frequency counters (`-d` or a trace) would tell whether any
   real workload exits often enough to matter.

@@ -65,9 +65,11 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   2.9 ns per op on x86-64; XP Super PI 1M on the Air 9:49 → 6:33 → 1:57
   (rig: 2:02), `x87-fast=off` control at softfloat pace, Win98 boots.
   Two aarch64 backend paths upstream never runs needed fixes (UMOV
-  element size, constant into a V register). PC=24 (Direct3D) code
-  still takes the patch 05 helpers: the inline variant with binary32
-  shadows is the next x87 item. Test any change to
+  element size, constant into a V register). PC=24 (Direct3D) is inline
+  too since 2026-09-03 (mode 2: same double shadows holding 24-bit
+  values, results rounded through binary32; guest test identical, DOS
+  loop 6.0× softfloat on the Air vs 10.4× at PC=53). Not yet checked in
+  a D3D title. Test any change to
   it with `tools/x87-fast-test.c` (x86-64 host oracle) and
   `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
   mtools, the FreeDOS floppy). Benchmarks inside a .COM must keep data on
@@ -101,9 +103,10 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 1. ~~M1~~ closed 2026-09-02 (latency at the vsync floor, XP benchmarked,
    patch 05 x87 fast path, QMP over socketpair). Patch 06 merged
-   2026-09-03 (XP Super PI 1M 1:57 on the Air, doc 13). Only the Windows
-   host remains untested. Next on x87: the PC=24 (Direct3D) inline
-   variant with binary32 shadows (doc 13 §Follow-ups).
+   2026-09-03 (XP Super PI 1M 1:57 on the Air, doc 13); PC=24 inline
+   mode added the same day. Only the Windows host remains untested.
+   Next on x87: run a Direct3D title in XP with and without
+   `x87-fast=off` (the PC=24 path's real-world check).
 2. **M3 (doc 12), in progress:** ~~vtable patch → EGL backend with
    readback → Win98 wglgears in the player on Linux → macOS CGL backend →
    wglgears in the player on the Air → dma-buf zero-copy on Linux~~ (done)

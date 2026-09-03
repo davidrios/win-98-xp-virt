@@ -2,12 +2,12 @@ x87 shadow doubles: keep the FPU stack as host doubles across instructions.
 
 Patch 05 does the common x87 case on the host FPU inside the helpers; the
 cost that remains is structural: a call per instruction and an 80-bit
-round trip through env->fpregs[]. This patch adds seven scalar binary64
-opcodes to TCG (add/sub/mul/div/fmsub/sqrt/cvt_f64_f32 on raw bit
-patterns in i64 temps; VEX scalar SSE + FMA3 on x86-64, scalar FP on
-aarch64) and a translator mode (target/i386/tcg/x87-shadow.c.inc) that,
-at PC=53 / RC=nearest / PE masked (TB flag from env->x87_fast_mode),
-keeps every x87 register it touches as a double in a TCG global and
+round trip through env->fpregs[]. This patch adds eight scalar binary64
+opcodes to TCG (add/sub/mul/div/fmsub/sqrt/cvt_f64_f32/cvt_f32_f64 on
+raw bit patterns in i64 temps; VEX scalar SSE + FMA3 on x86-64, scalar
+FP on aarch64) and a translator mode (target/i386/tcg/x87-shadow.c.inc)
+that, at PC=53 or PC=24 / RC=nearest / PE masked (2-bit TB flag from
+env->x87_fast_mode), keeps every x87 register it touches as a double in a TCG global and
 converts back to the 80-bit form only at TB exits, before helpers, and
 on exceptions (an insn_start word + x86_restore_state_to_opc repair).
 The stack is addressed relative to the entry top so no TB flag bits are
@@ -31,12 +31,20 @@ lines identical with the fast path on and off. A linux-user SIGSEGV test
 with two dirty shadows verified the unwind repair. 
 The aarch64 backend also needed a fix upstream never exercised: tcg_out_mov
 vector->general emitted UMOV with a zero element-size field (SIGILL).
+
+PC=24 (what Direct3D sets) uses the same shadows: they hold values with a
+24-bit significand inside the float exponent window, and every result is
+rounded through a binary32 conversion (correct for 24-bit operands, since
+53 >= 2*24+2). m64 operands round to 24 bits with PE, as softfloat does;
+an fild m32 wider than 24 bits takes the helper. Same guest test, all
+seven control words identical on/off.
 --- a/include/tcg/tcg-opc.h
 +++ b/include/tcg/tcg-opc.h
-@@ -188,6 +188,19 @@
+@@ -187,6 +187,20 @@
+ DEF(muls2_i64, 2, 2, 0, IMPL64 | IMPL(TCG_TARGET_HAS_muls2_i64))
  DEF(muluh_i64, 1, 2, 0, IMPL64 | IMPL(TCG_TARGET_HAS_muluh_i64))
  DEF(mulsh_i64, 1, 2, 0, IMPL64 | IMPL(TCG_TARGET_HAS_mulsh_i64))
- 
++
 +/*
 + * Scalar IEEE binary64 arithmetic on the host FPU, operands are the raw
 + * bit patterns in i64 temps. Round-to-nearest-even, host default
@@ -49,10 +57,10 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +DEF(fmsub_f64, 1, 3, 0, IMPL64 | IMPL(TCG_TARGET_HAS_f64))
 +DEF(sqrt_f64, 1, 1, 0, IMPL64 | IMPL(TCG_TARGET_HAS_f64))
 +DEF(cvt_f64_f32, 1, 1, 0, IMPL64 | IMPL(TCG_TARGET_HAS_f64))
-+
++DEF(cvt_f32_f64, 1, 1, 0, IMPL64 | IMPL(TCG_TARGET_HAS_f64))
+ 
  #define DATA64_ARGS  (TCG_TARGET_REG_BITS == 64 ? 1 : 2)
  
- /* There are tcg_ctx->insn_start_words here, not just one. */
 --- a/include/tcg/tcg.h
 +++ b/include/tcg/tcg.h
 @@ -162,6 +162,9 @@
@@ -67,7 +75,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  #endif
 --- a/include/tcg/tcg-op-common.h
 +++ b/include/tcg/tcg-op-common.h
-@@ -240,6 +240,17 @@
+@@ -240,6 +240,19 @@
                        TCGv_i64 ah, TCGv_i64 bl, TCGv_i64 bh);
  void tcg_gen_mulu2_i64(TCGv_i64 rl, TCGv_i64 rh, TCGv_i64 arg1, TCGv_i64 arg2);
  void tcg_gen_muls2_i64(TCGv_i64 rl, TCGv_i64 rh, TCGv_i64 arg1, TCGv_i64 arg2);
@@ -82,15 +90,19 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +void tcg_gen_sqrt_f64(TCGv_i64 ret, TCGv_i64 a);
 +/* binary32 result in the low 32 bits, high bits undefined */
 +void tcg_gen_cvt_f64_f32(TCGv_i64 ret, TCGv_i64 a);
++/* binary32 in the low 32 bits of a (high bits ignored) -> binary64, exact */
++void tcg_gen_cvt_f32_f64(TCGv_i64 ret, TCGv_i64 a);
  void tcg_gen_mulsu2_i64(TCGv_i64 rl, TCGv_i64 rh, TCGv_i64 arg1, TCGv_i64 arg2);
  void tcg_gen_not_i64(TCGv_i64 ret, TCGv_i64 arg);
  void tcg_gen_ext8s_i64(TCGv_i64 ret, TCGv_i64 arg);
 --- a/tcg/tcg-op.c
 +++ b/tcg/tcg-op.c
-@@ -3066,6 +3066,53 @@
+@@ -3064,8 +3064,61 @@
+         tcg_gen_mov_i64(rl, t0);
+         tcg_temp_free_i64(t0);
      }
- }
- 
++}
++
 +bool tcg_f64_supported(void)
 +{
 +    return TCG_TARGET_REG_BITS == 64 && TCG_TARGET_HAS_f64;
@@ -106,8 +118,8 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +{
 +    tcg_debug_assert(tcg_f64_supported());
 +    tcg_gen_op3_i64(INDEX_op_sub_f64, ret, a, b);
-+}
-+
+ }
+ 
 +void tcg_gen_mul_f64(TCGv_i64 ret, TCGv_i64 a, TCGv_i64 b)
 +{
 +    tcg_debug_assert(tcg_f64_supported());
@@ -138,15 +150,22 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    tcg_gen_op2_i64(INDEX_op_cvt_f64_f32, ret, a);
 +}
 +
++void tcg_gen_cvt_f32_f64(TCGv_i64 ret, TCGv_i64 a)
++{
++    tcg_debug_assert(tcg_f64_supported());
++    tcg_gen_op2_i64(INDEX_op_cvt_f32_f64, ret, a);
++}
++
  void tcg_gen_muls2_i64(TCGv_i64 rl, TCGv_i64 rh, TCGv_i64 arg1, TCGv_i64 arg2)
  {
      if (TCG_TARGET_HAS_muls2_i64) {
 --- a/tcg/tcg.c
 +++ b/tcg/tcg.c
-@@ -2164,6 +2164,15 @@
+@@ -2163,6 +2163,16 @@
+         return TCG_TARGET_HAS_muluh_i64;
      case INDEX_op_mulsh_i64:
          return TCG_TARGET_HAS_mulsh_i64;
- 
++
 +    case INDEX_op_add_f64:
 +    case INDEX_op_sub_f64:
 +    case INDEX_op_mul_f64:
@@ -154,11 +173,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    case INDEX_op_fmsub_f64:
 +    case INDEX_op_sqrt_f64:
 +    case INDEX_op_cvt_f64_f32:
++    case INDEX_op_cvt_f32_f64:
 +        return TCG_TARGET_HAS_f64;
-+
+ 
      case INDEX_op_mov_vec:
      case INDEX_op_dup_vec:
-     case INDEX_op_dupm_vec:
 --- a/host/include/i386/host/cpuinfo.h
 +++ b/host/include/i386/host/cpuinfo.h
 @@ -16,6 +16,7 @@
@@ -200,7 +219,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  
 --- a/tcg/i386/tcg-target.c.inc
 +++ b/tcg/i386/tcg-target.c.inc
-@@ -411,6 +411,13 @@
+@@ -411,6 +411,14 @@
  #define OPC_TESTL	(0x85)
  #define OPC_TZCNT       (0xbc | P_EXT | P_SIMDF3)
  #define OPC_UD2         (0x0b | P_EXT)
@@ -211,13 +230,16 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +#define OPC_VFMSUB213SD (0xab | P_EXT38 | P_DATA16 | P_VEXW)
 +#define OPC_VSQRTSD     (0x51 | P_EXT | P_SIMDF2)
 +#define OPC_VCVTSD2SS   (0x5a | P_EXT | P_SIMDF2)
++#define OPC_VCVTSS2SD   (0x5a | P_EXT | P_SIMDF3)
  #define OPC_VPBLENDD    (0x02 | P_EXT3A | P_DATA16)
  #define OPC_VPBLENDVB   (0x4c | P_EXT3A | P_DATA16)
  #define OPC_VPBLENDMB   (0x66 | P_EXT38 | P_DATA16 | P_EVEX)
-@@ -3041,6 +3048,29 @@
+@@ -3039,7 +3047,33 @@
+         /* Note that SHRD outputs to the r/m operand.  */
+         tcg_out_modrm(s, OPC_SHRD_Ib + rexw, a2, a0);
          tcg_out8(s, args[3]);
-         break;
- 
++        break;
++
 +    case INDEX_op_add_f64:
 +        tcg_out_vex_modrm(s, OPC_VADDSD, a0, a1, a2);
 +        break;
@@ -233,21 +255,24 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    case INDEX_op_fmsub_f64:
 +        /* a0 == a1 (constraint "0"): a0 = a2 * a0 - a3 */
 +        tcg_out_vex_modrm(s, OPC_VFMSUB213SD, a0, a2, args[3]);
-+        break;
+         break;
 +    case INDEX_op_sqrt_f64:
 +        tcg_out_vex_modrm(s, OPC_VSQRTSD, a0, a0, a1);
 +        break;
 +    case INDEX_op_cvt_f64_f32:
 +        tcg_out_vex_modrm(s, OPC_VCVTSD2SS, a0, a0, a1);
 +        break;
-+
++    case INDEX_op_cvt_f32_f64:
++        tcg_out_vex_modrm(s, OPC_VCVTSS2SD, a0, a0, a1);
++        break;
+ 
      case INDEX_op_mb:
          tcg_out_mb(s, a0);
-         break;
-@@ -3616,6 +3646,17 @@
+@@ -3615,6 +3649,18 @@
+     switch (op) {
      case INDEX_op_goto_ptr:
          return C_O0_I1(r);
- 
++
 +    case INDEX_op_add_f64:
 +    case INDEX_op_sub_f64:
 +    case INDEX_op_mul_f64:
@@ -257,11 +282,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        return C_O1_I3(x, 0, x, x);
 +    case INDEX_op_sqrt_f64:
 +    case INDEX_op_cvt_f64_f32:
++    case INDEX_op_cvt_f32_f64:
 +        return C_O1_I1(x, x);
-+
+ 
      case INDEX_op_ld8u_i32:
      case INDEX_op_ld8u_i64:
-     case INDEX_op_ld8s_i32:
 --- a/tcg/aarch64/tcg-target.h
 +++ b/tcg/aarch64/tcg-target.h
 @@ -145,6 +145,7 @@
@@ -274,10 +299,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  
 --- a/tcg/aarch64/tcg-target.c.inc
 +++ b/tcg/aarch64/tcg-target.c.inc
-@@ -524,6 +524,15 @@
+@@ -523,6 +523,16 @@
+     /* Data-processing (3 source) instructions.  */
      I3509_MADD      = 0x1b000000,
      I3509_MSUB      = 0x1b008000,
- 
++
 +    /* Scalar binary64 FP (Vd/Vn/Vm/Va are the low 5 bits of TCG_REG_Vn). */
 +    I3F_FADDD       = 0x1e602800,
 +    I3F_FSUBD       = 0x1e603800,
@@ -286,11 +312,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    I3F_FNMSUBD     = 0x1f608000,   /* Dd = Dn * Dm - Da */
 +    I3F_FSQRTD      = 0x1e61c000,
 +    I3F_FCVTSD      = 0x1e624000,   /* Sd = Dn */
-+
++    I3F_FCVTDS      = 0x1e22c000,   /* Dd = Sn */
+ 
      /* Logical shifted register instructions (without a shift).  */
      I3510_AND       = 0x0a000000,
-     I3510_BIC       = 0x0a200000,
-@@ -806,6 +815,19 @@
+@@ -806,6 +816,19 @@
      tcg_out32(s, insn | ext << 31 | rm << 16 | ra << 10 | rn << 5 | rd);
  }
  
@@ -310,7 +336,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  static void tcg_out_insn_3605(TCGContext *s, AArch64Insn insn, bool q,
                                TCGReg rd, TCGReg rn, int dst_idx, int src_idx)
  {
-@@ -1091,7 +1113,20 @@
+@@ -1091,7 +1114,20 @@
      switch (type) {
      case TCG_TYPE_I32:
      case TCG_TYPE_I64:
@@ -332,7 +358,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
          break;
      default:
          g_assert_not_reached();
-@@ -1221,7 +1256,12 @@
+@@ -1221,7 +1257,12 @@
              tcg_out_movr(s, type, ret, arg);
              break;
          } else if (ret < 32) {
@@ -346,10 +372,12 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
              break;
          } else if (arg < 32) {
              tcg_out_insn(s, 3605, INS, 0, ret, arg, 4 << type, 0);
-@@ -2482,6 +2522,28 @@
-         tcg_out_insn(s, 3508, SMULH, TCG_TYPE_I64, a0, a1, a2);
+@@ -2480,7 +2521,32 @@
          break;
- 
+     case INDEX_op_mulsh_i64:
+         tcg_out_insn(s, 3508, SMULH, TCG_TYPE_I64, a0, a1, a2);
++        break;
++
 +    case INDEX_op_add_f64:
 +        tcg_out_fp3(s, I3F_FADDD, a0, a1, a2);
 +        break;
@@ -367,15 +395,17 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        break;
 +    case INDEX_op_sqrt_f64:
 +        tcg_out32(s, I3F_FSQRTD | (a1 & 0x1f) << 5 | (a0 & 0x1f));
-+        break;
+         break;
 +    case INDEX_op_cvt_f64_f32:
 +        tcg_out32(s, I3F_FCVTSD | (a1 & 0x1f) << 5 | (a0 & 0x1f));
 +        break;
-+
++    case INDEX_op_cvt_f32_f64:
++        tcg_out32(s, I3F_FCVTDS | (a1 & 0x1f) << 5 | (a0 & 0x1f));
++        break;
+ 
      case INDEX_op_mb:
          tcg_out_mb(s, a0);
-         break;
-@@ -2957,6 +3019,17 @@
+@@ -2957,6 +3023,18 @@
      case INDEX_op_goto_ptr:
          return C_O0_I1(r);
  
@@ -388,6 +418,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        return C_O1_I3(w, w, w, w);
 +    case INDEX_op_sqrt_f64:
 +    case INDEX_op_cvt_f64_f32:
++    case INDEX_op_cvt_f32_f64:
 +        return C_O1_I1(w, w);
 +
      case INDEX_op_ld8u_i32:
@@ -409,9 +440,9 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      float_status fp_status;
      floatx80 ft0;
 +    /*
-+     * x87 inline fast path (tcg/x87-inline.c.inc): 1 = PC 53 bits, RC
-+     * nearest, PE masked, property x87-fast on; 0 otherwise. Derived
-+     * from fpuc by update_fp_status(), not migrated.
++     * x87 inline fast path (tcg/x87-shadow.c.inc): with RC nearest, PE
++     * masked and property x87-fast on, 1 = PC 53 bits, 2 = PC 24 bits;
++     * 0 otherwise. Derived from fpuc by update_fp_status(), not migrated.
 +     */
 +    uint8_t x87_fast_mode;
 +    /* shadow doubles of the x87 stack, relative slots (tcg/x87-shadow.c.inc) */
@@ -419,20 +450,22 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  
      float_status mmx_status; /* for 3DNow! float ops */
      float_status sse_status;
-@@ -2533,11 +2541,15 @@
+@@ -2532,12 +2540,17 @@
+ #if !defined(CONFIG_USER_ONLY)
  #include "hw/i386/apic.h"
  #endif
- 
-+/* TB flag (not an hflag): x87 inline mode, from env->x87_fast_mode */
-+#define TB_FLAG_X87_INLINE   (1u << 29)
 +
++/* TB flags (not hflags): x87 inline mode, env->x87_fast_mode (0, 1, 2) */
++#define TB_FLAG_X87_MODE_SHIFT  29
++#define TB_FLAG_X87_MODE_MASK   (3u << TB_FLAG_X87_MODE_SHIFT)
+ 
  static inline void cpu_get_tb_cpu_state(CPUX86State *env, vaddr *pc,
                                          uint64_t *cs_base, uint32_t *flags)
  {
      *flags = env->hflags |
 -        (env->eflags & (IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK));
 +        (env->eflags & (IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK)) |
-+        (env->x87_fast_mode == 1 ? TB_FLAG_X87_INLINE : 0);
++        ((uint32_t)env->x87_fast_mode << TB_FLAG_X87_MODE_SHIFT);
      if (env->hflags & HF_CS64_MASK) {
          *cs_base = 0;
          *pc = env->eip;
@@ -456,27 +489,33 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  {
      uint8_t new_flags = get_float_exception_flags(&env->fp_status);
      float_raise(old_flags, &env->fp_status);
-@@ -976,6 +976,11 @@
+@@ -976,6 +976,17 @@
          break;
      }
      set_floatx80_rounding_precision(rnd_prec, &env->fp_status);
 +
-+    env->x87_fast_mode = env_archcpu(env)->x87_fast
++    env->x87_fast_mode = 0;
++    if (env_archcpu(env)->x87_fast
 +        && rnd_mode == 0                   /* round to nearest even */
-+        && rnd_prec == floatx80_precision_d
-+        && (env->fpuc & 0x20);       /* PM: precision exception masked */
++        && (env->fpuc & 0x20)) {           /* PM: precision exception masked */
++        if (rnd_prec == floatx80_precision_d) {
++            env->x87_fast_mode = 1;
++        } else if (rnd_prec == floatx80_precision_s) {
++            env->x87_fast_mode = 2;
++        }
++    }
  }
  
  void helper_fldcw(CPUX86State *env, uint32_t val)
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
-@@ -79,6 +79,29 @@
+@@ -79,7 +79,30 @@
  static TCGv cpu_seg_base[6];
  static TCGv_i64 cpu_bndl[4];
  static TCGv_i64 cpu_bndu[4];
 +/* x87 shadow doubles (x87-shadow.c.inc), relative stack slots */
 +static TCGv_i64 cpu_x87_sd[8];
-+
+ 
 +/* x87 shadow-double translation: one out-of-line slow block (x87-shadow.c.inc) */
 +typedef struct X87SlowBlock {
 +    TCGLabel *label;
@@ -497,15 +536,18 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +} X87SlowBlock;
 +#define X87S_MAX_SLOW 96
 +#define X87S_MAX_TMPS 96
- 
++
  typedef struct DisasContext {
      DisasContextBase base;
-@@ -127,6 +150,19 @@
+ 
+@@ -127,6 +150,21 @@
      int cpuid_7_1_eax_features;
      int cpuid_xsave_features;
  
 +    /* x87 shadow-double state (x87-shadow.c.inc) */
 +    bool x87s_on;               /* TB translated in inline mode */
++    int x87s_mode;              /* env->x87_fast_mode this TB is for */
++    bool x87s_prec24;           /* mode 2: PC=24, shadows hold 24-bit values */
 +    bool x87s_guarded;          /* runtime mode guard emitted */
 +    TCGv_i32 x87s_top;          /* entry top of stack, NULL: no frame */
 +    int x87s_delta;             /* current top = (entry top + delta) & 7 */
@@ -520,7 +562,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      /* TCG local temps */
      TCGv cc_srcT;
      TCGv A0;
-@@ -257,6 +293,10 @@
+@@ -257,6 +295,10 @@
  #endif
  
  static void gen_jmp_rel(DisasContext *s, MemOp ot, int diff, int tb_num);
@@ -531,7 +573,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  static void gen_jmp_rel_csize(DisasContext *s, int diff, int tb_num);
  static void gen_exception_gpf(DisasContext *s);
  
-@@ -1406,6 +1446,7 @@
+@@ -1406,6 +1448,7 @@
  
  static void gen_exception(DisasContext *s, int trapno)
  {
@@ -539,7 +581,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      gen_update_cc_op(s);
      gen_update_eip_cur(s);
      gen_helper_raise_exception(tcg_env, tcg_constant_i32(trapno));
-@@ -2109,6 +2150,7 @@
+@@ -2109,6 +2152,7 @@
     privilege checks */
  static void gen_interrupt(DisasContext *s, uint8_t intno)
  {
@@ -547,7 +589,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      gen_update_cc_op(s);
      gen_update_eip_cur(s);
      gen_helper_raise_interrupt(tcg_env, tcg_constant_i32(intno),
-@@ -2179,6 +2221,7 @@
+@@ -2179,6 +2223,7 @@
  {
      bool inhibit_reset;
  
@@ -555,7 +597,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      gen_update_cc_op(s);
  
      /* If several instructions disable interrupts, only the first does it.  */
-@@ -2218,6 +2261,7 @@
+@@ -2218,6 +2263,7 @@
      target_ulong new_eip = new_pc - s->cs_base;
  
      assert(!s->cc_op_dirty);
@@ -563,7 +605,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  
      /* In 64-bit mode, operand size is fixed at 64 bits. */
      if (!CODE64(s)) {
-@@ -2339,6 +2383,7 @@
+@@ -2339,6 +2385,7 @@
  }
  
  #include "emit.c.inc"
@@ -571,7 +613,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  
  static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
  {
-@@ -2356,14 +2401,37 @@
+@@ -2356,15 +2403,38 @@
      mod = (modrm >> 6) & 3;
      rm = modrm & 7;
      op = ((b & 7) << 3) | ((modrm >> 3) & 7);
@@ -604,13 +646,14 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    if (tcg_f64_supported() && gen_x87s_ends_tb(op, mod, rm)) {
 +        s->base.is_jmp = DISAS_EOB_NEXT;
 +    }
-+
+ 
 +    if (mod != 3) {
 +        bool update_fdp = true;
- 
++
          switch (op) {
          case 0x00 ... 0x07: /* fxxxs */
-@@ -2556,16 +2624,8 @@
+         case 0x10 ... 0x17: /* fixxxl */
+@@ -2556,16 +2626,8 @@
              goto illegal_op;
          }
  
@@ -629,7 +672,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
          }
      } else {
          /* register float ops */
-@@ -2889,12 +2949,7 @@
+@@ -2889,17 +2951,31 @@
      }
  
      if (update_fip) {
@@ -643,10 +686,10 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      }
      return;
  
-@@ -2902,6 +2957,25 @@
+  illegal_op:
      gen_illegal_opcode(s);
- }
- 
++}
++
 +/* FIP/FCS and, for memory operands, FDP/FDS of the current instruction. */
 +static void gen_x87_fip_fdp(DisasContext *s)
 +{
@@ -664,12 +707,10 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +                     offsetof(CPUX86State, fpcs));
 +    tcg_gen_st_tl(eip_cur_tl(s),
 +                  tcg_env, offsetof(CPUX86State, fpip));
-+}
-+
+ }
+ 
  static void gen_multi0F(DisasContext *s, X86DecodedInsn *decode)
- {
-     int prefixes = s->prefix;
-@@ -3055,6 +3129,7 @@
+@@ -3055,6 +3131,7 @@
              if (!(s->cpuid_ext_features & CPUID_EXT_MONITOR) || CPL(s) != 0) {
                  goto illegal_op;
              }
@@ -677,7 +718,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
              gen_update_cc_op(s);
              gen_update_eip_cur(s);
              gen_helper_mwait(tcg_env, cur_insn_len_i32(s));
-@@ -3130,6 +3205,7 @@
+@@ -3130,6 +3207,7 @@
              if (!check_cpl0(s)) {
                  break;
              }
@@ -685,7 +726,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
              gen_update_cc_op(s);
              gen_update_eip_cur(s);
              /*
-@@ -3147,6 +3223,7 @@
+@@ -3147,6 +3225,7 @@
              if (!SVME(s)) {
                  goto illegal_op;
              }
@@ -693,10 +734,12 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
              gen_update_cc_op(s);
              gen_update_eip_cur(s);
              gen_helper_vmmcall(tcg_env);
-@@ -3621,6 +3698,15 @@
+@@ -3619,6 +3698,15 @@
+             = tcg_global_mem_new(tcg_env,
+                                  offsetof(CPUX86State, segs[i].base),
                                   seg_base_names[i]);
-     }
- 
++    }
++
 +    for (i = 0; i < 8; ++i) {
 +        static const char sd_names[8][4] = {
 +            "sd0", "sd1", "sd2", "sd3", "sd4", "sd5", "sd6", "sd7"
@@ -704,17 +747,17 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        cpu_x87_sd[i] = tcg_global_mem_new_i64(tcg_env,
 +                                               offsetof(CPUX86State, x87_sd[i]),
 +                                               sd_names[i]);
-+    }
-+
+     }
+ 
      for (i = 0; i < 4; ++i) {
-         cpu_bndl[i]
-             = tcg_global_mem_new_i64(tcg_env,
-@@ -3665,6 +3751,13 @@
+@@ -3665,6 +3753,15 @@
  
      dc->cc_op = CC_OP_DYNAMIC;
      dc->cc_op_dirty = false;
-+    dc->x87s_on = (flags & TB_FLAG_X87_INLINE) && tcg_f64_supported()
++    dc->x87s_mode = (flags & TB_FLAG_X87_MODE_MASK) >> TB_FLAG_X87_MODE_SHIFT;
++    dc->x87s_on = dc->x87s_mode != 0 && tcg_f64_supported()
 +        && !(flags & (HF_TF_MASK | HF_INHIBIT_IRQ_MASK));
++    dc->x87s_prec24 = dc->x87s_mode == 2;
 +    dc->x87s_guarded = false;
 +    dc->x87s_nslow = 0;
 +    dc->x87s_ntmps = 0;
@@ -723,7 +766,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
      /* select memory access functions */
      dc->mem_index = cpu_mmu_index(cpu, false);
      dc->cpuid_features = env->features[FEAT_1_EDX];
-@@ -3718,7 +3811,7 @@
+@@ -3718,7 +3815,7 @@
      if (tb_cflags(dcbase->tb) & CF_PCREL) {
          pc_arg &= ~TARGET_PAGE_MASK;
      }
@@ -732,7 +775,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  }
  
  static void i386_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
-@@ -3817,6 +3910,7 @@
+@@ -3817,6 +3914,7 @@
      default:
          g_assert_not_reached();
      }
@@ -910,15 +953,15 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
  #ifndef CONFIG_USER_ONLY
 --- /dev/null
 +++ b/target/i386/tcg/x87-shadow.c.inc
-@@ -0,0 +1,1560 @@
+@@ -0,0 +1,1659 @@
 +/*
 + * x87 shadow-double translation: keep the FPU stack as host doubles
 + * across instructions.
 + *
-+ * In "inline mode" (TB flag TB_FLAG_X87_INLINE: precision control 53
-+ * bits, round to nearest, precision exception masked, property x87-fast
-+ * on) the translator keeps every x87 register it has touched as a raw
-+ * binary64 pattern in a TCG global (cpu_x87_sd[]) and only converts back
++ * In "inline mode" (TB flags TB_FLAG_X87_MODE: precision control 53 or
++ * 24 bits, round to nearest, precision exception masked, property
++ * x87-fast on) the translator keeps every x87 register it has touched as
++ * a raw binary64 pattern in a TCG global (cpu_x87_sd[]) and only converts back
 + * to the 80-bit env->fpregs[] form when the value has to be visible to
 + * something else: a helper, the end of the translation block, an
 + * exception. A dependent chain such as fld/fmul/fadd/fstp is then four
@@ -958,6 +1001,18 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 + * register is the only way to tell; real hardware returns an indefinite
 + * NaN there anyway).
 + *
++ * PC=24 (mode 2, what Direct3D sets). The shadows are still binary64
++ * but hold only values with a 24-bit significand, inside the float
++ * exponent window: a reload from fpregs[] requires it, loads of m32 and
++ * the constants have it, and every arithmetic result is rounded to it
++ * (x87s_round24: the host's binary64 result converted to binary32 and
++ * back; for 24-bit operands that double rounding is the correctly
++ * rounded 24-bit result of +, -, *, / and sqrt since 53 >= 2 * 24 + 2).
++ * Softfloat rounds m64 operands to 24 bits as well (fld/fadd m64 are
++ * inexact there, real hardware never rounds loads) and integer loads
++ * stay exact: so do we, and an fild m32 that does not fit 24 bits takes
++ * the helper. Results are identical to the PC=24 helper path.
++ *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +
@@ -966,6 +1021,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +#define X87S_BIAS_X80   16383
 +#define X87S_BIAS_F64   1023
 +#define X87S_WIN        900     /* X87F_WIN_D: 2^-900 .. 2^900 */
++#define X87S_WIN24      126     /* PC=24: binary32 normal range, minus the top binade */
 +
 +enum {
 +    X87S_MEM = 0,
@@ -986,11 +1042,24 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    X87S_SLOW_FCOM,
 +    X87S_SLOW_FSQRT,
 +    X87S_SLOW_FRNDINT,
++    X87S_SLOW_FILD,
 +};
 +
 +QEMU_BUILD_BUG_ON(sizeof(FPReg) != 16);
 +
 +#define X87S_SLOT(s, i)  (((s)->x87s_delta + (i)) & 7)
++
++/* exponent window of shadows and results, relative to 2^0 */
++static int x87s_win(DisasContext *s)
++{
++    return s->x87s_prec24 ? X87S_WIN24 : X87S_WIN;
++}
++
++/* mantissa bits of an x80 that must be zero for the value to be a shadow */
++static uint64_t x87s_mant_mask(DisasContext *s)
++{
++    return s->x87s_prec24 ? 0xffffffffffULL : 0x7ff;
++}
 +
 +/*
 + * Temporaries. TCG allows 512 temps per TB and an inlined instruction
@@ -1161,12 +1230,14 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +
 +/*
 + * x80 (low, high) -> binary64, exact. Branches to slow unless the value
-+ * is zero or a normal with a 53-bit mantissa and exponent within
-+ * [-win, win] (x87f_x80_to_d). Branchless apart from the exit; `out` is
-+ * only written after the branch.
++ * is zero or a normal whose mantissa bits in `mmask` are clear (53-bit,
++ * or 24-bit at PC=24) with exponent within [-win, win] (x87f_x80_to_d,
++ * x87f_x80_to_f). Branchless apart from the exit; `out` is only written
++ * after the branch.
 + */
 +static void x87s_x80_to_f64(DisasContext *s, TCGv_i64 out, TCGv_i64 low,
-+                            TCGv_i32 high, int win, TCGLabel *slow)
++                            TCGv_i32 high, int win, uint64_t mmask,
++                            TCGLabel *slow)
 +{
 +    TCGv_i64 zero = tcg_constant_i64(0);
 +    TCGv_i64 e = x87s_tmp_i64(s);
@@ -1185,7 +1256,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +
 +    tcg_gen_subi_i64(e, e, X87S_BIAS_X80 - win);
 +    tcg_gen_setcondi_i64(TCG_COND_GTU, bad, e, 2 * win);
-+    tcg_gen_andi_i64(t, low, 0x7ff);
++    tcg_gen_andi_i64(t, low, mmask);
 +    tcg_gen_setcondi_i64(TCG_COND_NE, t, t, 0);
 +    tcg_gen_or_i64(bad, bad, t);
 +    tcg_gen_setcondi_i64(TCG_COND_GE, t, low, 0);
@@ -1259,8 +1330,8 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    TCGv_i64 t = x87s_tmp_i64(s);
 +    TCGv_i64 u = x87s_tmp_i64(s);
 +    TCGv_i64 zero = tcg_constant_i64(0);
-+    int lo = X87S_BIAS_F64 - X87S_WIN;
-+    int range = 2 * X87S_WIN;
++    int lo = X87S_BIAS_F64 - x87s_win(s);
++    int range = 2 * x87s_win(s);
 +
 +    tcg_gen_shli_i64(t, r, 1);
 +    tcg_gen_subi_i64(u, t, (uint64_t)lo << 53);
@@ -1271,12 +1342,33 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +
 +static void x87s_f64_check_win(DisasContext *s, TCGv_i64 d, TCGLabel *slow)
 +{
-+    x87s_f64_check(s, d, X87S_BIAS_F64 - X87S_WIN, 2 * X87S_WIN, slow);
++    x87s_f64_check(s, d, X87S_BIAS_F64 - x87s_win(s), 2 * x87s_win(s), slow);
++}
++
++/*
++ * PC=24: out = `in` rounded to nearest even at 24 significant bits, and
++ * diff = in ^ out, nonzero iff that was inexact. `in` is zero or a normal
++ * inside the PC=24 window, so the binary32 conversion neither overflows
++ * nor denormalizes and the result is a normal binary32 (its exponent
++ * may reach 127 by rounding up), exact as a binary64 again.
++ */
++static void x87s_round24(DisasContext *s, TCGv_i64 out, TCGv_i64 in,
++                         TCGv_i64 diff)
++{
++    TCGv_i64 f = x87s_tmp_i64(s);
++    TCGv_i64 r = x87s_tmp_i64(s);
++
++    tcg_gen_cvt_f64_f32(f, in);
++    tcg_gen_cvt_f32_f64(r, f);
++    tcg_gen_xor_i64(diff, in, r);
++    tcg_gen_mov_i64(out, r);
 +}
 +
 +/*
 + * binary32 bits (in the low half of m) -> binary64, exact; zero or
-+ * normal only (x87f_from_f32), which is always inside the window.
++ * normal only (x87f_from_f32), which is always inside the PC=53 window.
++ * At PC=24 the exponent may be 127, one above the window: harmless, every
++ * consumer that needs a bound checks its result (or, fist, its operand).
 + */
 +static void x87s_f32_to_f64(DisasContext *s, TCGv_i64 out, TCGv_i64 m,
 +                            TCGLabel *slow)
@@ -1370,6 +1462,26 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    x87s_set_pe(s, t);
 +}
 +
++/*
++ * m64 operand (fld/fxxx/fcom m64) as a shadow: zero or a normal inside
++ * the window; at PC=24 rounded to 24 bits with PE when inexact, as
++ * softfloat's float64_to_floatx80 does at that precision.
++ */
++static TCGv_i64 x87s_m64_operand(DisasContext *s, TCGv_i64 m, TCGLabel *slow)
++{
++    TCGv_i64 v, diff;
++
++    x87s_f64_check_win(s, m, slow);
++    if (!s->x87s_prec24) {
++        return m;
++    }
++    v = x87s_tmp_i64(s);
++    diff = x87s_tmp_i64(s);
++    x87s_round24(s, v, m, diff);
++    x87s_set_pe(s, diff);
++    return v;
++}
++
 +/* ------------------------------------------------------------------ */
 +/* shadow access, materialization, slow blocks                         */
 +
@@ -1383,7 +1495,8 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        TCGv_i32 high = x87s_tmp_i32(s);
 +
 +        x87s_ld_x80(low, high, x87s_slot_ptr(s, r));
-+        x87s_x80_to_f64(s, cpu_x87_sd[r], low, high, X87S_WIN, slow);
++        x87s_x80_to_f64(s, cpu_x87_sd[r], low, high, x87s_win(s),
++                        x87s_mant_mask(s), slow);
 +        s->x87s_state[r] = X87S_CLEAN;
 +    }
 +    return cpu_x87_sd[r];
@@ -1509,7 +1622,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    b = x87s_new_slow(s, X87S_SLOW_GUARD);
 +    m = x87s_tmp_i32(s);
 +    tcg_gen_ld8u_i32(m, tcg_env, offsetof(CPUX86State, x87_fast_mode));
-+    tcg_gen_brcondi_i32(TCG_COND_NE, m, 1, b->label);
++    tcg_gen_brcondi_i32(TCG_COND_NE, m, s->x87s_mode, b->label);
 +}
 +
 +static void x87s_begin(DisasContext *s)
@@ -1656,6 +1769,13 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        case X87S_SLOW_FRNDINT:
 +            gen_helper_frndint(tcg_env);
 +            break;
++        case X87S_SLOW_FILD:
++            {
++                TCGv_i32 m32 = x87s_tmp_i32(s);
++                tcg_gen_extrl_i64_i32(m32, b->m);
++                gen_helper_fildl_ST0(tcg_env, m32);
++            }
++            break;
 +        default:
 +            g_assert_not_reached();
 +        }
@@ -1726,6 +1846,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +        break;
 +    default:
 +        g_assert_not_reached();
++    }
++    if (s->x87s_prec24) {
++        TCGv_i64 diff = x87s_tmp_i64(s);
++        x87s_round24(s, r, r, diff);
++        tcg_gen_or_i64(err, err, diff);
 +    }
 +    x87s_set_pe(s, err);
 +}
@@ -1800,8 +1925,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    b->m64 = m64;
 +    b->op1 = op1;
 +    if (m64) {
-+        x87s_f64_check_win(s, m, b->label);
-+        v = m;
++        v = x87s_m64_operand(s, m, b->label);
 +    } else {
 +        x87s_f32_to_f64(s, v, m, b->label);
 +    }
@@ -1871,8 +1995,7 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    b->m = m;
 +    b->m64 = m64;
 +    if (m64) {
-+        x87s_f64_check_win(s, m, b->label);
-+        v = m;
++        v = x87s_m64_operand(s, m, b->label);
 +    } else {
 +        x87s_f32_to_f64(s, v, m, b->label);
 +    }
@@ -1880,18 +2003,32 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    x87s_set(s, 0, v);
 +}
 +
-+/* fild m32 / m16: exact, no slow path. Value sign-extended in s->tmp2_i32. */
-+static void gen_x87s_fild(DisasContext *s)
++/*
++ * fild m32 / m16: exact. Value sign-extended in s->tmp2_i32. No slow
++ * path, except at PC=24 for an m32 value that needs more than 24 bits
++ * (the helper keeps it exact, but a shadow cannot).
++ */
++static void gen_x87s_fild(DisasContext *s, bool m16)
 +{
 +    TCGv_i64 v = x87s_tmp_i64(s);
 +    TCGv_i64 t = x87s_tmp_i64(s);
 +    TCGv_i64 k = tcg_constant_i64(0x4330000080000000ULL);  /* 2^52 + 2^31 */
++    X87SlowBlock *b = NULL;
 +
 +    x87s_begin(s);
++    if (s->x87s_prec24 && !m16) {
++        b = x87s_new_slow(s, X87S_SLOW_FILD);
++        b->m = tcg_temp_new_i64();
++        tcg_gen_ext_i32_i64(b->m, s->tmp2_i32);
++    }
 +    tcg_gen_extu_i32_i64(t, s->tmp2_i32);
 +    tcg_gen_xori_i64(t, t, 0x80000000);          /* v + 2^31 as u32 */
 +    tcg_gen_ori_i64(t, t, 0x4330000000000000ULL); /* 2^52 + (v + 2^31) */
 +    tcg_gen_sub_f64(v, t, k);                     /* exact */
++    if (b) {
++        tcg_gen_andi_i64(t, v, (1 << 29) - 1);    /* fits 24 bits? */
++        tcg_gen_brcondi_i64(TCG_COND_NE, t, 0, b->label);
++    }
 +    x87s_push(s);
 +    x87s_set(s, 0, v);
 +}
@@ -2161,6 +2298,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +    tcg_gen_sqrt_f64(r, v);
 +    x87s_f64_check_win(s, r, b->label);
 +    tcg_gen_fmsub_f64(err, r, r, v);
++    if (s->x87s_prec24) {
++        TCGv_i64 diff = x87s_tmp_i64(s);
++        x87s_round24(s, r, r, diff);
++        tcg_gen_or_i64(err, err, diff);
++    }
 +    x87s_set_pe(s, err);
 +    x87s_set(s, 0, r);
 +}
@@ -2262,11 +2404,11 @@ vector->general emitted UMOV with a zero element-size field (SIGILL).
 +            return true;
 +        case 0x18: /* fildl */
 +            tcg_gen_qemu_ld_i32(s->tmp2_i32, s->A0, s->mem_index, MO_LEUL);
-+            gen_x87s_fild(s);
++            gen_x87s_fild(s, false);
 +            return true;
 +        case 0x38: /* filds */
 +            tcg_gen_qemu_ld_i32(s->tmp2_i32, s->A0, s->mem_index, MO_LESW);
-+            gen_x87s_fild(s);
++            gen_x87s_fild(s, true);
 +            return true;
 +        case 0x0a: /* fsts */
 +        case 0x0b: /* fstps */

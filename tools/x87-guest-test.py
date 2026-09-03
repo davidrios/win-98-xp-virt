@@ -684,8 +684,9 @@ BENCH_ASM = r"""
 org 100h
 bits 16
 ; x87 throughput: ITER iterations of a typical double-precision inner loop
-; (fld/fmul/fadd/fstp on memory doubles) at PC=53, timed with the BIOS tick
-; counter (18.2 Hz). Prints "BENCH <iterations> <ticks>" on COM1.
+; (fld/fmul/fadd/fstp on memory doubles) at PC=53 (X87BENCH) or PC=24
+; (X87BEN24), timed with the BIOS tick counter (18.2 Hz). Prints
+; "BENCH <iterations> <ticks>" (or "BENCH24 ...") on COM1.
 %define ITER 20000000
 start:
     fninit
@@ -840,6 +841,12 @@ def main():
     with open(basm, "w") as f:
         f.write(BENCH_ASM)
     sh("nasm", "-O0", "-f", "bin", "-o", bcom, basm)
+    b24asm = os.path.join(OUT, "x87ben24.asm")
+    b24com = os.path.join(OUT, "X87BEN24.COM")
+    with open(b24asm, "w") as f:
+        f.write(BENCH_ASM.replace("cw: dw 023Fh", "cw: dw 003Fh")
+                .replace('db "BENCH ", 0', 'db "BENCH24 ", 0'))
+    sh("nasm", "-O0", "-f", "bin", "-o", b24com, b24asm)
     lasm = os.path.join(OUT, "longblk.asm")
     lcom = os.path.join(OUT, "LONGBLK.COM")
     with open(lasm, "w") as f:
@@ -854,11 +861,13 @@ def main():
                 "SHELL=\\FREEDOS\\BIN\\COMMAND.COM \\FREEDOS\\BIN /E:2048 /P=\\FDAUTO.BAT\r\n")
     bat = os.path.join(OUT, "FDAUTO.BAT")
     with open(bat, "w") as f:
-        f.write("@echo off\r\nX87BENCH.COM\r\nLONGBLK.COM\r\nX87TEST.COM\r\n")
+        f.write("@echo off\r\nX87BENCH.COM\r\nX87BEN24.COM\r\nLONGBLK.COM\r\n"
+                "X87TEST.COM\r\n")
     sh("mcopy", "-o", "-i", img, cfg, "::FDCONFIG.SYS")
     sh("mcopy", "-o", "-i", img, bat, "::FDAUTO.BAT")
     sh("mcopy", "-o", "-i", img, com, "::X87TEST.COM")
     sh("mcopy", "-o", "-i", img, bcom, "::X87BENCH.COM")
+    sh("mcopy", "-o", "-i", img, b24com, "::X87BEN24.COM")
     sh("mcopy", "-o", "-i", img, lcom, "::LONGBLK.COM")
 
     logs = {}
@@ -871,21 +880,22 @@ def main():
     ticks = {}
     for fast, data in (("off", a), ("on", b)):
         for line in data.split(b"\n"):
-            if line.startswith(b"BENCH "):
-                _, it, tk = line.split()
-                ticks[fast] = (int(it, 16), int(tk, 16))
-    if "off" in ticks and "on" in ticks:
-        it = ticks["off"][0]
-        ratio = ticks["off"][1] / max(1, ticks["on"][1])
-        print("bench: %d iterations x 7 x87 ops: off %.2f s, on %.2f s (%.1fx)" % (
-            it, ticks["off"][1] / 18.2, ticks["on"][1] / 18.2, ratio))
-        if ratio < 1.5:
-            print("WARNING: the fast path does not seem active (expected 5x or "
-                  "more): stale build/qemu/qemu-system-i386? re-run "
-                  "scripts/prepare-qemu.sh, configure, ninja")
-    # the bench line is timing, not a result: compare everything else
-    a = b"\n".join(l for l in a.split(b"\n") if not l.startswith(b"BENCH "))
-    b = b"\n".join(l for l in b.split(b"\n") if not l.startswith(b"BENCH "))
+            if line.startswith(b"BENCH"):
+                tag, it, tk = line.split()
+                ticks[(tag.decode(), fast)] = (int(it, 16), int(tk, 16))
+    for tag, what in (("BENCH", "PC=53"), ("BENCH24", "PC=24")):
+        if (tag, "off") in ticks and (tag, "on") in ticks:
+            off, on = ticks[(tag, "off")], ticks[(tag, "on")]
+            ratio = off[1] / max(1, on[1])
+            print("bench %s: %d iterations x 7 x87 ops: off %.2f s, on %.2f s (%.1fx)"
+                  % (what, off[0], off[1] / 18.2, on[1] / 18.2, ratio))
+            if ratio < 1.5:
+                print("WARNING: the fast path does not seem active at %s "
+                      "(expected 5x or more): stale build/qemu/qemu-system-i386? "
+                      "re-run scripts/prepare-qemu.sh, configure, ninja" % what)
+    # the bench lines are timing, not results: compare everything else
+    a = b"\n".join(l for l in a.split(b"\n") if not l.startswith(b"BENCH"))
+    b = b"\n".join(l for l in b.split(b"\n") if not l.startswith(b"BENCH"))
     n_lines = a.count(b"\n")
     if a == b and b"DONE" in a:
         print("x87 guest test: %d result lines identical with the fast path on and off" % n_lines)
