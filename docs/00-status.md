@@ -6,7 +6,7 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 
 | Area | State |
 |---|---|
-| QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, Sequoia 15.7). Windows untested. |
+| QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI on the Air pending. |
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio. **Win98 runs in it on the M1 Air** with sound and tablet mouse. |
 | 3D | qemu-3dfx GL pass-through works **standalone** (`qemu-system-i386 -display sdl`, 500+ fps wglgears on the Air). **Not yet in the player** — needs the M3 window-less context provider (doc 12). Under the player a GL app is refused cleanly; a Glide app still exits QEMU (patch 04). |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) into an ISO. Must match the host's qemu-3dfx commit. |
@@ -52,6 +52,12 @@ macOS specifics: `docs/build-macos.md`.
 - `enable_cache` for librashader off (needs `Features::PIPELINE_CACHE`).
 - `prepare-qemu.sh` must be followed by `configure-qemu.sh` when meson
   files change; the script keeps `werror` off and unchanged mtimes stable.
+- x87 under TCG is all helper calls into 80-bit softfloat; patch 05 does
+  the 53/24-bit-precision common case on the host FPU. Test any change to
+  it with `tools/x87-fast-test.c` (x86-64 host oracle) and
+  `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
+  mtools, the FreeDOS floppy). Benchmarks inside a .COM must keep data on
+  a separate page from code or QEMU's SMC invalidation dominates.
 - Embed API bump (header `QEMU_EMBED_API_VERSION` + `qemu-embed` crate
   `API_VERSION`) ⇒ every machine must re-run prepare + ninja the dylib
   before `cargo build`, or the link fails on the new symbol.
@@ -60,8 +66,10 @@ macOS specifics: `docs/build-macos.md`.
 
 1. M1 close-out: latency DONE (Air: p50 6–10 / p95 15–17 / max 18 ms,
    the 60 Hz vsync-phase floor; Linux identical); XP boot + Super PI DONE
-   + 7-Zip DONE (integer 1.3–2× the rig, x87 FP 21 %). Left: QMP over
-   socketpair (doc 11 §QMP).
+   + 7-Zip DONE (integer 1.3–2× the rig, x87 FP 21 %). Re-run Super PI on
+   the Air with patch 05 (prepare → configure → ninja → cargo; compare
+   `-cpu pentium3,x87-fast=off`) and fill in `reference/benchmarks/`. Left:
+   QMP over socketpair (doc 11 §QMP).
 2. **M3 (pulled forward, doc 12):** `30-3dfx-ui-vtable` patch →
    `embed/mglcntx_embed.c` (EGL pbuffer, compat profile) with readback
    bring-up → dma-buf import into wgpu → macOS CGL/IOSurface → Glide.

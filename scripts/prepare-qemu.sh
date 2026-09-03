@@ -63,6 +63,15 @@ patched_files "$PATCH" "$ROOT"/patches/qemu/*.patch | while read -r f; do
     git -C "$QEMU" checkout -q -- "$f"
   fi
 done
+# Files a patch CREATES ('--- /dev/null' header) must not pre-exist for
+# git apply. Untracked overlay files (hw/3dfx, hw/mesa, embed) are also
+# untracked but are refreshed by rsync above — never touch those here.
+created_files() {
+  awk '/^--- \/dev\/null/ { getline; sub(/^\+\+\+ (b\/|\.\/)/, ""); print }' "$@" | sort -u
+}
+created_files "$PATCH" "$ROOT"/patches/qemu/*.patch | while read -r f; do
+  rm -f "$QEMU/$f"
+done
 
 echo "==> applying $(basename "$PATCH")"
 git -C "$QEMU" apply "$PATCH"

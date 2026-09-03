@@ -55,6 +55,11 @@ Reading: the two tests bracket TCG on the M1 against a real P4 1.7.
   software renderers hit.
 - Boot time is disk/interrupt bound and the host SSD hides the rest.
 
+**Patch 05 (x87 host-FPU fast path, 2026-09-02):** re-measure Super PI on
+the Air with it (default on) and with `-cpu pentium3,x87-fast=off` to
+confirm the delta; add a row here. Expected: a large share of the 4.8× gap
+closes, the helper-call floor remains.
+
 In-app expectation text should say both halves: "integer speed of a fast
 P4; floating-point speed of a Pentium II". Games mix the two; per-title
 validation in M4 decides which side dominates.

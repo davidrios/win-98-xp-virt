@@ -1,0 +1,1101 @@
+x87 fast path: host FPU for the common case, bit-exact, softfloat otherwise.
+
+Every x87 instruction is a helper call into 80-bit softfloat (128-bit
+parts, precision control applied at rounding): hundreds of host
+instructions per fadd/fmul. Windows runs the FPU at 53-bit precision
+(process default) or 24-bit (Direct3D), so the guest is doing double/float
+math with a wider exponent range. When both operands are exact host
+doubles (floats), rounding is nearest-even and the result is a normal
+number well inside the exponent range, the host's correctly rounded result
+equals the 80-bit result rounded to 53 (24) bits; the inexact flag comes
+from TwoSum/FMA residuals. Everything else falls back, so results never
+change. Covers fadd/fsub/fmul/fdiv (all forms), fsqrt, frndint, fcom*,
+fld/fst m32/m64, fild, fist/fistt, and the double<->x80 conversions around
+the host-libm transcendentals. -cpu ...,x87-fast=off disables it.
+
+Verified: tools/x87-fast-test.c (host oracle vs. the real x87, millions of
+operands incl. edge cases, 0 mismatches) and tools/x87-guest-test.py (DOS
+program under TCG, 125k results identical with the fast path on/off;
+2.2x on a 7-op double loop on x86-64, Super PI on the M1 Air is the
+real-world number). Known softfloat deviation kept on purpose: at 24-bit
+precision softfloat rounds double loads and transcendental results to 24
+bits (real hardware does not); the fast path defers to softfloat there.
+
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index 348771bd..b7fa796d 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8495,6 +8495,7 @@ static Property x86_cpu_properties[] = {
+ 
+     DEFINE_PROP_BOOL("check", X86CPU, check_cpuid, true),
+     DEFINE_PROP_BOOL("enforce", X86CPU, enforce_cpuid, false),
++    DEFINE_PROP_BOOL("x87-fast", X86CPU, x87_fast, true),
+     DEFINE_PROP_BOOL("x-force-features", X86CPU, force_features, false),
+     DEFINE_PROP_BOOL("kvm", X86CPU, expose_kvm, true),
+     DEFINE_PROP_UINT32("phys-bits", X86CPU, phys_bits, 0),
+diff --git a/target/i386/cpu.h b/target/i386/cpu.h
+index 4c239a69..9f0e527e 100644
+--- a/target/i386/cpu.h
++++ b/target/i386/cpu.h
+@@ -2093,6 +2093,8 @@ struct ArchCPU {
+ 
+     bool check_cpuid;
+     bool enforce_cpuid;
++    /* x87 host-FPU fast path (target/i386/tcg/x87-fast.h) */
++    bool x87_fast;
+     /*
+      * Force features to be enabled even if the host doesn't support them.
+      * This is dangerous and should be done only for testing CPUID
+diff --git a/target/i386/tcg/fpu_helper.c b/target/i386/tcg/fpu_helper.c
+index 53b49bb2..59b63f76 100644
+--- a/target/i386/tcg/fpu_helper.c
++++ b/target/i386/tcg/fpu_helper.c
+@@ -28,6 +28,7 @@
+ #include "fpu/softfloat-macros.h"
+ #include "helper-tcg.h"
+ #include "access.h"
++#include "x87-fast.h"
+ 
+ /* float macros */
+ #define FT0    (env->ft0)
+@@ -105,6 +106,78 @@ static void do_fstt(X86Access *ac, target_ulong ptr, floatx80 f)
+ 
+ /* x87 FPU helpers */
+ 
++/*
++ * x87 fast path (x87-fast.h): host FPU for the common case, softfloat for
++ * the rest. Applicable when the guest runs at 53- or 24-bit precision with
++ * round-to-nearest; the -cpu property x87-fast=off disables it.
++ */
++static inline int x87_fast_prec(CPUX86State *env)
++{
++    if (!env_archcpu(env)->x87_fast) {
++        return -1;
++    }
++    if (env->fp_status.float_rounding_mode != float_round_nearest_even) {
++        return -1;
++    }
++    switch (env->fp_status.floatx80_rounding_precision) {
++    case floatx80_precision_d:
++        return X87F_PREC_D;
++    case floatx80_precision_s:
++        return X87F_PREC_S;
++    default:
++        return -1;
++    }
++}
++
++/*
++ * softfloat rounds float64 -> floatx80 conversions (fld m64, fadd m64, the
++ * host-libm transcendental results) to the precision-control width, so at
++ * 24-bit precision a double load is inexact there. Real hardware never
++ * rounds loads, but the fast path must stay indistinguishable from
++ * softfloat: keep exact double conversions only for 53/64-bit precision.
++ */
++static inline bool x87_fast_f64(CPUX86State *env)
++{
++    return env_archcpu(env)->x87_fast
++        && env->fp_status.floatx80_rounding_precision != floatx80_precision_s;
++}
++
++static inline int x87_fast_rnd(CPUX86State *env)
++{
++    /* FloatRoundMode nearest_even/down/up/to_zero = 0..3 = X87F_RND_* */
++    return env->fp_status.float_rounding_mode;
++}
++
++static inline floatx80 x87_binop(CPUX86State *env, int op,
++                                 floatx80 a, floatx80 b)
++{
++    int prec = x87_fast_prec(env);
++    floatx80 r;
++    bool inexact;
++
++    if (prec >= 0 && x87f_binop(op, prec, a, b, &r, &inexact)) {
++        if (inexact) {
++            float_raise(float_flag_inexact, &env->fp_status);
++        }
++        return r;
++    }
++    switch (op) {
++    case X87F_ADD:
++        return floatx80_add(a, b, &env->fp_status);
++    case X87F_SUB:
++        return floatx80_sub(a, b, &env->fp_status);
++    case X87F_MUL:
++        return floatx80_mul(a, b, &env->fp_status);
++    default:
++        return floatx80_div(a, b, &env->fp_status);
++    }
++}
++
++#define x87_add(env, a, b) x87_binop(env, X87F_ADD, a, b)
++#define x87_sub(env, a, b) x87_binop(env, X87F_SUB, a, b)
++#define x87_mul(env, a, b) x87_binop(env, X87F_MUL, a, b)
++#define x87_div(env, a, b) x87_binop(env, X87F_DIV, a, b)
++
+ static inline double floatx80_to_double(CPUX86State *env, floatx80 a)
+ {
+     union {
+@@ -112,6 +185,9 @@ static inline double floatx80_to_double(CPUX86State *env, floatx80 a)
+         double d;
+     } u;
+ 
++    if (env_archcpu(env)->x87_fast && x87f_to_f64(a, &u.f64)) {
++        return u.d;
++    }
+     u.f64 = floatx80_to_float64(a, &env->fp_status);
+     return u.d;
+ }
+@@ -124,6 +200,12 @@ static inline floatx80 double_to_floatx80(CPUX86State *env, double a)
+     } u;
+ 
+     u.d = a;
++    if (x87_fast_f64(env)) {
++        floatx80 r;
++        if (x87f_from_f64(u.f64, &r)) {
++            return r;
++        }
++    }
+     return float64_to_floatx80(u.f64, &env->fp_status);
+ }
+ 
+@@ -198,7 +280,7 @@ static void merge_exception_flags(CPUX86State *env, uint8_t old_flags)
+ static inline floatx80 helper_fdiv(CPUX86State *env, floatx80 a, floatx80 b)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    floatx80 ret = floatx80_div(a, b, &env->fp_status);
++    floatx80 ret = x87_div(env, a, b);
+     merge_exception_flags(env, old_flags);
+     return ret;
+ }
+@@ -224,7 +306,9 @@ void helper_flds_FT0(CPUX86State *env, uint32_t val)
+     } u;
+ 
+     u.i = val;
+-    FT0 = float32_to_floatx80(u.f, &env->fp_status);
++    if (!(env_archcpu(env)->x87_fast && x87f_from_f32(u.i, &FT0))) {
++        FT0 = float32_to_floatx80(u.f, &env->fp_status);
++    }
+     merge_exception_flags(env, old_flags);
+ }
+ 
+@@ -237,12 +321,18 @@ void helper_fldl_FT0(CPUX86State *env, uint64_t val)
+     } u;
+ 
+     u.i = val;
+-    FT0 = float64_to_floatx80(u.f, &env->fp_status);
++    if (!(x87_fast_f64(env) && x87f_from_f64(u.i, &FT0))) {
++        FT0 = float64_to_floatx80(u.f, &env->fp_status);
++    }
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fildl_FT0(CPUX86State *env, int32_t val)
+ {
++    if (env_archcpu(env)->x87_fast) {
++        FT0 = x87f_from_i64(val);
++        return;
++    }
+     FT0 = int32_to_floatx80(val, &env->fp_status);
+ }
+ 
+@@ -257,7 +347,10 @@ void helper_flds_ST0(CPUX86State *env, uint32_t val)
+ 
+     new_fpstt = (env->fpstt - 1) & 7;
+     u.i = val;
+-    env->fpregs[new_fpstt].d = float32_to_floatx80(u.f, &env->fp_status);
++    if (!(env_archcpu(env)->x87_fast
++          && x87f_from_f32(u.i, &env->fpregs[new_fpstt].d))) {
++        env->fpregs[new_fpstt].d = float32_to_floatx80(u.f, &env->fp_status);
++    }
+     env->fpstt = new_fpstt;
+     env->fptags[new_fpstt] = 0; /* validate stack entry */
+     merge_exception_flags(env, old_flags);
+@@ -274,7 +367,10 @@ void helper_fldl_ST0(CPUX86State *env, uint64_t val)
+ 
+     new_fpstt = (env->fpstt - 1) & 7;
+     u.i = val;
+-    env->fpregs[new_fpstt].d = float64_to_floatx80(u.f, &env->fp_status);
++    if (!(x87_fast_f64(env)
++          && x87f_from_f64(u.i, &env->fpregs[new_fpstt].d))) {
++        env->fpregs[new_fpstt].d = float64_to_floatx80(u.f, &env->fp_status);
++    }
+     env->fpstt = new_fpstt;
+     env->fptags[new_fpstt] = 0; /* validate stack entry */
+     merge_exception_flags(env, old_flags);
+@@ -293,7 +389,11 @@ void helper_fildl_ST0(CPUX86State *env, int32_t val)
+     FloatX80RoundPrec old = tmp_maximise_precision(&env->fp_status);
+ 
+     new_fpstt = (env->fpstt - 1) & 7;
+-    env->fpregs[new_fpstt].d = int32_to_floatx80(val, &env->fp_status);
++    if (env_archcpu(env)->x87_fast) {
++        env->fpregs[new_fpstt].d = x87f_from_i64(val);
++    } else {
++        env->fpregs[new_fpstt].d = int32_to_floatx80(val, &env->fp_status);
++    }
+     env->fpstt = new_fpstt;
+     env->fptags[new_fpstt] = 0; /* validate stack entry */
+ 
+@@ -306,7 +406,11 @@ void helper_fildll_ST0(CPUX86State *env, int64_t val)
+     FloatX80RoundPrec old = tmp_maximise_precision(&env->fp_status);
+ 
+     new_fpstt = (env->fpstt - 1) & 7;
+-    env->fpregs[new_fpstt].d = int64_to_floatx80(val, &env->fp_status);
++    if (env_archcpu(env)->x87_fast) {
++        env->fpregs[new_fpstt].d = x87f_from_i64(val);
++    } else {
++        env->fpregs[new_fpstt].d = int64_to_floatx80(val, &env->fp_status);
++    }
+     env->fpstt = new_fpstt;
+     env->fptags[new_fpstt] = 0; /* validate stack entry */
+ 
+@@ -321,7 +425,9 @@ uint32_t helper_fsts_ST0(CPUX86State *env)
+         uint32_t i;
+     } u;
+ 
+-    u.f = floatx80_to_float32(ST0, &env->fp_status);
++    if (!(env_archcpu(env)->x87_fast && x87f_to_f32(ST0, &u.i))) {
++        u.f = floatx80_to_float32(ST0, &env->fp_status);
++    }
+     merge_exception_flags(env, old_flags);
+     return u.i;
+ }
+@@ -334,7 +440,9 @@ uint64_t helper_fstl_ST0(CPUX86State *env)
+         uint64_t i;
+     } u;
+ 
+-    u.f = floatx80_to_float64(ST0, &env->fp_status);
++    if (!(env_archcpu(env)->x87_fast && x87f_to_f64(ST0, &u.i))) {
++        u.f = floatx80_to_float64(ST0, &env->fp_status);
++    }
+     merge_exception_flags(env, old_flags);
+     return u.i;
+ }
+@@ -344,7 +452,19 @@ int32_t helper_fist_ST0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     int32_t val;
+ 
+-    val = floatx80_to_int32(ST0, &env->fp_status);
++    {
++        int64_t fv;
++        bool fx;
++        if (env_archcpu(env)->x87_fast
++            && x87f_to_int(ST0, x87_fast_rnd(env), -2147483648.0, 2147483648.0, &fv, &fx)) {
++            val = (int32_t)fv;
++            if (fx) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++        } else {
++            val = floatx80_to_int32(ST0, &env->fp_status);
++        }
++    }
+     if (val != (int16_t)val) {
+         set_float_exception_flags(float_flag_invalid, &env->fp_status);
+         val = -32768;
+@@ -358,7 +478,19 @@ int32_t helper_fistl_ST0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     int32_t val;
+ 
+-    val = floatx80_to_int32(ST0, &env->fp_status);
++    {
++        int64_t fv;
++        bool fx;
++        if (env_archcpu(env)->x87_fast
++            && x87f_to_int(ST0, x87_fast_rnd(env), -2147483648.0, 2147483648.0, &fv, &fx)) {
++            val = (int32_t)fv;
++            if (fx) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++        } else {
++            val = floatx80_to_int32(ST0, &env->fp_status);
++        }
++    }
+     if (get_float_exception_flags(&env->fp_status) & float_flag_invalid) {
+         val = 0x80000000;
+     }
+@@ -371,7 +503,19 @@ int64_t helper_fistll_ST0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     int64_t val;
+ 
+-    val = floatx80_to_int64(ST0, &env->fp_status);
++    {
++        int64_t fv;
++        bool fx;
++        if (env_archcpu(env)->x87_fast
++            && x87f_to_int(ST0, x87_fast_rnd(env), -9223372036854775808.0, 9223372036854775808.0, &fv, &fx)) {
++            val = (int64_t)fv;
++            if (fx) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++        } else {
++            val = floatx80_to_int64(ST0, &env->fp_status);
++        }
++    }
+     if (get_float_exception_flags(&env->fp_status) & float_flag_invalid) {
+         val = 0x8000000000000000ULL;
+     }
+@@ -384,7 +528,19 @@ int32_t helper_fistt_ST0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     int32_t val;
+ 
+-    val = floatx80_to_int32_round_to_zero(ST0, &env->fp_status);
++    {
++        int64_t fv;
++        bool fx;
++        if (env_archcpu(env)->x87_fast
++            && x87f_to_int(ST0, X87F_RND_ZERO, -2147483648.0, 2147483648.0, &fv, &fx)) {
++            val = (int32_t)fv;
++            if (fx) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++        } else {
++            val = floatx80_to_int32_round_to_zero(ST0, &env->fp_status);
++        }
++    }
+     if (val != (int16_t)val) {
+         set_float_exception_flags(float_flag_invalid, &env->fp_status);
+         val = -32768;
+@@ -398,7 +554,19 @@ int32_t helper_fisttl_ST0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     int32_t val;
+ 
+-    val = floatx80_to_int32_round_to_zero(ST0, &env->fp_status);
++    {
++        int64_t fv;
++        bool fx;
++        if (env_archcpu(env)->x87_fast
++            && x87f_to_int(ST0, X87F_RND_ZERO, -2147483648.0, 2147483648.0, &fv, &fx)) {
++            val = (int32_t)fv;
++            if (fx) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++        } else {
++            val = floatx80_to_int32_round_to_zero(ST0, &env->fp_status);
++        }
++    }
+     if (get_float_exception_flags(&env->fp_status) & float_flag_invalid) {
+         val = 0x80000000;
+     }
+@@ -411,7 +579,19 @@ int64_t helper_fisttll_ST0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     int64_t val;
+ 
+-    val = floatx80_to_int64_round_to_zero(ST0, &env->fp_status);
++    {
++        int64_t fv;
++        bool fx;
++        if (env_archcpu(env)->x87_fast
++            && x87f_to_int(ST0, X87F_RND_ZERO, -9223372036854775808.0, 9223372036854775808.0, &fv, &fx)) {
++            val = (int64_t)fv;
++            if (fx) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++        } else {
++            val = floatx80_to_int64_round_to_zero(ST0, &env->fp_status);
++        }
++    }
+     if (get_float_exception_flags(&env->fp_status) & float_flag_invalid) {
+         val = 0x8000000000000000ULL;
+     }
+@@ -507,7 +687,14 @@ void helper_fcom_ST0_FT0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     FloatRelation ret;
+ 
+-    ret = floatx80_compare(ST0, FT0, &env->fp_status);
++    {
++        int rel;
++        if (env_archcpu(env)->x87_fast && x87f_compare(ST0, FT0, &rel)) {
++            ret = (FloatRelation)rel;
++        } else {
++            ret = floatx80_compare(ST0, FT0, &env->fp_status);
++        }
++    }
+     env->fpus = (env->fpus & ~0x4500) | fcom_ccval[ret + 1];
+     merge_exception_flags(env, old_flags);
+ }
+@@ -517,7 +704,14 @@ void helper_fucom_ST0_FT0(CPUX86State *env)
+     uint8_t old_flags = save_exception_flags(env);
+     FloatRelation ret;
+ 
+-    ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
++    {
++        int rel;
++        if (env_archcpu(env)->x87_fast && x87f_compare(ST0, FT0, &rel)) {
++            ret = (FloatRelation)rel;
++        } else {
++            ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
++        }
++    }
+     env->fpus = (env->fpus & ~0x4500) | fcom_ccval[ret + 1];
+     merge_exception_flags(env, old_flags);
+ }
+@@ -530,7 +724,14 @@ void helper_fcomi_ST0_FT0(CPUX86State *env)
+     int eflags;
+     FloatRelation ret;
+ 
+-    ret = floatx80_compare(ST0, FT0, &env->fp_status);
++    {
++        int rel;
++        if (env_archcpu(env)->x87_fast && x87f_compare(ST0, FT0, &rel)) {
++            ret = (FloatRelation)rel;
++        } else {
++            ret = floatx80_compare(ST0, FT0, &env->fp_status);
++        }
++    }
+     eflags = cpu_cc_compute_all(env) & ~(CC_Z | CC_P | CC_C);
+     CC_SRC = eflags | fcomi_ccval[ret + 1];
+     CC_OP = CC_OP_EFLAGS;
+@@ -543,7 +744,14 @@ void helper_fucomi_ST0_FT0(CPUX86State *env)
+     int eflags;
+     FloatRelation ret;
+ 
+-    ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
++    {
++        int rel;
++        if (env_archcpu(env)->x87_fast && x87f_compare(ST0, FT0, &rel)) {
++            ret = (FloatRelation)rel;
++        } else {
++            ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
++        }
++    }
+     eflags = cpu_cc_compute_all(env) & ~(CC_Z | CC_P | CC_C);
+     CC_SRC = eflags | fcomi_ccval[ret + 1];
+     CC_OP = CC_OP_EFLAGS;
+@@ -553,28 +761,28 @@ void helper_fucomi_ST0_FT0(CPUX86State *env)
+ void helper_fadd_ST0_FT0(CPUX86State *env)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST0 = floatx80_add(ST0, FT0, &env->fp_status);
++    ST0 = x87_add(env, ST0, FT0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fmul_ST0_FT0(CPUX86State *env)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST0 = floatx80_mul(ST0, FT0, &env->fp_status);
++    ST0 = x87_mul(env, ST0, FT0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fsub_ST0_FT0(CPUX86State *env)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST0 = floatx80_sub(ST0, FT0, &env->fp_status);
++    ST0 = x87_sub(env, ST0, FT0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fsubr_ST0_FT0(CPUX86State *env)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST0 = floatx80_sub(FT0, ST0, &env->fp_status);
++    ST0 = x87_sub(env, FT0, ST0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+@@ -593,28 +801,28 @@ void helper_fdivr_ST0_FT0(CPUX86State *env)
+ void helper_fadd_STN_ST0(CPUX86State *env, int st_index)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST(st_index) = floatx80_add(ST(st_index), ST0, &env->fp_status);
++    ST(st_index) = x87_add(env, ST(st_index), ST0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fmul_STN_ST0(CPUX86State *env, int st_index)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST(st_index) = floatx80_mul(ST(st_index), ST0, &env->fp_status);
++    ST(st_index) = x87_mul(env, ST(st_index), ST0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fsub_STN_ST0(CPUX86State *env, int st_index)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST(st_index) = floatx80_sub(ST(st_index), ST0, &env->fp_status);
++    ST(st_index) = x87_sub(env, ST(st_index), ST0);
+     merge_exception_flags(env, old_flags);
+ }
+ 
+ void helper_fsubr_STN_ST0(CPUX86State *env, int st_index)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST(st_index) = floatx80_sub(ST0, ST(st_index), &env->fp_status);
++    ST(st_index) = x87_sub(env, ST0, ST(st_index));
+     merge_exception_flags(env, old_flags);
+ }
+ 
+@@ -2277,7 +2485,19 @@ void helper_fsqrt(CPUX86State *env)
+         env->fpus &= ~0x4700;  /* (C3,C2,C1,C0) <-- 0000 */
+         env->fpus |= 0x400;
+     }
+-    ST0 = floatx80_sqrt(ST0, &env->fp_status);
++    {
++        int prec = x87_fast_prec(env);
++        floatx80 r;
++        bool inexact;
++        if (prec >= 0 && x87f_sqrt(prec, ST0, &r, &inexact)) {
++            if (inexact) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++            ST0 = r;
++        } else {
++            ST0 = floatx80_sqrt(ST0, &env->fp_status);
++        }
++    }
+     merge_exception_flags(env, old_flags);
+ }
+ 
+@@ -2299,7 +2519,19 @@ void helper_fsincos(CPUX86State *env)
+ void helper_frndint(CPUX86State *env)
+ {
+     uint8_t old_flags = save_exception_flags(env);
+-    ST0 = floatx80_round_to_int(ST0, &env->fp_status);
++    {
++        floatx80 r;
++        bool inexact;
++        if (env_archcpu(env)->x87_fast
++            && x87f_round_to_int(ST0, x87_fast_rnd(env), &r, &inexact)) {
++            if (inexact) {
++                float_raise(float_flag_inexact, &env->fp_status);
++            }
++            ST0 = r;
++        } else {
++            ST0 = floatx80_round_to_int(ST0, &env->fp_status);
++        }
++    }
+     merge_exception_flags(env, old_flags);
+ }
+ 
+diff --git a/target/i386/tcg/x87-fast.h b/target/i386/tcg/x87-fast.h
+new file mode 100644
+index 00000000..8fb5a6f1
+--- /dev/null
++++ b/target/i386/tcg/x87-fast.h
+@@ -0,0 +1,523 @@
++/*
++ * x87 fast path: do the common case on the host FPU, bit-exactly.
++ *
++ * Every x87 arithmetic instruction goes through a helper and QEMU's
++ * software float library (80-bit, 128-bit parts, precision control
++ * applied at rounding). Under Windows the FPU almost never runs at full
++ * 64-bit precision: the process default is 53 bits (PC=10b) and Direct3D
++ * drops it to 24 bits, so the guest is really doing double/float math with
++ * a wider exponent range. When both operands are exactly representable as
++ * host doubles (floats), the rounding mode is nearest-even and the result
++ * is a normal number well inside the double (float) exponent range, the
++ * host's correctly rounded result is identical to what the 80-bit path
++ * produces after rounding to 53 (24) bits. Everything else -- denormals,
++ * infinities, NaNs, 64-bit mantissas, other rounding modes, results near
++ * the exponent limits -- falls back to softfloat, so results never change,
++ * only how fast the common case gets there.
++ *
++ * The inexact flag is recovered with error-free transformations (TwoSum,
++ * FMA residuals); the exponent window (X87F_WIN) keeps every residual
++ * representable so a nonzero residual is never rounded to zero.
++ *
++ * This header has no QEMU dependencies beyond the floatx80 struct, so
++ * tools/x87-fast-test.c can compile it on an x86-64 host and compare
++ * against the real x87 (the oracle both this and softfloat imitate).
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef I386_TCG_X87_FAST_H
++#define I386_TCG_X87_FAST_H
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <string.h>
++
++enum {
++    X87F_PREC_S = 0,        /* precision control 24 bits: host float */
++    X87F_PREC_D = 1,        /* precision control 53 bits: host double */
++};
++
++enum {
++    X87F_ADD, X87F_SUB, X87F_MUL, X87F_DIV,
++};
++
++enum {
++    X87F_RND_NEAREST = 0, X87F_RND_DOWN = 1, X87F_RND_UP = 2, X87F_RND_ZERO = 3,
++};
++
++/* Exponent window for operands and results, relative to 2^0. */
++#define X87F_WIN_D 900
++#define X87F_WIN_S 90
++
++#define X87F_EXP_BIAS 16383
++
++/* ---- floatx80 <-> host double/float, exact conversions only ---- */
++
++static inline bool x87f_x80_to_d(floatx80 a, double *d)
++{
++    uint32_t e = a.high & 0x7fff;
++    uint64_t sign = (uint64_t)(a.high & 0x8000) << 48;
++    uint64_t bits;
++
++    if (e == 0 && a.low == 0) {
++        bits = sign;
++    } else {
++        if (e < X87F_EXP_BIAS - X87F_WIN_D || e > X87F_EXP_BIAS + X87F_WIN_D) {
++            return false;
++        }
++        /* normal with explicit integer bit; mantissa fits 53 bits */
++        if (!(a.low >> 63) || (a.low & 0x7ff)) {
++            return false;
++        }
++        bits = sign | ((uint64_t)(e - X87F_EXP_BIAS + 1023) << 52)
++             | ((a.low << 1) >> 12);
++    }
++    memcpy(d, &bits, 8);
++    return true;
++}
++
++static inline bool x87f_x80_to_f(floatx80 a, float *f)
++{
++    uint32_t e = a.high & 0x7fff;
++    uint32_t sign = (uint32_t)(a.high & 0x8000) << 16;
++    uint32_t bits;
++
++    if (e == 0 && a.low == 0) {
++        bits = sign;
++    } else {
++        if (e < X87F_EXP_BIAS - X87F_WIN_S || e > X87F_EXP_BIAS + X87F_WIN_S) {
++            return false;
++        }
++        if (!(a.low >> 63) || (a.low & 0xffffffffffULL)) {
++            return false;
++        }
++        bits = sign | ((e - X87F_EXP_BIAS + 127) << 23)
++             | (uint32_t)((a.low << 1) >> 41);
++    }
++    memcpy(f, &bits, 4);
++    return true;
++}
++
++/* Result acceptance: zero, or normal inside the window. */
++static inline bool x87f_d_ok(double d)
++{
++    uint64_t bits;
++    uint32_t e;
++
++    memcpy(&bits, &d, 8);
++    e = (bits >> 52) & 0x7ff;
++    if (e == 0) {
++        return (bits << 1) == 0;
++    }
++    return e >= 1023 - X87F_WIN_D && e <= 1023 + X87F_WIN_D;
++}
++
++static inline bool x87f_f_ok(float f)
++{
++    uint32_t bits;
++    uint32_t e;
++
++    memcpy(&bits, &f, 4);
++    e = (bits >> 23) & 0xff;
++    if (e == 0) {
++        return (bits << 1) == 0;
++    }
++    return e >= 127 - X87F_WIN_S && e <= 127 + X87F_WIN_S;
++}
++
++/* Caller guarantees d is zero or normal. */
++static inline floatx80 x87f_d_to_x80(double d)
++{
++    uint64_t bits;
++    uint32_t e;
++    floatx80 r;
++
++    memcpy(&bits, &d, 8);
++    e = (bits >> 52) & 0x7ff;
++    r.high = (bits >> 48) & 0x8000;
++    if (e == 0) {
++        r.low = 0;
++    } else {
++        r.high |= e - 1023 + X87F_EXP_BIAS;
++        r.low = (1ULL << 63) | ((bits & 0xfffffffffffffULL) << 11);
++    }
++    return r;
++}
++
++static inline floatx80 x87f_f_to_x80(float f)
++{
++    uint32_t bits;
++    uint32_t e;
++    floatx80 r;
++
++    memcpy(&bits, &f, 4);
++    e = (bits >> 23) & 0xff;
++    r.high = (bits >> 16) & 0x8000;
++    if (e == 0) {
++        r.low = 0;
++    } else {
++        r.high |= e - 127 + X87F_EXP_BIAS;
++        r.low = (1ULL << 63) | ((uint64_t)(bits & 0x7fffff) << 40);
++    }
++    return r;
++}
++
++/* ---- arithmetic ---- */
++
++static inline bool x87f_binop_d(int op, double a, double b,
++                                double *out, bool *inexact)
++{
++    double r, t, err;
++
++    switch (op) {
++    case X87F_ADD:
++    case X87F_SUB:
++        if (op == X87F_SUB) {
++            b = -b;
++        }
++        r = a + b;
++        if (!x87f_d_ok(r)) {
++            return false;
++        }
++        t = r - a;                                  /* TwoSum */
++        err = (a - (r - t)) + (b - t);
++        *inexact = err != 0.0;
++        break;
++    case X87F_MUL:
++        r = a * b;
++        if (!x87f_d_ok(r)) {
++            return false;
++        }
++        if (r == 0.0 && a != 0.0 && b != 0.0) {
++            return false;                           /* underflowed */
++        }
++        *inexact = __builtin_fma(a, b, -r) != 0.0;
++        break;
++    case X87F_DIV:
++        if (b == 0.0) {
++            return false;                           /* ZE / IE */
++        }
++        r = a / b;
++        if (!x87f_d_ok(r)) {
++            return false;
++        }
++        if (r == 0.0 && a != 0.0) {
++            return false;
++        }
++        *inexact = __builtin_fma(r, b, -a) != 0.0;
++        break;
++    default:
++        return false;
++    }
++    *out = r;
++    return true;
++}
++
++static inline bool x87f_binop_f(int op, float a, float b,
++                                float *out, bool *inexact)
++{
++    float r, t, err;
++
++    switch (op) {
++    case X87F_ADD:
++    case X87F_SUB:
++        if (op == X87F_SUB) {
++            b = -b;
++        }
++        r = a + b;
++        if (!x87f_f_ok(r)) {
++            return false;
++        }
++        t = r - a;
++        err = (a - (r - t)) + (b - t);
++        *inexact = err != 0.0f;
++        break;
++    case X87F_MUL:
++        r = a * b;
++        if (!x87f_f_ok(r)) {
++            return false;
++        }
++        if (r == 0.0f && a != 0.0f && b != 0.0f) {
++            return false;
++        }
++        *inexact = __builtin_fmaf(a, b, -r) != 0.0f;
++        break;
++    case X87F_DIV:
++        if (b == 0.0f) {
++            return false;
++        }
++        r = a / b;
++        if (!x87f_f_ok(r)) {
++            return false;
++        }
++        if (r == 0.0f && a != 0.0f) {
++            return false;
++        }
++        *inexact = __builtin_fmaf(r, b, -a) != 0.0f;
++        break;
++    default:
++        return false;
++    }
++    *out = r;
++    return true;
++}
++
++/*
++ * a OP b at precision `prec` (X87F_PREC_*), round-to-nearest-even.
++ * Returns false when the caller must use softfloat.
++ */
++static inline bool x87f_binop(int op, int prec, floatx80 a, floatx80 b,
++                              floatx80 *r, bool *inexact)
++{
++    if (prec == X87F_PREC_D) {
++        double da, db, dr;
++        if (!x87f_x80_to_d(a, &da) || !x87f_x80_to_d(b, &db)) {
++            return false;
++        }
++        if (!x87f_binop_d(op, da, db, &dr, inexact)) {
++            return false;
++        }
++        *r = x87f_d_to_x80(dr);
++        return true;
++    } else {
++        float fa, fb, fr;
++        if (!x87f_x80_to_f(a, &fa) || !x87f_x80_to_f(b, &fb)) {
++            return false;
++        }
++        if (!x87f_binop_f(op, fa, fb, &fr, inexact)) {
++            return false;
++        }
++        *r = x87f_f_to_x80(fr);
++        return true;
++    }
++}
++
++static inline bool x87f_sqrt(int prec, floatx80 a, floatx80 *r, bool *inexact)
++{
++    if (a.high & 0x8000) {
++        /* sqrt(-0) = -0 is exact; anything else negative is IE */
++        if ((a.high & 0x7fff) == 0 && a.low == 0) {
++            *r = a;
++            *inexact = false;
++            return true;
++        }
++        return false;
++    }
++    if (prec == X87F_PREC_D) {
++        double d, s;
++        if (!x87f_x80_to_d(a, &d)) {
++            return false;
++        }
++        s = __builtin_sqrt(d);
++        if (!x87f_d_ok(s)) {
++            return false;
++        }
++        *inexact = __builtin_fma(s, s, -d) != 0.0;
++        *r = x87f_d_to_x80(s);
++        return true;
++    } else {
++        float f, s;
++        if (!x87f_x80_to_f(a, &f)) {
++            return false;
++        }
++        s = __builtin_sqrtf(f);
++        if (!x87f_f_ok(s)) {
++            return false;
++        }
++        *inexact = __builtin_fmaf(s, s, -f) != 0.0f;
++        *r = x87f_f_to_x80(s);
++        return true;
++    }
++}
++
++/* Ordered compare: -1, 0, 1. Only finite exact doubles (never NaN). */
++static inline bool x87f_compare(floatx80 a, floatx80 b, int *rel)
++{
++    double da, db;
++
++    if (!x87f_x80_to_d(a, &da) || !x87f_x80_to_d(b, &db)) {
++        return false;
++    }
++    *rel = da < db ? -1 : (da > db ? 1 : 0);
++    return true;
++}
++
++/* ---- loads / stores ---- */
++
++/* IEEE double -> x80, exact; normal or zero only (denormal/inf/nan: no). */
++static inline bool x87f_from_f64(uint64_t bits, floatx80 *r)
++{
++    uint32_t e = (bits >> 52) & 0x7ff;
++
++    if (e == 0x7ff || (e == 0 && (bits << 1) != 0)) {
++        return false;
++    }
++    r->high = (bits >> 48) & 0x8000;
++    if (e == 0) {
++        r->low = 0;
++    } else {
++        r->high |= e - 1023 + X87F_EXP_BIAS;
++        r->low = (1ULL << 63) | ((bits & 0xfffffffffffffULL) << 11);
++    }
++    return true;
++}
++
++static inline bool x87f_from_f32(uint32_t bits, floatx80 *r)
++{
++    uint32_t e = (bits >> 23) & 0xff;
++
++    if (e == 0xff || (e == 0 && (bits << 1) != 0)) {
++        return false;
++    }
++    r->high = (bits >> 16) & 0x8000;
++    if (e == 0) {
++        r->low = 0;
++    } else {
++        r->high |= e - 127 + X87F_EXP_BIAS;
++        r->low = (1ULL << 63) | ((uint64_t)(bits & 0x7fffff) << 40);
++    }
++    return true;
++}
++
++/* x80 -> IEEE double when exact (no rounding, no flags). */
++static inline bool x87f_to_f64(floatx80 a, uint64_t *bits)
++{
++    uint32_t e = a.high & 0x7fff;
++    uint64_t sign = (uint64_t)(a.high & 0x8000) << 48;
++
++    if (e == 0 && a.low == 0) {
++        *bits = sign;
++        return true;
++    }
++    if (e < X87F_EXP_BIAS - 1022 || e > X87F_EXP_BIAS + 1023) {
++        return false;
++    }
++    if (!(a.low >> 63) || (a.low & 0x7ff)) {
++        return false;
++    }
++    *bits = sign | ((uint64_t)(e - X87F_EXP_BIAS + 1023) << 52)
++          | ((a.low << 1) >> 12);
++    return true;
++}
++
++static inline bool x87f_to_f32(floatx80 a, uint32_t *bits)
++{
++    uint32_t e = a.high & 0x7fff;
++    uint32_t sign = (uint32_t)(a.high & 0x8000) << 16;
++
++    if (e == 0 && a.low == 0) {
++        *bits = sign;
++        return true;
++    }
++    if (e < X87F_EXP_BIAS - 126 || e > X87F_EXP_BIAS + 127) {
++        return false;
++    }
++    if (!(a.low >> 63) || (a.low & 0xffffffffffULL)) {
++        return false;
++    }
++    *bits = sign | ((e - X87F_EXP_BIAS + 127) << 23)
++          | (uint32_t)((a.low << 1) >> 41);
++    return true;
++}
++
++/* Integer -> x80, always exact. */
++static inline floatx80 x87f_from_i64(int64_t v)
++{
++    floatx80 r;
++    uint64_t m;
++    int s;
++
++    if (v == 0) {
++        r.high = 0;
++        r.low = 0;
++        return r;
++    }
++    m = v < 0 ? -(uint64_t)v : (uint64_t)v;
++    s = __builtin_clzll(m);
++    r.low = m << s;
++    r.high = (v < 0 ? 0x8000 : 0) | (X87F_EXP_BIAS + 63 - s);
++    return r;
++}
++
++/*
++ * x80 -> integer with rounding `rnd` (X87F_RND_*), accepted when the
++ * rounded value lies in [lo, hi). Out-of-range (the invalid case) and
++ * anything not an exact double fall back.
++ */
++static inline bool x87f_to_int(floatx80 a, int rnd, double lo, double hi,
++                               int64_t *out, bool *inexact)
++{
++    double d, r, t;
++
++    if (!x87f_x80_to_d(a, &d)) {
++        return false;
++    }
++    if (rnd == X87F_RND_NEAREST) {
++        if (__builtin_fabs(d) < 4503599627370496.0) {         /* 2^52 */
++            t = __builtin_copysign(4503599627370496.0, d);
++            r = (d + t) - t;                                   /* host RNE */
++        } else {
++            r = d;
++        }
++    } else {
++        if (!(__builtin_fabs(d) < 9223372036854775808.0)) {   /* 2^63 */
++            return false;
++        }
++        t = (double)(int64_t)d;                                /* trunc */
++        switch (rnd) {
++        case X87F_RND_DOWN:
++            r = t > d ? t - 1.0 : t;
++            break;
++        case X87F_RND_UP:
++            r = t < d ? t + 1.0 : t;
++            break;
++        default:
++            r = t;
++            break;
++        }
++    }
++    if (!(r >= lo && r < hi)) {
++        return false;
++    }
++    *out = (int64_t)r;
++    *inexact = r != d;
++    return true;
++}
++
++/* frndint: x80 -> integral x80, rounding `rnd`; exact doubles only. */
++static inline bool x87f_round_to_int(floatx80 a, int rnd, floatx80 *r,
++                                     bool *inexact)
++{
++    double d, t, v;
++
++    if (!x87f_x80_to_d(a, &d)) {
++        return false;
++    }
++    if (!(__builtin_fabs(d) < 4503599627370496.0)) {          /* 2^52 */
++        *r = a;                                                /* integral */
++        *inexact = false;
++        return true;
++    }
++    t = (double)(int64_t)d;
++    switch (rnd) {
++    case X87F_RND_NEAREST:
++        v = __builtin_copysign(4503599627370496.0, d);
++        t = (d + v) - v;
++        break;
++    case X87F_RND_DOWN:
++        t = t > d ? t - 1.0 : t;
++        break;
++    case X87F_RND_UP:
++        t = t < d ? t + 1.0 : t;
++        break;
++    default:
++        break;
++    }
++    /* keep the sign of zero: x87 rounds -0.3 to -0 */
++    t = __builtin_copysign(t, d);
++    *inexact = t != d;
++    *r = x87f_d_to_x80(t);
++    return true;
++}
++
++#endif /* I386_TCG_X87_FAST_H */
