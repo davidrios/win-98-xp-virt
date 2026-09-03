@@ -63,7 +63,8 @@ constraint is the vector class:
   `CPUINFO_FMA`).
 - aarch64: `fadd/fsub/fmul/fdiv/fnmsub/fsqrt/fcvt` (scalar D),
   `C_O1_I2(w, w, w)` etc., plus `tcg_out_movi` into a V register.
-  Encodings checked against llvm-mc; **not yet executed** (M1 Air).
+  Verified on the M1 Air (2026-09-03): the guest test passes, 382,251
+  lines identical.
 - Other hosts / TCI: `TCG_TARGET_HAS_f64` is 0, the translator emits the
   helper calls as before.
 
