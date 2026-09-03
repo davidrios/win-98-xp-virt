@@ -107,8 +107,14 @@ build_wined3d() {
     echo "==> cloning wine9x @ ${WINE9X_REF:0:7}"
     git clone -q "$WINE9X_URL" "$d"
   fi
-  ( cd "$d" && git fetch -q origin && git checkout -q "$WINE9X_REF" \
+  ( cd "$d" && git fetch -q origin && git checkout -q -- . && git checkout -q "$WINE9X_REF" \
     && git submodule update --init -q )
+  # our wine9x patch queue (patches/wine9x/*.patch, git-format, from pristine)
+  for p in "$ROOT"/patches/wine9x/*.patch; do
+    [ -e "$p" ] || continue
+    ( cd "$d" && git apply --check "$p" && git apply "$p" ) && echo "    wine9x: $(basename "$p") applied" \
+      || { echo "wine9x patch $(basename "$p") does not apply"; exit 1; }
+  done
   cp "$d/config.mk-sample" "$d/config.mk"
   echo "==> building wine9x (wined3d + DX interfaces + switchers)"
   ( cd "$d" && make clean >/dev/null 2>&1; make -C pthread9x clean >/dev/null 2>&1
@@ -151,6 +157,9 @@ cp "$W"/README.md "$OUT/iso/WINED3D/WINE9X.TXT"
 # x87 control word after CreateDevice, spinning triangle with fps.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3d9test.exe" "$ROOT/guest-tools/src/d3d9test.c" \
   -ld3d9 -lgdi32 -luser32
+# Display-mode probe (guest-tools/src/modetest.c): current mode, mode list,
+# ChangeDisplaySettingsEx results for the switches ddraw/wined3d make.
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/modetest.exe" "$ROOT/guest-tools/src/modetest.c" -luser32
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
@@ -176,6 +185,8 @@ GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
             DirectX 5/6/7 games (DirectDraw + Direct3D up to 7): DDRAW.DLL +
             WINED3D.DLL instead. Never copy DDRAW.DLL into system32 this way.
             D3D9TEST.EXE + D3D9.DLL + WINED3D.DLL + OPENGL32.DLL = D3D9 test
+            MODETEST.EXE prints the display modes the driver accepts (run
+            it when a fullscreen game fails to start).
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 

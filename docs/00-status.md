@@ -59,6 +59,15 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   so every GL/D3D EXE "crashes at startup" (0xc0000142). The ISO's
   WIN2KXP step (FXPTL.SYS + INSTDRV.EXE as admin, reboot) is required for
   OpenGL and WineD3D, not only Glide. Hit and resolved 2026-09-03.
+- FIFA 2000 (DX7, XP): with the WineD3D DDRAW.DLL it died in
+  SetCooperativeLevel before the menu (2026-09-03). Read from the disk image
+  (qemu-img convert → hdiutil attach → Dr Watson + Wine logs, the logs need
+  the flushing debug build): wined3d asked cirrus for 800×600×32 because it
+  maps the 24-bit desktop to B8G8R8X8, the driver refused, Wine 1.7.55
+  crashed in the init_3d error path. Fixed in `patches/wine9x/01`; not yet
+  re-tested in the guest. The stock software renderer also crashed once at
+  match start with Microsoft's DDraw (NULL surface in softdrawz.dll), so the
+  game may have a second, unrelated problem on this XP.
 - Win98: after wglgears / D3D9TEST exit, the mouse stops working in the
   guest (2026-09-03, untriaged: wrapper hook/cursor state vs the
   player's tablet? check whether keyboard still works and whether a

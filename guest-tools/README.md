@@ -38,6 +38,21 @@ inline x87 mode 2 (doc 13) covers. Build notes: wine9x links the CRT
 (overridden to the mingw one), `-march=pentium3` from the shim wins over
 its `-march=pentium2`; the ISA and CRT checks run on its DLLs too.
 
+**wine9x patch queue** (`patches/wine9x/*.patch`, git-format diffs against
+the pinned commit, applied by the script after checkout):
+- `01-24bit-desktop-mode`: wined3d maps both 24- and 32-bit desktops to
+  `B8G8R8X8`, so a fullscreen swapchain created from a 24-bit desktop asks
+  `ChangeDisplaySettingsEx` for 32 bpp; drivers without 32-bit modes (QEMU
+  cirrus on XP at 800×600) refuse, the device never comes up and Wine 1.7.55
+  crashes in its own error path (`glsl_fragment_pipe_free` on a NULL priv).
+  Found with FIFA 2000 on XP, 2026-09-03: now a 32-bpp request on a 24-bpp
+  desktop stays at 24 (redundant when the size matches), and a failed 32-bpp
+  switch is retried at 24. Worth sending upstream to JHRobotics.
+
+`MODETEST.EXE` (`guest-tools/src/modetest.c`) prints the current desktop
+mode, the driver's mode list and the result of the `ChangeDisplaySettingsEx`
+calls ddraw/wined3d make; run it when a fullscreen game dies at startup.
+
 `D3D9TEST.EXE` (`guest-tools/src/d3d9test.c`) is the D3D9 counterpart of
 wglgears: prints the adapter identifier (WineD3D reports a GL-derived
 card name), HAL caps, the x87 control word after CreateDevice (`PC=24`

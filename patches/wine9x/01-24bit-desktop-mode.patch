@@ -1,0 +1,46 @@
+diff --git a/wined3d/directx.c b/wined3d/directx.c
+index a890a66..813578a 100644
+--- a/wined3d/directx.c
++++ b/wined3d/directx.c
+@@ -4527,6 +4527,27 @@ HRESULT CDECL wined3d_set_adapter_display_mode(struct wined3d *wined3d,
+         return WINED3D_OK;
+     }
+ 
++    /* 24-bit desktops (QEMU cirrus on XP, many era drivers): pixelformat_for_depth()
++     * maps both 24 and 32 bpp to WINED3DFMT_B8G8R8X8_UNORM, so a fullscreen swapchain
++     * built from a 24-bit desktop mode asks for 32 bpp here. A driver without 32-bit
++     * modes refuses, the device never comes up and ddraw dies in the error path.
++     * Stay at 24 when that is what the desktop runs (nothing in the GL path depends
++     * on the desktop depth). */
++    if (new_mode.dmBitsPerPel == 32 && current_mode.dmBitsPerPel == 24 && !wined3d_settings.force32bit)
++    {
++        if (current_mode.dmPelsWidth == new_mode.dmPelsWidth
++                && current_mode.dmPelsHeight == new_mode.dmPelsHeight
++                && (current_mode.dmDisplayFrequency == new_mode.dmDisplayFrequency
++                || !(new_mode.dmFields & DM_DISPLAYFREQUENCY)))
++        {
++            TRACE("Skipping redundant mode setting call (24-bit desktop for a 32-bit request).\n");
++            return WINED3D_OK;
++        }
++        TRACE("24-bit desktop, requesting %ux%u at 24 bpp instead of 32.\n",
++                new_mode.dmPelsWidth, new_mode.dmPelsHeight);
++        new_mode.dmBitsPerPel = 24;
++    }
++
+     ret = ChangeDisplaySettingsExA95(adapter->DeviceName, &new_mode, NULL, CDS_FULLSCREEN, NULL);
+     if (ret != DISP_CHANGE_SUCCESSFUL)
+     {
+@@ -4537,6 +4558,13 @@ HRESULT CDECL wined3d_set_adapter_display_mode(struct wined3d *wined3d,
+             new_mode.dmDisplayFrequency = 0;
+             ret = ChangeDisplaySettingsExA95(adapter->DeviceName, &new_mode, NULL, CDS_FULLSCREEN, NULL);
+         }
++        if (ret != DISP_CHANGE_SUCCESSFUL && new_mode.dmBitsPerPel == 32 && !wined3d_settings.force32bit)
++        {
++            /* the same format at the depth true-color drivers of the era do have */
++            WARN("ChangeDisplaySettingsExA failed at 32 bpp, trying 24 bpp.\n");
++            new_mode.dmBitsPerPel = 24;
++            ret = ChangeDisplaySettingsExA95(adapter->DeviceName, &new_mode, NULL, CDS_FULLSCREEN, NULL);
++        }
+         if (ret != DISP_CHANGE_SUCCESSFUL)
+             return WINED3DERR_NOTAVAILABLE;
+     }
