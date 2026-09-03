@@ -31,13 +31,13 @@ is the structure: every x87 op is a call, the value passes through
 | softfloat (`x87-fast=off`) | 21.6 | 1.0× |
 | patch 05 (helpers on the host FPU) | 10.6 | 2.0× |
 | level 2: ops inline, x80 round trip per instruction (prototype) | 6.9 | 3.1× |
-| **patch 06: shadow doubles across instructions** | **3.3** | **6.5×** |
+| **patch 06: shadow doubles across instructions** | **2.9** | **7.4×** |
 
 With patch 06, 93 % of the time is in translated code; the remaining
 helper is nothing in this loop (fistp is inlined too). The fast path of
-`fmul m64` is ~53 host instructions: TLB lookup 9, operand window check 8,
-multiply + result check 10, underflow check 8, FMA residual + PE 9,
-FIP/FDP 7, one sync store of the shadow global.
+`fmul m64` is ~45 host instructions: TLB lookup 9, operand window check 5,
+multiply + result check with the underflow test folded in 9, FMA residual
++ PE 9, FIP/FDP 7, one sync store of the shadow global.
 
 Correctness: `tools/x87-guest-test.py` (68 instruction sequences × 44²
 operand pairs × 7 control words, incl. multi-instruction chains, fcmov,
@@ -153,9 +153,8 @@ helpers for the rest.
   XP against `-cpu pentium3,x87-fast=off` (doc 00 §benchmarks). If the
   aarch64 lowering is wrong the guest test shows mismatches or QEMU
   aborts in `tcg_out_op`; `x87-fast=off` is the fallback.
-- Per-op cost (~53 host instructions) can still drop: fold the underflow
-  test into the result window check (~8), a `movcond`-based window check
-  (~3), defer FIP/FCS to flush points with the pc in the insn_start word
-  (~4). PC=24 (Direct3D) mode with binary32 shadows is the same design.
+- Per-op cost (~45 host instructions) can still drop: defer FIP/FCS to
+  flush points with the pc in the insn_start word (~4), keep FDP eager;
+  PC=24 (Direct3D) mode with binary32 shadows is the same design.
 - Slow-path frequency counters (`-d` or a trace) would tell whether any
   real workload exits often enough to matter.

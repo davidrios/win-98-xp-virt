@@ -25,7 +25,7 @@ content rather than the popped value (only observable by reading an
 empty register, which QEMU never faults on).
 
 Measured on a Ryzen 7 5700X, DOS 7-op loop (ns per x87 op): softfloat
-21.6, patch 05 helpers 10.6, patch 06 3.3. tools/x87-guest-test.py
+21.6, patch 05 helpers 10.6, patch 06 2.9. tools/x87-guest-test.py
 (68 op sequences x 44 operands^2 x 7 control words): 382,250 result
 lines identical with the fast path on and off. A linux-user SIGSEGV test
 with two dirty shadows verified the unwind repair. The aarch64 lowering
@@ -887,7 +887,7 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
  #ifndef CONFIG_USER_ONLY
 --- /dev/null
 +++ b/target/i386/tcg/x87-shadow.c.inc
-@@ -0,0 +1,1544 @@
+@@ -0,0 +1,1560 @@
 +/*
 + * x87 shadow-double translation: keep the FPU stack as host doubles
 + * across instructions.
@@ -1211,16 +1211,39 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +                           TCGLabel *slow)
 +{
 +    TCGv_i64 t = x87s_tmp_i64(s);
-+    TCGv_i64 bad = x87s_tmp_i64(s);
-+    TCGv_i64 iszero = x87s_tmp_i64(s);
++    TCGv_i64 u = x87s_tmp_i64(s);
++    TCGv_i64 zero = tcg_constant_i64(0);
 +
++    /*
++     * On d << 1 (sign gone), the exponent range [lo, lo + range] is one
++     * unsigned interval; zero is folded in by selecting 0 for it.
++     */
 +    tcg_gen_shli_i64(t, d, 1);
-+    tcg_gen_setcondi_i64(TCG_COND_EQ, iszero, t, 0);
-+    tcg_gen_shri_i64(t, t, 53);
-+    tcg_gen_subi_i64(t, t, lo);
-+    tcg_gen_setcondi_i64(TCG_COND_GTU, bad, t, range);
-+    tcg_gen_andc_i64(bad, bad, iszero);
-+    tcg_gen_brcondi_i64(TCG_COND_NE, bad, 0, slow);
++    tcg_gen_subi_i64(u, t, (uint64_t)lo << 53);
++    tcg_gen_movcond_i64(TCG_COND_EQ, u, t, zero, zero, u);
++    tcg_gen_brcondi_i64(TCG_COND_GTU, u,
++                        ((uint64_t)range << 53) | ((1ULL << 53) - 1), slow);
++}
++
++/*
++ * Result check for mul/div: r must be zero or in the window, but zero is
++ * only right when the operand `z` (a for div, a or b for mul, passed as
++ * min(a << 1, b << 1)) is zero; otherwise it is an underflow.
++ */
++static void x87s_f64_check_result(DisasContext *s, TCGv_i64 r, TCGv_i64 z1,
++                                  TCGLabel *slow)
++{
++    TCGv_i64 t = x87s_tmp_i64(s);
++    TCGv_i64 u = x87s_tmp_i64(s);
++    TCGv_i64 zero = tcg_constant_i64(0);
++    int lo = X87S_BIAS_F64 - X87S_WIN;
++    int range = 2 * X87S_WIN;
++
++    tcg_gen_shli_i64(t, r, 1);
++    tcg_gen_subi_i64(u, t, (uint64_t)lo << 53);
++    tcg_gen_movcond_i64(TCG_COND_EQ, u, z1, zero, zero, u);
++    tcg_gen_brcondi_i64(TCG_COND_GTU, u,
++                        ((uint64_t)range << 53) | ((1ULL << 53) - 1), slow);
 +}
 +
 +static void x87s_f64_check_win(DisasContext *s, TCGv_i64 d, TCGLabel *slow)
@@ -1637,7 +1660,6 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +    TCGv_i64 err = x87s_tmp_i64(s);
 +    TCGv_i64 t1 = x87s_tmp_i64(s);
 +    TCGv_i64 t2 = x87s_tmp_i64(s);
-+    TCGv_i64 t3 = x87s_tmp_i64(s);
 +
 +    if (op == 5 || op == 7) {
 +        TCGv_i64 x = a;
@@ -1665,24 +1687,18 @@ is written against llvm-mc encodings but has not run yet (M1 Air).
 +        break;
 +    case 1:
 +        tcg_gen_mul_f64(r, a, b);
-+        x87s_f64_check_win(s, r, slow);
-+        x87s_iszero(t1, r);
-+        x87s_iszero(t2, a);
-+        x87s_iszero(t3, b);
-+        tcg_gen_or_i64(t2, t2, t3);
-+        tcg_gen_andc_i64(t1, t1, t2);             /* underflow */
-+        tcg_gen_brcondi_i64(TCG_COND_NE, t1, 0, slow);
++        tcg_gen_shli_i64(t1, a, 1);
++        tcg_gen_shli_i64(t2, b, 1);
++        tcg_gen_umin_i64(t1, t1, t2);             /* 0 iff a or b is zero */
++        x87s_f64_check_result(s, r, t1, slow);
 +        tcg_gen_fmsub_f64(err, a, b, r);
 +        break;
 +    case 6:
-+        x87s_iszero(t1, b);                       /* ZE / IE */
-+        tcg_gen_brcondi_i64(TCG_COND_NE, t1, 0, slow);
++        tcg_gen_shli_i64(t2, b, 1);
++        tcg_gen_brcondi_i64(TCG_COND_EQ, t2, 0, slow);   /* ZE / IE */
 +        tcg_gen_div_f64(r, a, b);
-+        x87s_f64_check_win(s, r, slow);
-+        x87s_iszero(t1, r);
-+        x87s_iszero(t2, a);
-+        tcg_gen_andc_i64(t1, t1, t2);             /* underflow */
-+        tcg_gen_brcondi_i64(TCG_COND_NE, t1, 0, slow);
++        tcg_gen_shli_i64(t1, a, 1);
++        x87s_f64_check_result(s, r, t1, slow);
 +        tcg_gen_fmsub_f64(err, r, b, a);
 +        break;
 +    default:

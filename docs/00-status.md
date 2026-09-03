@@ -56,7 +56,7 @@ macOS specifics: `docs/build-macos.md`.
   the 53/24-bit-precision common case on the host FPU. Branch
   `worktree-x87-inline-tcg` (patch 06, doc 13) keeps the x87 stack as host
   doubles across instructions in TCG: 21.6 (softfloat) / 10.6 (patch 05) /
-  3.3 ns per op on x86-64; aarch64 lowering written but not yet run —
+  2.9 ns per op on x86-64; aarch64 lowering written but not yet run —
   `tools/x87-guest-test.py` on the Air before merging. Test any change to
   it with `tools/x87-fast-test.c` (x86-64 host oracle) and
   `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
