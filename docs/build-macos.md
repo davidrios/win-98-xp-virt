@@ -52,7 +52,12 @@ maintenance tool for the second step. The SDK is self-contained under
 chosen. Then `scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja
 -C build/dxvk` and the run lines in `tools/dxvk-d3d9-test.cpp` with that
 `VK_ICD_FILENAMES` (2026-09-03: both harnesses pass on the Air, see
-`patches/dxvk/README.md`).
+`patches/dxvk/README.md`). `scripts/test.sh` sets that environment
+itself on Darwin (Homebrew's loader on `DYLD_LIBRARY_PATH`,
+`SDL_VULKAN_LIBRARY`, the SDK's KosmicKrisp ICD unless
+`VK_ICD_FILENAMES` is already set): a `DYLD_*` variable exported to the
+script is stripped by SIP at its `#!/usr/bin/env bash` exec, which made
+the two native DXVK checks fail with `Direct3DCreate9 failed` (2026-09-04).
 
 ## Clone
 

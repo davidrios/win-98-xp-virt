@@ -100,7 +100,15 @@ guests: D3DX-shaped SSE1 kernels and the same math in x87 C, ns per op.
 | M1 Air, TCG, **patch 07** inline (default) | 0.38 (**12×**) | 0.77 (**3.6×**) | 2026-09-04 |
 
 That is ~1.2 ns per packed op and ~2.7 ns per scalar op inline against
-~14 and ~10 for the helpers. Loops with memory operands see less (the
+~14 and ~10 for the helpers. Re-run on the Air 2026-09-04 after the
+x86-64 session's fixes (all of which fall back to the pre-existing
+aarch64 code paths except packuswb's portable `dup_i64_vec`+`bitsel_vec`
+combine): packed 0.33 s (13.8×), scalar 0.82 s (3.4×), the MMX chain
+0.55 s vs 1.98 s (3.6×), and the new `SSEBENCHC` clamp+cmp kernel
+0.33 s vs 2.86 s (8.7×) on the key-transform path. On the x86-64 box
+the same tool gives packed 10.0×, MMX 2.1×, clamp+cmp 6.5× with the
+native `fmin_vec`/`fmax_vec`/`fcmp_vec` and `mulsh_vec`/`*narrow_vec`
+opcodes (`docs/tracks/m8-tcg-fastpaths.md`). Loops with memory operands see less (the
 TLB lookup per operand is the same on both paths).
 
 `SSEBENCH.EXE` in XP (`tools/xp-ssebench.sh ~/vms/winxp.qcow2`, `-iter 20`,
@@ -111,6 +119,7 @@ better):
 |---|---|---|---|---|---|---|---|---|---|---|
 | **Rig (P4 1.7), XP, real hardware** | 1.28 | 1.93 | 4.09 | 1.59 | 2.50 | 0.74 | 4.02 | 1552 | 0.44 | 2026-09-04 |
 | M1 Air, XP, defaults (patches 06 + 07 + 08) | **2.1** | **2.0** | **3.9** | **4.7** | **2.3** | **4.2** | **4.6** | 80 | **0.41** | 2026-09-04 |
+| M1 Air, XP, defaults, after the x86-64 session's fixes (aarch64 fallbacks + portable packuswb) | 2.0 | 1.6 | 3.5 | 5.1 | 2.3 | 4.0 | 3.9 | 81 | 0.40 | 2026-09-04 |
 | M1 Air, XP, `simd-fast=off` (07 on) | 2.4 | 2.4 | 3.8 | 4.6 | 2.3 | 4.2 | 4.3 | 83 | 0.80 | 2026-09-04 |
 | M1 Air, XP, `sse-fast=off` (06 + 08's predecessor) | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | | 2026-09-04 |
 | M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | | 2026-09-04 |

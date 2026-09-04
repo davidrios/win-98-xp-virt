@@ -53,6 +53,20 @@ BUDGET="${D3D_GOLDEN_BUDGET:-1200}"
 case "$OS" in Darwin) SO=dylib;; *) SO=so;; esac
 export D3DPT_EXEC_LIB="${D3DPT_EXEC_LIB:-$ROOT/build/d3dpt/libd3dpt_exec.$SO}"
 export D3DPT_DXVK_LIB="${D3DPT_DXVK_LIB:-$ROOT/build/dxvk/src/d3d9/libdxvk_d3d9.$SO$([ "$SO" = so ] && echo .0)}"
+if [ "$OS" = Darwin ]; then
+  # DXVK dlopens the Vulkan loader by leaf name and SDL2 needs it too; a
+  # DYLD_* variable handed to this script is stripped by SIP at the
+  # `#!/usr/bin/env` exec, so set the documented macOS run environment
+  # here (docs/build-macos.md, patches/dxvk/README.md): Homebrew's loader,
+  # and the LunarG SDK's KosmicKrisp ICD unless the caller chose one.
+  export DYLD_LIBRARY_PATH="/opt/homebrew/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+  export SDL_VULKAN_LIBRARY="${SDL_VULKAN_LIBRARY:-/opt/homebrew/lib/libvulkan.dylib}"
+  if [ -z "${VK_ICD_FILENAMES:-}" ]; then
+    for f in "$HOME"/VulkanSDK/*/macOS/share/vulkan/icd.d/libkosmickrisp_icd.json; do
+      [ -f "$f" ] && export VK_ICD_FILENAMES="$f"
+    done
+  fi
+fi
 
 PASS=(); FAIL=(); SKIP=()
 log() { printf '\n==> %s\n' "$*"; }

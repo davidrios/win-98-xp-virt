@@ -103,12 +103,19 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   Patches 07 and 08 were regenerated four times total across these
   fixes (recipe below); the last time both had to move together since
   08's context sits right where 07's clamp+cmp fix now inserts code.
-  **Open:** aarch64 validation of every x86-64-only addition above
-  (needs the Air, not started here) — the new opcodes' `TCG_TARGET_HAS_*`
-  macros are `0` there so the existing SWAR/key-transform fallbacks
-  should be unaffected, but that's unconfirmed; and an XP-guest
-  `SSEBENCH.EXE` clamp+cmp number on this host to compare directly
-  against the rig's original 34 % (no guest-tools ISO built in this
+  **aarch64 validated 2026-09-04 (the Air, macOS 26.6.2)** after the
+  four fixes: the queue applies and builds clean, `sse-guest-test.py`
+  546,425 and `x87-guest-test.py` 382,251 lines identical on/off, so
+  the `0` macros do route every new opcode to the SWAR / key-transform
+  fallbacks and the portable ops the guards now use (`bitsel_vec`,
+  `dup_i64_vec`, `cmp_vec`) behave. Register-only bench on the Air:
+  packed 13.8×, scalar 3.4×, MMX chain 3.6×, and the new `SSEBENCHC`
+  clamp+cmp 8.7× on the key-transform path (the isolated kernel is
+  cheap enough there that the x86-64 native-op win is specifically a
+  clamp+cmp-vs-P4 story, not an aarch64 problem). Both guest checks
+  PASS in `scripts/test.sh all`. **Still open:** an XP-guest
+  `SSEBENCH.EXE` clamp+cmp number on an x86-64 host to compare directly
+  against the rig's original 34 % (no guest-tools ISO built in that
   worktree yet).
 
 ## Build / test loop
@@ -161,20 +168,15 @@ benchmark's convert kernel was fixed to stay in range).
 ## Next steps, in order
 
 1. ~~**x86-64 host run + clamp+cmp.**~~ Done 2026-09-04 — see State
-   above for the four fixes and ratios. **Open before merging to
-   `main`: aarch64 validation** of every x86-64-only opcode this
-   session added (`mulsh_vec`/`muluh_vec`/`ssnarrow_vec`/`usnarrow_vec`/
-   `fmin_vec`/`fmax_vec`/`fcmp_vec`, all macro'd `0` on aarch64 so the
-   existing SWAR/key-transform fallbacks should be unaffected — but
-   `bitsel_vec`/`dup_i64_vec`/`shli_vec`/`cmp_vec`, used by the new fast
-   paths' guards, are portable stock ops the aarch64 codegen shares, so
-   confirm nothing there broke too); needs the Air, not started here.
-   Also open: an XP-guest `SSEBENCH.EXE` clamp+cmp number on this host,
-   directly comparable to the rig's original 34 % (needs `guest-tools/
-   build-wrappers.sh` + `tools/xp-ssebench.sh ~/vms/winxp.qcow2` — no
-   ISO built in this worktree yet). The x87 C transform (18 % on the
-   Air) is the cheap-op throughput of the shadow translator, a bigger
-   redesign; note it, do not start it here.
+   above for the four fixes and ratios. ~~aarch64 validation~~ done the
+   same day on the Air (State above): both batteries identical, suite
+   green. Still open: an XP-guest `SSEBENCH.EXE` clamp+cmp number on an
+   x86-64 host, directly comparable to the rig's original 34 % (needs
+   `guest-tools/build-wrappers.sh` + `tools/xp-ssebench.sh
+   ~/vms/winxp.qcow2` there — no ISO built in that worktree yet). With
+   that number in hand the branch is ready to merge to `main`. The x87
+   C transform (18 % on the Air) is the cheap-op throughput of the
+   shadow translator, a bigger redesign; note it, do not start it here.
 2. **A real workload number.** A Direct3D title in XP (the M4 track's
    item) with and without both `*-fast=off`: the first end-to-end number
    for patches 06 + 07 together.
