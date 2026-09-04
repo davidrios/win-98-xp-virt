@@ -76,6 +76,23 @@ Win32-on-SDL2 shim (`tools/d3dgame-native/win32_sdl.h`): it runs to the
 same refusal today and will write the first executor BMP to diff against
 `reference/d3d/rig-2026-09-03/d3dgame9-w300-ff.bmp` afterwards.
 
+## Verified on KosmicKrisp (2026-09-03, Air on macOS 26.6.2)
+
+LunarG SDK 1.4.357.1 (`vulkansdk-macos-1.4.357.1.zip`, headless install
+into `~/VulkanSDK`; KosmicKrisp is the optional component
+`com.lunarg.vulkan.kosmic`, added with the SDK's `MaintenanceTool`).
+`vulkaninfo`: `Apple M1`, `DRIVER_ID_MESA_KOSMICKRISP` 26.2.99, Vulkan
+1.4.359, conformance 1.4.3.2. Against DXVK's full required list it lacks
+exactly two features: `geometryShader` (patch 02, predicted above) and
+**`fillModeNonSolid`** (not predicted: MoltenVK reports it, KosmicKrisp does
+not). Patch 05 makes it optional and clamps D3D wireframe/point fill to
+solid on such a driver. With both, `dxvk-d3d9-test` writes its BMP and
+`d3dgame9-native -frames 600 -dump 300` at 120 fps windowed matches the rig
+golden as closely as RADV does (1095 vs 1089 pixels beyond tolerance 8, 16
+beyond 32 on both, HUD masked). The fill-mode row was numbered 05 because
+the headless-WSI patch (04) landed from Linux the same evening. ADR-007 stands; option 2 below is the
+production path and option 1 is no longer needed.
+
 ## Options for the macOS executor
 
 1. **DXVK + MoltenVK with a DXVK patch queue** (what Gcenx's DXVK-macOS

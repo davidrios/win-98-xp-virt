@@ -100,7 +100,11 @@ guest (XP)                                  host (QEMU process, embed lib)
   fixed-function frame 300 vs the rig golden differs in 0.35 % of pixels
   beyond a channel tolerance of 8 (HUD masked), visually identical — DXVK
   draws what the GeForce 6200 drew. The vs_1_1 golden has no native
-  counterpart (no d3dx9 compiler off Windows) and is not diffed.
+  counterpart (no d3dx9 compiler off Windows) and is not diffed. **On
+  macOS 26 over KosmicKrisp (Air, 2026-09-03) both pass too** after a second
+  one-line patch (`fillModeNonSolid` optional, wireframe → solid): 1095
+  pixels beyond tolerance 8 vs 1089 on RADV, 16 beyond 32 on both. The
+  executor draws the same frame on Metal and on AMD.
 - **P1 — Transport + device:** `hw/d3dpt` in the QEMU queue (patch 40),
   guest `d3d9.dll` with `Direct3DCreate9`, adapter identifier/caps from the
   host, `CreateDevice`, `Clear`, `Present` → the D3D9TEST triangle

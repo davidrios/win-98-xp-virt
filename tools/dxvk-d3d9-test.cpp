@@ -17,7 +17,9 @@
  *   build/dxvk-d3d9-test [out.bmp] [frames]
  * NOWINDOW=1 DXVK_WSI_DRIVER=Headless: no SDL window at all (patch 04's driver).
  * A refused device prints DXVK's reason (e.g. "Device does not support
- * required feature 'nullDescriptor'" on MoltenVK).
+ * required feature 'nullDescriptor'" on MoltenVK). Passes on KosmicKrisp
+ * (LunarG SDK, macOS 26): <icd.json> =
+ * ~/VulkanSDK/<ver>/macOS/share/vulkan/icd.d/libkosmickrisp_icd.json.
  */
 #include <windows.h>
 #include <d3d9.h>

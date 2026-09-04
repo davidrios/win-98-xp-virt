@@ -1,0 +1,15 @@
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 444fc2c..150042b 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -828,7 +828,9 @@ namespace dxvk {
+       ENABLE_FEATURE(core.features, depthClamp, true),
+       ENABLE_FEATURE(core.features, drawIndirectFirstInstance, false),
+       ENABLE_FEATURE(core.features, dualSrcBlend, true),
+-      ENABLE_FEATURE(core.features, fillModeNonSolid, true),
++      /* Wireframe/point fill. KosmicKrisp (Mesa on Metal) does not expose
++       * it; d3d9 falls back to solid fill when it is missing. */
++      ENABLE_FEATURE(core.features, fillModeNonSolid, false),
+       ENABLE_FEATURE(core.features, fragmentStoresAndAtomics, true),
+       ENABLE_FEATURE(core.features, fullDrawIndexUint32, true),
+       /* d3d9 never creates a geometry shader; Vulkan-on-Metal drivers

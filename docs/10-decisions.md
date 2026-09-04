@@ -156,4 +156,7 @@ player links DXVK through a C shim; a window-less WSI backend replaces
 SDL2 (the device renders off-screen into the existing IOSurface / dma-buf
 frame path). KosmicKrisp is young: Metal 4 workarounds for M1/M2 on macOS
 26 live in the driver (fixed in 27); the rig goldens (`reference/d3d`)
-are the acceptance test for both drivers.
+are the acceptance test for both drivers. **Verified 2026-09-03** on the
+Air (macOS 26.6.2, SDK 1.4.357.1): one more required feature had to be made
+optional (`fillModeNonSolid`, patch 05), then the reference frame matches
+the rig as closely as on RADV (spike C, "Verified on KosmicKrisp").

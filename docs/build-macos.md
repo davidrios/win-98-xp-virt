@@ -27,6 +27,33 @@ Why each of the odd ones:
   `scripts/configure-qemu.sh`, so the header itself never depends on
   XQuartz's Mesa headers version.
 
+## Vulkan for the Direct3D executor (macOS 26 only)
+
+DXVK's d3d9 (ADR-007) runs over Mesa's KosmicKrisp, shipped in the LunarG
+SDK as an optional component. Homebrew's `vulkan-loader` and `molten-vk`
+stay installed (MoltenVK is refused by DXVK, see spike C).
+
+```sh
+brew install vulkan-headers vulkan-loader vulkan-tools glslang     # + sdl2 meson ninja from above
+curl -sSL -o vulkan-sdk.zip https://sdk.lunarg.com/sdk/download/latest/mac/vulkan-sdk.zip
+unzip -q vulkan-sdk.zip                                          # vulkansdk-macOS-<ver>.app
+V=1.4.357.1                                                      # the version the zip carried
+vulkansdk-macOS-$V.app/Contents/MacOS/vulkansdk-macOS-$V --root ~/VulkanSDK/$V \
+  --accept-licenses --default-answer --confirm-command install
+~/VulkanSDK/$V/MaintenanceTool.app/Contents/MacOS/MaintenanceTool \
+  --accept-licenses --default-answer --confirm-command install com.lunarg.vulkan.kosmic
+export VK_ICD_FILENAMES=~/VulkanSDK/$V/macOS/share/vulkan/icd.d/libkosmickrisp_icd.json
+vulkaninfo --summary | grep -E "driverName|apiVersion"           # KosmicKrisp, 1.4.x
+```
+
+The installer refuses to add a component into an existing root, hence the
+maintenance tool for the second step. The SDK is self-contained under
+`~/VulkanSDK`; nothing goes into `/usr/local` unless the `usr` component is
+chosen. Then `scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja
+-C build/dxvk` and the run lines in `tools/dxvk-d3d9-test.cpp` with that
+`VK_ICD_FILENAMES` (2026-09-03: both harnesses pass on the Air, see
+`patches/dxvk/README.md`).
+
 ## Clone
 
 ```sh
