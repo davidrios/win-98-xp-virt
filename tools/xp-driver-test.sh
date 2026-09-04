@@ -5,14 +5,14 @@
 # pulls the guest logs out of the scratch disk with mtools.
 #
 #   tools/xp-driver-test.sh <image.qcow2> install      # DRVINST from the ISO, reboot, desktop on the driver
-#   tools/xp-driver-test.sh <image.qcow2> ddtest       # DDTEST 640x480x16 / x32 / windowed, logs + BMP
+#   tools/xp-driver-test.sh <image.qcow2> ddtest       # DDTEST 640x480x8 (palette) / x16 / x32 / windowed, logs + BMP
 #   tools/xp-driver-test.sh <image.qcow2> modes        # SETMODE 1024x768x32@85, 800x600x16@75, list
 #   tools/xp-driver-test.sh <image.qcow2> d3d7         # D3D7TEST: the DX7 HAL scene, diffed against the host test's frame
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
 #   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
 # Env: DDFLAGS=N (-device d3dpt-vga,ddflags=N), OUT=dir for screendumps
-# and logs (default build/xp-driver-test), NO_KVM=1, GAME_ISO=game.iso (the
+# and logs (default build/xp-driver-test), NO_KVM=1, CPU=pentium3 (the KVM CPU model), GAME_ISO=game.iso (the
 # game disc takes the CD-ROM drive the game was installed from, D:; the
 # driver ISO moves to the next drive, F: after the E: scratch), and for `cmd` / `bat`:
 # CMD_WAIT=s (one wait, default 30) or SHOTS=n SHOT_EVERY=s (n screendumps
@@ -35,14 +35,20 @@ if [ ! -f "$SCRATCH" ]; then
   printf 'label: dos\nstart=2048, type=0c\n' | sfdisk -q "$SCRATCH"
   mkfs.fat -F 32 --offset 2048 "$SCRATCH" >/dev/null
 fi
-if [ "$MODE" = bat ]; then
-  # the Run dialog truncates long lines: stage a batch file on the scratch disk (before the guest mounts it)
-  sed 's/\r$//; s/$/\r/' "${1:?batch file}" > "$OUT/RUN.BAT"
+stage_bat() {  # the Run dialog truncates long lines: stage a batch file on the scratch disk (before the guest mounts it)
+  sed 's/\r$//; s/$/\r/' "$1" > "$OUT/RUN.BAT"
   mcopy -o -i "$SCRATCH@@1048576" "$OUT/RUN.BAT" ::/RUN.BAT
+}
+[ "$MODE" = bat ] && stage_bat "${1:?batch file}"
+if [ "$MODE" = ddtest ]; then
+  printf '%s\n' '@echo off' 'cd /d E:\' 'for %%b in (8 16 32) do (' \
+    '  D:\DRIVER\DDTEST.EXE 640 480 %%b 300' '  copy ddtest.log E:\dd%%b.log > nul' '  copy ddtest.bmp E:\dd%%b.bmp > nul' ')' \
+    'D:\DRIVER\DDTEST.EXE 640 480 32 200 -windowed' 'copy ddtest.log E:\ddwin.log > nul' > "$OUT/ddtest.bat"
+  stage_bat "$OUT/ddtest.bat"
 fi
 SOCK="$OUT/qmp.sock"; rm -f "$SOCK"
 ACCEL=(-cpu pentium3)
-[ -e /dev/kvm ] && [ -z "${NO_KVM:-}" ] && ACCEL=(-accel kvm -cpu host)
+[ -e /dev/kvm ] && [ -z "${NO_KVM:-}" ] && ACCEL=(-accel kvm -cpu "${CPU:-host}")   # CPU=pentium3: Max Payne's JPEG decoder mis-decodes on a modern family
 LOG="$OUT/qemu-$MODE.log"
 CD2=()
 CD1="$ISO"
@@ -76,12 +82,12 @@ case "$MODE" in
     sleep 60; Q screendump "$OUT/install-rebooted.png"
     finish ;;
   ddtest)
-    run 'D:\DRIVER\DDTEST.EXE 640 480 16 300 & copy ddtest.log E:\dd16.log & copy ddtest.bmp E:\dd16.bmp & D:\DRIVER\DDTEST.EXE 640 480 32 300 & copy ddtest.log E:\dd32.log & D:\DRIVER\DDTEST.EXE 640 480 32 200 -windowed & copy ddtest.log E:\ddwin.log'
-    sleep 6; Q screendump "$OUT/ddtest-fullscreen.png"
-    sleep 50
+    run 'E:\RUN.BAT'                                        # 8 / 16 / 32 bpp chains, then windowed (staged above)
+    sleep 5; Q screendump "$OUT/ddtest-fullscreen.png"      # the 8 bpp chain: the palette shows in the dump
+    sleep 55
     finish
-    pull dd16.log; pull dd32.log; pull ddwin.log
-    mcopy -n -i "$SCRATCH@@1048576" ::/dd16.bmp "$OUT/dd16.bmp" 2>/dev/null || true ;;
+    pull dd8.log; pull dd16.log; pull dd32.log; pull ddwin.log
+    for b in 8 16 32; do mcopy -n -i "$SCRATCH@@1048576" "::/dd$b.bmp" "$OUT/dd$b.bmp" 2>/dev/null || true; done ;;
   modes)
     run 'D:\DRIVER\SETMODE.EXE 1024 768 32 85 & D:\DRIVER\SETMODE.EXE 800 600 16 75 & D:\DRIVER\SETMODE.EXE 1024 768 32 85 & D:\DRIVER\SETMODE.EXE > E:\modes.log'
     sleep 25

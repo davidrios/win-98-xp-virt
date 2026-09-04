@@ -9,6 +9,9 @@
  * buffer, a Blt colour fill paints a bar, Flip presents. Reports whether
  * the surfaces landed in video memory, the frame rate, and dumps the
  * last back buffer to ddtest.bmp. Everything also goes to ddtest.log.
+ * At 8 bpp a 256-entry palette (four ramps) goes on the primary and is
+ * rotated by one entry per frame through SetEntries: the 2D titles'
+ * palette animation; the BMP is written through that palette.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -53,6 +56,8 @@ static void pump(void)
     }
 }
 
+static PALETTEENTRY cur_pal[256];       /* what the primary's palette holds now */
+
 static void dump_bmp(const char *path, const DDSURFACEDESC2 *sd)
 {
     BITMAPFILEHEADER fh;
@@ -72,6 +77,9 @@ static void dump_bmp(const char *path, const DDSURFACEDESC2 *sd)
         for (x = 0; x < w; x++) {
             if (bpp == 32) {
                 row[x * 3 + 0] = src[x * 4 + 0]; row[x * 3 + 1] = src[x * 4 + 1]; row[x * 3 + 2] = src[x * 4 + 2];
+            } else if (bpp == 8) {
+                const PALETTEENTRY *e = &cur_pal[src[x]];
+                row[x * 3 + 0] = e->peBlue; row[x * 3 + 1] = e->peGreen; row[x * 3 + 2] = e->peRed;
             } else {
                 unsigned v = ((const unsigned short *)src)[x];
                 row[x * 3 + 0] = (v & 0x1f) << 3; row[x * 3 + 1] = ((v >> 5) & 0x3f) << 2; row[x * 3 + 2] = ((v >> 11) & 0x1f) << 3;
@@ -101,6 +109,7 @@ int main(int argc, char **argv)
     int w = 640, h = 480, bpp = 16, frames = 300, windowed = 0, i, argn = 0;
     LPDIRECTDRAW7 dd = NULL;
     LPDIRECTDRAWSURFACE7 prim = NULL, back = NULL;
+    LPDIRECTDRAWPALETTE pal = NULL;
     DDSURFACEDESC2 sd;
     DDSCAPS2 caps;
     DDCAPS hal, hel;
@@ -136,8 +145,8 @@ int main(int argc, char **argv)
     memset(&hal, 0, sizeof(hal)); hal.dwSize = sizeof(hal);
     memset(&hel, 0, sizeof(hel)); hel.dwSize = sizeof(hel);
     hr = dd->lpVtbl->GetCaps(dd, &hal, &hel);
-    logp("GetCaps %08lx: HAL dwCaps %08lx dwCaps2 %08lx ddsCaps %08lx vidmem %lu/%lu KiB\n", hr,
-         hal.dwCaps, hal.dwCaps2, hal.ddsCaps.dwCaps, hal.dwVidMemFree / 1024, hal.dwVidMemTotal / 1024);
+    logp("GetCaps %08lx: HAL dwCaps %08lx dwCaps2 %08lx ddsCaps %08lx palcaps %08lx vidmem %lu/%lu KiB\n", hr,
+         hal.dwCaps, hal.dwCaps2, hal.ddsCaps.dwCaps, hal.dwPalCaps, hal.dwVidMemFree / 1024, hal.dwVidMemTotal / 1024);
     logp("  HAL: %s%s%s%s%s\n",
          hal.dwCaps & DDCAPS_NOHARDWARE ? "NOHARDWARE " : "HAL-present ",
          hal.dwCaps & DDCAPS_BLT ? "BLT " : "no-blt ",
@@ -149,9 +158,26 @@ int main(int argc, char **argv)
                                          (DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWREBOOT));
     logp("SetCooperativeLevel %08lx\n", hr);
     if (!windowed) {
+        HDC hdc;
         hr = dd->lpVtbl->SetDisplayMode(dd, w, h, bpp, 0, 0);
         logp("SetDisplayMode %dx%dx%d %08lx\n", w, h, bpp, hr);
         if (FAILED(hr)) goto out;
+        /* what the runtime rebuilt for the new mode: caps again, the mode's
+         * pixel format, and GDI's view of the palette (8 bpp) */
+        memset(&hal, 0, sizeof(hal)); hal.dwSize = sizeof(hal);
+        memset(&hel, 0, sizeof(hel)); hel.dwSize = sizeof(hel);
+        hr = dd->lpVtbl->GetCaps(dd, &hal, &hel);
+        logp("after mode set: GetCaps %08lx HAL dwCaps %08lx palcaps %08lx ddsCaps %08lx\n", hr,
+             hal.dwCaps, hal.dwPalCaps, hal.ddsCaps.dwCaps);
+        memset(&sd, 0, sizeof(sd)); sd.dwSize = sizeof(sd);
+        hr = dd->lpVtbl->GetDisplayMode(dd, &sd);
+        logp("GetDisplayMode %08lx: %lux%lu %lu bpp pf flags %08lx pitch %ld\n", hr, sd.dwWidth, sd.dwHeight,
+             sd.ddpfPixelFormat.dwRGBBitCount, sd.ddpfPixelFormat.dwFlags, sd.lPitch);
+        hdc = GetDC(NULL);
+        logp("GDI: BITSPIXEL %d RASTERCAPS %08x SIZEPALETTE %d NUMRESERVED %d COLORRES %d\n",
+             GetDeviceCaps(hdc, BITSPIXEL), GetDeviceCaps(hdc, RASTERCAPS), GetDeviceCaps(hdc, SIZEPALETTE),
+             GetDeviceCaps(hdc, NUMRESERVED), GetDeviceCaps(hdc, COLORRES));
+        ReleaseDC(NULL, hdc);
     }
 
     memset(&sd, 0, sizeof(sd));
@@ -166,7 +192,36 @@ int main(int argc, char **argv)
     }
     hr = dd->lpVtbl->CreateSurface(dd, &sd, &prim, NULL);
     logp("CreateSurface(primary%s) %08lx\n", windowed ? "" : " + 1 back buffer", hr);
+    if (FAILED(hr) && !windowed) {
+        /* a plain primary, then a system-memory one: which of them the mode allows */
+        memset(&sd, 0, sizeof(sd)); sd.dwSize = sizeof(sd);
+        sd.dwFlags = DDSD_CAPS; sd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
+        hr = dd->lpVtbl->CreateSurface(dd, &sd, &prim, NULL);
+        logp("CreateSurface(plain primary) %08lx\n", hr);
+        if (prim) { prim->lpVtbl->Release(prim); prim = NULL; }
+        sd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE | DDSCAPS_SYSTEMMEMORY;
+        hr = dd->lpVtbl->CreateSurface(dd, &sd, &prim, NULL);
+        logp("CreateSurface(sysmem primary) %08lx\n", hr);
+        if (prim) { prim->lpVtbl->Release(prim); prim = NULL; }
+        goto out;
+    }
     if (FAILED(hr)) goto out;
+    if (bpp == 8 && !windowed) {
+        /* four ramps: red, green, blue, grey */
+        for (i = 0; i < 256; i++) {
+            unsigned v = (i & 63) * 255 / 63;
+            cur_pal[i].peRed = (i >> 6) == 0 || (i >> 6) == 3 ? v : 0;
+            cur_pal[i].peGreen = (i >> 6) == 1 || (i >> 6) == 3 ? v : 0;
+            cur_pal[i].peBlue = (i >> 6) == 2 || (i >> 6) == 3 ? v : 0;
+            cur_pal[i].peFlags = 0;
+        }
+        hr = dd->lpVtbl->CreatePalette(dd, DDPCAPS_8BIT | DDPCAPS_ALLOW256, cur_pal, &pal, NULL);
+        logp("CreatePalette(8BIT|ALLOW256) %08lx\n", hr);
+        if (FAILED(hr)) goto out;
+        hr = prim->lpVtbl->SetPalette(prim, pal);
+        logp("SetPalette(primary) %08lx\n", hr);
+        if (FAILED(hr)) goto out;
+    }
     if (windowed) {
         memset(&sd, 0, sizeof(sd));
         sd.dwSize = sizeof(sd);
@@ -209,6 +264,10 @@ int main(int argc, char **argv)
                 unsigned *p = (unsigned *)row;
                 unsigned v = c ? 0x00204080 : 0x00c0a040;
                 for (x = 0; x < sd.dwWidth; x++) p[x] = ((x + i) / 16 & 1) ? v : v ^ 0x00ffffff;
+            } else if (sd.ddpfPixelFormat.dwRGBBitCount == 8) {
+                /* diagonal bands through the whole palette; the checker
+                 * flips the ramp (bit 7) */
+                for (x = 0; x < sd.dwWidth; x++) row[x] = (unsigned char)(((x + y) / 2) ^ (c ? 0x80 : 0));
             } else {
                 unsigned short *p = (unsigned short *)row;
                 unsigned short v = c ? 0x2210 : 0xc528;
@@ -220,7 +279,8 @@ int main(int argc, char **argv)
 
         /* a moving bar through Blt (HEL or HAL, whichever DirectDraw picks) */
         memset(&fx, 0, sizeof(fx)); fx.dwSize = sizeof(fx);
-        fx.dwFillColor = sd.ddpfPixelFormat.dwRGBBitCount == 32 ? 0x00ff2020 : 0xf800;
+        fx.dwFillColor = sd.ddpfPixelFormat.dwRGBBitCount == 32 ? 0x00ff2020 :
+                         sd.ddpfPixelFormat.dwRGBBitCount == 8 ? 255 : 0xf800;
         r.left = (i * 3) % (w - 40); r.right = r.left + 40; r.top = h / 4; r.bottom = h * 3 / 4;
         hr = back->lpVtbl->Blt(back, &r, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &fx);
         if (FAILED(hr)) { logp("Blt(COLORFILL) failed %08lx at frame %d\n", hr, i); goto out; }
@@ -231,6 +291,14 @@ int main(int argc, char **argv)
             hr = prim->lpVtbl->Flip(prim, NULL, DDFLIP_WAIT);
         }
         if (FAILED(hr)) { logp("%s failed %08lx at frame %d\n", windowed ? "Blt(primary)" : "Flip", hr, i); goto out; }
+        if (pal) {
+            /* palette animation: rotate the 256 entries by one per frame */
+            PALETTEENTRY first = cur_pal[0];
+            memmove(&cur_pal[0], &cur_pal[1], 255 * sizeof(PALETTEENTRY));
+            cur_pal[255] = first;
+            hr = pal->lpVtbl->SetEntries(pal, 0, 0, 256, cur_pal);
+            if (FAILED(hr)) { logp("SetEntries failed %08lx at frame %d\n", hr, i); goto out; }
+        }
         if (i == 60) {
             t1 = GetTickCount();
             logp("first 60 frames: %lu ms\n", t1 - t0);
@@ -252,6 +320,7 @@ int main(int argc, char **argv)
 out:
     if (back && !windowed) back = NULL;      /* attached: released with the primary */
     else if (back) back->lpVtbl->Release(back);
+    if (pal) pal->lpVtbl->Release(pal);
     if (prim) prim->lpVtbl->Release(prim);
     if (dd) {
         if (!windowed) dd->lpVtbl->RestoreDisplayMode(dd);

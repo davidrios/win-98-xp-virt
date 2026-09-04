@@ -19,7 +19,8 @@ picture and the track rules, then this file, then doc 15.
   driver's records: VRAM surfaces, contexts, the DP2 interpreter,
   readback) and `d3dpt/exec/d3dpt_exec_int.h` (state shared with the d3d9
   half); `tools/d3dpt-dp2-test.cpp`.
-- Tests: `tools/xp-driver-test.sh`, `tools/qmpc.py` key map additions.
+- Tests: `tools/xp-driver-test.sh`, `tools/xp-fifa-match.sh` + `tools/xp-fifa2000.bat`,
+  `tools/xp-diablo.sh`, `tools/qmpc.py` key map additions.
 - Docs: `docs/15-guest-display-driver.md`, this file, the M7 row of the
   state table and the M7 line of "Next steps" in `docs/00-status.md`.
 - Shared with the M4 track (rebase first, edit minimally, say so in the
@@ -68,10 +69,24 @@ picture and the track rules, then this file, then doc 15.
   library, `PLAYER_KEYS_HOLD`, the executor's `frames/s` line,
   `xp-driver-test.sh`'s `bat` / `GAME_ISO` / `SHOTS` / `SHOT_KEYS`,
   `qmpc.py click`.
+- **8 bpp palettized modes (2026-09-04 night, register set v3): Diablo
+  plays.** Device PALETTE block + c8 shadow, miniport palette-driven modes
+  + `SET_COLOR_REGISTERS`, GDI `GCAPS_PALMANAGED` / `DrvSetPalette`,
+  DirectDraw `DDPF_PALETTEINDEXED8`; two XP runtime rules found by
+  disassembly (doc 15 "8 bpp palettized modes"): `dwPalCaps` must be 0
+  and no palette callbacks (dxg drops the HAL otherwise; palettes go
+  through GDI on NT), and the HAL must keep offering Direct3D in every
+  mode (ddraw.dll fails a mode switch to a PDEV without it). `DDTEST 640
+  480 8` (palette rotated every frame, 1200 fps), `tools/xp-diablo.sh
+  install|play <image>` (installer, intro, menus, Tristram, screendumps).
+  `winxp-m7g` has Diablo installed at `C:\Diablo`; the M7c driver there is
+  the v3 build (the user's `winxp-m7` and `m7f` still carry v2 drivers,
+  which refuse the v3 device: reinstall from the ISO first).
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
-  2026-09-04 evening). New work: branch `track/m7-<topic>` off main.
+  2026-09-04 evening; the 8 bpp work continues on it). New work: branch
+  `track/m7-<topic>` off main.
 - **Resuming here (2026-09-04 evening):** pull main, then prepare →
   configure → ninja (the embed library carries the input statistics),
   `scripts/build-d3dpt-exec.sh` (the frames/s line; main also has the M4
@@ -110,6 +125,8 @@ GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driv
 # a real match, driven over QMP (menus, side, kickoff) and a keyboard test in it (F2 / Esc / F12 taps + screendumps),
 # dinput_log.txt pulled from the image at the end; ~6 min under kvm, ~9 under tcg
 tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2      # or tcg
+# Diablo, the 8 bpp palettized title: installer (once per image), then the game into Tristram with screendumps (~2 min)
+tools/xp-diablo.sh install ~/vms/winxp-m7g.qcow2 && tools/xp-diablo.sh play ~/vms/winxp-m7g.qcow2
 # the same game in the player, by hand (the image above: driver reinstalled, WineD3D DLLs renamed)
 target/release/player -- -L $PWD/qemu/pc-bios -accel kvm -cpu host -machine pc -m 512 \
   -hda ~/vms/winxp-m7f.qcow2 -cdrom /mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO -vga none -device d3dpt-vga \
@@ -153,7 +170,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 3. Small items: `DrvDeriveSurface` (GDI on DirectDraw surfaces), a real
    vblank signal from the player's present, the hardware cursor (needs a
    sprite in the player), the mode table fed from the player (M2), a macOS
-   run of the same image, a 2D DirectDraw title.
+   run of the same image, more 8 bpp titles (StarCraft, Age of Empires,
+   Caesar 3: install + a `tools/xp-<game>.sh` each; Diablo's dungeon
+   levels), a RAM-backed palette page if a title animates the palette
+   faster than the MMIO writes allow.
 
 ## Gotchas of this track (details in doc 15)
 
@@ -174,5 +194,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   out (doc 15 has the two findings).
 - XP SP3's Logo dialog ignores every registry policy; DRVINST presses it.
 - Keys typed while a full-screen DirectDraw window is up are lost: one
-  chained `cmd /k a & b & c` line per test.
+  chained `cmd /k a & b & c` line per test — and the Run dialog truncates
+  long lines silently (a `copy … E:\dd32.log` became `E:\dd`): anything
+  longer than a short chain goes through a staged `E:\RUN.BAT`.
+- Palettized DirectDraw on XP: `dwPalCaps` 0, no palette callbacks, and
+  Direct3D offered in every mode, or the HAL silently degrades to
+  `DDCAPS_NOHARDWARE` (doc 15 has the disassembly trail).
 - The debugger is the DEBUG register → QEMU log. No WinDbg, no serial KD.

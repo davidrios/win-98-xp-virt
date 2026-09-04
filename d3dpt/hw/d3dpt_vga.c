@@ -9,9 +9,11 @@
  * the DisplaySurface is created over the guest's framebuffer bytes (no
  * copy inside QEMU), dirty lines come from the memory dirty log, and the
  * embed library's listener hands the same pointer to the player. 16 bpp
- * modes are converted into an x8r8g8b8 shadow per dirty span because the
- * embed listener takes one format. ENABLE = 0 returns the console to the
- * VGA core (BSOD, reboot, the BIOS).
+ * and 8 bpp (palettized, the PALETTE register block) modes are converted
+ * into an x8r8g8b8 shadow per dirty span because the embed listener takes
+ * one format; a palette write repaints the whole frame at the next
+ * refresh. ENABLE = 0 returns the console to the VGA core (BSOD, reboot,
+ * the BIOS).
  *
  * M7c (doc 15): the top 64 MiB of BAR 0 is a command window in the
  * d3dpt_proto.h layout. The display driver's Direct3D DDI appends records
@@ -66,8 +68,11 @@ struct D3dptVgaState {
     bool full_update;
     unsigned vga_grace;         /* refreshes to hold the last frame after ENABLE 1->0 */
     D3dptLinearMode lin;
-    pixman_image_t *shadow;     /* x8r8g8b8 copy for 16 bpp modes */
-    pixman_image_t *src16;      /* r5g6b5 view of VRAM for the conversion */
+    pixman_image_t *shadow;     /* x8r8g8b8 copy for 16 and 8 bpp modes */
+    pixman_image_t *src;        /* r5g6b5 / c8 view of VRAM for the conversion */
+    uint32_t pal[D3DPT_FB_PALETTE_SIZE]; /* the PALETTE registers */
+    bool pal_dirty;             /* written since the last refresh */
+    pixman_indexed_t *indexed;  /* pal as pixman's palette for the c8 view */
 
     char dbg[256];
     unsigned dbg_len;
@@ -91,7 +96,7 @@ static const struct { uint16_t w, h; } fb_sizes[] = {
     { 1280, 960 }, { 1280, 1024 }, { 1600, 1200 },
 };
 static const uint8_t fb_hz[] = { 60, 75, 85 };
-static const uint8_t fb_bpp[] = { 16, 32 };
+static const uint8_t fb_bpp[] = { 8, 16, 32 };
 #define FB_MODE_COUNT (ARRAY_SIZE(fb_sizes) * ARRAY_SIZE(fb_hz) * ARRAY_SIZE(fb_bpp))
 
 /* refreshes (the player's pull interval, 16 ms by default) the last linear
@@ -122,7 +127,7 @@ static bool fb_get_mode(D3dptVgaState *s, D3dptLinearMode *m)
     if (!s->r_enable) {
         return false;
     }
-    if (s->r_bpp != 16 && s->r_bpp != 32) {
+    if (s->r_bpp != 8 && s->r_bpp != 16 && s->r_bpp != 32) {
         return false;
     }
     bytepp = s->r_bpp / 8;
@@ -149,10 +154,20 @@ static void fb_drop_shadow(D3dptVgaState *s)
         qemu_pixman_image_unref(s->shadow);
         s->shadow = NULL;
     }
-    if (s->src16) {
-        qemu_pixman_image_unref(s->src16);
-        s->src16 = NULL;
+    if (s->src) {
+        qemu_pixman_image_unref(s->src);
+        s->src = NULL;
     }
+}
+
+static void fb_apply_palette(D3dptVgaState *s)
+{
+    int i;
+
+    for (i = 0; i < D3DPT_FB_PALETTE_SIZE; i++) {
+        s->indexed->rgba[i] = 0xff000000u | (s->pal[i] & 0xffffffu);
+    }
+    s->pal_dirty = false;
 }
 
 static void fb_switch(D3dptVgaState *s, const D3dptLinearMode *m)
@@ -165,8 +180,17 @@ static void fb_switch(D3dptVgaState *s, const D3dptLinearMode *m)
         ds = qemu_create_displaysurface_from(m->w, m->h, PIXMAN_x8r8g8b8,
                                              m->pitch, ptr);
     } else {
-        s->src16 = pixman_image_create_bits(PIXMAN_r5g6b5, m->w, m->h,
-                                            (uint32_t *)ptr, m->pitch);
+        if (m->bpp == 16) {
+            s->src = pixman_image_create_bits(PIXMAN_r5g6b5, m->w, m->h,
+                                              (uint32_t *)ptr, m->pitch);
+        } else {
+            /* indices through the palette: pixman's c8 fetcher looks each
+             * byte up in the indexed table the image points at */
+            s->src = pixman_image_create_bits(PIXMAN_c8, m->w, m->h,
+                                              (uint32_t *)ptr, m->pitch);
+            fb_apply_palette(s);
+            pixman_image_set_indexed(s->src, s->indexed);
+        }
         s->shadow = pixman_image_create_bits(PIXMAN_x8r8g8b8, m->w, m->h,
                                              NULL, 0);
         ds = qemu_create_displaysurface_pixman(s->shadow);
@@ -180,7 +204,7 @@ static void fb_switch(D3dptVgaState *s, const D3dptLinearMode *m)
 static void fb_update_span(D3dptVgaState *s, int y0, int y1)
 {
     if (s->shadow) {
-        pixman_image_composite(PIXMAN_OP_SRC, s->src16, NULL, s->shadow,
+        pixman_image_composite(PIXMAN_OP_SRC, s->src, NULL, s->shadow,
                                0, y0, 0, 0, 0, y0, s->lin.w, y1 - y0);
     }
     dpy_gfx_update(s->vga.con, 0, y0, s->lin.w, y1 - y0);
@@ -217,6 +241,11 @@ static void d3dpt_vga_gfx_update(void *opaque)
         fb_switch(s, &m);
     }
     s->frames++;
+    if (s->pal_dirty && m.bpp == 8) {
+        /* a new palette recolours every pixel: one full conversion */
+        fb_apply_palette(s);
+        s->full_update = true;
+    }
 
     if (s->full_update) {
         s->full_update = false;
@@ -369,7 +398,8 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
     case D3DPT_FB_REG_VRAM_SIZE:
         return s->vga.vram_size;
     case D3DPT_FB_REG_CAPS:
-        return D3DPT_FB_CAP_BPP16 | D3DPT_FB_CAP_BPP32 | (s->cmd_offset ? D3DPT_FB_CAP_D3D : 0);
+        return D3DPT_FB_CAP_BPP8 | D3DPT_FB_CAP_BPP16 | D3DPT_FB_CAP_BPP32 |
+               (s->cmd_offset ? D3DPT_FB_CAP_D3D : 0);
     case D3DPT_FB_REG_MODE_COUNT:
         return FB_MODE_COUNT;
     case D3DPT_FB_REG_MODE_SEL:
@@ -408,6 +438,10 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
         /* probing loads the executor: the answer must be honest */
         return d3d_load(s) ? D3DPT_STATUS_READY : D3DPT_STATUS_NO_EXEC;
     default:
+        if (addr >= D3DPT_FB_REG_PALETTE &&
+            addr < D3DPT_FB_REG_PALETTE + 4 * D3DPT_FB_PALETTE_SIZE) {
+            return s->pal[(addr - D3DPT_FB_REG_PALETTE) / 4];
+        }
         return 0;
     }
 }
@@ -478,6 +512,11 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
         d3d_doorbell(s);
         break;
     default:
+        if (addr >= D3DPT_FB_REG_PALETTE &&
+            addr < D3DPT_FB_REG_PALETTE + 4 * D3DPT_FB_PALETTE_SIZE) {
+            s->pal[(addr - D3DPT_FB_REG_PALETTE) / 4] = val & 0xffffffu;
+            s->pal_dirty = true;
+        }
         break;
     }
 }
@@ -507,6 +546,8 @@ static void d3dpt_vga_realize(PCIDevice *dev, Error **errp)
 
     memory_region_init_io(&s->regs, OBJECT(dev), &d3dpt_vga_regs_ops, s,
                           "d3dpt-vga.regs", D3DPT_FB_REGS_SIZE);
+    s->indexed = g_new0(pixman_indexed_t, 1);
+    s->indexed->color = true;
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_MEM_PREFETCH, &vga->vram);
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->regs);

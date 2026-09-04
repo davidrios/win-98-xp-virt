@@ -231,21 +231,101 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
 - DirectDraw: `DdBlt` is not hooked, so blits are the HEL's user-mode
   copies on cached VRAM (fast enough for 2D); a host-side blit through
   the executor only makes sense once surfaces can live on the host GPU
-  (M7c). Palettized (8 bpp) modes and surfaces, overlays, FourCC and
-  different-format surfaces are refused. Not yet exercised: `GetDC` on a
-  DirectDraw surface (`DrvDeriveSurface` absent, DirectDraw falls back),
-  a real DX5–7 game.
+  (M7c). Overlays, FourCC and different-format surfaces are refused
+  (8 bpp palettized modes: see the section below). Not yet exercised:
+  `GetDC` on a DirectDraw surface (`DrvDeriveSurface` absent, DirectDraw
+  falls back).
 - Mode table from the player (M2): a `modes=` device property or an embed
   API call that replaces the static table, pixel-aspect flags per entry.
-- Multi-monitor, 8 bpp palettized modes, DPMS/power states, hot-unplug:
-  not planned.
+- Multi-monitor, DPMS/power states, hot-unplug: not planned.
 - Win2000 untested (same DDI version; should work).
+
+## 8 bpp palettized modes (2026-09-04, register set v3)
+
+The late-90s 2D titles (Diablo, StarCraft, Age of Empires, Caesar 3) set
+640×480×8 through DirectDraw and animate the palette; with only 16/32 bpp
+modes in the table `SetDisplayMode` failed and each stopped at its "could
+not set display mode" box. Now every size is also offered at 8 bpp (63
+modes), across the four layers:
+
+- **Device** (`d3dpt_fb.h` v3, `d3dpt_vga.c`): `BPP = 8`, a 256-entry
+  `PALETTE` register block (x8r8g8b8 per entry, 0x400..0x7fc of the
+  register page, `CAP_BPP8`). The scanout is a pixman `c8` view of VRAM
+  through a `pixman_indexed_t` filled from the registers, converted into
+  the x8r8g8b8 shadow per dirty span exactly like the 16 bpp path; a
+  palette write marks the palette dirty and the next refresh repaints the
+  whole frame (a palette change recolours every pixel). Each entry write
+  is one MMIO exit: a full 256-entry animation costs ≈0.5 ms under KVM
+  (DDTEST's 8 bpp chain with a `SetEntries` every frame runs at 1200 fps
+  against 3800–6400 for the RGB chains) — fine for a game's 20–30 palette
+  updates a second; a RAM-backed palette page is the optimisation if a
+  title ever needs more.
+- **Miniport**: 8 bpp mode entries carry `VIDEO_MODE_PALETTE_DRIVEN |
+  VIDEO_MODE_MANAGED_PALETTE`, 8 bits per gun, no masks;
+  `IOCTL_VIDEO_SET_COLOR_REGISTERS` writes the CLUT into the block.
+- **Display driver, GDI:** `GCAPS_PALMANAGED | GCAPS_COLOR_DITHER`, a
+  `PAL_INDEXED` 256-entry default palette (the 20 system colours at 0–9
+  and 246–255, a 6×6×6 cube, 20 greys), `BMF_8BPP` surfaces, `ulNumColors
+  = 20`, `ulNumPalReg = 256`, `HT_FORMAT_8BPP`, and `DrvSetPalette`
+  (`PALOBJ_cGetColors` → the PALETTE registers directly, the IOCTL only
+  while the register page is unmapped). XP's desktop at 800×600×8 comes up
+  in the classic theme with the wallpaper dithered through the system
+  palette, as on any palette-managed adapter.
+- **Display driver, DirectDraw:** `ddpfDisplay = DDPF_RGB |
+  DDPF_PALETTEINDEXED8`, 8 bits, no masks. Two runtime findings, both
+  from the disassembly of the image's `dxg.sys` / `ddraw.dll`
+  (`build/xp-driver-test/pal-*`, DDTEST at 8 bpp answering
+  `DDERR_UNSUPPORTEDMODE` from `CreateSurface` until both were in):
+  1. **`dwPalCaps` must stay 0 and there must be no palette callbacks.**
+     dxg's post-enable validation (the function that also rejects
+     `DDCAPS_GDI`, `DDCAPS_BANKSWITCHED`, `DDSCAPS_MODEX`…) fails the HAL
+     outright when `ddCaps.dwPalCaps != 0`; the probes stop after
+     `GUID_MotionCompCallbacks`, never reaching `GUID_GetHeapAlignment`.
+     On NT the primary's palette is GDI's: `IDirectDrawPalette::SetEntries`
+     on the primary's palette lands in `DrvSetPalette`, so the
+     `DdCreatePalette` / `DdSetEntries` / `DdSetPalette` callbacks of the
+     DDK header are dead on XP. `DDPCAPS_8BIT | DDPCAPS_ALLOW256` palettes
+     work without any of it.
+  2. **The HAL's Direct3D must not disappear between modes.** The first
+     8 bpp cut hid Direct3D (`d3d_init` refused palettized PDEVs); dxg then
+     completed every probe but `ddraw.dll`'s object rebuild after
+     `SetDisplayMode` still failed (`GetCaps` afterwards showed
+     `DDCAPS_NOHARDWARE`, `dwModeIndex = DDUNSUPPORTEDMODE`). With
+     `-device d3dpt-vga,ddflags=0x20` (no Direct3D in any mode) the 8 bpp
+     chain worked at once, so it is the change of shape across the mode
+     switch that the runtime rejects, not 8 bpp. Direct3D is therefore
+     offered at 8 bpp too; the runtime refuses `CreateDevice` on a
+     palettized primary by itself.
+- **Test:** `DDTEST 640 480 8 300` creates a `DDPCAPS_8BIT | ALLOW256`
+  palette of four ramps on the primary, draws diagonal bands through all
+  256 indices, fills the bar with index 255 and rotates the palette by one
+  entry per frame with `SetEntries`; `ddtest.bmp` is written through the
+  palette. `tools/xp-driver-test.sh <image> ddtest` now runs 8, 16, 32 and
+  windowed from a staged `E:\RUN.BAT` (the chain outgrew the Run dialog:
+  the earlier truncated line was why `dd32.log` went missing once) and
+  pulls `dd8.log` / `dd8.bmp`; a QMP screendump during the 8 bpp run shows
+  the ramps through the device's conversion
+  (`build/xp-driver-test/pal-shot/cmd-02.png`).
+- **Diablo (1.00, the retail disc) plays.** `tools/xp-diablo.sh install
+  <image>` runs Blizzard's installer (three clicks, the game starts by
+  itself), `play` runs `C:\Diablo\Diablo.exe`: the Blizzard North and
+  intro videos, the title menu with its palette-cycled flames, a new
+  Warrior into Tristram, a click to walk, the character sheet, all at
+  640×480×8 through the palette; the QMP screendumps (`title.png`,
+  `town.png`, `walk.png`, `char.png` in `build/xp-driver-test/diablo-play/`)
+  are the device's conversion and show the right colours. The whole run
+  takes 2 minutes under KVM. Quirks: the game's menus ignore QMP clicks
+  (keyboard instead), the installer's "DirectX 2.0 cannot be detected
+  (sound)" warning is the missing sound card, alt+F4 exits the game.
+  Not tested: the dungeon levels (the light radius is palette work too),
+  a sound card, TCG timing.
 
 ## M7b / M7c pointers
 
-- **M7b DirectDraw DDI:** landed in its first cut (above). Left: a DX5–7
-  title on it (2D titles run now; 3D ones need M7c), `DrvDeriveSurface`,
-  the vblank signal.
+- **M7b DirectDraw DDI:** landed in its first cut (above); 8 bpp
+  palettized modes since 2026-09-04 evening (Diablo plays). Left:
+  `DrvDeriveSurface`, the vblank signal, StarCraft / Age of Empires /
+  Caesar 3 as further 8 bpp titles.
 - **M7c Direct3D DDI: first cut landed (see the section below); FIFA 2000
   runs on it out of the box (intro, title, attract-mode match).** Left:
   a user-driven match (input, menus, frame rate), claiming T&L, DX8

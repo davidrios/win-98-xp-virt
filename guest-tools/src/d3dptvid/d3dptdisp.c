@@ -80,6 +80,7 @@ typedef struct _PDEV {
     ULONG fb_len;
     volatile ULONG *regs;       /* public access range (register page) */
     BOOL device_surface;        /* EngCreateDeviceSurface took: DirectDraw possible */
+    ULONG pal[256];             /* 8 bpp: GDI's default palette (PALETTEENTRY form) */
 
     /* M7c: the command window and the Direct3D state */
     ULONG cmd_offset;           /* window offset in VRAM (0 = the device has none) */
@@ -257,6 +258,100 @@ static const COLORINFO color_info = {
     0, 0, 0, 0, 0, 0
 };
 
+static ULONG bmf_of(PPDEV p)
+{
+    return p->bpp == 32 ? BMF_32BPP : p->bpp == 16 ? BMF_16BPP : BMF_8BPP;
+}
+
+/* the 20 Windows system colours (PALETTEENTRY form: red in the low byte) */
+static const ULONG base_colors[20] = {
+    0x000000, 0x000080, 0x008000, 0x008080, 0x800000, 0x800080, 0x808000, 0xc0c0c0,
+    0xc0dcc0, 0xf0caa6,
+    0xf0fbff, 0xa4a0a0, 0x808080, 0x0000ff, 0x00ff00, 0x00ffff, 0xff0000, 0xff00ff,
+    0xffff00, 0xffffff,
+};
+
+/* GDI's default 8 bpp palette: system colours at 0-9 and 246-255, a 6x6x6
+ * cube at 10-225, 20 greys at 226-245 */
+static void build_palette(ULONG *pal)
+{
+    ULONG i, r, g, b;
+
+    for (i = 0; i < 10; i++) {
+        pal[i] = base_colors[i];
+        pal[246 + i] = base_colors[10 + i];
+    }
+    i = 10;
+    for (r = 0; r < 6; r++) {
+        for (g = 0; g < 6; g++) {
+            for (b = 0; b < 6; b++) {
+                pal[i++] = (r * 51) | ((g * 51) << 8) | ((b * 51) << 16);
+            }
+        }
+    }
+    for (; i < 246; i++) {
+        ULONG v = (i - 226) * 255 / 19;
+        pal[i] = v | (v << 8) | (v << 16);
+    }
+}
+
+/* n PALETTEENTRY-form colours into the device's PALETTE registers from
+ * entry start (the host applies them at its next refresh); through the
+ * miniport's IOCTL while the register page is not mapped yet */
+static void set_clut(PPDEV p, ULONG start, ULONG n, const ULONG *rgb)
+{
+    ULONG i;
+
+    if (start >= 256) {
+        return;
+    }
+    if (n > 256 - start) {
+        n = 256 - start;
+    }
+    if (p->regs) {
+        for (i = 0; i < n; i++) {
+            ULONG c = rgb[i];
+            p->regs[(D3DPT_FB_REG_PALETTE + 4 * (start + i)) / 4] =
+                ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff);
+        }
+    } else {
+        UCHAR buf[4 + 256 * 4];
+        PVIDEO_CLUT clut = (PVIDEO_CLUT)buf;
+        DWORD ret;
+        clut->NumEntries = (USHORT)n;
+        clut->FirstEntry = (USHORT)start;
+        for (i = 0; i < n; i++) {
+            ULONG c = rgb[i];
+            clut->LookupTable[i].RgbArray.Red = (UCHAR)c;
+            clut->LookupTable[i].RgbArray.Green = (UCHAR)(c >> 8);
+            clut->LookupTable[i].RgbArray.Blue = (UCHAR)(c >> 16);
+            clut->LookupTable[i].RgbArray.Unused = 0;
+        }
+        EngDeviceIoControl(p->hDriver, IOCTL_VIDEO_SET_COLOR_REGISTERS, clut, 4 + n * 4,
+                           NULL, 0, &ret);
+    }
+}
+
+/* palette-managed 8 bpp: GDI's system palette, at mode set and whenever a
+ * palette is realized */
+BOOL APIENTRY DrvSetPalette(DHPDEV dhpdev, PALOBJ *ppalo, FLONG fl, ULONG iStart, ULONG cColors)
+{
+    PPDEV p = (PPDEV)dhpdev;
+    ULONG colors[256];
+
+    if (p->bpp != 8 || iStart >= 256) {
+        return FALSE;
+    }
+    if (cColors > 256 - iStart) {
+        cColors = 256 - iStart;
+    }
+    if (PALOBJ_cGetColors(ppalo, iStart, cColors, colors) != cColors) {
+        return FALSE;
+    }
+    set_clut(p, iStart, cColors, colors);
+    return TRUE;
+}
+
 DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
                               HSURF *phsurfPatterns, ULONG cjCaps, ULONG *pdevcaps,
                               ULONG cjDevInfo, DEVINFO *pdi, HDEV hdev,
@@ -292,7 +387,7 @@ DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
     g.ulVertRes = p->h;
     g.cBitsPixel = p->bpp;
     g.cPlanes = 1;
-    g.ulNumColors = (ULONG)-1;
+    g.ulNumColors = p->bpp == 8 ? 20 : (ULONG)-1;
     g.ulVRefresh = p->hz;
     g.ulBltAlignment = 1;
     g.ulLogPixelsX = pdm->dmLogPixels ? pdm->dmLogPixels : 96;
@@ -301,9 +396,12 @@ DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
     if (p->bpp == 32) {
         g.ulDACRed = g.ulDACGreen = g.ulDACBlue = 8;
         g.ulHTOutputFormat = HT_FORMAT_32BPP;
-    } else {
+    } else if (p->bpp == 16) {
         g.ulDACRed = 5; g.ulDACGreen = 6; g.ulDACBlue = 5;
         g.ulHTOutputFormat = HT_FORMAT_16BPP;
+    } else {
+        g.ulDACRed = g.ulDACGreen = g.ulDACBlue = 8;
+        g.ulHTOutputFormat = HT_FORMAT_8BPP;
     }
     g.ulAspectX = 36;
     g.ulAspectY = 36;
@@ -311,7 +409,7 @@ DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
     g.xStyleStep = 1;
     g.yStyleStep = 1;
     g.denStyleStep = 3;
-    g.ulNumPalReg = 0;
+    g.ulNumPalReg = p->bpp == 8 ? 256 : 0;
     g.ciDevice = color_info;
     g.ulDevicePelsDPI = 0;
     g.ulPrimaryOrder = PRIMARY_ORDER_CBA;
@@ -326,10 +424,20 @@ DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
     d.lfAnsiVarFont = font_ansi_var;
     d.lfAnsiFixFont = font_ansi_fix;
     d.cFonts = 0;
-    d.iDitherFormat = p->bpp == 32 ? BMF_32BPP : BMF_16BPP;
+    d.iDitherFormat = bmf_of(p);
     d.cxDither = 0;
     d.cyDither = 0;
-    d.hpalDefault = EngCreatePalette(PAL_BITFIELDS, 0, NULL, p->rmask, p->gmask, p->bmask);
+    if (p->bpp == 8) {
+        /* palette-managed: GDI owns the 256 entries and hands them to
+         * DrvSetPalette; the default palette has the 20 system colours
+         * where GDI expects them */
+        build_palette(p->pal);
+        d.flGraphicsCaps = GCAPS_PALMANAGED | GCAPS_COLOR_DITHER;
+        d.cxDither = d.cyDither = 8;
+        d.hpalDefault = EngCreatePalette(PAL_INDEXED, 256, p->pal, 0, 0, 0);
+    } else {
+        d.hpalDefault = EngCreatePalette(PAL_BITFIELDS, 0, NULL, p->rmask, p->gmask, p->bmask);
+    }
     if (!d.hpalDefault) {
         EngFreeMem(p);
         return NULL;
@@ -424,6 +532,9 @@ HSURF APIENTRY DrvEnableSurface(DHPDEV dhpdev)
     }
     p->fb = vmi.FrameBufferBase;
     p->fb_len = vmi.FrameBufferLength;
+    if (p->bpp == 8) {
+        set_clut(p, 0, 256, p->pal);
+    }
 
     sizl.cx = p->w;
     sizl.cy = p->h;
@@ -433,7 +544,7 @@ HSURF APIENTRY DrvEnableSurface(DHPDEV dhpdev)
      * try them in order and say which one took; the engine bitmap of M7a
      * is the last resort (desktop works, no DirectDraw). */
     hsurf = (p->regs && (p->regs[D3DPT_FB_REG_DDFLAGS / 4] & DDF_ENGINE_BITMAP)) ? NULL :
-            EngCreateDeviceSurface((DHSURF)p, sizl, p->bpp == 32 ? BMF_32BPP : BMF_16BPP);
+            EngCreateDeviceSurface((DHSURF)p, sizl, bmf_of(p));
     if (hsurf) {
         static const struct { FLONG hooks, surf; } variants[] = {
             { HOOK_SYNCHRONIZE, MS_NOTSYSTEMMEMORY },
@@ -460,7 +571,7 @@ HSURF APIENTRY DrvEnableSurface(DHPDEV dhpdev)
         dbg_puts(p, "d3dptdisp: EngCreateDeviceSurface failed\n");
     }
     if (!hsurf) {
-        hsurf = (HSURF)EngCreateBitmap(sizl, p->pitch, p->bpp == 32 ? BMF_32BPP : BMF_16BPP,
+        hsurf = (HSURF)EngCreateBitmap(sizl, p->pitch, bmf_of(p),
                                        BMF_TOPDOWN | BMF_NOZEROINIT, p->fb);
         if (!hsurf) {
             dbg_puts(p, "d3dptdisp: EngCreateBitmap failed\n");
@@ -866,7 +977,7 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
     pHalInfo->vmiData.dwDisplayHeight = p->h;
     pHalInfo->vmiData.lDisplayPitch = (LONG)p->pitch;
     pHalInfo->vmiData.ddpfDisplay.dwSize = sizeof(DDPIXELFORMAT);
-    pHalInfo->vmiData.ddpfDisplay.dwFlags = DDPF_RGB;
+    pHalInfo->vmiData.ddpfDisplay.dwFlags = p->bpp == 8 ? DDPF_RGB | DDPF_PALETTEINDEXED8 : DDPF_RGB;
     pHalInfo->vmiData.ddpfDisplay.dwRGBBitCount = p->bpp;
     pHalInfo->vmiData.ddpfDisplay.dwRBitMask = p->rmask;
     pHalInfo->vmiData.ddpfDisplay.dwGBitMask = p->gmask;
@@ -892,6 +1003,10 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
     }
     pHalInfo->ddCaps.dwVidMemTotal = heap_end(p) - start;
     pHalInfo->ddCaps.dwVidMemFree = heap_end(p) - start;
+    /* dwPalCaps stays 0 at 8 bpp too: XP's dxg.sys drops the whole HAL when
+     * a driver reports palette caps (its post-enable validation, next to the
+     * DDCAPS_GDI check; 2026-09-04 disassembly). On NT the primary's palette
+     * is GDI's: SetPalette / SetEntries reach DrvSetPalette. */
     if (!(ddflags(p) & DDF_NO_GETDRIVERINFO)) {
         pHalInfo->GetDriverInfo = DdGetDriverInfo;
         pHalInfo->dwFlags = DDHALINFO_GETDRIVERINFOSET;
@@ -955,7 +1070,7 @@ BOOL APIENTRY DrvEnableDirectDraw(DHPDEV dhpdev, DD_CALLBACKS *cb, DD_SURFACECAL
             scb->Unlock = DdUnlock;
         }
     }
-    pcb->dwSize = sizeof(*pcb);
+    pcb->dwSize = sizeof(*pcb);         /* no palette callbacks: see dwPalCaps above */
     dbg_puts((PPDEV)dhpdev, "d3dptdisp: dd enabled\n");
     return TRUE;
 }
@@ -1220,6 +1335,10 @@ static BOOL d3d_init(PPDEV p)
     if (!p->regs || !p->fb || !p->cmd_offset || (ddflags(p) & DDF_NO_D3D)) {
         return FALSE;
     }
+    /* offered at 8 bpp too (no DX7 device can be created on a palettized
+     * primary, the runtime refuses that itself): ddraw.dll fails a mode
+     * switch when the HAL loses its Direct3D between two PDEVs (2026-09-04,
+     * DDTEST 640x480x8 -> DDERR_UNSUPPORTEDMODE until this was consistent) */
     if (p->regs[D3DPT_FB_REG_D3D_STATUS / 4] != D3DPT_STATUS_READY) {
         dbg_puts(p, "d3dptdisp: no Direct3D executor on the host\n");
         return FALSE;
@@ -1696,6 +1815,7 @@ static DRVFN drv_fn[] = {
     { INDEX_DrvEnableSurface,  (PFN)DrvEnableSurface },
     { INDEX_DrvDisableSurface, (PFN)DrvDisableSurface },
     { INDEX_DrvAssertMode,     (PFN)DrvAssertMode },
+    { INDEX_DrvSetPalette,     (PFN)DrvSetPalette },
     { INDEX_DrvGetModes,       (PFN)DrvGetModes },
     { INDEX_DrvSynchronizeSurface, (PFN)DrvSynchronizeSurface },
     { INDEX_DrvGetDirectDrawInfo, (PFN)DrvGetDirectDrawInfo },

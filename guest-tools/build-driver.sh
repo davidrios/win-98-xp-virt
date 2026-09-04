@@ -82,7 +82,7 @@ Install (as Administrator):  DRVINST.EXE -reboot
   (or Device Manager > Video Controller (VGA Compatible) > Update Driver
    > Install from a specific location > this folder)
 Then Display Properties offers the host's mode table (640x480 .. 1600x1200,
-16/32 bpp, 60/75/85 Hz); the desktop lives in the adapter's VRAM and the
+8/16/32 bpp, 60/75/85 Hz; 8 bpp is palettized); the desktop lives in the adapter's VRAM and the
 player shows it without copies.
 
 Files: D3DPTVID.SYS (video miniport), D3DPTDISP.DLL (display driver),
@@ -90,7 +90,8 @@ D3DPTVID.INF, DRVINST.EXE (scripted installer: sets the driver-signing
 policy to ignore, UpdateDriverForPlugAndPlayDevices, optional reboot),
 SETMODE.EXE (lists the modes; SETMODE 1024 768 32 85 switches and saves),
 DDTEST.EXE (DirectDraw 7: HAL caps, exclusive flip chain, Lock/Blt/Flip,
-fps; DDTEST [w h bpp] [frames]; log in ddtest.log),
+fps, at 8 bpp a palette on the primary rotated every frame; DDTEST [w h bpp]
+[frames]; log in ddtest.log),
 DITEST.EXE (DirectInput keyboard under load: DITEST [seconds] [busy-ms]
 [-window] [-nonexcl]; what DirectInput / GetAsyncKeyState / WM_KEYDOWN
 each see of the keys, log in ditest.log).

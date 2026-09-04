@@ -172,7 +172,7 @@ static VP_STATUS build_mode_table(PDEVICE_EXTENSION d)
         h = reg_read(d, D3DPT_FB_REG_MODE_H);
         bpp = reg_read(d, D3DPT_FB_REG_MODE_BPP);
         hz = reg_read(d, D3DPT_FB_REG_MODE_HZ);
-        if (!w || !h || (bpp != 16 && bpp != 32)) {
+        if (!w || !h || (bpp != 8 && bpp != 16 && bpp != 32)) {
             continue;
         }
         pitch = bpp_pitch(w, bpp);
@@ -190,14 +190,21 @@ static VP_STATUS build_mode_table(PDEVICE_EXTENSION d)
         m->Frequency = hz;
         m->XMillimeter = 320;                  /* a 4:3 monitor of 16" diagonal */
         m->YMillimeter = 240;
+        m->AttributeFlags = VIDEO_MODE_COLOR | VIDEO_MODE_GRAPHICS | VIDEO_MODE_NO_OFF_SCREEN;
         if (bpp == 32) {
             m->NumberRedBits = m->NumberGreenBits = m->NumberBlueBits = 8;
             m->RedMask = 0x00ff0000; m->GreenMask = 0x0000ff00; m->BlueMask = 0x000000ff;
-        } else {
+        } else if (bpp == 16) {
             m->NumberRedBits = 5; m->NumberGreenBits = 6; m->NumberBlueBits = 5;
             m->RedMask = 0xf800; m->GreenMask = 0x07e0; m->BlueMask = 0x001f;
+        } else {
+            /* 8 bpp: indices into the device's PALETTE block (8 bits per
+             * gun), GDI manages the palette and sets it through
+             * IOCTL_VIDEO_SET_COLOR_REGISTERS / the display driver */
+            m->NumberRedBits = m->NumberGreenBits = m->NumberBlueBits = 8;
+            m->RedMask = m->GreenMask = m->BlueMask = 0;
+            m->AttributeFlags |= VIDEO_MODE_PALETTE_DRIVEN | VIDEO_MODE_MANAGED_PALETTE;
         }
-        m->AttributeFlags = VIDEO_MODE_COLOR | VIDEO_MODE_GRAPHICS | VIDEO_MODE_NO_OFF_SCREEN;
         m->VideoMemoryBitmapWidth = w;
         m->VideoMemoryBitmapHeight = h;
         m->DriverSpecificAttributeFlags = 0;
@@ -500,10 +507,26 @@ static BOOLEAN NTAPI HwStartIO(PVOID ext, PVIDEO_REQUEST_PACKET rp)
         ZwUnmapViewOfSection(in->ProcessHandle, in->RequestedVirtualAddress);
         break;
     }
-    case IOCTL_VIDEO_SET_COLOR_REGISTERS:
-        /* no palettized modes */
-        st = ERROR_INVALID_FUNCTION;
+    case IOCTL_VIDEO_SET_COLOR_REGISTERS: {
+        /* 8 bpp modes: the CLUT goes into the device's PALETTE block (one
+         * x8r8g8b8 register per entry; the host applies it at its next
+         * refresh) */
+        PVIDEO_CLUT clut = rp->InputBuffer;
+        ULONG i;
+        if (rp->InputBufferLength < sizeof(VIDEO_CLUT) ||
+            rp->InputBufferLength < 4 + (ULONG)clut->NumEntries * 4 ||
+            clut->FirstEntry >= D3DPT_FB_PALETTE_SIZE ||
+            clut->NumEntries > D3DPT_FB_PALETTE_SIZE - clut->FirstEntry) {
+            st = ERROR_INVALID_PARAMETER;
+            break;
+        }
+        for (i = 0; i < clut->NumEntries; i++) {
+            const VIDEO_CLUTDATA *c = &clut->LookupTable[i].RgbArray;
+            reg_write(d, D3DPT_FB_REG_PALETTE + 4 * (clut->FirstEntry + i),
+                      ((ULONG)c->Red << 16) | ((ULONG)c->Green << 8) | c->Blue);
+        }
         break;
+    }
     default:
         st = ERROR_INVALID_FUNCTION;
         break;
