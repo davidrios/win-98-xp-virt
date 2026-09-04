@@ -38,6 +38,7 @@ typedef struct _DEVICE_EXTENSION {
     ULONG regs_len;
     PHYSICAL_ADDRESS vram_phys;           /* BAR 0 */
     ULONG vram_len;
+    PUCHAR vram;                          /* BAR 0 mapped (kernel VA), for clearing */
     ULONG num_modes;
     PVIDEO_MODE_INFORMATION modes;        /* num_modes entries */
     ULONG cur_mode;                       /* index into modes, or ~0 */
@@ -153,7 +154,7 @@ static VP_STATUS build_mode_table(PDEVICE_EXTENSION d)
     return kept ? NO_ERROR : ERROR_DEV_NOT_EXIST;
 }
 
-static VP_STATUS set_mode(PDEVICE_EXTENSION d, ULONG index)
+static VP_STATUS set_mode(PDEVICE_EXTENSION d, ULONG index, BOOLEAN zero)
 {
     PVIDEO_MODE_INFORMATION m;
 
@@ -162,6 +163,11 @@ static VP_STATUS set_mode(PDEVICE_EXTENSION d, ULONG index)
     }
     m = &d->modes[index];
     reg_write(d, D3DPT_FB_REG_ENABLE, 0);
+    /* what real adapters do: the new mode comes up black, not with the old
+     * desktop bytes reinterpreted at the new pitch */
+    if (zero && d->vram) {
+        VideoPortZeroMemory(d->vram, m->ScreenStride * m->VisScreenHeight);
+    }
     reg_write(d, D3DPT_FB_REG_WIDTH, m->VisScreenWidth);
     reg_write(d, D3DPT_FB_REG_HEIGHT, m->VisScreenHeight);
     reg_write(d, D3DPT_FB_REG_BPP, m->BitsPerPlane);
@@ -224,6 +230,10 @@ static VP_STATUS NTAPI HwFindAdapter(PVOID ext, PVOID ctx, PWSTR args,
         d->regs = NULL;
         return ERROR_DEV_NOT_EXIST;
     }
+    /* the whole of VRAM in kernel space: mode-set clearing now, the
+     * DirectDraw heap later. 32 MiB of system PTEs is what any real
+     * adapter's miniport takes. */
+    d->vram = VideoPortGetDeviceBase(d, d->vram_phys, d->vram_len, VIDEO_MEMORY_SPACE_MEMORY);
     dbg_puts(d, "d3dptvid: adapter found\n");
     dbg_hex(d, "  vram ", d->vram_phys.LowPart);
     dbg_hex(d, " len ", d->vram_len);
@@ -339,7 +349,8 @@ static BOOLEAN NTAPI HwStartIO(PVOID ext, PVIDEO_REQUEST_PACKET rp)
         }
         dbg_hex(d, "d3dptvid: set mode ", vm->RequestedMode);
         dbg_puts(d, "\n");
-        st = set_mode(d, vm->RequestedMode & ~(VIDEO_MODE_NO_ZERO_MEMORY | VIDEO_MODE_MAP_MEM_LINEAR));
+        st = set_mode(d, vm->RequestedMode & ~(VIDEO_MODE_NO_ZERO_MEMORY | VIDEO_MODE_MAP_MEM_LINEAR),
+                      !(vm->RequestedMode & VIDEO_MODE_NO_ZERO_MEMORY));
         break;
     }
     case IOCTL_VIDEO_RESET_DEVICE:

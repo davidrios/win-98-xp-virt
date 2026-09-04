@@ -52,6 +52,7 @@ struct D3dptVgaState {
     /* the linear mode currently shown (lin_on) */
     bool lin_on;
     bool full_update;
+    unsigned vga_grace;         /* refreshes to hold the last frame after ENABLE 1->0 */
     D3dptLinearMode lin;
     pixman_image_t *shadow;     /* x8r8g8b8 copy for 16 bpp modes */
     pixman_image_t *src16;      /* r5g6b5 view of VRAM for the conversion */
@@ -72,6 +73,10 @@ static const struct { uint16_t w, h; } fb_sizes[] = {
 static const uint8_t fb_hz[] = { 60, 75, 85 };
 static const uint8_t fb_bpp[] = { 16, 32 };
 #define FB_MODE_COUNT (ARRAY_SIZE(fb_sizes) * ARRAY_SIZE(fb_hz) * ARRAY_SIZE(fb_bpp))
+
+/* refreshes (the player's pull interval, 16 ms by default) the last linear
+ * frame stays up after ENABLE goes 0 before the VGA core is shown */
+#define D3DPT_FB_VGA_GRACE_REFRESHES 15
 
 static bool fb_mode_entry(uint32_t sel, uint32_t *w, uint32_t *h,
                           uint32_t *bpp, uint32_t *hz)
@@ -170,6 +175,15 @@ static void d3dpt_vga_gfx_update(void *opaque)
 
     if (!fb_get_mode(s, &m)) {
         if (s->lin_on) {
+            /* A mode switch is RESET (ENABLE = 0) followed by the new mode a
+             * few ms later; showing the VGA core in between flashes text
+             * mode or stale VGA memory in the player. Hold the last frame
+             * for a moment: a real return to VGA (BSOD, full-screen console,
+             * reboot) is only delayed by that. */
+            if (s->vga_grace) {
+                s->vga_grace--;
+                return;
+            }
             /* back to the VGA core: it recreates its own surface */
             s->lin_on = false;
             fb_drop_shadow(s);
@@ -304,6 +318,9 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
                         val ? "on" : "off", s->r_w, s->r_h, s->r_bpp,
                         s->r_pitch, s->r_offset, s->r_hz);
         }
+        if (!val && s->r_enable) {
+            s->vga_grace = D3DPT_FB_VGA_GRACE_REFRESHES;
+        }
         s->r_enable = val != 0;
         s->frames = 0;
         graphic_hw_invalidate(s->vga.con);
@@ -384,6 +401,7 @@ static void d3dpt_vga_reset(DeviceState *dev)
     s->r_enable = s->r_w = s->r_h = s->r_bpp = s->r_pitch = 0;
     s->r_offset = s->r_hz = s->r_sel = 0;
     s->frames = 0;
+    s->vga_grace = 0;
     s->dbg_len = 0;
 }
 

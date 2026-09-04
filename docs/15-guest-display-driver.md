@@ -119,21 +119,37 @@ DDK is used. What it took:
   VGA core, the second boot comes back at the saved 1024×768×32@85, and
   QMP `system_powerdown` ends the run with the player exiting cleanly.
 
+- **KVM** (2026-09-04, the user's run and mine): `-accel kvm -cpu host`
+  with the same device and driver works and is far faster than TCG; the
+  x87 patches are TCG-only and irrelevant there. Linux hosts should run XP
+  under KVM; TCG stays the Apple Silicon path.
+- **Mode-switch flash fixed** (2026-09-04): a switch is RESET → SET_MODE a
+  few ms apart, and the VGA core was shown in between (text mode / stale
+  VGA memory in the player), then the new mode came up with the old
+  desktop bytes at the new pitch. Now the device holds the last linear
+  frame for 15 refreshes after ENABLE goes 0 before handing the console to
+  the VGA core (a real return to VGA is delayed by ~250 ms, nothing else),
+  and the miniport zeroes the new mode's frame buffer unless
+  `VIDEO_MODE_NO_ZERO_MEMORY` (it maps all of VRAM in kernel space for
+  that). Player log of a switch is now one `[display] switch` line.
+
 ## Open items
 
-- The Logo dialog: `Driver Signing\Policy` (HKLM + HKCU) did not silence
-  it on this SP3 image; the installer now also writes the Group Policy
-  `BehaviorOnFailedVerify = 0`. Untested since (the driver is installed
-  on the image). If it still shows, `alt+c` accepts it from a script.
+- The Logo dialog: none of the registry policy values silence it on XP
+  SP3 (the stored policy is hash-protected; only the Control Panel can
+  change it). `DRVINST.EXE` therefore runs a watcher thread that finds
+  the dialog (created by setupapi inside DRVINST's own process) and presses
+  its first push button, "Continue Anyway". `alt+c` is the manual fallback.
 - The two `640×480×4 / 800×600×4 @ 1 Hz` entries in the mode list are
   vga.sys' (VgaSave stays registered as the VGA-compatible device); harmless,
   a `VgaCompatible = 1` INF variant would hide them but also makes our
   driver the one bootvid uses. Leave.
 - No `DrvSetPointerShape`: GDI's software pointer draws into VRAM, so the
-  cursor is part of the framebuffer (the player's own cursor stays hidden as
-  with cirrus). A hardware cursor through the device (define + move
-  registers, the player draws it) is cheap and removes the cursor from the
-  dirty-rect stream.
+  cursor is part of the framebuffer (the player hides its own cursor over
+  the image, as with cirrus). A hardware cursor needs the player to
+  composite a sprite (it ignores QEMU's `on_cursor` today) plus define /
+  move registers here; deferred, the software pointer is correct and the
+  dirty rectangles it causes are small.
 - `FRAMES` is a refresh counter, not a vblank; DirectDraw's `WaitForVerticalBlank`
   (M7b) needs a real per-frame signal (the player's present timing) here.
 - Mode table from the player (M2): a `modes=` device property or an embed

@@ -50,6 +50,56 @@ static void set_signing_policy(void)
     }
 }
 
+/* XP SP3 shows the "has not passed Windows Logo testing" dialog no matter
+ * what the registry policy says (the value is hash-protected; only the
+ * Control Panel can change it). setupapi creates that dialog inside our
+ * own process, on the thread blocked in UpdateDriverForPlugAndPlayDevices,
+ * so a second thread can find it (a #32770 dialog of this process) and
+ * press its "Continue Anyway" button, which is the first push button in
+ * the template in every language. What commercial installers do. */
+static DWORD g_pid;
+static HWND g_button;
+
+static BOOL CALLBACK find_button(HWND h, LPARAM lp)
+{
+    char cls[32];
+    LONG style;
+    if (!GetClassNameA(h, cls, sizeof(cls)) || lstrcmpiA(cls, "Button") != 0) return TRUE;
+    style = GetWindowLongA(h, GWL_STYLE) & 0xF;
+    if (style != BS_PUSHBUTTON && style != BS_DEFPUSHBUTTON) return TRUE;
+    g_button = h;
+    return FALSE;
+}
+
+static BOOL CALLBACK find_dialog(HWND h, LPARAM lp)
+{
+    char cls[32];
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != g_pid || !IsWindowVisible(h)) return TRUE;
+    if (!GetClassNameA(h, cls, sizeof(cls)) || strcmp(cls, "#32770") != 0) return TRUE;
+    g_button = NULL;
+    EnumChildWindows(h, find_button, 0);
+    if (g_button) {
+        printf("drvinst: pressing the Logo dialog's first button\n");
+        fflush(stdout);
+        PostMessageA(g_button, BM_CLICK, 0, 0);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static DWORD WINAPI logo_watcher(LPVOID arg)
+{
+    int i;
+    g_pid = GetCurrentProcessId();
+    for (i = 0; i < 1200; i++) {          /* up to two minutes */
+        Sleep(100);
+        EnumWindows(find_dialog, 0);
+    }
+    return 0;
+}
+
 static void reboot(void)
 {
     HANDLE tok;
@@ -103,7 +153,9 @@ int main(int argc, char **argv)
     }
 
     set_signing_policy();
+    CloseHandle(CreateThread(NULL, 0, logo_watcher, NULL, 0, NULL));
     printf("drvinst: installing %s for %s\n", full, HWID);
+    fflush(stdout);
     if (!update(NULL, HWID, full, INSTALLFLAG_FORCE, &need_reboot)) {
         DWORD e = GetLastError();
         printf("drvinst: failed, error %lu (0x%lx)%s\n", e, e,
