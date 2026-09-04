@@ -39,6 +39,20 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 
 ## State (2026-09-04, evening)
 
+- **Step 3 done** (commit "M5 step 3"): `ccd.rs`. Tracks from the
+  `[Entry]` records with ADR 1 and Point 1..99 (`PLBA` = index 1,
+  `Control` = the nibble), modes and `INDEX n=` from `[TRACK n]`, one
+  `Session` per distinct `Session=`, lead-out from `Point=0xa2`; the
+  `.img` is addressed as `lba × 2352` (inter-session gaps are in the file,
+  as libmirage assumes), the `.sub` as `lba × 96` and only while it covers
+  the sector (a truncated `.sub` synthesizes past its end). Values parse
+  as decimal or `0x` hex. Lead-in entries: A0 carries the first track's
+  control, A1 and A2 the last track's — the synthesizer in `mmc.rs` and
+  the generator in `discx` both do that now (they disagreed on A2 at
+  first; real CloneCD dumps of mixed-mode discs show A2 with the audio
+  control). The `ccd` check compares every reply and every sector across
+  the three images and covers no-`.sub`, truncated `.sub`,
+  `DataTracksScrambled=1` and a missing `.img`.
 - **Step 2 done** (commit "M5 step 2"): `mmc.rs` (READ TOC 0/1/2, READ
   SUB-CHANNEL 1/2/3, READ DISC INFORMATION, READ CD length + fill),
   `capi.rs` + `libdisc/libdisc.h` (v1; 17 functions, `nm` shows all 17 as
@@ -163,7 +177,7 @@ State section) — they are the handoff.
    `scripts/test.sh` host stage green with the new check; `nm
    target/release/liblibdisc.a | grep ' T _libdisc_'` (macOS; no
    underscore on Linux) lists every function in the header.
-3. **CCD reader** (`ccd.rs`; doc 17 §2.4) including verbatim raw TOC
+3. **CCD reader** — *done 2026-09-04* (`ccd.rs`; doc 17 §2.4) including verbatim raw TOC
    entries and `.sub` replay; `selftest` gains `mixed.ccd/.img/.sub` and
    the cross-format identity checks (`toc*` identical across cue, ccd,
    cooked cue; `subq-synth` now stored vs synthesized). Acceptance: all

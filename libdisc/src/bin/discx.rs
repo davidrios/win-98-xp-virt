@@ -211,7 +211,7 @@ fn generate(dir: &Path) -> Result<Vec<u8>, String> {
     // 4. plain.iso
     fs::write(dir.join("plain.iso"), &data).map_err(|e| e.to_string())?;
 
-    // 2. mixed.ccd/.img/.sub (read back from step 3 on; written from the model now)
+    // 2. mixed.ccd/.img/.sub: the same disc as CloneCD, written from the model (checked by `ccd`)
     let disc = Disc::open(&dir.join("mixed.cue")).map_err(|e| e.to_string())?;
     let n = disc.sector_count() as i32;
     let mut img = Vec::with_capacity(n as usize * 2352);
@@ -229,10 +229,12 @@ fn generate(dir: &Path) -> Result<Vec<u8>, String> {
     let mut ccd = String::new();
     let session = &disc.sessions[0];
     let entries: Vec<(u8, u8, u8, i32)> = {
+        let first = &session.tracks[0];
+        let last = session.tracks.last().unwrap();
         let mut v = vec![
-            (0xA0, 1, 0x4, (1 << 16)), // PMIN = first track, PSEC = disc type 0
-            (0xA1, 1, 0x4, (session.tracks.len() as i32) << 16),
-            (0xA2, 1, 0x0, session.leadout_lba),
+            (0xA0, 1, first.control, (first.number as i32) << 16), // PMIN = first track, PSEC = disc type 0
+            (0xA1, 1, last.control, (last.number as i32) << 16),
+            (0xA2, 1, last.control, session.leadout_lba),
         ];
         for t in &session.tracks {
             v.push((t.number, 1, t.control, t.start_lba));
@@ -622,8 +624,8 @@ fn check_toc(dir: &Path) -> Result<(), String> {
     let want = [
         vec![0, 68, 1, 1],
         e(0x14, 0xA0, vec![1, 0, 0]),
-        e(0x14, 0xA1, vec![3, 0, 0]),
-        e(0x14, 0xA2, msf3(leadout)),
+        e(0x10, 0xA1, vec![3, 0, 0]),
+        e(0x10, 0xA2, msf3(leadout)),
         e(0x14, 1, msf3(0)),
         e(0x10, 2, msf3(t2_i1)),
         e(0x10, 3, msf3(t3_i1)),
@@ -637,6 +639,81 @@ fn check_toc(dir: &Path) -> Result<(), String> {
     want[1] = 32; want[2] = 0x0E; want[3] = 1; want[4] = 1; want[5] = 1; want[6] = 3; want[7] = 0x20;
     want[16..24].fill(0xFF);
     expect("disc information", mixed.disc_information().map_err(|e| e.to_string())?, want)?;
+    Ok(())
+}
+
+fn check_ccd(dir: &Path) -> Result<(), String> {
+    let cue = CDisc::open(&dir.join("mixed.cue"))?;
+    let ccd = CDisc::open(&dir.join("mixed.ccd"))?;
+    let cooked = CDisc::open(&dir.join("cooked.cue"))?;
+    let n = cue.sector_count();
+    expect("sector_count", ccd.sector_count(), n)?;
+    expect("track_count", ccd.track_count(), cue.track_count())?;
+    for t in 1..=3 {
+        expect(&format!("track {t}"), ccd.track_info(t), cue.track_info(t))?;
+    }
+    // TOC formats identical across cue, ccd (raw_toc replayed) and cooked cue
+    for (format, msf, start) in [(0, false, 0), (0, true, 0), (1, false, 0), (2, false, 0), (2, true, 0)] {
+        let a = cue.toc(format, msf, start).map_err(|e| e.to_string())?;
+        let b = ccd.toc(format, msf, start).map_err(|e| format!("ccd toc {format}: {e}"))?;
+        let c = cooked.toc(format, msf, start).map_err(|e| e.to_string())?;
+        if a != b || a != c {
+            return Err(format!("toc format {format} msf {msf} differs between mixed.cue, mixed.ccd and cooked.cue"));
+        }
+    }
+    expect("disc information", ccd.disc_information(), cue.disc_information())?;
+    for f in [1u8, 2, 3] {
+        expect(&format!("subchannel format {f}"), ccd.subchannel(2300, false, true, f, 2, 0x15), cue.subchannel(2300, false, true, f, 2, 0x15))?;
+    }
+    // every sector: raw identical, sub identical (stored .sub vs synthesized), cooked identical
+    for lba in 0..n {
+        let a = cue.read_raw(lba).map_err(|e| e.to_string())?;
+        let b = ccd.read_raw(lba).map_err(|e| format!("ccd read_raw {lba}: {e}"))?;
+        if a != b {
+            return Err(format!("raw sector {lba} differs between mixed.cue and mixed.ccd"));
+        }
+        let a = cue.read_sub(lba).map_err(|e| e.to_string())?;
+        let b = ccd.read_sub(lba).map_err(|e| format!("ccd read_sub {lba}: {e}"))?;
+        if a != b {
+            return Err(format!("subchannel of {lba} differs between mixed.cue (synthesized) and mixed.ccd (stored)"));
+        }
+        expect(&format!("info {lba}"), ccd.sector_info(lba), cue.sector_info(lba))?;
+    }
+    for lba in [0u32, 16, 1999] {
+        expect(&format!("cooked {lba}"), ccd.read_cooked(lba), cue.read_cooked(lba))?;
+    }
+    expect("cooked audio", ccd.read_cooked(3000).err(), Some(capi::LIBDISC_EMODE))?;
+    expect("lead-out", ccd.read_raw(n).err(), Some(capi::LIBDISC_ERANGE))?;
+    // a CCD without .sub opens and synthesizes; a truncated .sub synthesizes past its end
+    fs::copy(dir.join("mixed.ccd"), dir.join("nosub.ccd")).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(dir.join("nosub.img"));
+    fs::hard_link(dir.join("mixed.img"), dir.join("nosub.img")).or_else(|_| fs::copy(dir.join("mixed.img"), dir.join("nosub.img")).map(|_| ())).map_err(|e| e.to_string())?;
+    let nosub = CDisc::open(&dir.join("nosub.ccd"))?;
+    for lba in [0u32, 2149, 2150, 5299, 5300, n - 1] {
+        expect(&format!("nosub {lba}"), nosub.read_sub(lba), cue.read_sub(lba))?;
+    }
+    let stored = fs::read(dir.join("mixed.sub")).map_err(|e| e.to_string())?;
+    fs::copy(dir.join("mixed.ccd"), dir.join("trunc.ccd")).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(dir.join("trunc.img"));
+    fs::hard_link(dir.join("mixed.img"), dir.join("trunc.img")).or_else(|_| fs::copy(dir.join("mixed.img"), dir.join("trunc.img")).map(|_| ())).map_err(|e| e.to_string())?;
+    let mut half = stored[..3000 * 96].to_vec();
+    half[2000 * 96 + 20] ^= 0xFF; // a stored byte that synthesis would not produce
+    fs::write(dir.join("trunc.sub"), &half).map_err(|e| e.to_string())?;
+    let trunc = CDisc::open(&dir.join("trunc.ccd"))?;
+    let s = trunc.read_sub(2000).map_err(|e| e.to_string())?;
+    expect("stored sub replayed", s[20], half[2000 * 96 + 20])?;
+    expect("past the .sub end", trunc.read_sub(4000), cue.read_sub(4000))?;
+    // refusals
+    fs::write(dir.join("scr.ccd"), "[CloneCD]\nVersion=3\n[Disc]\nTocEntries=0\nSessions=1\nDataTracksScrambled=1\n").map_err(|e| e.to_string())?;
+    match CDisc::open(&dir.join("scr.ccd")) {
+        Err(e) if e.contains("Scrambled") => {}
+        other => return Err(format!("scrambled ccd: {:?}", other.map(|_| ()))),
+    }
+    fs::write(dir.join("noimg.ccd"), fs::read(dir.join("mixed.ccd")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    match CDisc::open(&dir.join("noimg.ccd")) {
+        Err(e) if e.contains("not found") => {}
+        other => return Err(format!("ccd without img: {:?}", other.map(|_| ()))),
+    }
     Ok(())
 }
 
@@ -714,6 +791,7 @@ fn selftest(dir: &Path) -> i32 {
     ck.report("edges", check_edges(dir));
     ck.report("subq-synth", check_subq(dir));
     ck.report("toc", check_toc(dir));
+    ck.report("ccd", check_ccd(dir));
     ck.report("read-cd-length", check_read_cd_lengths());
     ck.report("read-cd-fill", check_read_cd_fill(dir));
     ck.report("panic-safety", check_panic_safety(dir));

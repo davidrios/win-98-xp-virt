@@ -10,6 +10,7 @@
 
 #[allow(non_camel_case_types)]
 pub mod capi;
+pub mod ccd;
 pub mod cue;
 pub mod ecc;
 pub mod iso;
@@ -335,12 +336,13 @@ impl Disc {
         &self.files[index]
     }
 
-    /// Open an image: `.cue`, `.iso` (`.ccd` later), dispatching on the
+    /// Open an image: `.cue`, `.ccd`, `.iso`, dispatching on the
     /// extension first and on the content when the extension says nothing.
     pub fn open(path: &Path) -> Result<Disc> {
         let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
         match ext.as_str() {
             "cue" => cue::open(path),
+            "ccd" => ccd::open(path),
             "iso" => iso::open(path),
             _ => {
                 let mut head = [0u8; 4096];
@@ -359,6 +361,7 @@ impl Disc {
                 };
                 match sniff(&head[..n]) {
                     Some("cue") => cue::open(path),
+                    Some("ccd") => ccd::open(path),
                     Some("iso") => iso::open(path),
                     _ => Err(Error::Invalid(format!("{}: not a disc image libdisc reads", path.display()))),
                 }

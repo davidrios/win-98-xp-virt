@@ -88,11 +88,12 @@ pub fn read_toc(disc: &Disc, format: u8, msf: bool, start: u8, out: &mut Vec<u8>
                     }
                     let ft = s.tracks.first().ok_or(Error::Range)?;
                     let lt = s.tracks.last().ok_or(Error::Range)?;
-                    let ctl = adr_control(ft);
-                    out.extend_from_slice(&[s.number, ctl, 0, 0xA0, 0, 0, 0, 0, ft.number, disc_type(ft), 0]);
-                    out.extend_from_slice(&[s.number, ctl, 0, 0xA1, 0, 0, 0, 0, lt.number, 0, 0]);
+                    // A0 carries the first track's control, A1 and A2 the last track's (the
+                    // lead-out follows it), as real lead-ins do
+                    out.extend_from_slice(&[s.number, adr_control(ft), 0, 0xA0, 0, 0, 0, 0, ft.number, disc_type(ft), 0]);
+                    out.extend_from_slice(&[s.number, adr_control(lt), 0, 0xA1, 0, 0, 0, 0, lt.number, 0, 0]);
                     let lo = Msf::from_lba(s.leadout_lba);
-                    out.extend_from_slice(&[s.number, ctl, 0, 0xA2, 0, 0, 0, 0, lo.m, lo.s, lo.f]);
+                    out.extend_from_slice(&[s.number, adr_control(lt), 0, 0xA2, 0, 0, 0, 0, lo.m, lo.s, lo.f]);
                     for t in &s.tracks {
                         let p = Msf::from_lba(t.start_lba);
                         out.extend_from_slice(&[s.number, adr_control(t), 0, t.number, 0, 0, 0, 0, p.m, p.s, p.f]);
