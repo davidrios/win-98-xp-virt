@@ -1,0 +1,66 @@
+; d3dptvid.inf - win98-xp-virt paravirtual display adapter (d3dpt-vga), Windows 2000/XP
+; doc 15 (ADR-008 / M7a). Miniport d3dptvid.sys + display driver d3dptdisp.dll.
+; Install: DRVINST.EXE next to this file (or Device Manager > Update Driver).
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Display
+ClassGUID={4d36e968-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=09/04/2026,1.0.0.0
+
+[DestinationDirs]
+d3dpt.Miniport=12
+d3dpt.Display=11
+
+[SourceDisksNames]
+1=%DiskId%,,,
+
+[SourceDisksFiles]
+d3dptvid.sys=1
+d3dptdisp.dll=1
+
+[Manufacturer]
+%Mfg%=d3dpt.Mfg
+
+[d3dpt.Mfg]
+%d3dpt.DeviceDesc%=d3dpt_Install, PCI\VEN_1234&DEV_3D00
+
+[d3dpt_Install]
+CopyFiles=d3dpt.Miniport, d3dpt.Display
+
+[d3dpt.Miniport]
+d3dptvid.sys
+
+[d3dpt.Display]
+d3dptdisp.dll
+
+[d3dpt_Install.Services]
+AddService=d3dptvid, 0x00000002, d3dpt_Service_Inst
+
+[d3dpt_Service_Inst]
+ServiceType=1
+StartType=1
+ErrorControl=0
+LoadOrderGroup=Video
+ServiceBinary=%12%\d3dptvid.sys
+
+[d3dpt_Install.SoftwareSettings]
+AddReg=d3dpt_SoftwareDeviceSettings
+
+[d3dpt_SoftwareDeviceSettings]
+HKR,, InstalledDisplayDrivers, %REG_MULTI_SZ%, d3dptdisp
+HKR,, VgaCompatible, %REG_DWORD%, 0
+
+[d3dpt_Install.GeneralConfigData]
+MaximumNumberOfDevices=1
+MaximumDeviceMemoryConfiguration=32
+KeepExistingDriverEnabled=1
+
+[Strings]
+Provider="win98-xp-virt"
+Mfg="win98-xp-virt"
+DiskId="win98-xp-virt guest tools"
+d3dpt.DeviceDesc="win98-xp-virt paravirtual display adapter (d3dpt-vga)"
+REG_MULTI_SZ=0x00010000
+REG_DWORD=0x00010001

@@ -45,7 +45,7 @@ Modeled as a ~2002–2005 PC.
 | Machine | `pc` (i440FX) | best compat with XP-era drivers; q35 unnecessary |
 | CPU | `pentium3`/host-class with sane flags | XP handles more, keep TCG features modest |
 | RAM | 512 MB–1 GB default | period-typical, snappy |
-| Video | Cirrus GD5446 (`-vga cirrus`) + qemu-3dfx | XP inbox driver for 2D (up to 1024×768×16 / 800×600×24, found on 2026-09-03: std VGA has **no** XP driver, basic 640×480×16 only); wrappers for 3D, which do not depend on the VGA device |
+| Video | **XP: `-vga none -device d3dpt-vga` + our driver (doc 15, since 2026-09-04)**; Win98: Cirrus GD5446 (`-vga cirrus`) + qemu-3dfx | d3dpt-vga: the host's mode table (640×480…1600×1200, 16/32 bpp, 60/75/85 Hz), desktop straight from VRAM; before the driver is installed it is a standard VGA (vga.sys, 800×600×4). Cirrus: XP inbox driver for 2D (up to 1024×768×16 / 800×600×24; std VGA has **no** XP driver). Wrappers for 3D do not depend on the VGA device |
 | Audio | AC'97 (fallback: emulated HDA) | XP AC'97 driver in guest tools |
 | Net | RTL8139 | in-box XP driver |
 | Storage | IDE + our ATAPI CD | AHCI needs F6 drivers; not worth it |

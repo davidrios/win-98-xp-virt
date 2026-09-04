@@ -185,6 +185,10 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
   -lopengl32 -lgdi32 -lglu32 -mwindows
+# XP display driver for the d3dpt-vga adapter (doc 15, M7a): built and
+# checked by its own script (kernel-mode PE rules differ), staged as DRIVER\.
+"$ROOT/guest-tools/build-driver.sh" >/dev/null
+mkdir -p "$OUT/iso/DRIVER" && cp "$ROOT"/guest-tools/out/driver/* "$OUT/iso/DRIVER/"
 for f in "$OUT"/iso/*/*.dll "$OUT"/iso/*/*.exe; do check_crt "$f"; check_isa "$f"; done
 # CRLF: Win9x Notepad shows LF-only text as one line
 crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }'; }
@@ -219,11 +223,14 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             (C:\d3dpt.log when run from the CD). Do not mix with WINED3D.
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
+DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with
+            -vga none -device d3dpt-vga): DRVINST.EXE -reboot installs it;
+            see DRIVER\README.TXT. Not for Win9x.
 
 Not included: GLIDE2X.OVL (DOS Glide games; needs Open Watcom to build).
 TXT
 # 8.3-safe upper-case names for Win9x
-( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/* D3DPT/*; do
+( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/* D3DPT/* DRIVER/*; do
     u="$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; [ "$f" = "$u" ] || mv "$f" "$u"; done )
 
 ISO="$OUT/guest-tools-3dfx-$REV.iso"

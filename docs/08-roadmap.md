@@ -100,9 +100,11 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 
 ## M7 — A real guest display driver (ADR-008; after M4, interleaves with M5/M6)
 
-- M7a framebuffer driver: video miniport + display DLL over the `d3dpt`
-  shared window, our own mode list, zero-copy desktop; replaces Cirrus for
-  XP. Delivers M2's mode table on XP.
+- ~~M7a framebuffer driver~~ ✅ 2026-09-04 (doc 15): `d3dpt-vga` PCI
+  adapter (stdvga core + register BAR) + `d3dptvid.sys` / `d3dptdisp.dll`
+  built with mingw-w64; XP desktop at 1024×768×32@85 from the host's mode
+  table, no copy inside QEMU, installed by `DRIVER\DRVINST.EXE`. Cirrus
+  replaced for XP; M2's mode table plugs into the device's table.
 - M7b DirectDraw DDI on the same driver (DX5–7 titles without WineD3D).
 - M7c Direct3D DDI: DP2 tokens → device records; Microsoft's d3d8/d3d9
   stay in the guest, no DLL in the game folder. The DLL device (M4)

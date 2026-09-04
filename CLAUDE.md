@@ -31,6 +31,12 @@ backend later.
   the fallback/DX7 path only; don't sink more time into wine9x bugs. The
   reference workload is `guest-tools/src/d3dgame9.c` / `d3dgame8.c`,
   golden on the rig first.
+- **XP's display adapter is our `d3dpt-vga` + real display driver** (doc
+  15, ADR-008): `-vga none -device d3dpt-vga`, `guest-tools/src/d3dptvid/`
+  (miniport + display DLL + INF, mingw-w64 DDK headers, no Microsoft DDK),
+  `guest-tools/build-driver.sh`. Register set `d3dpt/d3dpt_fb.h` is shared
+  by the QEMU device and the miniport; bump `D3DPT_FB_VERSION` on change.
+  Win98 stays on `-vga cirrus`.
 
 ## Conventions
 
@@ -88,6 +94,7 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 | `tools/qmpc.py` | drives a guest over an extra `-qmp unix:…,server,nowait` socket: keys, typing, screendumps |
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
+| `DRIVER\SETMODE.EXE` (guest-tools ISO) | lists / switches XP display modes from a script; the QEMU log shows the device side (`d3dpt-vga: linear mode on …`, `guest: …` = the driver's debug register) |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`; wglgears lives at
 `C:\WINDOWS\Desktop\GAMEDIR`). **End scripted Win98 runs with a
@@ -115,8 +122,11 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   code, or QEMU's self-modifying-code invalidation dominates.
 - Win98 must be an ACPI install (`SETUP /p j`) or PCI hot-adds are never
   seen; guest wrappers must be msvcrt-linked and `-march=pentium3`.
-- Both guests run `-vga cirrus` (inbox drivers). XP has no driver for
-  `-vga std`: basic 640×480×16 only.
+- Win98 runs `-vga cirrus` (inbox driver). XP runs `-vga none -device
+  d3dpt-vga` with our driver (doc 15); without the driver installed it is a
+  plain VGA (vga.sys, 800×600×4), and `-vga std` has no XP driver at all.
+  Kernel-mode debugging = the device's DEBUG register → QEMU log; never a
+  debugger. Miniport headers: `ntdef.h`+`ddk/miniport.h`, **not** `ntddk.h`.
 - x87 under TCG is helper calls into 80-bit softfloat; patch 05 does the
   53/24-bit common case on the host FPU and patch 06 (doc 13) keeps the
   stack as host doubles inside TCG at PC=53 and PC=24. Test any change

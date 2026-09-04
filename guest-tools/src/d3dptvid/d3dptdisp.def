@@ -1,0 +1,4 @@
+LIBRARY d3dptdisp.dll
+EXPORTS
+    DrvEnableDriver
+    DrvDisableDriver
