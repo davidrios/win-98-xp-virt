@@ -9,9 +9,14 @@
 #   tools/xp-driver-test.sh <image.qcow2> modes        # SETMODE 1024x768x32@85, 800x600x16@75, list
 #   tools/xp-driver-test.sh <image.qcow2> d3d7         # D3D7TEST: the DX7 HAL scene, diffed against the host test's frame
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
+#   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
 # Env: DDFLAGS=N (-device d3dpt-vga,ddflags=N), OUT=dir for screendumps
-# and logs (default build/xp-driver-test), NO_KVM=1. Needs
+# and logs (default build/xp-driver-test), NO_KVM=1, GAME_ISO=game.iso (the
+# game disc takes the CD-ROM drive the game was installed from, D:; the
+# driver ISO moves to the next drive, F: after the E: scratch), and for `cmd` / `bat`:
+# CMD_WAIT=s (one wait, default 30) or SHOTS=n SHOT_EVERY=s (n screendumps
+# cmd-01.png … every s seconds — for watching a game start). Needs
 # guest-tools/build-driver.sh run first (guest-tools/out/d3dpt-driver.iso),
 # mkfs.fat + sfdisk + mtools + python3. Ends every run with a clean
 # power-down. Keys typed while a full-screen DirectDraw window is up are
@@ -19,7 +24,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|cmd}"; shift 2
+IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|cmd|bat}"; shift 2
 OUT="${OUT:-$ROOT/build/xp-driver-test}"; mkdir -p "$OUT"
 ISO="$ROOT/guest-tools/out/d3dpt-driver.iso"
 [ -f "$ISO" ] || { echo "no $ISO: run guest-tools/build-driver.sh"; exit 1; }
@@ -29,14 +34,22 @@ if [ ! -f "$SCRATCH" ]; then
   printf 'label: dos\nstart=2048, type=0c\n' | sfdisk -q "$SCRATCH"
   mkfs.fat -F 32 --offset 2048 "$SCRATCH" >/dev/null
 fi
+if [ "$MODE" = bat ]; then
+  # the Run dialog truncates long lines: stage a batch file on the scratch disk (before the guest mounts it)
+  sed 's/\r$//; s/$/\r/' "${1:?batch file}" > "$OUT/RUN.BAT"
+  mcopy -o -i "$SCRATCH@@1048576" "$OUT/RUN.BAT" ::/RUN.BAT
+fi
 SOCK="$OUT/qmp.sock"; rm -f "$SOCK"
 ACCEL=(-cpu pentium3)
 [ -e /dev/kvm ] && [ -z "${NO_KVM:-}" ] && ACCEL=(-accel kvm -cpu host)
 LOG="$OUT/qemu-$MODE.log"
+CD2=()
+CD1="$ISO"
+if [ -n "${GAME_ISO:-}" ]; then CD1="$GAME_ISO"; CD2=(-drive "file=$ISO,media=cdrom,if=ide,index=3,readonly=on"); fi
 export D3DPT_EXEC_LIB="${D3DPT_EXEC_LIB:-$ROOT/build/d3dpt/libd3dpt_exec.so}"
 export D3DPT_DXVK_LIB="${D3DPT_DXVK_LIB:-$ROOT/build/dxvk/src/d3d9/libdxvk_d3d9.so.0}"
 "$ROOT/build/qemu/qemu-system-i386" -L "$ROOT/qemu/pc-bios" "${ACCEL[@]}" -machine pc -m 512 \
-  -hda "$IMG" -hdb "$SCRATCH" -cdrom "$ISO" -vga none -device "d3dpt-vga,ddflags=${DDFLAGS:-0}" \
+  -hda "$IMG" -hdb "$SCRATCH" -cdrom "$CD1" "${CD2[@]}" -vga none -device "d3dpt-vga,ddflags=${DDFLAGS:-0}" \
   -net none -usb -device usb-tablet -display none -qmp "unix:$SOCK,server,nowait" \
   -serial none -monitor none > "$LOG" 2>&1 &
 QPID=$!
@@ -85,9 +98,13 @@ case "$MODE" in
       ( cd "$ROOT" && D3DPT_EXEC_LIB="${D3DPT_EXEC_LIB:-$ROOT/build/d3dpt/libd3dpt_exec.so}" build/d3dpt-dp2-test "$OUT/d3d7-host.bmp" >"$OUT/d3d7-host.log" 2>&1 ) || true
       python3 "$ROOT/tools/bmpdiff.py" "$OUT/d3d7-host.bmp" "$OUT/d3d7.bmp" --tolerance 2 --max-over 0 -o "$OUT/d3d7-diff.bmp" && echo "-- d3d7: guest frame == host frame" || echo "-- d3d7: FRAMES DIFFER ($OUT/d3d7-diff.bmp)"
     fi ;;
-  cmd)
-    run "${1:?guest command line}"
-    sleep "${CMD_WAIT:-30}"
+  cmd|bat)
+    if [ "$MODE" = bat ]; then run 'E:\RUN.BAT'; else run "${1:?guest command line}"; fi
+    if [ -n "${SHOTS:-}" ]; then
+      for i in $(seq -f '%02g' 1 "$SHOTS"); do sleep "${SHOT_EVERY:-5}"; Q screendump "$OUT/cmd-$i.png" || true; done
+    else
+      sleep "${CMD_WAIT:-30}"
+    fi
     finish ;;
   *) echo "unknown mode $MODE"; kill $QPID; exit 1 ;;
 esac

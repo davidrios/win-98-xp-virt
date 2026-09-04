@@ -246,10 +246,11 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
 - **M7b DirectDraw DDI:** landed in its first cut (above). Left: a DX5–7
   title on it (2D titles run now; 3D ones need M7c), `DrvDeriveSurface`,
   the vblank signal.
-- **M7c Direct3D DDI: first cut landed (see the section below).** Left:
-  claiming T&L, DX8 tokens / `GUID_D3DCaps` for `D3DCAPS8`, colour keying,
-  render-to-texture, state sets, then FIFA 2000 (doc 00 known issues has its
-  history). Exit: doc 04 matrix with no DLL in the game folder.
+- **M7c Direct3D DDI: first cut landed (see the section below); FIFA 2000
+  runs on it out of the box (intro, title, attract-mode match).** Left:
+  a user-driven match (input, menus, frame rate), claiming T&L, DX8
+  tokens / `GUID_D3DCaps` for `D3DCAPS8`, colour keying, render-to-texture,
+  state sets. Exit: doc 04 matrix with no DLL in the game folder.
 
 ## M7c — the Direct3D DDI (2026-09-04, first cut)
 
@@ -396,3 +397,28 @@ Per frame that is one 1.2 MB readback (`GetRenderTargetData` +
 memcpy) plus the page flip; the executor logs the DX7-only render
 states the runtime sends (4, 10, 30, 33, 47: texture perspective, line
 pattern, ZVISIBLE, stippled alpha, ZBIAS) once and drops them.
+
+### FIFA 2000 on the HAL (2026-09-04)
+
+The first real DX7-era title, the one that was parked on WineD3D (doc 00
+known issues, doc 14): with the WineD3D DLLs renamed out of the game
+folder (`tools/xp-fifa2000.bat`, run by `GAME_ISO=FIFA2000.ISO SHOTS=24
+tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat`)
+the game's own DirectX renderer (`THRASH\dx6z.dll`, registry `Thrash
+Driver = dx`, `Hardware Acceleration = 1`, `Thrash Resolution = 800x600`)
+runs on the HAL **unmodified**: the EA intro at 640×480×16 (19 DP2 calls,
+page flips), the title screen, then the attract-mode match at 800×600×16
+with textured players, kits, crowd, pitch and the HUD, all through
+`DrawPrimitives2` on DXVK and the readback into VRAM (screendumps in
+`build/xp-driver-test/fifa/cmd-*.png`). The match does not page-flip (4
+`scanout offset` lines for the whole run): the game blits its back buffer
+to the primary, so every frame is READBACK + a driver-side blit. Executor
+log for the run: the DX5/6 render states dropped once (1–6, 10–13, 17,
+18, 21, 30–33, 39, 40, 43–47, 49: texture handle / address / filter /
+map-blend, ROP, plane mask, stipple, ZBIAS…), DXVK's own "unhandled
+render state 26 / 62 / 128" (dither, an unknown, WRAP0), no colour keying
+requested, no unsupported token, no refused record. Nothing crashed;
+the run ends with a clean power-down while the match is still playing.
+Not yet measured: the frame rate (the player shows it), input (the
+headless loop never touches the game), a full user-driven match with the
+menus, the 640×480 in-game resolution.

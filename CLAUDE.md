@@ -122,7 +122,8 @@ GPU); don't propose wiring it in.
 | `DRIVER\SETMODE.EXE` (guest-tools ISO) | lists / switches XP display modes from a script; the QEMU log shows the device side (`d3dpt-vga: linear mode on …`, `guest: …` = the driver's debug register) |
 | `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; `scanout offset` lines in the QEMU log are the page flips |
 | `DRIVER\D3D7TEST.EXE` (guest-tools ISO) | Direct3D 7 through our driver's HAL (M7c): device enumeration, Z buffer, texture, the reference scene, fps, `d3d7test.log`/`.bmp` (the BMP must match `d3dpt-dp2-test`'s) |
-| `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|d3d7\|cmd` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log; `d3d7` also diffs the guest frame against the host test's |
+| `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|d3d7\|cmd\|bat` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log; `d3d7` also diffs the guest frame against the host test's; `bat` stages a batch file as `E:\RUN.BAT` (the Run dialog truncates long lines), `GAME_ISO=` attaches a game disc as D:, `SHOTS=n` screendumps every 5 s |
+| `tools/xp-fifa2000.bat` (+ `GAME_ISO=FIFA2000.ISO`) | FIFA 2000 on the M7c HAL: renames the WineD3D DLLs out of the game folder, dumps its registry, starts the game; the screendumps show the intro, title and attract-mode match |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`, `~/vms/winxp.qcow2`;
 wglgears lives at `C:\WINDOWS\Desktop\GAMEDIR`; on Linux `~/vms/scratch.img`

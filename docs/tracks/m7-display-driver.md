@@ -48,6 +48,16 @@ picture and the track rules, then this file, then doc 15.
   the reference scene at 640×480×32 renders at 2400 fps and its
   frame is byte-identical to the host-side
   `d3dpt-dp2-test` frame of the same DP2 tokens.
+- **FIFA 2000 renders on the HAL (2026-09-04, headless):** the game's
+  DX6 Thrash renderer (`THRASH\dx6z.dll`) unmodified, with the WineD3D
+  DLLs renamed out of its folder: intro at 640×480×16, title screen,
+  attract-mode match at 800×600×16 with textures, kits, crowd, HUD
+  (doc 15 "FIFA 2000 on the HAL"; screendumps in
+  `build/xp-driver-test/fifa/`). No unsupported token, no refused record,
+  no colour keying requested; the match blits instead of flipping. The
+  image is `~/vms/winxp-m7f.qcow2` (a copy of the user's `winxp-m7` with
+  the M7c driver reinstalled and the DLLs renamed); the user's own image
+  still has the M7b driver (register set v1) and the DLLs in place.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04). New
   work: branch `track/m7-<topic>` off main. A session resuming here:
@@ -72,6 +82,12 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 ddtest    # DirectDraw: caps, flip
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 modes     # SETMODE switches + the mode list
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL scene, diffed against build/d3dpt-dp2-test's frame
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
+# a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
+GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat
+# the same game in the player, by hand (the image above: driver reinstalled, WineD3D DLLs renamed)
+target/release/player -- -L $PWD/qemu/pc-bios -accel kvm -cpu host -machine pc -m 512 \
+  -hda ~/vms/winxp-m7f.qcow2 -cdrom /mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO -vga none -device d3dpt-vga \
+  -net none -usb -device usb-tablet 2>&1 | tee fifa-player.log     # then Start menu → EA SPORTS → FIFA 2000
 build/d3dpt-dp2-test x.bmp                              # the same scene through the executor without a guest (host stage of scripts/test.sh)
 ```
 
@@ -96,8 +112,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 
 ## Next steps, in order
 
-1. **M7c, the rest:** a real DX7 title (FIFA 2000, doc 00 known issues
-   has its history) on the HAL, and what it asks for first among: colour
+1. **M7c, the rest:** FIFA 2000 played by hand in the player on
+   `winxp-m7f` (it renders headless; open: frame rate, input after the
+   mode switches, the menus, a full match, the 640×480 in-game mode), then
+   what it or the next title asks for first among: colour
    keying (key → alpha at upload + alpha test), claiming T&L
    (`D3DDEVCAPS_HWTRANSFORMANDLIGHT`, the tokens are already mapped),
    render-to-texture, state sets, the DX8 tokens + `GUID_D3DCaps`
