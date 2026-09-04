@@ -181,6 +181,9 @@ i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d8.dll" "$ROOT/guest
 cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
 # Feature test (doc 14 P3): shaders, declarations, state blocks, queries, cube maps, surfaces.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src/d3dfeat9.c" -ld3d9 -lgdi32 -luser32
+# SSE throughput (guest-tools/src/ssebench.c, doc 16): D3DX-shaped SSE1
+# kernels plus the same math in x87 C; ns per op, console + ssebench.log.
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/ssebench.exe" "$ROOT/guest-tools/src/ssebench.c"
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
@@ -221,6 +224,9 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             D3D9TEST.EXE / D3DGAME9.EXE; needs the WIN2KXP (FXPTL.SYS) or
             WIN9X step like OPENGL32.DLL. Log: d3dpt.log next to the EXE
             (C:\d3dpt.log when run from the CD). Do not mix with WINED3D.
+            SSEBENCH.EXE: SSE/x87 math throughput in ns per op (console and
+            SSEBENCH.LOG). Run on the rig and in each guest, also with
+            -cpu ...,sse-fast=off / x87-fast=off, to compare the paths.
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with

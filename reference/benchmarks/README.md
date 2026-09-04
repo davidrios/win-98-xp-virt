@@ -83,3 +83,31 @@ per-title validation in M4 decides which side dominates.
 
 Also record here anything the XP guest needed that Win98 did not
 (drivers, HAL, activation state is not recorded).
+
+## SSE (patch 07, doc 16)
+
+Two instruments. `tools/sse-guest-test.py` runs `SSEBENCH.COM` (DOS,
+register-only kernels, 40M iterations, BIOS ticks) with `sse-fast=on` and
+`off` on the same build; `SSEBENCH.EXE` (guest-tools ISO, from
+`guest-tools/src/ssebench.c`) is the Win32 program for the rig and the
+guests: D3DX-shaped SSE1 kernels and the same math in x87 C, ns per op.
+
+| Machine / config | packed 8-op chain (s) | scalar 7-op chain (s) | Date |
+|---|---|---|---|
+| M1 Air, TCG, helpers (`-cpu pentium3,+sse2,sse-fast=off`) | 4.56 | 2.80 | 2026-09-04 |
+| M1 Air, TCG, **patch 07** inline (default) | 0.38 (**12×**) | 0.77 (**3.6×**) | 2026-09-04 |
+
+That is ~1.2 ns per packed op and ~2.7 ns per scalar op inline against
+~14 and ~10 for the helpers. Loops with memory operands see less (the
+TLB lookup per operand is the same on both paths).
+
+`SSEBENCH.EXE` numbers (rig P4 1.7 / XP on the Air with and without
+`sse-fast=off` and `x87-fast=off`): not yet run — the rig is off and the
+guest-tools ISO needs a rebuild with the new EXE. Fill in the table:
+
+| Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | SSE score (ns/op) | Date |
+|---|---|---|---|---|---|---|---|---|---|
+| Rig (P4 1.7), XP | | | | | | | | | |
+| M1 Air, XP, defaults | | | | | | | | | |
+| M1 Air, XP, `sse-fast=off` | | | | | | | | | |
+| M1 Air, XP, `sse-fast=off,x87-fast=off` | | | | | | | | | |

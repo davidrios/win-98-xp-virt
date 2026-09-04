@@ -23,6 +23,7 @@
 #                  oracle for the guest stage
 #
 # Guest stage
+#   sse-guest      tools/sse-guest-test.py: the SSE battery, sse-fast on/off identical (doc 16)
 #   x87-guest      tools/x87-guest-test.py: a DOS x87 battery under TCG,
 #                  identical with the fast path on and off (needs nasm,
 #                  mtools and the FreeDOS floppy the tool fetches on first use)
@@ -140,6 +141,7 @@ guest_stage() {
   if command -v nasm >/dev/null && command -v mcopy >/dev/null && [ -x build/qemu/qemu-system-i386 ]; then
     if [ -f build/images/144m/x86BOOT.img ]; then
       run_check x87-guest x87-guest.log python3 tools/x87-guest-test.py || true
+      run_check sse-guest sse-guest.log python3 tools/sse-guest-test.py || true
     else skip x87-guest "no FreeDOS floppy yet: run tools/x87-guest-test.py once to fetch it"; fi
   else skip x87-guest "needs nasm, mtools and build/qemu"; fi
   if [ "$OS" != Linux ]; then skip guest "Linux only for now (mkfs.fat, sfdisk, mtools)"; return; fi

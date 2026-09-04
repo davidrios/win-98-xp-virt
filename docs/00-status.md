@@ -12,7 +12,8 @@ build/test loop and ordered next steps:
 |---|---|---|---|
 | **M4 — paravirtual Direct3D device** (DLL path, executor, tests) | `docs/tracks/m4-d3d-device.md` | `d3dpt/exec`, `d3dpt/hw/d3dpt_mm.c`, `guest-tools/src/d3dpt/`, `scripts/test.sh`, doc 14 | a real game on the device |
 | **M7 — XP display driver** (`d3dpt-vga`, miniport + display DLL, DirectDraw/Direct3D DDI) | `docs/tracks/m7-display-driver.md` | `d3dpt/hw/d3dpt_vga.c`, `d3dpt/d3dpt_fb.h`, `guest-tools/src/d3dptvid/`, `tools/xp-driver-test.sh`, doc 15 | M7c, the Direct3D DDI |
-| Everything else (M3 Glide/fences, M2, M5, M6, macOS bring-up, x87) | this doc's "Next steps" | — | as listed |
+| **M8 — CPU fast paths in TCG** (x87 shadows, SSE inline, TCG float opcodes) | `docs/tracks/m8-tcg-fastpaths.md` | `patches/qemu/05..07`, `tools/x87-*`, `tools/sse-guest-test.py`, `guest-tools/src/ssebench.c`, docs 13 and 16 | the x86-64 backend run, SSEBENCH on the rig |
+| Everything else (M3 Glide/fences, M2, M5, M6, macOS bring-up) | this doc's "Next steps" | — | as listed |
 
 Rules: branch `track/<name>-<topic>` off `main`, rebase on `main` before
 pushing, merge to `main` when green. Shared files (`d3dpt/d3dpt_proto.h`,
@@ -26,7 +27,7 @@ side pulls `main`.
 
 | Area | State |
 |---|---|
-| QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26.6.2 since 2026-09-03, for KosmicKrisp / ADR-007). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI 1M on the Air 9:49 → 6:33. Patch 06 (2026-09-03, doc 13): x87 stack as host doubles in TCG, 7.4× vs softfloat on x86-64; **XP Super PI 1M on the Air 1:57, faster than the rig's real P4 1.7 (2:02)**. |
+| QEMU fork | v9.2.4 + qemu-3dfx (d00e858) + our queue (`patches/qemu/README.md`). Builds on Linux x86_64 (Arch) and macOS Apple Silicon (M1 Air, macOS 26.6.2 since 2026-09-03, for KosmicKrisp / ADR-007). Windows untested. Patch 05 (2026-09-02): x87 on the host FPU at 53/24-bit precision, bit-exact vs softfloat (host oracle + in-guest on/off test), 2.2× on an x86-64 host loop; Super PI 1M on the Air 9:49 → 6:33. Patch 06 (2026-09-03, doc 13): x87 stack as host doubles in TCG, 7.4× vs softfloat on x86-64; **XP Super PI 1M on the Air 1:57, faster than the rig's real P4 1.7 (2:02)**. Patch 07 (2026-09-04, doc 16): SSE/SSE2 float inline on the host FPU, packed ops on the vector unit (new TCG vector float opcodes), scalar in general registers; 333,875-line on/off guest test identical on the Air; register-only bench packed 12×, scalar 3.6× over the helpers. x86-64 backend part untested (no host). |
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio, QMP over a socketpair (`PLAYER_QMP`, `PLAYER_QMP_EXEC`). **Win98 and XP run in it on the M1 Air** with sound and tablet mouse. |
 | 3D | **GL pass-through runs inside the player on Linux** (doc 12 steps 1–2, 2026-09-02): patches 30/31 + `embed/mglcntx_embed.c` (EGL surfaceless pbuffer as FBO 0, `glReadPixels` on swap) + API v4. Win98 wglgears in the player: 420 fps at 800×600 with the readback path, desktop returns on exit. Standalone `-display sdl` still works (500+ fps on the Air). **macOS too** (CGL, no drawable, FBO stand-in; `GL 2.1 Metal / Apple M1`, wglgears in the player on the Air). **Linux zero-copy** (GBM dma-buf ring → Vulkan import, API v5, 2026-09-03): 575–600 fps wglgears, nothing copied per frame. **macOS zero-copy** (IOSurface ring → Metal, API v6) verified on the Air. Glide: no window, reported cleanly. |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) and, since 2026-09-03, the WineD3D set from JHRobotics/wine9x (Wine 1.7.55 for 9x/XP: per-game D3D8/D3D9/WINED3D DLLs + system-wide switchers) with a D3D9 smoke test (`D3D9TEST.EXE`), the display-mode probe (`MODETEST.EXE`) and the reference workloads `D3DGAME9.EXE` / `D3DGAME8.EXE` (doc 14 P0a) into an ISO. **Rig (P4 + GeForce 6200), 2026-09-03: both run.** First-run fixes: ground triangle winding (top face was culled), shader path now applies the per-cube material (all cubes were one colour), d3dgame8 windowed swaps with COPY_VSYNC so both pace at the refresh rate by default (85 fps on the rig's monitor is vsync, `-novsync` for throughput), console output also goes to `d3dgameN.log`. **Golden captures landed 2026-09-03** (`reference/d3d/rig-2026-09-03/`, diff with `tools/bmpdiff.py`): d3dgame9 frame 300 windowed, fixed function and `-shader`. The rig's log explained the `-shader` oddity: d3dx9_36's HLSL compiler refuses ps_1_1 (X3539), so the cubes ran vs_1_1 + fixed-function pixel stage while the log claimed fixed function. **Rendering is frozen at that build** (the golden set must stay comparable; the rig stays off for now): only the log line naming the shader case and the elapsed-ms summary were fixed, no pixel changes. Mask the HUD bars (wall time) when diffing. d3dgame8 windowed with COPY_VSYNC runs at half refresh (43 fps at 85 Hz) on the GeForce driver: real behaviour, recorded. Must match the host's qemu-3dfx commit. **Win98 and XP (2026-09-03): wglgears and D3D9TEST run in the player on both** (WineD3D needs no Microsoft DX runtime in the guest; XP needs the FXPTL.SYS step first, see gotchas). XP D3D9TEST on the Air: adapter reported as "GeForce 6800" (WineD3D's GL-renderer mapping), x87 PC=24 after CreateDevice, 377–504 fps windowed 640×480. |
@@ -155,6 +156,24 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   `tools/x87-guest-test.py` (on/off identical under TCG; needs nasm,
   mtools, the FreeDOS floppy). Benchmarks inside a .COM must keep data on
   a separate page from code or QEMU's SMC invalidation dominates.
+- SSE under TCG was a helper call per instruction (hardfloat inside, but
+  a call and a lane loop). Patch 07 (doc 16, 2026-09-04) inlines the
+  common cases when MXCSR admits the host FPU (RC nearest, no FTZ/DAZ,
+  all masked) *and* PE is already sticky: then the host can raise nothing
+  but PE, so one classification check per result replaces the residual
+  the x87 path needs; anything else takes the helper out of line.
+  Packed ops run on the vector unit (fadd_vec etc., vector checks, one
+  lane-mask branch through env), scalar ops in general registers.
+  Register-only bench on the Air: packed 1.2 ns/op vs 14 (12×), scalar
+  2.7 vs 10 (3.6×); memory-operand loops see less (the TLB lookup
+  dominates either way; the `dmb` barriers TCG emits for max_cpus > 1
+  measured free on the M1). `-cpu …,sse-fast=off` is the control. Test
+  any change with `tools/sse-guest-test.py` (on/off identical, incl.
+  SSE2 via `+sse2`, the hand-over case and a mixed x87/SSE block) and
+  re-run the x87 test: the slow blocks are shared. The hand-over exit
+  after the first inexact helper must be emitted at the end of the
+  instruction (after the register write-back) — the test caught
+  `cvttss2si` losing EAX when it was emitted inside the gen function.
 - Driving a Windows guest headlessly on Linux: pass
   `-qmp unix:/path,server,nowait` to the player (extra monitor), then
   `screendump` / `send-key` from a script; the QMP screendump shows the VGA
@@ -243,6 +262,7 @@ items nobody owns yet:
 3. **Player:** a hardware-cursor sprite (the M7 driver and cirrus both
    define cursors the player ignores today), the vblank signal for guests.
 4. M5 libdisc; M6 launcher.
+5. x87 / SSE: the **M8** track (`docs/tracks/m8-tcg-fastpaths.md`).
 
 ## Gotchas learned (don't relearn)
 
