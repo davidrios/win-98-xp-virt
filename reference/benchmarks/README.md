@@ -47,7 +47,7 @@ in the table.
 
 | Machine | CPU / config | Super PI 1M (s) | 7-Zip 26.02 GIPS (comp / decomp) | Boot to desktop (s) | Date |
 |---|---|---|---|---|---|
-| Rig (P4 + 6200), XP | Pentium 4 1.7 GHz (Willamette), 512 MB | 122 (2:02) | 0.742 / 0.776 | ~30 | 2026-09-02 |
+| Rig (P4 + 6200), XP | Pentium 4 1.7 GHz (Willamette: XP reports "Intel Pentium 4 CPU 1.70GHz", CPUID family 15 model 1), 512 MB | 122 (2:02) | 0.742 / 0.776 | ~30 | 2026-09-02 |
 | M1 Air, XP in player, TCG `-cpu pentium3 -m 512` | Apple M1, macOS 26 | 589 (9:49) | 0.996 / 1.511 | ~30 | 2026-09-02 |
 | M1 Air, same + patch 05 x87 fast path (`x87-fast=on`, default) | Apple M1, macOS 26 | 393 (6:33) — loop 1: 23 s vs 36 s off | | | 2026-09-02 |
 | M1 Air, same + **patch 06** (x87 stack as host doubles in TCG) | Apple M1, macOS 26 | 117 (1:57), both runs — loop 1 at 0:35 with `x87-fast=off` on the same build | | | 2026-09-03 |
