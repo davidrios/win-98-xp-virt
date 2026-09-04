@@ -126,8 +126,9 @@ static void res_init(struct res_hdr *r, const void *vt, struct device *dev)
 static void res_free(struct res_hdr *r)
 {
     struct device *dev = r->dev;
+    int owned = r->vt == &surf_vtbl && (((struct surface *)r)->kind == SURF_BACKBUFFER || ((struct surface *)r)->kind == SURF_AUTODEPTH);
     HeapFree(GetProcessHeap(), 0, r);
-    IDirect3DDevice9_Release((IDirect3DDevice9 *)dev);
+    if (!owned) IDirect3DDevice9_Release((IDirect3DDevice9 *)dev);
 }
 /* the common methods, generated per interface */
 #define RES_COMMON(pfx, IFACE, IID_, TYPE_)                                                                  \
@@ -525,6 +526,7 @@ static HRESULT implicit_surface(struct device *dev, int depth, struct surface **
         d.Width = dev->pp.BackBufferWidth; d.Height = dev->pp.BackBufferHeight;
         s = surface_new(dev, depth ? SURF_AUTODEPTH : SURF_BACKBUFFER, &d);
         if (!s) return E_OUTOFMEMORY;
+        IDirect3DDevice9_Release((IDirect3DDevice9 *)dev);   /* owned by the device: no back-reference (res_free skips it) */
         hr = surface_get_host(s, 0, depth ? 1 : 0);
         if (FAILED(hr)) { s->h.handle = 0; IDirect3DSurface9_Release((IDirect3DSurface9 *)s); return hr; }
         *slot = s;      /* the device keeps this reference */

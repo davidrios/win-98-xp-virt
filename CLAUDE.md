@@ -9,6 +9,10 @@ backend later.
 
 - `docs/00-status.md` — the maintained handoff: state table, build cheat
   sheet, open threads, ordered next steps, gotchas. Read it first.
+- `docs/tracks/` — one doc per parallel work track (M4 Direct3D device,
+  M7 XP display driver): scope, owned files, state, test loop, next
+  steps. A session picks one track and follows the rules in the status
+  doc's "Tracks" section.
 - `docs/01`–`12` design docs; decisions/ADRs in `docs/10`; roadmap `docs/08`.
 - `patches/qemu/README.md` — every QEMU patch, what it does, when to drop it.
 - `docs/build-macos.md` — Apple Silicon specifics (the M1 Air is the
@@ -46,6 +50,15 @@ backend later.
 - CI (`.github/workflows/ci.yml`) is manual-trigger only for now.
 - Docs are part of every change: update `docs/00-status.md` (and the
   relevant design doc / patch README row) in the same commit.
+- **Testing policy: no unit tests. Integration and end-to-end tests only.**
+  A test must exercise a real boundary (decoder + executor on a real batch,
+  a guest program under TCG, a frame diffed against a golden BMP), never a
+  function in isolation. Don't write `#[cfg(test)]` modules or per-function
+  test cases; when something starts working, add or extend a tool in the
+  table below and wire it into `scripts/test.sh` so it guards against
+  regressions (the existing `#[test]`s in `libdisc/src/msf.rs` predate this
+  policy; don't add more). Run `scripts/test.sh all` before every commit
+  that touches QEMU, the embed library, the D3D device or the guest DLLs.
 
 ## Build / run
 
@@ -84,8 +97,16 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 
 ## Testing tools
 
+All integration / e2e (see policy above). `scripts/test.sh` runs them:
+`host` (default, ~30 s: everything without a guest) or `all` (adds the
+guest stage, ~2 min: XP headless on the D3D device from a snapshot of
+`~/vms/winxp.qcow2`, plus the DOS x87 battery). **Local only, by
+decision:** CI will never run the suite (it needs the guest images and a
+GPU); don't propose wiring it in.
+
 | Tool | What it proves |
 |---|---|
+| `scripts/test.sh [host\|guest\|all]` | the whole suite below, PASS/FAIL/SKIP per check, outputs in `build/test/`; `TEST_KEEP=1` leaves XP running on failure |
 | `tools/x87-fast-test.c` | patch 05's x87 fast path equals the real x87 (x86-64 host oracle) |
 | `tools/x87-guest-test.py` | DOS program under TCG: results identical with the fast path on/off (needs nasm, mtools, FreeDOS floppy) |
 | `guest-tools/src/d3dfeat9.c` (+ `tools/d3dfeat9-native.cpp`) | the D3D9 feature test (shaders without D3DX, declarations, state blocks, queries, cube maps, surfaces): the XP guest's frame must be byte-identical to the native DXVK build's |
@@ -98,8 +119,10 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 | `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; `scanout offset` lines in the QEMU log are the page flips |
 | `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|cmd` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log |
 
-Guest images are not in the repo (`~/vms/win98.qcow2`; wglgears lives at
-`C:\WINDOWS\Desktop\GAMEDIR`). **End scripted Win98 runs with a
+Guest images are not in the repo (`~/vms/win98.qcow2`, `~/vms/winxp.qcow2`;
+wglgears lives at `C:\WINDOWS\Desktop\GAMEDIR`; on Linux `~/vms/scratch.img`
+is a FAT32 disk attached as `-hdb`, E: in XP, read with `mcopy -i img@@1048576`).
+The Direct3D device test loop is in `docs/00-status.md`'s cheat sheet. **End scripted Win98 runs with a
 Start-menu shutdown** (`qmpc.py … keys ctrl+esc`, `keys u`, `keys ret`),
 never by killing the player — a killed VM leaves the FAT dirty and every
 next boot runs ScanDisk. A QMP `screendump` shows only the VGA surface,

@@ -23,7 +23,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   3u
+#define D3DPT_PROTO_VERSION   4u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -84,6 +84,7 @@ typedef struct d3dpt_ret {
 
 enum d3dpt_op {
     D3DPT_OP_NOP = 0,
+    D3DPT_OP_LOG = 90,              /* body: d3dpt_u32x2 (bytes, 0) + text: the guest DLL's log line, printed by the host (diagnostics) */
     /* --- adapter / device (sync) --- */
     D3DPT_OP_GET_ADAPTER = 1,       /* body: d3dpt_get_adapter; ret: d3dpt_ret + d3dpt_adapter_info */
     D3DPT_OP_CREATE_DEVICE = 2,     /* body: d3dpt_create_device; ret: d3dpt_ret */

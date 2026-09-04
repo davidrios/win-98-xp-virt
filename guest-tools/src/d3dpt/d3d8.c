@@ -19,6 +19,11 @@
 #include "d3d9.c"
 
 /* ------------------------------------------------------ D3D8-only types */
+/* mingw's d3d8types.h / d3d8caps.h pack these to 4 bytes on i386; a
+ * naturally aligned D3DADAPTER_IDENTIFIER8 is 4 bytes longer and
+ * GetAdapterIdentifier then clears past the caller's buffer (found the
+ * hard way: D3DGAME8 hung on return from main) */
+#pragma pack(push, 4)
 typedef struct _D3DPRESENT_PARAMETERS8 {
     UINT BackBufferWidth, BackBufferHeight;
     D3DFORMAT BackBufferFormat;
@@ -59,6 +64,11 @@ typedef struct _D3DCAPS8 {
     DWORD MaxPrimitiveCount, MaxVertexIndex, MaxStreams, MaxStreamStride, VertexShaderVersion, MaxVertexShaderConst, PixelShaderVersion;
     float MaxPixelShaderValue;
 } D3DCAPS8;
+#pragma pack(pop)
+typedef char d3d8_size_check_id[sizeof(D3DADAPTER_IDENTIFIER8) == 1068 ? 1 : -1];
+typedef char d3d8_size_check_caps[sizeof(D3DCAPS8) == 212 ? 1 : -1];
+typedef char d3d8_size_check_pp[sizeof(D3DPRESENT_PARAMETERS8) == 52 ? 1 : -1];
+typedef char d3d8_size_check_desc[sizeof(D3DSURFACE_DESC8) == 32 ? 1 : -1];
 #define D3D8_SDK_VERSION 220
 #define D3DSWAPEFFECT_COPY_VSYNC8 4
 #define D3DRS8_LINEPATTERN 10
@@ -246,6 +256,7 @@ ULONG WINAPI d8_Release(IDirect3D8 *This)
 {
     struct d3d8 *d = (struct d3d8 *)This;
     LONG r = InterlockedDecrement(&d->ref);
+    d3dpt_log("d3d8: IDirect3D8 Release -> %ld", (long)r);
     if (r == 0) { IDirect3D9_Release((IDirect3D9 *)d->d9); HeapFree(GetProcessHeap(), 0, d); }
     return r;
 }
@@ -368,13 +379,17 @@ ULONG WINAPI dev8_Release(IDirect3DDevice8 *This)
 {
     struct dev8 *d = D8(This);
     LONG r = InterlockedDecrement(&d->ref);
+    if (r < 2) d3dpt_log("d3d8: device Release -> %ld", (long)r);
     if (r == 0) {
         UINT i;
+        d3dpt_log("d3d8: device teardown: %u vs, %u ps, %u sb slots", d->vs_n, d->ps_n, d->sb_n);
         for (i = 0; i < d->vs_n; i++) vs8_free(&d->vs[i]);
         for (i = 0; i < d->ps_n; i++) if (d->ps[i]) IDirect3DPixelShader9_Release((IDirect3DPixelShader9 *)d->ps[i]);
         for (i = 0; i < d->sb_n; i++) if (d->sb[i]) IDirect3DStateBlock9_Release((IDirect3DStateBlock9 *)d->sb[i]);
         HeapFree(GetProcessHeap(), 0, d->vs); HeapFree(GetProcessHeap(), 0, d->ps); HeapFree(GetProcessHeap(), 0, d->sb);
+        d3dpt_log("d3d8: device teardown: releasing the d3d9 device");
         IDirect3DDevice9_Release(DEV9(This));
+        d3dpt_log("d3d8: device teardown: done");
         d8_Release((IDirect3D8 *)d->d8);
         HeapFree(GetProcessHeap(), 0, d);
     }

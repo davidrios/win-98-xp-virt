@@ -2,7 +2,7 @@
 """Compare two 24-bit BMPs (the d3dgame -dump format) pixel by pixel.
 
     tools/bmpdiff.py golden.bmp candidate.bmp [-o diff.bmp] [--mask X,Y,W,H]...
-                     [--tolerance N]
+                     [--tolerance N] [--max-over N]
 
 Prints the number of differing pixels, the largest channel difference and
 the bounding box of the differences; writes an amplified difference image
@@ -10,7 +10,9 @@ with -o. --mask ignores a rectangle (top-left origin, like the screen) —
 the d3dgame frame-time HUD sits at 0,368,270,112 in a 640x480 frame
 (deterministic since 2026-09-03 in -frames mode, so masking it is only
 needed for the first rig captures). Exit status 1 when pixels differ by
-more than --tolerance (default 0). Pure Python, no Pillow.
+more than --tolerance (default 0), unless --max-over allows that many
+(the native DXVK frame sits ~1090 pixels from the GeForce golden at
+tolerance 8: a regression budget, not equality). Pure Python, no Pillow.
 """
 import argparse
 import struct
@@ -56,6 +58,7 @@ def main():
     ap.add_argument("-o", "--out", help="write an amplified difference image (BMP)")
     ap.add_argument("--mask", action="append", default=[], help="X,Y,W,H rectangle to ignore (top-left origin); repeatable")
     ap.add_argument("--tolerance", type=int, default=0, help="per-channel difference that still counts as equal")
+    ap.add_argument("--max-over", type=int, default=0, help="exit 0 while at most this many pixels are beyond the tolerance")
     a = ap.parse_args()
     w, h, ga, _ = read_bmp(a.golden)
     w2, h2, gb, _ = read_bmp(a.candidate)
@@ -94,7 +97,7 @@ def main():
     if a.out:
         write_bmp(a.out, w, h, out)
         print(f"difference image: {a.out}")
-    sys.exit(1 if over else 0)
+    sys.exit(1 if over > a.max_over else 0)
 
 
 if __name__ == "__main__":

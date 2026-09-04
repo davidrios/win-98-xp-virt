@@ -181,6 +181,15 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
     switch (c->op) {
     case D3DPT_OP_NOP:
         break;
+    case D3DPT_OP_LOG: {
+        auto *a = body<d3dpt_u32x2>(c, 0, b); if (!a) return;
+        if (a->a > 512 || c->size < sizeof(d3dpt_cmd) + sizeof *a + a->a) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        char buf[513];
+        memcpy(buf, tail(a), a->a); buf[a->a] = 0;
+        for (char *p = buf; *p; p++) if ((unsigned char)*p < 32) *p = ' ';
+        x.log("guest: %s", buf);
+        break;
+    }
 
     case D3DPT_OP_GET_ADAPTER: {
         auto *a = body<d3dpt_get_adapter>(c, 0, b); if (!a) return;
