@@ -109,6 +109,26 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   scratch-memory round trips still dominate there, a possible further
   optimization, not chased). Both patches regenerated per the recipe
   below, verified byte-identical after two `prepare-qemu.sh` runs.
+- **packuswb's scratch round trip, 2026-09-04 (same session, continued):**
+  chased the item just noted above. `env->sses_scratch` combine was two
+  GP stores immediately reloaded by a differently-sized vector load — a
+  store-to-load-forwarding stall, the same anti-pattern doc 16 already
+  names for the aarch64 shuffle path (patch 08's "two lessons"), just not
+  recognised as the same thing at the time. Replaced with `dup_i64_vec`
+  (broadcast each 64-bit half across a whole register, register-only) and
+  `bitsel_vec` (blend the two broadcasts against a constant lane mask,
+  lane 0 all-ones / lane 1 all-zero) so the combine costs one memory read
+  (the mask, `SIMD_TBL_MASK64LO` in `env->simd_tbl`, shared by every pack
+  instruction) instead of two round-tripped stores plus a reload. Both
+  ops are stock TCG vector infrastructure with portable SW fallbacks
+  (`bitsel_vec` needs no `tcg_*_supported()` gate, unlike this session's
+  earlier `mulsh_vec`/`ssnarrow_vec` additions — no new opcodes this
+  time). x86-64 MMX register bench 1.7× → **2.1×**; guest test still
+  546,425 lines bit-identical. Patch regenerated per the recipe below
+  (only `cpu.h` and the new `simd-fast.c.inc` changed), verified
+  byte-identical after two `prepare-qemu.sh` runs. `scripts/test.sh all`
+  green (4 passed, the d3d/guest-ISO checks skip in this worktree as
+  before, unrelated to this change).
 
 ## Build / test loop
 
@@ -149,13 +169,16 @@ benchmark's convert kernel was fixed to stay in range).
    guest batteries bit-identical, `simd_psadbw`'s gvec-vs-register-vec
    regression found and fixed, `pmulhw`/`packsswb`/`packuswb`/`packssdw`
    given real x86-64 vector ops (`mulsh_vec`/`muluh_vec`,
-   `ssnarrow_vec`/`usnarrow_vec`) — MMX chain 1.4× → 1.7×. Still open
-   before merging to `main`: **aarch64 validation** of this session's
-   work (the new opcodes are x86-64-only, `TCG_TARGET_HAS_*` macros `0`
-   on aarch64 so the SWAR fallback should still be exercised there
-   unchanged, but that needs the Air to confirm — not started here);
-   packuswb's scratch-memory round trip is a further, smaller item
-   (see State above).
+   `ssnarrow_vec`/`usnarrow_vec`) — MMX chain 1.4× → 1.7×. ~~packuswb's
+   scratch-memory round trip~~ Done 2026-09-04 (see State above):
+   `dup_i64_vec` + `bitsel_vec` replace the `env->sses_scratch` combine —
+   MMX chain 1.7× → 2.1×. Still open before merging to `main`: **aarch64
+   validation** of this session's work (the new opcodes — `mulsh_vec`/
+   `muluh_vec`/`ssnarrow_vec`/`usnarrow_vec` — are x86-64-only,
+   `TCG_TARGET_HAS_*` macros `0` on aarch64 so the SWAR fallback should
+   still be exercised there unchanged, but `bitsel_vec`/`dup_i64_vec` are
+   portable stock ops so the aarch64 pack path changed too and needs the
+   same check; needs the Air, not started here).
 2. **clamp+cmp at 34 % of the rig.** `minps`/`maxps`/`cmpps` cost 4.7 ns
    per op on the Air against 2.1 for `mulps`/`addps` in the same TB shape;
    find out why (the compare's mask materialisation? a per-lane check

@@ -322,21 +322,22 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
          return -1;
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -1732,6 +1732,13 @@
-     target_ulong result;
+@@ -1733,6 +1733,14 @@
      target_ulong auxbits;
  } HVFX86LazyFlags;
-+
+ 
 +/* tcg/simd-fast.c.inc permute tables (see there) */
 +#define SIMD_TBL_SHUFPS   0                     /* [256 imm][3: v, s, v==s][16] */
 +#define SIMD_TBL_SHUFPD   (256 * 3 * 16)        /* [4 imm][3][16] */
 +#define SIMD_TBL_UNPCK    (SIMD_TBL_SHUFPD + 4 * 3 * 16)   /* [3 esz][2 hi][2 w][3][16] */
 +#define SIMD_TBL_PSHUFW   (SIMD_TBL_UNPCK + 3 * 2 * 2 * 3 * 16)  /* [256 imm][16] */
-+#define SIMD_TBL_BYTES    (SIMD_TBL_PSHUFW + 256 * 16)
- 
++#define SIMD_TBL_MASK64LO (SIMD_TBL_PSHUFW + 256 * 16)            /* [16]: lane0 all-1, lane1 all-0 */
++#define SIMD_TBL_BYTES    (SIMD_TBL_MASK64LO + 16)
++
  typedef struct CPUArchState {
      /* standard registers */
-@@ -1800,8 +1807,8 @@
+     target_ulong regs[CPU_NB_REGS];
+@@ -1800,8 +1808,8 @@
       * on. Derived from mxcsr by update_mxcsr_status(), not migrated.
       */
      uint8_t sse_fast_mode;
@@ -347,7 +348,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      /* slow-path counters (info registers): guard, hand-over, helper, cvt/comis */
      uint64_t sses_stat[4];
      /* shadow doubles of the x87 stack, relative slots (tcg/x87-shadow.c.inc) */
-@@ -1969,6 +1976,13 @@
+@@ -1969,6 +1977,13 @@
      /* Fields up to this point are cleared by a CPU reset */
      struct {} end_reset_fields;
  
@@ -361,7 +362,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      /* Fields after this point are preserved across CPU reset. */
  
      /* processor features (e.g. for CPUID insn) */
-@@ -2115,6 +2129,8 @@
+@@ -2115,6 +2130,8 @@
      bool x87_fast;
      /* SSE host-FPU inline path (target/i386/tcg/sse-fast.c.inc) */
      bool sse_fast;
@@ -640,7 +641,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  #endif /* TCG_CPU_H */
 --- /dev/null
 +++ b/target/i386/tcg/simd-fast.c.inc
-@@ -0,0 +1,731 @@
+@@ -0,0 +1,755 @@
 +/*
 + * MMX / SSE integer and permutation instructions inline (doc 16, patch
 + * 08): the helper-call instructions that sit between the inlined float
@@ -819,6 +820,15 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 +            e[l] = 0x80;
 +        }
 +    }
++    {                                            /* bitsel mask: lane0 all-1, lane1 all-0 */
++        uint8_t *e = t + SIMD_TBL_MASK64LO;
++        for (l = 0; l < 8; l++) {
++            e[l] = 0xff;
++        }
++        for (l = 8; l < 16; l++) {
++            e[l] = 0x00;
++        }
++    }
 +}
 +
 +/*
@@ -981,9 +991,18 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 + * high, one 64-bit result) has no direct 128-bit equivalent, since a
 + * 128-bit pack's low 64 bits come from *all 8* of src1's lanes, not a
 + * 4+4 split. Get there by building one combined 128-bit register (v's
-+ * bits, then s's, adjacent in scratch) and packing it against itself:
++ * bits in lane 0, s's in lane 1) and packing it against itself:
 + * dest_low = pack(v0..v3, s0..s3) is exactly the MMX result, dest_high
 + * (a redundant duplicate) is simply not stored.
++ *
++ * Building that combined register through env->sses_scratch (store both
++ * halves, reload as one vector) cost as much as the helper it replaces:
++ * two GP stores immediately reloaded by a differently-sized vector load
++ * is a textbook store-to-load-forwarding stall. dup_i64_vec each half
++ * across a whole register instead (broadcast, no memory round trip) and
++ * bitsel_vec the two together against a constant lane mask
++ * (SIMD_TBL_MASK64LO): one memory read (the mask, shared by every pack
++ * here) instead of two round-tripped stores plus a reload.
 + */
 +static void simd_pack_vec(DisasContext *s, X86DecodedInsn *decode, int kind)
 +{
@@ -991,22 +1010,28 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 +    unsigned vece = kind == 2 ? MO_32 : MO_16;
 +
 +    if (mmx) {
-+        int scratch = offsetof(CPUX86State, sses_scratch[0]);
 +        TCGv_i64 t = tcg_temp_new_i64();
++        TCGv_vec va = tcg_temp_new_vec(TCG_TYPE_V128);
++        TCGv_vec vb = tcg_temp_new_vec(TCG_TYPE_V128);
++        TCGv_vec mask = tcg_temp_new_vec(TCG_TYPE_V128);
 +        TCGv_vec ab = tcg_temp_new_vec(TCG_TYPE_V128);
 +        TCGv_vec r = tcg_temp_new_vec(TCG_TYPE_V128);
 +
 +        tcg_gen_ld_i64(t, tcg_env, simd_q(&decode->op[1], 0));
-+        tcg_gen_st_i64(t, tcg_env, scratch);
++        tcg_gen_dup_i64_vec(MO_64, va, t);
 +        tcg_gen_ld_i64(t, tcg_env, simd_q(&decode->op[2], 0));
-+        tcg_gen_st_i64(t, tcg_env, scratch + 8);
-+        tcg_gen_ld_vec(ab, tcg_env, scratch);
++        tcg_gen_dup_i64_vec(MO_64, vb, t);
++        tcg_gen_ld_vec(mask, tcg_env, offsetof(CPUX86State, simd_tbl) + SIMD_TBL_MASK64LO);
++        tcg_gen_bitsel_vec(MO_64, ab, mask, va, vb);
 +        if (kind == 1) {
 +            tcg_gen_usnarrow_vec(vece, r, ab, ab);
 +        } else {
 +            tcg_gen_ssnarrow_vec(vece, r, ab, ab);
 +        }
 +        tcg_gen_stl_vec(r, tcg_env, vector_reg_offset(&decode->op[0]), TCG_TYPE_V64);
++        tcg_temp_free_vec(va);
++        tcg_temp_free_vec(vb);
++        tcg_temp_free_vec(mask);
 +        tcg_temp_free_vec(ab);
 +        tcg_temp_free_vec(r);
 +        return;
