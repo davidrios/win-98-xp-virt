@@ -12,7 +12,7 @@ build/test loop and ordered next steps:
 |---|---|---|---|
 | **M4 — paravirtual Direct3D device** (DLL path, executor, tests) | `docs/tracks/m4-d3d-device.md` | `d3dpt/exec`, `d3dpt/hw/d3dpt_mm.c`, `guest-tools/src/d3dpt/`, `scripts/test.sh`, doc 14 | a real game on the device |
 | **M7 — XP display driver** (`d3dpt-vga`, miniport + display DLL, DirectDraw/Direct3D DDI) | `docs/tracks/m7-display-driver.md` | `d3dpt/hw/d3dpt_vga.c`, `d3dpt/d3dpt_fb.h`, `guest-tools/src/d3dptvid/`, `tools/xp-driver-test.sh`, doc 15 | M7c, the Direct3D DDI |
-| **M8 — CPU fast paths in TCG** (x87 shadows, SSE inline, TCG float opcodes) | `docs/tracks/m8-tcg-fastpaths.md` | `patches/qemu/05..07`, `tools/x87-*`, `tools/sse-guest-test.py`, `guest-tools/src/ssebench.c`, docs 13 and 16 | native vector ops for `pmulhw`/`packuswb` (x86-64 MMX chain 1.4×, aarch64 4.0×), then clamp+cmp (34 % of the rig) |
+| **M8 — CPU fast paths in TCG** (x87 shadows, SSE inline, TCG float opcodes) | `docs/tracks/m8-tcg-fastpaths.md` | `patches/qemu/05..07`, `tools/x87-*`, `tools/sse-guest-test.py`, `guest-tools/src/ssebench.c`, docs 13 and 16 | aarch64 validation of the x86-64 mulh/pack work (x86-64 MMX chain now 1.7×, aarch64 unvalidated), then clamp+cmp (34 % of the rig) |
 | Everything else (M3 Glide/fences, M2, M5, M6, macOS bring-up) | this doc's "Next steps" | — | as listed |
 
 Rules: branch `track/<name>-<topic>` off `main`, rebase on `main` before

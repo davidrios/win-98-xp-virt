@@ -78,12 +78,37 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   `packuswb` are scalar SWAR (per-lane `sextract`/`deposit` loops) and
   only get 3–3.9× from removing the helper call — x86-64 lacks a cheap
   bitfield-insert equivalent to aarch64's `BFI`/`SBFX`, so the same
-  portable code costs more host instructions here. Closing that gap for
-  real needs native vector ops for multiply-high and saturating pack
-  (mirroring how `tbl_vec` was added: a new generic opcode gated per
-  backend), not attempted this session — x86-64 has native
-  `PMULHW`/`PMULHUW`/`PACKSSWB`/`PACKUSWB` hardware for exactly this,
-  aarch64 support would need separate design/validation.
+  portable code costs more host instructions here.
+- **x86-64 native mulh/pack, 2026-09-04** (same session): closed that
+  gap for real with two new generic TCG vector opcodes, x86-64-only —
+  `mulsh_vec`/`muluh_vec` (multiply-high, `TCG_TARGET_HAS_mulh_vec`,
+  native `PMULHW`/`PMULHUW`) and `ssnarrow_vec`/`usnarrow_vec`
+  (saturating narrow, `TCG_TARGET_HAS_pack_vec`, native
+  `PACKSSWB`/`PACKUSWB`/`PACKSSDW`) — mirroring how `tbl_vec` was added
+  (declared in `tcg-opc.h`/`tcg.c`, public `tcg_gen_*`/`tcg_*_supported`
+  wrappers in `tcg-op-vec.c`/`tcg-op-common.h`, backend in
+  `tcg/i386/tcg-target.{h,c.inc}`); `tcg/aarch64/tcg-target.h` defines
+  both macros `0` (keeps the existing SWAR fallback there, unvalidated
+  on that host — same caveat as the rest of the x86-64-only work here).
+  `simd_mulh_vec`/`simd_pack_vec` in `simd-fast.c.inc` use them when
+  `tcg_mulh_vec_supported()`/`tcg_narrow_vec_supported()`, falling back
+  to the SWAR path otherwise. One real gotcha: a 128-bit
+  `PACKSSWB`'s low 64 result bits come from *all 8* words of its first
+  operand (not a 4+4 split), so naively zero-padding MMX's 4-word
+  operands to 128 bits and packing them against each other silently
+  drops the second operand entirely (caught by an isolated per-op
+  microbench with hand-computed expected values, and a debug print of
+  the actual emitted VEX bytes to confirm the encoding itself was
+  correct — the bug was semantic, not an encoding bug). Fixed for MMX
+  by building one combined 128-bit register (both operands concatenated
+  via `env->sses_scratch`) and narrowing it against itself, keeping
+  only the low 64 bits (`tcg_gen_stl_vec`). `mulsh_vec`/`muluh_vec` have
+  no such issue (purely per-lane, safe to zero-pad). Guest tests still
+  bit-identical (382,251 / 546,425 lines); x86-64 MMX register bench
+  1.4× → **1.7×** (pmulhw net cost ~0, packuswb roughly unchanged —
+  scratch-memory round trips still dominate there, a possible further
+  optimization, not chased). Both patches regenerated per the recipe
+  below, verified byte-identical after two `prepare-qemu.sh` runs.
 
 ## Build / test loop
 
@@ -122,12 +147,15 @@ benchmark's convert kernel was fixed to stay in range).
 
 1. ~~**x86-64 host run.**~~ Done 2026-09-04 (see State above): both
    guest batteries bit-identical, `simd_psadbw`'s gvec-vs-register-vec
-   regression found and fixed. Still open before merging to `main`:
-   `pmulhw`/`packuswb` real vectorization (native `PMULHW`/`PACKSSWB`/
-   `PACKUSWB`, a new generic opcode gated per backend like `tbl_vec`) to
-   close the x86-64 MMX chain gap for real (currently 1.4× vs aarch64's
-   4.0×) — bigger, cross-backend, needs aarch64 validation too; not
-   started this session.
+   regression found and fixed, `pmulhw`/`packsswb`/`packuswb`/`packssdw`
+   given real x86-64 vector ops (`mulsh_vec`/`muluh_vec`,
+   `ssnarrow_vec`/`usnarrow_vec`) — MMX chain 1.4× → 1.7×. Still open
+   before merging to `main`: **aarch64 validation** of this session's
+   work (the new opcodes are x86-64-only, `TCG_TARGET_HAS_*` macros `0`
+   on aarch64 so the SWAR fallback should still be exercised there
+   unchanged, but that needs the Air to confirm — not started here);
+   packuswb's scratch-memory round trip is a further, smaller item
+   (see State above).
 2. **clamp+cmp at 34 % of the rig.** `minps`/`maxps`/`cmpps` cost 4.7 ns
    per op on the Air against 2.1 for `mulps`/`addps` in the same TB shape;
    find out why (the compare's mask materialisation? a per-lane check

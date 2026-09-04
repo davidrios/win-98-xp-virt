@@ -21,7 +21,7 @@ identical on/off (MMX and XMM forms, memory operands, chains, a mixed
 x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 --- a/include/tcg/tcg-opc.h
 +++ b/include/tcg/tcg-opc.h
-@@ -342,6 +342,12 @@
+@@ -342,6 +342,28 @@
  DEF(fmul_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
  DEF(fdiv_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
  DEF(fsqrt_vec, 1, 1, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
@@ -31,39 +31,65 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 + * 0..15 and 0x80). vece unused.
 + */
 +DEF(tbl_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_tbl_vec))
++
++/*
++ * Per-lane widening multiply, high half only (pmulhw / pmulhuw): the
++ * mmx/sse2 op the SWAR/gvec paths can't express as bitwise tricks.
++ * vece is the operand width (MO_16 only, so far).
++ */
++DEF(mulsh_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_mulh_vec))
++DEF(muluh_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_mulh_vec))
++/*
++ * Saturating narrow (packsswb/packssdw, packuswb): a[i] narrowed into
++ * r's low half, b[i] into the high half, each clamped to the output
++ * width (signed for ssnarrow, unsigned for usnarrow). vece is the
++ * operand (wide, pre-narrow) width: MO_16 -> byte, MO_32 -> word.
++ */
++DEF(ssnarrow_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_pack_vec))
++DEF(usnarrow_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_pack_vec))
  
  DEF(last_generic, 0, 0, 0, TCG_OPF_NOT_PRESENT)
  
 --- a/include/tcg/tcg.h
 +++ b/include/tcg/tcg.h
-@@ -157,6 +157,7 @@
+@@ -157,6 +157,9 @@
  #define TCG_TARGET_HAS_cmpsel_vec       0
  #define TCG_TARGET_HAS_tst_vec          0
  #define TCG_TARGET_HAS_fp_vec           0
 +#define TCG_TARGET_HAS_tbl_vec          0
++#define TCG_TARGET_HAS_mulh_vec         0
++#define TCG_TARGET_HAS_pack_vec         0
  #else
  #define TCG_TARGET_MAYBE_vec            1
  #endif
 --- a/include/tcg/tcg-op-common.h
 +++ b/include/tcg/tcg-op-common.h
-@@ -498,6 +498,9 @@
+@@ -498,6 +498,19 @@
  void tcg_gen_fmul_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
  void tcg_gen_fdiv_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
  void tcg_gen_fsqrt_vec(unsigned vece, TCGv_vec r, TCGv_vec a);
 +/* byte table lookup with zeroing (pshufb / tbl); only when tcg_tbl_vec_supported() */
 +bool tcg_tbl_vec_supported(void);
 +void tcg_gen_tbl_vec(TCGv_vec r, TCGv_vec a, TCGv_vec idx);
++/* per-lane widening multiply, high half only; only when tcg_mulh_vec_supported() */
++bool tcg_mulh_vec_supported(unsigned vece);
++void tcg_gen_mulsh_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
++void tcg_gen_muluh_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
++/* saturating narrow, a into r's low half and b into the high half; only
++ * when tcg_narrow_vec_supported(vece, uns) (signed and unsigned narrowing
++ * aren't available at the same widths, checked separately) */
++bool tcg_narrow_vec_supported(unsigned vece, bool uns);
++void tcg_gen_ssnarrow_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
++void tcg_gen_usnarrow_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
  void tcg_gen_ld_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset);
  void tcg_gen_st_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset);
  void tcg_gen_stl_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset, TCGType t);
 --- a/tcg/tcg-op-vec.c
 +++ b/tcg/tcg-op-vec.c
-@@ -610,6 +610,24 @@
- void tcg_gen_fdiv_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
- {
+@@ -612,6 +612,63 @@
      do_op3_nofail(vece, r, a, b, INDEX_op_fdiv_vec);
-+}
-+
+ }
+ 
 +bool tcg_tbl_vec_supported(void)
 +{
 +    return TCG_TARGET_HAS_tbl_vec
@@ -80,27 +106,78 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 +    tcg_debug_assert(at->base_type >= type && it->base_type >= type);
 +    tcg_debug_assert(tcg_can_emit_vec_op(INDEX_op_tbl_vec, type, MO_8) > 0);
 +    vec_gen_3(INDEX_op_tbl_vec, type, MO_8, temp_arg(rt), temp_arg(at), temp_arg(it));
- }
- 
++}
++
++bool tcg_mulh_vec_supported(unsigned vece)
++{
++    return TCG_TARGET_HAS_mulh_vec
++        && tcg_can_emit_vec_op(INDEX_op_mulsh_vec, TCG_TYPE_V128, vece) > 0
++        && tcg_can_emit_vec_op(INDEX_op_muluh_vec, TCG_TYPE_V128, vece) > 0;
++}
++
++void tcg_gen_mulsh_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
++{
++    do_op3_nofail(vece, r, a, b, INDEX_op_mulsh_vec);
++}
++
++void tcg_gen_muluh_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
++{
++    do_op3_nofail(vece, r, a, b, INDEX_op_muluh_vec);
++}
++
++/*
++ * Signed and unsigned narrowing aren't available at the same widths
++ * (e.g. x86 has no unsigned dword->word narrow in our scope), so each
++ * checks its own opcode rather than sharing one query.
++ */
++bool tcg_narrow_vec_supported(unsigned vece, bool uns)
++{
++    return TCG_TARGET_HAS_pack_vec
++        && tcg_can_emit_vec_op(uns ? INDEX_op_usnarrow_vec : INDEX_op_ssnarrow_vec,
++                               TCG_TYPE_V128, vece) > 0;
++}
++
++void tcg_gen_ssnarrow_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
++{
++    do_op3_nofail(vece, r, a, b, INDEX_op_ssnarrow_vec);
++}
++
++void tcg_gen_usnarrow_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
++{
++    do_op3_nofail(vece, r, a, b, INDEX_op_usnarrow_vec);
++}
++
  void tcg_gen_fsqrt_vec(unsigned vece, TCGv_vec r, TCGv_vec a)
+ {
+     TCGTemp *rt = tcgv_vec_temp(r);
 --- a/tcg/tcg.c
 +++ b/tcg/tcg.c
-@@ -2196,6 +2196,8 @@
+@@ -2196,6 +2196,14 @@
      case INDEX_op_fdiv_vec:
      case INDEX_op_fsqrt_vec:
          return have_vec && TCG_TARGET_HAS_fp_vec;
 +    case INDEX_op_tbl_vec:
 +        return have_vec && TCG_TARGET_HAS_tbl_vec;
++    case INDEX_op_mulsh_vec:
++    case INDEX_op_muluh_vec:
++        return have_vec && TCG_TARGET_HAS_mulh_vec;
++    case INDEX_op_ssnarrow_vec:
++    case INDEX_op_usnarrow_vec:
++        return have_vec && TCG_TARGET_HAS_pack_vec;
      case INDEX_op_add_vec:
      case INDEX_op_sub_vec:
      case INDEX_op_and_vec:
 --- a/tcg/aarch64/tcg-target.h
 +++ b/tcg/aarch64/tcg-target.h
-@@ -170,6 +170,7 @@
+@@ -170,6 +170,11 @@
  #define TCG_TARGET_HAS_cmpsel_vec       0
  #define TCG_TARGET_HAS_tst_vec          1
  #define TCG_TARGET_HAS_fp_vec           1
 +#define TCG_TARGET_HAS_tbl_vec          1
++/* multiply-high and saturating-narrow: not implemented here, the
++ * generic per-lane path (target/i386/tcg/simd-fast.c.inc) covers MMX. */
++#define TCG_TARGET_HAS_mulh_vec         0
++#define TCG_TARGET_HAS_pack_vec         0
  
  #define TCG_TARGET_DEFAULT_MO (0)
  #define TCG_TARGET_NEED_LDST_LABELS
@@ -138,27 +215,76 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      case INDEX_op_ld8s_i32:
 --- a/tcg/i386/tcg-target.h
 +++ b/tcg/i386/tcg-target.h
-@@ -229,6 +229,7 @@
+@@ -229,6 +229,9 @@
  #define TCG_TARGET_HAS_cmpsel_vec       1
  #define TCG_TARGET_HAS_tst_vec          have_avx512bw
  #define TCG_TARGET_HAS_fp_vec           have_avx1
 +#define TCG_TARGET_HAS_tbl_vec          have_avx1
++#define TCG_TARGET_HAS_mulh_vec         1
++#define TCG_TARGET_HAS_pack_vec         1
  
  #define TCG_TARGET_deposit_i32_valid(ofs, len) \
      (((ofs) == 0 && ((len) == 8 || (len) == 16)) || \
 --- a/tcg/i386/tcg-target.c.inc
 +++ b/tcg/i386/tcg-target.c.inc
-@@ -3580,6 +3580,9 @@
+@@ -358,6 +358,8 @@
+ #define OPC_PMULLW      (0xd5 | P_EXT | P_DATA16)
+ #define OPC_PMULLD      (0x40 | P_EXT38 | P_DATA16)
+ #define OPC_VPMULLQ     (0x40 | P_EXT38 | P_DATA16 | P_VEXW | P_EVEX)
++#define OPC_PMULHW      (0xe5 | P_EXT | P_DATA16)
++#define OPC_PMULHUW     (0xe4 | P_EXT | P_DATA16)
+ #define OPC_POR         (0xeb | P_EXT | P_DATA16)
+ #define OPC_PSHUFB      (0x00 | P_EXT38 | P_DATA16)
+ #define OPC_PSHUFD      (0x70 | P_EXT | P_DATA16)
+@@ -3408,6 +3410,25 @@
+     static int const packus_insn[4] = {
+         OPC_PACKUSWB, OPC_PACKUSDW, OPC_UD2, OPC_UD2
+     };
++    /*
++     * mulsh_vec/muluh_vec/ssnarrow_vec/usnarrow_vec (target/i386/tcg
++     * simd-fast.c.inc): indexed by the *operand* (pre-narrow, for the
++     * pack pair) width, so word (vece 1) is the only populated mulh
++     * entry and usnarrow has no dword source (no unsigned pack-dword
++     * in MMX/SSE2, only SSE4.1's packusdw, out of scope here).
++     */
++    static int const mulhs_insn[4] = {
++        OPC_UD2, OPC_PMULHW, OPC_UD2, OPC_UD2
++    };
++    static int const mulhu_insn[4] = {
++        OPC_UD2, OPC_PMULHUW, OPC_UD2, OPC_UD2
++    };
++    static int const ssnarrow_insn[4] = {
++        OPC_UD2, OPC_PACKSSWB, OPC_PACKSSDW, OPC_UD2
++    };
++    static int const usnarrow_insn[4] = {
++        OPC_UD2, OPC_PACKUSWB, OPC_UD2, OPC_UD2
++    };
+     static int const smin_insn[4] = {
+         OPC_PMINSB, OPC_PMINSW, OPC_PMINSD, OPC_VPMINSQ
+     };
+@@ -3580,6 +3601,21 @@
          a2 = a1;
          a1 = 0;
          goto gen_simd;
 +    case INDEX_op_tbl_vec:
 +        insn = OPC_PSHUFB;
 +        goto gen_simd;
++    case INDEX_op_mulsh_vec:
++        insn = mulhs_insn[vece];
++        goto gen_simd;
++    case INDEX_op_muluh_vec:
++        insn = mulhu_insn[vece];
++        goto gen_simd;
++    case INDEX_op_ssnarrow_vec:
++        insn = ssnarrow_insn[vece];
++        goto gen_simd;
++    case INDEX_op_usnarrow_vec:
++        insn = usnarrow_insn[vece];
++        goto gen_simd;
      gen_simd:
          tcg_debug_assert(insn != OPC_UD2);
          tcg_out_vex_modrm_type(s, insn, a0, a1, a2, type);
-@@ -3755,6 +3758,8 @@
+@@ -3755,6 +3791,8 @@
          return C_O1_I2(x, x, x);
      case INDEX_op_fsqrt_vec:
          return C_O1_I1(x, x);
@@ -167,12 +293,30 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  
      case INDEX_op_ld8u_i32:
      case INDEX_op_ld8u_i64:
-@@ -4034,6 +4039,8 @@
+@@ -3983,6 +4021,10 @@
+     case INDEX_op_x86_punpckl_vec:
+     case INDEX_op_x86_punpckh_vec:
+     case INDEX_op_x86_vpshldi_vec:
++    case INDEX_op_mulsh_vec:
++    case INDEX_op_muluh_vec:
++    case INDEX_op_ssnarrow_vec:
++    case INDEX_op_usnarrow_vec:
+ #if TCG_TARGET_REG_BITS == 32
+     case INDEX_op_dup2_vec:
+ #endif
+@@ -4034,6 +4076,15 @@
      case INDEX_op_fdiv_vec:
      case INDEX_op_fsqrt_vec:
          return vece >= MO_32;
 +    case INDEX_op_tbl_vec:
 +        return type <= TCG_TYPE_V128;       /* vpshufb shuffles within 128-bit lanes */
++    case INDEX_op_mulsh_vec:
++    case INDEX_op_muluh_vec:
++        return vece == MO_16 && type <= TCG_TYPE_V128;   /* pmulhw/pmulhuw only */
++    case INDEX_op_ssnarrow_vec:
++        return (vece == MO_16 || vece == MO_32) && type <= TCG_TYPE_V128;
++    case INDEX_op_usnarrow_vec:
++        return vece == MO_16 && type <= TCG_TYPE_V128;   /* no unsigned dword pack */
      case INDEX_op_cmp_vec:
      case INDEX_op_cmpsel_vec:
          return -1;
@@ -496,7 +640,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  #endif /* TCG_CPU_H */
 --- /dev/null
 +++ b/target/i386/tcg/simd-fast.c.inc
-@@ -0,0 +1,615 @@
+@@ -0,0 +1,731 @@
 +/*
 + * MMX / SSE integer and permutation instructions inline (doc 16, patch
 + * 08): the helper-call instructions that sit between the inlined float
@@ -823,6 +967,92 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 +    }
 +}
 +
++/*
++ * packsswb / packuswb / packssdw on the vector unit. kind: 0 packsswb,
++ * 1 packuswb, 2 packssdw. Only when tcg_narrow_vec_supported().
++ *
++ * XMM: the 128-bit PACKSSWB/PACKUSWB/PACKSSDW's own semantics already
++ * match ours exactly (dest low 64 = pack(all of v's lanes), dest high
++ * 64 = pack(all of s's lanes)) -- no read-before-write hazard either,
++ * a/b are fully loaded before r is stored.
++ *
++ * MMX: NOT the same instruction restricted to 64 bits -- the native
++ * legacy MMX pack (dest = v's 4 lanes packed low, s's 4 lanes packed
++ * high, one 64-bit result) has no direct 128-bit equivalent, since a
++ * 128-bit pack's low 64 bits come from *all 8* of src1's lanes, not a
++ * 4+4 split. Get there by building one combined 128-bit register (v's
++ * bits, then s's, adjacent in scratch) and packing it against itself:
++ * dest_low = pack(v0..v3, s0..s3) is exactly the MMX result, dest_high
++ * (a redundant duplicate) is simply not stored.
++ */
++static void simd_pack_vec(DisasContext *s, X86DecodedInsn *decode, int kind)
++{
++    bool mmx = decode->op[0].unit == X86_OP_MMX;
++    unsigned vece = kind == 2 ? MO_32 : MO_16;
++
++    if (mmx) {
++        int scratch = offsetof(CPUX86State, sses_scratch[0]);
++        TCGv_i64 t = tcg_temp_new_i64();
++        TCGv_vec ab = tcg_temp_new_vec(TCG_TYPE_V128);
++        TCGv_vec r = tcg_temp_new_vec(TCG_TYPE_V128);
++
++        tcg_gen_ld_i64(t, tcg_env, simd_q(&decode->op[1], 0));
++        tcg_gen_st_i64(t, tcg_env, scratch);
++        tcg_gen_ld_i64(t, tcg_env, simd_q(&decode->op[2], 0));
++        tcg_gen_st_i64(t, tcg_env, scratch + 8);
++        tcg_gen_ld_vec(ab, tcg_env, scratch);
++        if (kind == 1) {
++            tcg_gen_usnarrow_vec(vece, r, ab, ab);
++        } else {
++            tcg_gen_ssnarrow_vec(vece, r, ab, ab);
++        }
++        tcg_gen_stl_vec(r, tcg_env, vector_reg_offset(&decode->op[0]), TCG_TYPE_V64);
++        tcg_temp_free_vec(ab);
++        tcg_temp_free_vec(r);
++        return;
++    }
++
++    {
++        TCGv_vec a = tcg_temp_new_vec(TCG_TYPE_V128);
++        TCGv_vec b = tcg_temp_new_vec(TCG_TYPE_V128);
++        TCGv_vec r = tcg_temp_new_vec(TCG_TYPE_V128);
++
++        tcg_gen_ld_vec(a, tcg_env, vector_reg_offset(&decode->op[1]));
++        tcg_gen_ld_vec(b, tcg_env, vector_reg_offset(&decode->op[2]));
++        if (kind == 1) {
++            tcg_gen_usnarrow_vec(vece, r, a, b);
++        } else {
++            tcg_gen_ssnarrow_vec(vece, r, a, b);
++        }
++        tcg_gen_st_vec(r, tcg_env, vector_reg_offset(&decode->op[0]));
++        tcg_temp_free_vec(a);
++        tcg_temp_free_vec(b);
++        tcg_temp_free_vec(r);
++    }
++}
++
++/* pmulhw / pmulhuw on the vector unit; only when tcg_mulh_vec_supported() */
++static void simd_mulh_vec(DisasContext *s, X86DecodedInsn *decode, bool uns)
++{
++    bool mmx = decode->op[0].unit == X86_OP_MMX;
++    TCGType type = mmx ? TCG_TYPE_V64 : TCG_TYPE_V128;
++    TCGv_vec a = tcg_temp_new_vec(type);
++    TCGv_vec b = tcg_temp_new_vec(type);
++    TCGv_vec r = tcg_temp_new_vec(type);
++
++    tcg_gen_ld_vec(a, tcg_env, vector_reg_offset(&decode->op[1]));
++    tcg_gen_ld_vec(b, tcg_env, vector_reg_offset(&decode->op[2]));
++    if (uns) {
++        tcg_gen_muluh_vec(MO_16, r, a, b);
++    } else {
++        tcg_gen_mulsh_vec(MO_16, r, a, b);
++    }
++    tcg_gen_st_vec(r, tcg_env, vector_reg_offset(&decode->op[0]));
++    tcg_temp_free_vec(a);
++    tcg_temp_free_vec(b);
++    tcg_temp_free_vec(r);
++}
++
 +/* one 64-bit half of pmulhw / pmulhuw / pmaddwd / pavgb / pavgw */
 +static void simd_arith_half(TCGv_i64 r, TCGv_i64 a, TCGv_i64 b, int op)
 +{
@@ -1059,11 +1289,41 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 +    case SIMD_PUNPCKHDQ: simd_unpck(s, decode, 2, true); break;
 +    case SIMD_PUNPCKLQDQ: simd_unpck_qdq(s, decode, false); break;
 +    case SIMD_PUNPCKHQDQ: simd_unpck_qdq(s, decode, true); break;
-+    case SIMD_PACKSSWB: simd_pack(s, decode, 0); break;
-+    case SIMD_PACKUSWB: simd_pack(s, decode, 1); break;
-+    case SIMD_PACKSSDW: simd_pack(s, decode, 2); break;
++    case SIMD_PACKSSWB:
++        if (tcg_narrow_vec_supported(MO_16, false)) {
++            simd_pack_vec(s, decode, 0);
++        } else {
++            simd_pack(s, decode, 0);
++        }
++        break;
++    case SIMD_PACKUSWB:
++        if (tcg_narrow_vec_supported(MO_16, true)) {
++            simd_pack_vec(s, decode, 1);
++        } else {
++            simd_pack(s, decode, 1);
++        }
++        break;
++    case SIMD_PACKSSDW:
++        if (tcg_narrow_vec_supported(MO_32, false)) {
++            simd_pack_vec(s, decode, 2);
++        } else {
++            simd_pack(s, decode, 2);
++        }
++        break;
 +    case SIMD_PMULHW:
++        if (tcg_mulh_vec_supported(MO_16)) {
++            simd_mulh_vec(s, decode, false);
++        } else {
++            simd_arith(s, decode, op);
++        }
++        break;
 +    case SIMD_PMULHUW:
++        if (tcg_mulh_vec_supported(MO_16)) {
++            simd_mulh_vec(s, decode, true);
++        } else {
++            simd_arith(s, decode, op);
++        }
++        break;
 +    case SIMD_PMADDWD:
 +    case SIMD_PAVGB:
 +    case SIMD_PAVGW:
