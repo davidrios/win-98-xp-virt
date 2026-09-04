@@ -145,7 +145,11 @@ guest (XP)                                  host (QEMU process, embed lib)
   is byte-identical between the XP guest and the native DXVK build.
   Acceptance titles still to run; swap-chain objects and volume textures
   open.
-- **P4 — D3D8:** `d3d8.dll` over d3d9.
+- **P4 — D3D8:** `d3d8.dll` over d3d9. **Done 2026-09-04:** `d3d8.c`
+  includes `d3d9.c` and wraps its objects (the d3d8to9 shape in C; vtables
+  generated from mingw's d3d8.h by `gen_vtbl8.py` since the two headers
+  cannot coexist). D3DGAME8 from XP is byte-identical to D3DGAME9. Volume
+  textures, swap chains, GetFrontBuffer and ProcessVertices are stubs.
 - **P5 — later:** DirectDraw/D3D7 layer over the device (or keep WineD3D
   for DX7 titles), Win98 guest (the same DLLs are 9x-compatible if built
   msvcrt / no-CRT like wine9x). The "proper driver" is now **ADR-008 / M7**:
