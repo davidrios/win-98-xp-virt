@@ -119,3 +119,41 @@ are C. Apple Silicon depends on DXVK-over-MoltenVK being good enough for
 D3D9-era feature levels: spike first (doc 14 P0), fallback is a host-side
 WineD3D or a wgpu backend later. The x87 work (patch 06, doc 13) is
 unaffected: games still set PC=24 through our d3d9.dll's CreateDevice.
+
+## ADR-007: The host executor is DXVK on every platform; macOS runs it over KosmicKrisp (2026-09-03)
+
+**Decision.** The paravirtual Direct3D device's host executor (ADR-006,
+doc 14) is DXVK's d3d9, built natively as a library next to QEMU, on Linux
+and macOS alike. On macOS the Vulkan implementation under it is **Mesa's
+KosmicKrisp** (LunarG's Vulkan-on-Metal-4 driver, Vulkan 1.4 conformant on
+Apple Silicon, prebuilt in the LunarG macOS SDK), which requires **macOS 26**
+— the Air gets upgraded. MoltenVK is not a supported configuration.
+DXVK is carried as a submodule (`third_party/dxvk`) plus a patch queue
+(`patches/dxvk/`), the same discipline as the QEMU fork.
+
+**Why.** Spike C (`docs/spikes/spike-c-dxvk-native-macos.md`): DXVK
+master refuses MoltenVK 1.4.2 outright — five hard-required features are
+missing (geometry shaders, cull distance, depth-clip-enable,
+robustBufferAccess2, nullDescriptor), and the two robustness ones are
+unimplementable without shader-side bounds checks Metal lacks (MoltenVK
+issue open since 2025-02). KosmicKrisp advertises all of them except
+geometry shaders, which d3d9 never uses: a one-line "required → optional"
+patch. DXVK's core compiles on macOS; only its Linux-only Windows shim
+needs ~30 lines.
+
+**Alternatives rejected.** *Implement the features in MoltenVK*: harder than
+patching DXVK for the same result. *DXVK-on-MoltenVK with a dummy-resource
+patch queue* (the Gcenx DXVK-macOS pattern): viable as a bridge but fights
+DXVK's descriptor-heap design on every rebase; not pursued since the OS
+upgrade is accepted. *A native D3D9-on-Metal executor inspired by DXVK*:
+a rewrite of ~40 k lines plus years of fidelity work, and a second executor
+to keep bug-for-bug equal with Linux; last resort only. *wgpu translator*:
+same magnitude.
+
+**Consequences.** Minimum macOS for the player's Direct3D path is 26
+(Tahoe); GL pass-through and everything else keep working on 15. The
+player links DXVK through a C shim; a window-less WSI backend replaces
+SDL2 (the device renders off-screen into the existing IOSurface / dma-buf
+frame path). KosmicKrisp is young: Metal 4 workarounds for M1/M2 on macOS
+26 live in the driver (fixed in 27); the rig goldens (`reference/d3d`)
+are the acceptance test for both drivers.

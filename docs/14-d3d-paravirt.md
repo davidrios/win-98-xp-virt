@@ -88,7 +88,12 @@ guest (XP)                                  host (QEMU process, embed lib)
   read back. Measure. If MoltenVK cannot run DXVK's d3d9 for D3D9-era
   features (D3D9 needs Vulkan 1.1 + a few extensions DXVK lists), the
   executor becomes host WineD3D-over-GL or a wgpu translator; the guest side
-  is unchanged either way.
+  is unchanged either way. **Decided 2026-09-03 (ADR-007, spike C):**
+  MoltenVK cannot (five hard-required features missing, two of them
+  unimplementable on Metal); Mesa's KosmicKrisp on macOS 26 can, with a
+  one-line DXVK patch (geometry shaders optional). DXVK is the executor
+  everywhere; `third_party/dxvk` + `patches/dxvk/`. The off-screen test
+  itself runs once the Air is on macOS 26.
 - **P1 — Transport + device:** `hw/d3dpt` in the QEMU queue (patch 40),
   guest `d3d9.dll` with `Direct3DCreate9`, adapter identifier/caps from the
   host, `CreateDevice`, `Clear`, `Present` → the D3D9TEST triangle

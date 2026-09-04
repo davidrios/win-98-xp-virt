@@ -7,3 +7,6 @@
 [submodule "third_party/slang-shaders"]
 	path = third_party/slang-shaders
 	url = https://github.com/libretro/slang-shaders.git
+[submodule "third_party/dxvk"]
+	path = third_party/dxvk
+	url = https://github.com/doitsujin/dxvk
