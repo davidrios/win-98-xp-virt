@@ -17,7 +17,7 @@
 # Env:
 #   CDS="a.iso:b.iso"   discs after the disk, colon-separated (at most 3; add the guest-tools ISO
 #                       yourself when the game needs it or FRESH_DLLS=1 is set)
-#   FRESH_DLLS=1        copy D3DPT\*.DLL from whichever disc has them next to the EXE
+#   FRESH_DLLS=1        copy D3DPT\D3D8.DLL, D3D9.DLL, DDRAW.DLL from whichever disc has them next to the EXE
 #   TRACE=1             d3dpt_trace.on next to the EXE: every creation/lock/upload/
 #                       present call of the DLL goes to d3d8_trace.log / d3d9_trace.log
 #   KEYS="8:ret,25:esc" QMP keys sent after the device attach (delay in s, QKeyCode)
@@ -61,7 +61,7 @@ FAT="$STICK@@1048576"
 DRW='C:\Documents and Settings\All Users\Dados de aplicativos\Microsoft\Dr Watson'
 [ -n "${DRW_DIR:-}" ] && DRW="$DRW_DIR"      # a non-Portuguese XP: "Application Data"
 PRE="rem"
-[ "${FRESH_DLLS:-0}" = 1 ] && PRE='for %%d in (D E F G H) do if exist %%d:\D3DPT\D3D8.DLL copy /y %%d:\D3DPT\*.DLL . > nul'
+[ "${FRESH_DLLS:-0}" = 1 ] && PRE='for %%d in (D E F G H) do if exist %%d:\D3DPT\D3D8.DLL (copy /y %%d:\D3DPT\D3D8.DLL . > nul & copy /y %%d:\D3DPT\D3D9.DLL . > nul & copy /y %%d:\D3DPT\DDRAW.DLL . > nul)'
 [ "${TRACE:-0}" = 1 ] && PRE="$PRE & echo.> d3dpt_trace.on"
 # full page heap for the EXE (ntdll honours the IFEO flags without gflags.exe): every
 # heap overrun faults at the guilty instruction instead of corrupting a neighbour
