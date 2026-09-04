@@ -70,6 +70,10 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   PLAYER_QMP=1 logs every QMP event (SHUTDOWN/RESET/STOP/... are logged regardless)
 #   PLAYER_QMP_EXEC='{"execute":"query-status"}' (or a JSON array of requests) runs
 #   commands once the guest has drawn its first frame and prints the replies
+# Direct3D pass-through (doc 14): the d3dpt device is always present; it loads
+#   build/d3dpt/libd3dpt_exec.so (D3DPT_EXEC_LIB) and DXVK (D3DPT_DXVK_LIB) on the
+#   guest's first use. Build: scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh &&
+#   ninja -C build/dxvk && scripts/build-d3dpt-exec.sh; guest side: D3DPT\ on the ISO.
 # audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.
 #   -machine pc,pcspk-audiodev=embed0   or   -device sb16,audiodev=embed0
 ```

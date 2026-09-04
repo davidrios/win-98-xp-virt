@@ -25,7 +25,9 @@ backend later.
   era code. Python is uv-managed (3.12; 3.14 breaks QEMU's venv).
 - Everything open source; Apple Silicon must work (TCG), not just x86 hosts.
 - **Direct3D 8/9 on XP is our own paravirtual device** (doc 14, ADR-006):
-  guest serializer DLLs + native host executor (DXVK). WineD3D-in-guest is
+  guest serializer DLLs + native host executor (DXVK). Protocol
+  `d3dpt/d3dpt_proto.h` is the one header for guest DLL, QEMU device and
+  executor; bump `D3DPT_PROTO_VERSION` on any change. WineD3D-in-guest is
   the fallback/DX7 path only; don't sink more time into wine9x bugs. The
   reference workload is `guest-tools/src/d3dgame9.c` / `d3dgame8.c`,
   golden on the rig first.
@@ -46,6 +48,8 @@ git clone --recurse-submodules --shallow-submodules <repo>
 scripts/prepare-qemu.sh && scripts/configure-qemu.sh
 ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so   # .dylib on macOS
 cargo build --release
+# Direct3D pass-through (doc 14) needs the executor too:
+scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja -C build/dxvk && scripts/build-d3dpt-exec.sh
 ```
 
 After **every** `git pull`, repeat prepare → configure → ninja → cargo:
@@ -78,6 +82,7 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 |---|---|
 | `tools/x87-fast-test.c` | patch 05's x87 fast path equals the real x87 (x86-64 host oracle) |
 | `tools/x87-guest-test.py` | DOS program under TCG: results identical with the fast path on/off (needs nasm, mtools, FreeDOS floppy) |
+| `tools/d3dpt-exec-test.cpp` | the paravirtual D3D decoder + DXVK executor without a guest: D3D9TEST's batches through the guest encoder → BMP; hostile batch refused |
 | `tools/embed-3d-test.c` | drives the window-less Mesa backend without a guest: context, frame, orientation, dma-buf ring (Linux) |
 | `tools/qmpc.py` | drives a guest over an extra `-qmp unix:…,server,nowait` socket: keys, typing, screendumps |
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |

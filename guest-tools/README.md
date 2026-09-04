@@ -16,6 +16,7 @@ GAMEDIR\  OPENGL32.DLL WGLGEARS.EXE                        → next to each Open
           D3D9.DLL D3D8.DLL WINED3D.DLL D3D9TEST.EXE       → next to each Direct3D 8/9 game's EXE (WineD3D)
           DDRAW.DLL WINED3D.DLL                            → next to a DirectX 5–7 game's EXE (DirectDraw / Direct3D ≤7 via WineD3D)
 WINED3D\  the full WineD3D set + per-OS switcher DLLs       → system-wide install, see WINE9X.TXT
+D3DPT\    D3D9.DLL D3D9TEST.EXE D3DGAME9.EXE                → paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to the game's EXE; needs FXPTL.SYS / FXMEMMAP.VXD like OPENGL32.DLL. Never together with WINED3D's D3D9.DLL. Log in d3dpt.log next to the EXE (C:\d3dpt.log from the CD)
 ```
 
 **WineD3D (Direct3D 8/9 → OpenGL → pass-through):** built from

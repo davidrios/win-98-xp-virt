@@ -164,6 +164,16 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/modetest.exe" "$ROOT/guest-tools/s
 # Direct3D 9 and Direct3D 8; -frames N -dump N x.bmp for golden images.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame9.exe" "$ROOT/guest-tools/src/d3dgame9.c" -ld3d9 -lgdi32 -luser32
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame8.exe" "$ROOT/guest-tools/src/d3dgame8.c" -ld3d8 -lgdi32 -luser32
+# Paravirtual Direct3D 9 (doc 14, d3dpt/): our d3d9.dll over the d3dpt
+# device, with qemu-3dfx's fxlib device mapper (FXPTL.SYS / FXMEMMAP.VXD).
+# Staged apart from WineD3D so the two stacks never mix in one folder;
+# D3D9TEST.EXE and D3DGAME9.EXE next to it run against the device.
+# d3d9_vtbl.h is generated from mingw's d3d9.h (gen_vtbl.py) and checked in.
+mkdir -p "$OUT/iso/D3DPT"
+i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d9.dll" "$ROOT/guest-tools/src/d3dpt/d3d9.c" \
+  "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
+  -Wl,--kill-at -lgdi32 -luser32
+cp "$OUT/iso/GAMEDIR/d3d9test.exe" "$OUT/iso/GAMEDIR/d3dgame9.exe" "$OUT/iso/D3DPT/"
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
@@ -196,13 +206,18 @@ GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
             (and -fs, -bpp16, -shader variants) gives the golden images the
             emulated paths are compared against. WASD/arrows/Q/E camera,
             F1 wireframe, Space pause, Esc quits; fps in the title/console.
+D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
+            D3D9TEST.EXE / D3DGAME9.EXE; needs the WIN2KXP (FXPTL.SYS) or
+            WIN9X step like OPENGL32.DLL. Log: d3dpt.log next to the EXE
+            (C:\d3dpt.log when run from the CD). Do not mix with WINED3D.
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 
 Not included: GLIDE2X.OVL (DOS Glide games; needs Open Watcom to build).
 TXT
 # 8.3-safe upper-case names for Win9x
-( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/*; do mv "$f" "$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; done )
+( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/* D3DPT/*; do
+    u="$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; [ "$f" = "$u" ] || mv "$f" "$u"; done )
 
 ISO="$OUT/guest-tools-3dfx-$REV.iso"
 if command -v xorriso >/dev/null; then

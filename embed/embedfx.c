@@ -11,6 +11,7 @@
 #include "qemu/error-report.h"
 #include "ui/console.h"
 #include "embedfx.h"
+#include "hw/d3dpt/d3dpt.h"
 
 static int fx_active;
 
@@ -73,7 +74,26 @@ static const QemuFxUiOps embed_fx_ui_ops = {
     .mesa_gui_fullscreen  = fx_mesa_gui_fullscreen,
 };
 
+/* paravirtual Direct3D (hw/d3dpt): the executor's frames take the same
+ * path as GL swaps; while a device exists the VGA surface is not shown */
+static void d3dpt_present_active(bool on)
+{
+    graphic_hw_passthrough(qemu_console_lookup_by_index(0), on);
+    embed_fx_active(on);
+}
+
+static void d3dpt_present_frame(const void *px, int w, int h, int stride)
+{
+    embed_fx_frame(px, w, h, stride, /* bottom_up */ 0);
+}
+
+static const D3dptPresentOps embed_d3dpt_present_ops = {
+    .active = d3dpt_present_active,
+    .frame = d3dpt_present_frame,
+};
+
 void embed_fx_register(void)
 {
     qemu_fx_ui_register(&embed_fx_ui_ops);
+    d3dpt_set_present_ops(&embed_d3dpt_present_ops);
 }

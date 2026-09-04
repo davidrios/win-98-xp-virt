@@ -10,3 +10,5 @@
 build/
 /guest-tools/out/
 /guest-tools/tools/
+# DXVK writes <exe>_d3d9.log next to the cwd
+*_d3d9.log

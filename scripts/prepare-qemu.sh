@@ -49,6 +49,11 @@ rsync -rc "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
 echo "==> overlaying embed/ (libqemu_embed)"
 rsync -rc --delete "$ROOT/embed/" "$QEMU/embed/"
 
+echo "==> overlaying d3dpt/ (paravirtual Direct3D device: hw/d3dpt)"
+mkdir -p "$QEMU/hw/d3dpt"
+rsync -rc --delete --exclude d3dpt_proto.h --exclude d3dpt_exec.h "$ROOT/d3dpt/hw/" "$QEMU/hw/d3dpt/"
+rsync -c "$ROOT/d3dpt/d3dpt_proto.h" "$ROOT/d3dpt/exec/d3dpt_exec.h" "$QEMU/hw/d3dpt/"
+
 # Deterministic: restore every TRACKED file any patch touches to pristine
 # v9.2.4, then apply the 3dfx patch and our queue fresh. (Overlay files were
 # already refreshed by rsync above.) Partial states — e.g. a manual

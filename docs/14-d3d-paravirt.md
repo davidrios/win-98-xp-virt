@@ -45,7 +45,10 @@ guest (XP)                                  host (QEMU process, embed lib)
   (LGPL; ADR-006).
 - **Guest `d3d8.dll`:** D3D8 over our d3d9, the d3d8to9 approach (BSD-2):
   interface mapping, caps translation, SM1.1 passthrough.
-- **Host decoder:** one thread per device (like mesapt), owns a mirror of
+- **Host decoder:** lives in `libd3dpt_exec` (C++), which the C device
+  model dlopens, so the protocol evolves without a QEMU rebuild and QEMU
+  stays C. P1 runs it on the vCPU thread; one thread per device is the
+  planned shape. Owns a mirror of
   handles → DXVK objects, validates arguments (a hostile guest must not
   crash the host), executes through DXVK's `IDirect3D9` natively. DXVK's
   d3d9 is a complete D3D9 implementation with a Windows-free build (the
@@ -109,7 +112,18 @@ guest (XP)                                  host (QEMU process, embed lib)
   guest `d3d9.dll` with `Direct3DCreate9`, adapter identifier/caps from the
   host, `CreateDevice`, `Clear`, `Present` → the D3D9TEST triangle
   (guest-tools) shows in the player. Per-call and per-frame cost measured
-  against WineD3D-in-guest on the same test.
+  against WineD3D-in-guest on the same test. **Done 2026-09-03 (Linux):**
+  `d3dpt/d3dpt_proto.h` (protocol), `d3dpt/d3dpt_enc.h` (guest encoder),
+  `d3dpt/hw` (QEMU device, patch 40), `d3dpt/exec` (decoder + DXVK
+  executor as `libd3dpt_exec`, dlopened by the device), DXVK patch 04
+  (headless WSI), `guest-tools/src/d3dpt/d3d9.c` (the DLL, ISO `D3DPT\`).
+  XP D3D9TEST 640×480 windowed under TCG on the Linux host (RADV): 2840 fps on
+  the device, 1100 on WineD3D-in-guest, 4300 replaying the same batches
+  natively (`tools/d3dpt-exec-test.cpp`). One doorbell per frame; the
+  batch executes synchronously on the vCPU thread under the BQL (the
+  decoder thread of the shape above is deferred until a measurement asks
+  for it). Present reads the backbuffer back through GetRenderTargetData;
+  zero-copy through DXVK's Vulkan interop is P2/P3 work.
 - **P2 — Resources + fixed function:** vertex/index buffers, textures
   (all D3D9-era formats incl. DXT and palettized via conversion), Lock/Unlock,
   render/texture/sampler states, transforms, lights, DrawPrimitive*/UP
