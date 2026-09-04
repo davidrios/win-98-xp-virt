@@ -19,6 +19,11 @@ IMPL_TEX = IMPL_RES | set("""SetLOD GetLOD GetLevelCount SetAutoGenFilterType Ge
 GenerateMipSubLevels GetLevelDesc GetSurfaceLevel LockRect UnlockRect AddDirtyRect""".split())
 IMPL_SURF = IMPL_RES | set("GetContainer GetDesc LockRect UnlockRect".split())
 IMPL_SH = set("QueryInterface AddRef Release GetDevice GetFunction".split())
+IMPL_CUBE = IMPL_RES | set("""SetLOD GetLOD GetLevelCount SetAutoGenFilterType GetAutoGenFilterType
+GenerateMipSubLevels GetLevelDesc GetCubeMapSurface LockRect UnlockRect AddDirtyRect""".split())
+IMPL_DECL = set("QueryInterface AddRef Release GetDevice GetDeclaration".split())
+IMPL_QUERY = set("QueryInterface AddRef Release GetDevice GetType GetDataSize Issue GetData".split())
+IMPL_SB = set("QueryInterface AddRef Release GetDevice Capture Apply".split())
 IMPL_DEV = set("""QueryInterface AddRef Release TestCooperativeLevel GetAvailableTextureMem
 EvictManagedResources GetDirect3D GetDeviceCaps GetDisplayMode GetCreationParameters
 SetCursorProperties SetCursorPosition ShowCursor GetNumberOfSwapChains Reset Present
@@ -31,7 +36,12 @@ SetVertexShaderConstantF SetPixelShaderConstantF GetVertexShader GetPixelShader 
 GetTexture CreateTexture CreateVertexBuffer CreateIndexBuffer CreateRenderTarget CreateDepthStencilSurface
 CreateOffscreenPlainSurface GetRenderTargetData StretchRect SetRenderTarget GetRenderTarget
 SetDepthStencilSurface GetDepthStencilSurface GetBackBuffer DrawPrimitive DrawIndexedPrimitive
-DrawIndexedPrimitiveUP CreateVertexShader CreatePixelShader GetSwapChain SetClipPlane GetClipPlane""".split())
+DrawIndexedPrimitiveUP CreateVertexShader CreatePixelShader GetSwapChain SetClipPlane GetClipPlane
+CreateCubeTexture CreateVertexDeclaration SetVertexDeclaration GetVertexDeclaration CreateQuery
+CreateStateBlock BeginStateBlock EndStateBlock UpdateSurface UpdateTexture ColorFill
+GetVertexShaderConstantF GetPixelShaderConstantF SetVertexShaderConstantI GetVertexShaderConstantI
+SetVertexShaderConstantB GetVertexShaderConstantB SetPixelShaderConstantI GetPixelShaderConstantI
+SetPixelShaderConstantB GetPixelShaderConstantB""".split())
 
 src = open(sys.argv[1]).read()
 rx = re.compile(r'STDMETHOD(?:_\(\s*([^,]+?)\s*,\s*(\w+)\s*\)|\((\w+)\))\s*\(\s*THIS(?:_\s*(.*?))?\s*\)\s*PURE;', re.S)
@@ -45,7 +55,8 @@ def methods(iface):
         args = ' '.join((r.group(4) or '').split())
         out.append((ret, name, args))
     expect = {'IDirect3D9': 17, 'IDirect3DDevice9': 119, 'IDirect3DVertexBuffer9': 14, 'IDirect3DIndexBuffer9': 14,
-              'IDirect3DTexture9': 22, 'IDirect3DSurface9': 17, 'IDirect3DVertexShader9': 5, 'IDirect3DPixelShader9': 5}[iface]
+              'IDirect3DTexture9': 22, 'IDirect3DSurface9': 17, 'IDirect3DVertexShader9': 5, 'IDirect3DPixelShader9': 5,
+              'IDirect3DCubeTexture9': 22, 'IDirect3DVertexDeclaration9': 5, 'IDirect3DQuery9': 8, 'IDirect3DStateBlock9': 6}[iface]
     assert len(out) == expect, (iface, len(out))
     return out
 
@@ -77,4 +88,8 @@ emit('IDirect3DTexture9', 'tex', IMPL_TEX)
 emit('IDirect3DSurface9', 'surf', IMPL_SURF)
 emit('IDirect3DVertexShader9', 'vs', IMPL_SH)
 emit('IDirect3DPixelShader9', 'ps', IMPL_SH)
+emit('IDirect3DCubeTexture9', 'cube', IMPL_CUBE)
+emit('IDirect3DVertexDeclaration9', 'decl', IMPL_DECL)
+emit('IDirect3DQuery9', 'query', IMPL_QUERY)
+emit('IDirect3DStateBlock9', 'sb', IMPL_SB)
 print('#endif')

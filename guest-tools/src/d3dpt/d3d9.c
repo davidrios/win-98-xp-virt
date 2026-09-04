@@ -106,16 +106,8 @@ struct d3d9 {
 #define MAX_RS 256
 #define MAX_TSS_STAGES 8
 #define MAX_SAMPLERS 16
-struct device {
-    const IDirect3DDevice9Vtbl *vt;
-    LONG ref;
-    struct d3d9 *d3d;
-    uint32_t handle;
-    HWND focus, window;
-    DWORD behavior;
-    D3DPRESENT_PARAMETERS pp;
-    int mode_changed;
-    /* shadow state */
+/* everything an app can read back or a state block can capture */
+struct shadow_state {
     DWORD rs[MAX_RS];
     DWORD tss[MAX_TSS_STAGES][33];
     DWORD samp[MAX_SAMPLERS][14];
@@ -126,18 +118,51 @@ struct device {
     BOOL light_on[8];
     DWORD fvf;
     RECT scissor;
-    BOOL swvp;
-    /* resources (d3d9_res.h) */
-    struct surface *bb, *auto_ds;       /* the implicit backbuffer / depth, created on first use */
-    struct surface *rt[4], *ds;         /* bound render targets / depth stencil (referenced) */
+    float clip[6][4];
+    float vs_f[256][4], ps_f[224][4];
+    int vs_i[16][4], ps_i[16][4];
+    BOOL vs_b[16], ps_b[16];
+    /* bindings (referenced) */
     struct texture *tex_bound[16];
     struct vbuf *stream[16];
     UINT stream_off[16], stream_stride[16];
     struct ibuf *indices;
     struct shader *vs, *ps;
+    struct vdecl *decl;
+};
+/* which items a state block records */
+struct sb_marks {
+    uint32_t rs[MAX_RS / 32];
+    uint64_t tss[MAX_TSS_STAGES];
+    uint16_t samp[MAX_SAMPLERS];
+    uint32_t xform;         /* bit 0 world, 1 view, 2 proj, 3+i texture i */
+    uint32_t misc;          /* SB_VP, SB_MATERIAL, SB_FVF, SB_SCISSOR, SB_INDICES, SB_VS, SB_PS, SB_DECL */
+    uint32_t lights, light_on, clip;
+    uint32_t textures, streams;
+    uint32_t vs_f[8], ps_f[7], vs_i, ps_i, vs_b, ps_b;
+};
+enum { SB_VP = 1, SB_MATERIAL = 2, SB_FVF = 4, SB_SCISSOR = 8, SB_INDICES = 16, SB_VS = 32, SB_PS = 64, SB_DECL = 128 };
+struct stateblock;
+struct device {
+    const IDirect3DDevice9Vtbl *vt;
+    LONG ref;
+    struct d3d9 *d3d;
+    uint32_t handle;
+    HWND focus, window;
+    DWORD behavior;
+    D3DPRESENT_PARAMETERS pp;
+    int mode_changed;
+    BOOL swvp;
+    struct shadow_state st;
+    struct stateblock *recording;       /* BeginStateBlock .. EndStateBlock */
+    /* resources (d3d9_res.h) */
+    struct surface *bb, *auto_ds;       /* the implicit backbuffer / depth, created on first use */
+    struct surface *rt[4], *ds;         /* bound render targets / depth stencil (referenced) */
     int host_alive;                     /* the host device exists; resource releases still talk to it */
 };
-struct surface; struct texture; struct vbuf; struct ibuf; struct shader;
+struct surface; struct texture; struct vbuf; struct ibuf; struct shader; struct vdecl;
+static struct sb_marks *rec_marks(struct device *dev);   /* d3d9_p3.h: the recording block's marks or NULL */
+#define SB_MARK(dev, expr) do { struct sb_marks *m_ = rec_marks(dev); if (m_) { expr; } } while (0)
 static void device_unbind_all(struct device *dev);
 
 static HRESULT get_adapter_info(struct d3d9 *d)
@@ -319,49 +344,49 @@ static void shadow_defaults(struct device *dev)
 {
     int i;
     static const D3DMATRIX ident = {{{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }}};
-    memset(dev->rs, 0, sizeof dev->rs);
-    dev->rs[D3DRS_ZENABLE] = dev->pp.EnableAutoDepthStencil ? D3DZB_TRUE : D3DZB_FALSE;
-    dev->rs[D3DRS_FILLMODE] = D3DFILL_SOLID; dev->rs[D3DRS_SHADEMODE] = D3DSHADE_GOURAUD;
-    dev->rs[D3DRS_ZWRITEENABLE] = TRUE; dev->rs[D3DRS_LASTPIXEL] = TRUE;
-    dev->rs[D3DRS_SRCBLEND] = D3DBLEND_ONE; dev->rs[D3DRS_DESTBLEND] = D3DBLEND_ZERO;
-    dev->rs[D3DRS_CULLMODE] = D3DCULL_CCW; dev->rs[D3DRS_ZFUNC] = D3DCMP_LESSEQUAL;
-    dev->rs[D3DRS_ALPHAFUNC] = D3DCMP_ALWAYS; dev->rs[D3DRS_DITHERENABLE] = FALSE;
-    dev->rs[D3DRS_SPECULARENABLE] = FALSE; dev->rs[D3DRS_FOGCOLOR] = 0;
-    dev->rs[D3DRS_LIGHTING] = TRUE; dev->rs[D3DRS_AMBIENT] = 0;
-    dev->rs[D3DRS_COLORVERTEX] = TRUE; dev->rs[D3DRS_LOCALVIEWER] = TRUE;
-    dev->rs[D3DRS_DIFFUSEMATERIALSOURCE] = D3DMCS_COLOR1; dev->rs[D3DRS_SPECULARMATERIALSOURCE] = D3DMCS_COLOR2;
-    dev->rs[D3DRS_AMBIENTMATERIALSOURCE] = D3DMCS_MATERIAL; dev->rs[D3DRS_EMISSIVEMATERIALSOURCE] = D3DMCS_MATERIAL;
-    dev->rs[D3DRS_COLORWRITEENABLE] = 0xf; dev->rs[D3DRS_STENCILMASK] = 0xffffffff; dev->rs[D3DRS_STENCILWRITEMASK] = 0xffffffff;
-    dev->rs[D3DRS_STENCILFUNC] = D3DCMP_ALWAYS; dev->rs[D3DRS_STENCILFAIL] = D3DSTENCILOP_KEEP;
-    dev->rs[D3DRS_STENCILZFAIL] = D3DSTENCILOP_KEEP; dev->rs[D3DRS_STENCILPASS] = D3DSTENCILOP_KEEP;
-    dev->rs[D3DRS_POINTSIZE] = 0x3f800000; dev->rs[D3DRS_POINTSIZE_MAX] = 0x42800000; dev->rs[D3DRS_POINTSCALE_A] = 0x3f800000;
-    dev->rs[D3DRS_BLENDOP] = D3DBLENDOP_ADD; dev->rs[D3DRS_SRCBLENDALPHA] = D3DBLEND_ONE; dev->rs[D3DRS_DESTBLENDALPHA] = D3DBLEND_ZERO;
-    dev->rs[D3DRS_BLENDOPALPHA] = D3DBLENDOP_ADD; dev->rs[D3DRS_COLORWRITEENABLE1] = dev->rs[D3DRS_COLORWRITEENABLE2] = dev->rs[D3DRS_COLORWRITEENABLE3] = 0xf;
-    dev->rs[D3DRS_PATCHEDGESTYLE] = D3DPATCHEDGE_DISCRETE; dev->rs[D3DRS_CCW_STENCILFUNC] = D3DCMP_ALWAYS;
-    dev->rs[D3DRS_CCW_STENCILFAIL] = dev->rs[D3DRS_CCW_STENCILZFAIL] = dev->rs[D3DRS_CCW_STENCILPASS] = D3DSTENCILOP_KEEP;
-    memset(dev->tss, 0, sizeof dev->tss);
+    memset(dev->st.rs, 0, sizeof dev->st.rs);
+    dev->st.rs[D3DRS_ZENABLE] = dev->pp.EnableAutoDepthStencil ? D3DZB_TRUE : D3DZB_FALSE;
+    dev->st.rs[D3DRS_FILLMODE] = D3DFILL_SOLID; dev->st.rs[D3DRS_SHADEMODE] = D3DSHADE_GOURAUD;
+    dev->st.rs[D3DRS_ZWRITEENABLE] = TRUE; dev->st.rs[D3DRS_LASTPIXEL] = TRUE;
+    dev->st.rs[D3DRS_SRCBLEND] = D3DBLEND_ONE; dev->st.rs[D3DRS_DESTBLEND] = D3DBLEND_ZERO;
+    dev->st.rs[D3DRS_CULLMODE] = D3DCULL_CCW; dev->st.rs[D3DRS_ZFUNC] = D3DCMP_LESSEQUAL;
+    dev->st.rs[D3DRS_ALPHAFUNC] = D3DCMP_ALWAYS; dev->st.rs[D3DRS_DITHERENABLE] = FALSE;
+    dev->st.rs[D3DRS_SPECULARENABLE] = FALSE; dev->st.rs[D3DRS_FOGCOLOR] = 0;
+    dev->st.rs[D3DRS_LIGHTING] = TRUE; dev->st.rs[D3DRS_AMBIENT] = 0;
+    dev->st.rs[D3DRS_COLORVERTEX] = TRUE; dev->st.rs[D3DRS_LOCALVIEWER] = TRUE;
+    dev->st.rs[D3DRS_DIFFUSEMATERIALSOURCE] = D3DMCS_COLOR1; dev->st.rs[D3DRS_SPECULARMATERIALSOURCE] = D3DMCS_COLOR2;
+    dev->st.rs[D3DRS_AMBIENTMATERIALSOURCE] = D3DMCS_MATERIAL; dev->st.rs[D3DRS_EMISSIVEMATERIALSOURCE] = D3DMCS_MATERIAL;
+    dev->st.rs[D3DRS_COLORWRITEENABLE] = 0xf; dev->st.rs[D3DRS_STENCILMASK] = 0xffffffff; dev->st.rs[D3DRS_STENCILWRITEMASK] = 0xffffffff;
+    dev->st.rs[D3DRS_STENCILFUNC] = D3DCMP_ALWAYS; dev->st.rs[D3DRS_STENCILFAIL] = D3DSTENCILOP_KEEP;
+    dev->st.rs[D3DRS_STENCILZFAIL] = D3DSTENCILOP_KEEP; dev->st.rs[D3DRS_STENCILPASS] = D3DSTENCILOP_KEEP;
+    dev->st.rs[D3DRS_POINTSIZE] = 0x3f800000; dev->st.rs[D3DRS_POINTSIZE_MAX] = 0x42800000; dev->st.rs[D3DRS_POINTSCALE_A] = 0x3f800000;
+    dev->st.rs[D3DRS_BLENDOP] = D3DBLENDOP_ADD; dev->st.rs[D3DRS_SRCBLENDALPHA] = D3DBLEND_ONE; dev->st.rs[D3DRS_DESTBLENDALPHA] = D3DBLEND_ZERO;
+    dev->st.rs[D3DRS_BLENDOPALPHA] = D3DBLENDOP_ADD; dev->st.rs[D3DRS_COLORWRITEENABLE1] = dev->st.rs[D3DRS_COLORWRITEENABLE2] = dev->st.rs[D3DRS_COLORWRITEENABLE3] = 0xf;
+    dev->st.rs[D3DRS_PATCHEDGESTYLE] = D3DPATCHEDGE_DISCRETE; dev->st.rs[D3DRS_CCW_STENCILFUNC] = D3DCMP_ALWAYS;
+    dev->st.rs[D3DRS_CCW_STENCILFAIL] = dev->st.rs[D3DRS_CCW_STENCILZFAIL] = dev->st.rs[D3DRS_CCW_STENCILPASS] = D3DSTENCILOP_KEEP;
+    memset(dev->st.tss, 0, sizeof dev->st.tss);
     for (i = 0; i < MAX_TSS_STAGES; i++) {
-        dev->tss[i][D3DTSS_COLOROP] = i ? D3DTOP_DISABLE : D3DTOP_MODULATE;
-        dev->tss[i][D3DTSS_COLORARG1] = D3DTA_TEXTURE; dev->tss[i][D3DTSS_COLORARG2] = D3DTA_CURRENT;
-        dev->tss[i][D3DTSS_ALPHAOP] = i ? D3DTOP_DISABLE : D3DTOP_SELECTARG1;
-        dev->tss[i][D3DTSS_ALPHAARG1] = D3DTA_TEXTURE; dev->tss[i][D3DTSS_ALPHAARG2] = D3DTA_CURRENT;
-        dev->tss[i][D3DTSS_TEXCOORDINDEX] = i; dev->tss[i][D3DTSS_COLORARG0] = dev->tss[i][D3DTSS_ALPHAARG0] = D3DTA_CURRENT;
-        dev->tss[i][D3DTSS_RESULTARG] = D3DTA_CURRENT;
+        dev->st.tss[i][D3DTSS_COLOROP] = i ? D3DTOP_DISABLE : D3DTOP_MODULATE;
+        dev->st.tss[i][D3DTSS_COLORARG1] = D3DTA_TEXTURE; dev->st.tss[i][D3DTSS_COLORARG2] = D3DTA_CURRENT;
+        dev->st.tss[i][D3DTSS_ALPHAOP] = i ? D3DTOP_DISABLE : D3DTOP_SELECTARG1;
+        dev->st.tss[i][D3DTSS_ALPHAARG1] = D3DTA_TEXTURE; dev->st.tss[i][D3DTSS_ALPHAARG2] = D3DTA_CURRENT;
+        dev->st.tss[i][D3DTSS_TEXCOORDINDEX] = i; dev->st.tss[i][D3DTSS_COLORARG0] = dev->st.tss[i][D3DTSS_ALPHAARG0] = D3DTA_CURRENT;
+        dev->st.tss[i][D3DTSS_RESULTARG] = D3DTA_CURRENT;
     }
-    memset(dev->samp, 0, sizeof dev->samp);
+    memset(dev->st.samp, 0, sizeof dev->st.samp);
     for (i = 0; i < MAX_SAMPLERS; i++) {
-        dev->samp[i][D3DSAMP_ADDRESSU] = dev->samp[i][D3DSAMP_ADDRESSV] = dev->samp[i][D3DSAMP_ADDRESSW] = D3DTADDRESS_WRAP;
-        dev->samp[i][D3DSAMP_MAGFILTER] = dev->samp[i][D3DSAMP_MINFILTER] = D3DTEXF_POINT;
-        dev->samp[i][D3DSAMP_MIPFILTER] = D3DTEXF_NONE; dev->samp[i][D3DSAMP_MAXANISOTROPY] = 1;
+        dev->st.samp[i][D3DSAMP_ADDRESSU] = dev->st.samp[i][D3DSAMP_ADDRESSV] = dev->st.samp[i][D3DSAMP_ADDRESSW] = D3DTADDRESS_WRAP;
+        dev->st.samp[i][D3DSAMP_MAGFILTER] = dev->st.samp[i][D3DSAMP_MINFILTER] = D3DTEXF_POINT;
+        dev->st.samp[i][D3DSAMP_MIPFILTER] = D3DTEXF_NONE; dev->st.samp[i][D3DSAMP_MAXANISOTROPY] = 1;
     }
-    dev->world = dev->view = dev->proj = ident;
-    for (i = 0; i < 8; i++) dev->tex[i] = ident;
-    dev->vp.X = dev->vp.Y = 0; dev->vp.Width = dev->pp.BackBufferWidth; dev->vp.Height = dev->pp.BackBufferHeight;
-    dev->vp.MinZ = 0.0f; dev->vp.MaxZ = 1.0f;
-    memset(&dev->material, 0, sizeof dev->material);
-    memset(dev->lights, 0, sizeof dev->lights); memset(dev->light_on, 0, sizeof dev->light_on);
-    dev->fvf = 0;
-    dev->scissor.left = dev->scissor.top = 0; dev->scissor.right = dev->pp.BackBufferWidth; dev->scissor.bottom = dev->pp.BackBufferHeight;
+    dev->st.world = dev->st.view = dev->st.proj = ident;
+    for (i = 0; i < 8; i++) dev->st.tex[i] = ident;
+    dev->st.vp.X = dev->st.vp.Y = 0; dev->st.vp.Width = dev->pp.BackBufferWidth; dev->st.vp.Height = dev->pp.BackBufferHeight;
+    dev->st.vp.MinZ = 0.0f; dev->st.vp.MaxZ = 1.0f;
+    memset(&dev->st.material, 0, sizeof dev->st.material);
+    memset(dev->st.lights, 0, sizeof dev->st.lights); memset(dev->st.light_on, 0, sizeof dev->st.light_on);
+    dev->st.fvf = 0;
+    dev->st.scissor.left = dev->st.scissor.top = 0; dev->st.scissor.right = dev->pp.BackBufferWidth; dev->st.scissor.bottom = dev->pp.BackBufferHeight;
 }
 
 static void normalize_pp(struct device *dev, D3DPRESENT_PARAMETERS *pp)
@@ -559,10 +584,10 @@ HRESULT WINAPI dev_Clear(IDirect3DDevice9 *This, DWORD Count, const D3DRECT *pRe
 }
 static D3DMATRIX *xform_slot(struct device *dev, D3DTRANSFORMSTATETYPE t)
 {
-    if (t == D3DTS_VIEW) return &dev->view;
-    if (t == D3DTS_PROJECTION) return &dev->proj;
-    if (t >= D3DTS_TEXTURE0 && t <= D3DTS_TEXTURE7) return &dev->tex[t - D3DTS_TEXTURE0];
-    if (t == D3DTS_WORLD) return &dev->world;
+    if (t == D3DTS_VIEW) return &dev->st.view;
+    if (t == D3DTS_PROJECTION) return &dev->st.proj;
+    if (t >= D3DTS_TEXTURE0 && t <= D3DTS_TEXTURE7) return &dev->st.tex[t - D3DTS_TEXTURE0];
+    if (t == D3DTS_WORLD) return &dev->st.world;
     return NULL;
 }
 HRESULT WINAPI dev_SetTransform(IDirect3DDevice9 *This, D3DTRANSFORMSTATETYPE State, const D3DMATRIX *m)
@@ -570,7 +595,7 @@ HRESULT WINAPI dev_SetTransform(IDirect3DDevice9 *This, D3DTRANSFORMSTATETYPE St
     D3DMATRIX *slot = xform_slot(DEV(This), State);
     d3dpt_transform *t;
     if (!m) return D3DERR_INVALIDCALL;
-    if (slot) *slot = *m;
+    if (slot) { *slot = *m; SB_MARK(DEV(This), m_->xform |= State == D3DTS_VIEW ? 2u : State == D3DTS_PROJECTION ? 4u : State == D3DTS_WORLD ? 1u : 8u << (State - D3DTS_TEXTURE0)); }
     t = d3dpt_enc_cmd(&enc, D3DPT_OP_SET_TRANSFORM, sizeof *t, 0);
     if (!t) return E_FAIL;
     t->state = State; t->pad = 0; memcpy(t->m, m, sizeof t->m);
@@ -599,29 +624,31 @@ HRESULT WINAPI dev_SetViewport(IDirect3DDevice9 *This, const D3DVIEWPORT9 *vp)
 {
     d3dpt_viewport *v;
     if (!vp) return D3DERR_INVALIDCALL;
-    DEV(This)->vp = *vp;
+    DEV(This)->st.vp = *vp;
+    SB_MARK(DEV(This), m_->misc |= SB_VP);
     v = d3dpt_enc_cmd(&enc, D3DPT_OP_SET_VIEWPORT, sizeof *v, 0);
     if (!v) return E_FAIL;
     memcpy(v, vp, sizeof *v);
     return D3D_OK;
 }
-HRESULT WINAPI dev_GetViewport(IDirect3DDevice9 *This, D3DVIEWPORT9 *vp) { if (!vp) return D3DERR_INVALIDCALL; *vp = DEV(This)->vp; return D3D_OK; }
+HRESULT WINAPI dev_GetViewport(IDirect3DDevice9 *This, D3DVIEWPORT9 *vp) { if (!vp) return D3DERR_INVALIDCALL; *vp = DEV(This)->st.vp; return D3D_OK; }
 HRESULT WINAPI dev_SetMaterial(IDirect3DDevice9 *This, const D3DMATERIAL9 *m)
 {
     d3dpt_material *p;
     if (!m) return D3DERR_INVALIDCALL;
-    DEV(This)->material = *m;
+    DEV(This)->st.material = *m;
+    SB_MARK(DEV(This), m_->misc |= SB_MATERIAL);
     p = d3dpt_enc_cmd(&enc, D3DPT_OP_SET_MATERIAL, sizeof *p, 0);
     if (!p) return E_FAIL;
     memcpy(p->material, m, sizeof p->material); p->pad = 0;
     return D3D_OK;
 }
-HRESULT WINAPI dev_GetMaterial(IDirect3DDevice9 *This, D3DMATERIAL9 *m) { if (!m) return D3DERR_INVALIDCALL; *m = DEV(This)->material; return D3D_OK; }
+HRESULT WINAPI dev_GetMaterial(IDirect3DDevice9 *This, D3DMATERIAL9 *m) { if (!m) return D3DERR_INVALIDCALL; *m = DEV(This)->st.material; return D3D_OK; }
 HRESULT WINAPI dev_SetLight(IDirect3DDevice9 *This, DWORD Index, const D3DLIGHT9 *l)
 {
     d3dpt_light *p;
     if (!l) return D3DERR_INVALIDCALL;
-    if (Index < 8) DEV(This)->lights[Index] = *l;
+    if (Index < 8) { DEV(This)->st.lights[Index] = *l; SB_MARK(DEV(This), m_->lights |= 1u << Index); }
     p = d3dpt_enc_cmd(&enc, D3DPT_OP_SET_LIGHT, sizeof *p, 0);
     if (!p) return E_FAIL;
     p->index = Index; p->pad = 0; memcpy(p->light, l, sizeof p->light);
@@ -630,66 +657,67 @@ HRESULT WINAPI dev_SetLight(IDirect3DDevice9 *This, DWORD Index, const D3DLIGHT9
 HRESULT WINAPI dev_GetLight(IDirect3DDevice9 *This, DWORD Index, D3DLIGHT9 *l)
 {
     if (!l || Index >= 8) return D3DERR_INVALIDCALL;
-    *l = DEV(This)->lights[Index];
+    *l = DEV(This)->st.lights[Index];
     return D3D_OK;
 }
 HRESULT WINAPI dev_LightEnable(IDirect3DDevice9 *This, DWORD Index, WINBOOL Enable)
 {
-    if (Index < 8) DEV(This)->light_on[Index] = Enable;
+    if (Index < 8) { DEV(This)->st.light_on[Index] = Enable; SB_MARK(DEV(This), m_->light_on |= 1u << Index); }
     d3dpt_enc_u32x2(&enc, D3DPT_OP_LIGHT_ENABLE, Index, Enable ? 1 : 0);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetLightEnable(IDirect3DDevice9 *This, DWORD Index, WINBOOL *pEnable)
 {
     if (!pEnable || Index >= 8) return D3DERR_INVALIDCALL;
-    *pEnable = DEV(This)->light_on[Index];
+    *pEnable = DEV(This)->st.light_on[Index];
     return D3D_OK;
 }
 HRESULT WINAPI dev_SetRenderState(IDirect3DDevice9 *This, D3DRENDERSTATETYPE State, DWORD Value)
 {
-    if ((DWORD)State < MAX_RS) DEV(This)->rs[State] = Value;
+    if ((DWORD)State < MAX_RS) { DEV(This)->st.rs[State] = Value; SB_MARK(DEV(This), m_->rs[State / 32] |= 1u << (State % 32)); }
     d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_RENDER_STATE, State, Value);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetRenderState(IDirect3DDevice9 *This, D3DRENDERSTATETYPE State, DWORD *pValue)
 {
     if (!pValue || (DWORD)State >= MAX_RS) return D3DERR_INVALIDCALL;
-    *pValue = DEV(This)->rs[State];
+    *pValue = DEV(This)->st.rs[State];
     return D3D_OK;
 }
 HRESULT WINAPI dev_SetTextureStageState(IDirect3DDevice9 *This, DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value)
 {
-    if (Stage < MAX_TSS_STAGES && (DWORD)Type < 33) DEV(This)->tss[Stage][Type] = Value;
+    if (Stage < MAX_TSS_STAGES && (DWORD)Type < 33) { DEV(This)->st.tss[Stage][Type] = Value; SB_MARK(DEV(This), m_->tss[Stage] |= 1ull << Type); }
     d3dpt_enc_u32x3(&enc, D3DPT_OP_SET_TEXTURE_STAGE_STATE, Stage, Type, Value);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetTextureStageState(IDirect3DDevice9 *This, DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD *pValue)
 {
     if (!pValue || Stage >= MAX_TSS_STAGES || (DWORD)Type >= 33) return D3DERR_INVALIDCALL;
-    *pValue = DEV(This)->tss[Stage][Type];
+    *pValue = DEV(This)->st.tss[Stage][Type];
     return D3D_OK;
 }
 HRESULT WINAPI dev_SetSamplerState(IDirect3DDevice9 *This, DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value)
 {
-    if (Sampler < MAX_SAMPLERS && (DWORD)Type < 14) DEV(This)->samp[Sampler][Type] = Value;
+    if (Sampler < MAX_SAMPLERS && (DWORD)Type < 14) { DEV(This)->st.samp[Sampler][Type] = Value; SB_MARK(DEV(This), m_->samp[Sampler] |= 1u << Type); }
     d3dpt_enc_u32x3(&enc, D3DPT_OP_SET_SAMPLER_STATE, Sampler, Type, Value);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetSamplerState(IDirect3DDevice9 *This, DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD *pValue)
 {
     if (!pValue || Sampler >= MAX_SAMPLERS || (DWORD)Type >= 14) return D3DERR_INVALIDCALL;
-    *pValue = DEV(This)->samp[Sampler][Type];
+    *pValue = DEV(This)->st.samp[Sampler][Type];
     return D3D_OK;
 }
 HRESULT WINAPI dev_ValidateDevice(IDirect3DDevice9 *This, DWORD *pNumPasses) { if (pNumPasses) *pNumPasses = 1; return D3D_OK; }
 HRESULT WINAPI dev_SetScissorRect(IDirect3DDevice9 *This, const RECT *pRect)
 {
     if (!pRect) return D3DERR_INVALIDCALL;
-    DEV(This)->scissor = *pRect;
+    DEV(This)->st.scissor = *pRect;
+    SB_MARK(DEV(This), m_->misc |= SB_SCISSOR);
     d3dpt_enc_u32x4(&enc, D3DPT_OP_SET_SCISSOR_RECT, pRect->left, pRect->top, pRect->right, pRect->bottom);
     return D3D_OK;
 }
-HRESULT WINAPI dev_GetScissorRect(IDirect3DDevice9 *This, RECT *pRect) { if (!pRect) return D3DERR_INVALIDCALL; *pRect = DEV(This)->scissor; return D3D_OK; }
+HRESULT WINAPI dev_GetScissorRect(IDirect3DDevice9 *This, RECT *pRect) { if (!pRect) return D3DERR_INVALIDCALL; *pRect = DEV(This)->st.scissor; return D3D_OK; }
 HRESULT WINAPI dev_SetSoftwareVertexProcessing(IDirect3DDevice9 *This, WINBOOL bSoftware) { DEV(This)->swvp = bSoftware; return D3D_OK; }
 WINBOOL WINAPI dev_GetSoftwareVertexProcessing(IDirect3DDevice9 *This) { return DEV(This)->swvp; }
 static UINT prim_vertex_count(D3DPRIMITIVETYPE t, UINT n)
@@ -715,23 +743,27 @@ HRESULT WINAPI dev_DrawPrimitiveUP(IDirect3DDevice9 *This, D3DPRIMITIVETYPE Prim
     memcpy(d + 1, pVertexStreamZeroData, bytes);
     return D3D_OK;
 }
-HRESULT WINAPI dev_SetFVF(IDirect3DDevice9 *This, DWORD FVF) { DEV(This)->fvf = FVF; d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_FVF, FVF, 0); return D3D_OK; }
-HRESULT WINAPI dev_GetFVF(IDirect3DDevice9 *This, DWORD *pFVF) { if (!pFVF) return D3DERR_INVALIDCALL; *pFVF = DEV(This)->fvf; return D3D_OK; }
-static HRESULT set_const_f(uint32_t op, UINT start, const float *data, UINT count)
+HRESULT WINAPI dev_SetFVF(IDirect3DDevice9 *This, DWORD FVF) { DEV(This)->st.fvf = FVF; SB_MARK(DEV(This), m_->misc |= SB_FVF); d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_FVF, FVF, 0); return D3D_OK; }
+HRESULT WINAPI dev_GetFVF(IDirect3DDevice9 *This, DWORD *pFVF) { if (!pFVF) return D3DERR_INVALIDCALL; *pFVF = DEV(This)->st.fvf; return D3D_OK; }
+static HRESULT set_const_f(struct device *dev, uint32_t op, UINT start, const float *data, UINT count)
 {
     d3dpt_u32x2 *p;
-    if (!data || count > 256 || start + count > 256) return D3DERR_INVALIDCALL;
+    UINT i, max = op == D3DPT_OP_SET_VS_CONST_F ? 256 : 224;
+    if (!data || count > max || start > max || start + count > max) return D3DERR_INVALIDCALL;
     if (!count) return D3D_OK;
+    memcpy(op == D3DPT_OP_SET_VS_CONST_F ? dev->st.vs_f[start] : dev->st.ps_f[start], data, count * 16);
+    SB_MARK(dev, for (i = start; i < start + count; i++) { if (op == D3DPT_OP_SET_VS_CONST_F) m_->vs_f[i / 32] |= 1u << (i % 32); else m_->ps_f[i / 32] |= 1u << (i % 32); });
     p = d3dpt_enc_cmd(&enc, op, sizeof *p, count * 16);
     if (!p) return E_FAIL;
     p->a = start; p->b = count;
     memcpy(p + 1, data, count * 16);
     return D3D_OK;
 }
-HRESULT WINAPI dev_SetVertexShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { return set_const_f(D3DPT_OP_SET_VS_CONST_F, StartRegister, pConstantData, Vector4fCount); }
-HRESULT WINAPI dev_SetPixelShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { return set_const_f(D3DPT_OP_SET_PS_CONST_F, StartRegister, pConstantData, Vector4fCount); }
+HRESULT WINAPI dev_SetVertexShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { return set_const_f(DEV(This), D3DPT_OP_SET_VS_CONST_F, StartRegister, pConstantData, Vector4fCount); }
+HRESULT WINAPI dev_SetPixelShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { return set_const_f(DEV(This), D3DPT_OP_SET_PS_CONST_F, StartRegister, pConstantData, Vector4fCount); }
 
 #include "d3d9_res.h"
+#include "d3d9_p3.h"
 
 /* ============================================================== exports */
 __declspec(dllexport) IDirect3D9 *WINAPI Direct3DCreate9(UINT SDKVersion)

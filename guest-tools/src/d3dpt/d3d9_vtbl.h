@@ -65,17 +65,17 @@ static void WINAPI dev_SetGammaRamp(IDirect3DDevice9 *This, UINT swapchain_idx, 
 static void WINAPI dev_GetGammaRamp(IDirect3DDevice9 *This, UINT iSwapChain, D3DGAMMARAMP* pRamp) { D3DPT_STUB("IDirect3DDevice9::GetGammaRamp");  }
 HRESULT WINAPI dev_CreateTexture(IDirect3DDevice9 *This, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle);
 static HRESULT WINAPI dev_CreateVolumeTexture(IDirect3DDevice9 *This, UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture9** ppVolumeTexture, HANDLE* pSharedHandle) { D3DPT_STUB("IDirect3DDevice9::CreateVolumeTexture"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_CreateCubeTexture(IDirect3DDevice9 *This, UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle) { D3DPT_STUB("IDirect3DDevice9::CreateCubeTexture"); return E_NOTIMPL; }
+HRESULT WINAPI dev_CreateCubeTexture(IDirect3DDevice9 *This, UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle);
 HRESULT WINAPI dev_CreateVertexBuffer(IDirect3DDevice9 *This, UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9** ppVertexBuffer, HANDLE* pSharedHandle);
 HRESULT WINAPI dev_CreateIndexBuffer(IDirect3DDevice9 *This, UINT Length, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DIndexBuffer9** ppIndexBuffer, HANDLE* pSharedHandle);
 HRESULT WINAPI dev_CreateRenderTarget(IDirect3DDevice9 *This, UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, WINBOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle);
 HRESULT WINAPI dev_CreateDepthStencilSurface(IDirect3DDevice9 *This, UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, WINBOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle);
-static HRESULT WINAPI dev_UpdateSurface(IDirect3DDevice9 *This, IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point) { D3DPT_STUB("IDirect3DDevice9::UpdateSurface"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_UpdateTexture(IDirect3DDevice9 *This, IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture) { D3DPT_STUB("IDirect3DDevice9::UpdateTexture"); return E_NOTIMPL; }
+HRESULT WINAPI dev_UpdateSurface(IDirect3DDevice9 *This, IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point);
+HRESULT WINAPI dev_UpdateTexture(IDirect3DDevice9 *This, IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture);
 HRESULT WINAPI dev_GetRenderTargetData(IDirect3DDevice9 *This, IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface);
 static HRESULT WINAPI dev_GetFrontBufferData(IDirect3DDevice9 *This, UINT iSwapChain, IDirect3DSurface9* pDestSurface) { D3DPT_STUB("IDirect3DDevice9::GetFrontBufferData"); return E_NOTIMPL; }
 HRESULT WINAPI dev_StretchRect(IDirect3DDevice9 *This, IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter);
-static HRESULT WINAPI dev_ColorFill(IDirect3DDevice9 *This, IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) { D3DPT_STUB("IDirect3DDevice9::ColorFill"); return E_NOTIMPL; }
+HRESULT WINAPI dev_ColorFill(IDirect3DDevice9 *This, IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color);
 HRESULT WINAPI dev_CreateOffscreenPlainSurface(IDirect3DDevice9 *This, UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle);
 HRESULT WINAPI dev_SetRenderTarget(IDirect3DDevice9 *This, DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget);
 HRESULT WINAPI dev_GetRenderTarget(IDirect3DDevice9 *This, DWORD RenderTargetIndex, IDirect3DSurface9** ppRenderTarget);
@@ -99,9 +99,9 @@ HRESULT WINAPI dev_SetClipPlane(IDirect3DDevice9 *This, DWORD index, const float
 HRESULT WINAPI dev_GetClipPlane(IDirect3DDevice9 *This, DWORD Index, float* pPlane);
 HRESULT WINAPI dev_SetRenderState(IDirect3DDevice9 *This, D3DRENDERSTATETYPE State, DWORD Value);
 HRESULT WINAPI dev_GetRenderState(IDirect3DDevice9 *This, D3DRENDERSTATETYPE State, DWORD* pValue);
-static HRESULT WINAPI dev_CreateStateBlock(IDirect3DDevice9 *This, D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** ppSB) { D3DPT_STUB("IDirect3DDevice9::CreateStateBlock"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_BeginStateBlock(IDirect3DDevice9 *This) { D3DPT_STUB("IDirect3DDevice9::BeginStateBlock"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_EndStateBlock(IDirect3DDevice9 *This, IDirect3DStateBlock9** ppSB) { D3DPT_STUB("IDirect3DDevice9::EndStateBlock"); return E_NOTIMPL; }
+HRESULT WINAPI dev_CreateStateBlock(IDirect3DDevice9 *This, D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** ppSB);
+HRESULT WINAPI dev_BeginStateBlock(IDirect3DDevice9 *This);
+HRESULT WINAPI dev_EndStateBlock(IDirect3DDevice9 *This, IDirect3DStateBlock9** ppSB);
 static HRESULT WINAPI dev_SetClipStatus(IDirect3DDevice9 *This, const D3DCLIPSTATUS9 *clip_status) { D3DPT_STUB("IDirect3DDevice9::SetClipStatus"); return E_NOTIMPL; }
 static HRESULT WINAPI dev_GetClipStatus(IDirect3DDevice9 *This, D3DCLIPSTATUS9* pClipStatus) { D3DPT_STUB("IDirect3DDevice9::GetClipStatus"); return E_NOTIMPL; }
 HRESULT WINAPI dev_GetTexture(IDirect3DDevice9 *This, DWORD Stage, IDirect3DBaseTexture9** ppTexture);
@@ -126,20 +126,20 @@ HRESULT WINAPI dev_DrawIndexedPrimitive(IDirect3DDevice9 *This, D3DPRIMITIVETYPE
 HRESULT WINAPI dev_DrawPrimitiveUP(IDirect3DDevice9 *This, D3DPRIMITIVETYPE primitive_type, UINT primitive_count, const void *data, UINT stride);
 HRESULT WINAPI dev_DrawIndexedPrimitiveUP(IDirect3DDevice9 *This, D3DPRIMITIVETYPE primitive_type, UINT min_vertex_idx, UINT vertex_count, UINT primitive_count, const void *index_data, D3DFORMAT index_format, const void *data, UINT stride);
 static HRESULT WINAPI dev_ProcessVertices(IDirect3DDevice9 *This, UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDecl, DWORD Flags) { D3DPT_STUB("IDirect3DDevice9::ProcessVertices"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_CreateVertexDeclaration(IDirect3DDevice9 *This, const D3DVERTEXELEMENT9 *elements, IDirect3DVertexDeclaration9 **declaration) { D3DPT_STUB("IDirect3DDevice9::CreateVertexDeclaration"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_SetVertexDeclaration(IDirect3DDevice9 *This, IDirect3DVertexDeclaration9* pDecl) { D3DPT_STUB("IDirect3DDevice9::SetVertexDeclaration"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_GetVertexDeclaration(IDirect3DDevice9 *This, IDirect3DVertexDeclaration9** ppDecl) { D3DPT_STUB("IDirect3DDevice9::GetVertexDeclaration"); return E_NOTIMPL; }
+HRESULT WINAPI dev_CreateVertexDeclaration(IDirect3DDevice9 *This, const D3DVERTEXELEMENT9 *elements, IDirect3DVertexDeclaration9 **declaration);
+HRESULT WINAPI dev_SetVertexDeclaration(IDirect3DDevice9 *This, IDirect3DVertexDeclaration9* pDecl);
+HRESULT WINAPI dev_GetVertexDeclaration(IDirect3DDevice9 *This, IDirect3DVertexDeclaration9** ppDecl);
 HRESULT WINAPI dev_SetFVF(IDirect3DDevice9 *This, DWORD FVF);
 HRESULT WINAPI dev_GetFVF(IDirect3DDevice9 *This, DWORD* pFVF);
 HRESULT WINAPI dev_CreateVertexShader(IDirect3DDevice9 *This, const DWORD *byte_code, IDirect3DVertexShader9 **shader);
 HRESULT WINAPI dev_SetVertexShader(IDirect3DDevice9 *This, IDirect3DVertexShader9* pShader);
 HRESULT WINAPI dev_GetVertexShader(IDirect3DDevice9 *This, IDirect3DVertexShader9** ppShader);
 HRESULT WINAPI dev_SetVertexShaderConstantF(IDirect3DDevice9 *This, UINT reg_idx, const float *data, UINT count);
-static HRESULT WINAPI dev_GetVertexShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, float* pConstantData, UINT Vector4fCount) { D3DPT_STUB("IDirect3DDevice9::GetVertexShaderConstantF"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_SetVertexShaderConstantI(IDirect3DDevice9 *This, UINT reg_idx, const int *data, UINT count) { D3DPT_STUB("IDirect3DDevice9::SetVertexShaderConstantI"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_GetVertexShaderConstantI(IDirect3DDevice9 *This, UINT StartRegister, int* pConstantData, UINT Vector4iCount) { D3DPT_STUB("IDirect3DDevice9::GetVertexShaderConstantI"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_SetVertexShaderConstantB(IDirect3DDevice9 *This, UINT reg_idx, const WINBOOL *data, UINT count) { D3DPT_STUB("IDirect3DDevice9::SetVertexShaderConstantB"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_GetVertexShaderConstantB(IDirect3DDevice9 *This, UINT StartRegister, WINBOOL* pConstantData, UINT BoolCount) { D3DPT_STUB("IDirect3DDevice9::GetVertexShaderConstantB"); return E_NOTIMPL; }
+HRESULT WINAPI dev_GetVertexShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, float* pConstantData, UINT Vector4fCount);
+HRESULT WINAPI dev_SetVertexShaderConstantI(IDirect3DDevice9 *This, UINT reg_idx, const int *data, UINT count);
+HRESULT WINAPI dev_GetVertexShaderConstantI(IDirect3DDevice9 *This, UINT StartRegister, int* pConstantData, UINT Vector4iCount);
+HRESULT WINAPI dev_SetVertexShaderConstantB(IDirect3DDevice9 *This, UINT reg_idx, const WINBOOL *data, UINT count);
+HRESULT WINAPI dev_GetVertexShaderConstantB(IDirect3DDevice9 *This, UINT StartRegister, WINBOOL* pConstantData, UINT BoolCount);
 HRESULT WINAPI dev_SetStreamSource(IDirect3DDevice9 *This, UINT StreamNumber, IDirect3DVertexBuffer9* pStreamData, UINT OffsetInBytes, UINT Stride);
 HRESULT WINAPI dev_GetStreamSource(IDirect3DDevice9 *This, UINT StreamNumber, IDirect3DVertexBuffer9** ppStreamData, UINT* OffsetInBytes, UINT* pStride);
 static HRESULT WINAPI dev_SetStreamSourceFreq(IDirect3DDevice9 *This, UINT StreamNumber, UINT Divider) { D3DPT_STUB("IDirect3DDevice9::SetStreamSourceFreq"); return E_NOTIMPL; }
@@ -150,15 +150,15 @@ HRESULT WINAPI dev_CreatePixelShader(IDirect3DDevice9 *This, const DWORD *byte_c
 HRESULT WINAPI dev_SetPixelShader(IDirect3DDevice9 *This, IDirect3DPixelShader9* pShader);
 HRESULT WINAPI dev_GetPixelShader(IDirect3DDevice9 *This, IDirect3DPixelShader9** ppShader);
 HRESULT WINAPI dev_SetPixelShaderConstantF(IDirect3DDevice9 *This, UINT reg_idx, const float *data, UINT count);
-static HRESULT WINAPI dev_GetPixelShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, float* pConstantData, UINT Vector4fCount) { D3DPT_STUB("IDirect3DDevice9::GetPixelShaderConstantF"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_SetPixelShaderConstantI(IDirect3DDevice9 *This, UINT reg_idx, const int *data, UINT count) { D3DPT_STUB("IDirect3DDevice9::SetPixelShaderConstantI"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_GetPixelShaderConstantI(IDirect3DDevice9 *This, UINT StartRegister, int* pConstantData, UINT Vector4iCount) { D3DPT_STUB("IDirect3DDevice9::GetPixelShaderConstantI"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_SetPixelShaderConstantB(IDirect3DDevice9 *This, UINT reg_idx, const WINBOOL *data, UINT count) { D3DPT_STUB("IDirect3DDevice9::SetPixelShaderConstantB"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_GetPixelShaderConstantB(IDirect3DDevice9 *This, UINT StartRegister, WINBOOL* pConstantData, UINT BoolCount) { D3DPT_STUB("IDirect3DDevice9::GetPixelShaderConstantB"); return E_NOTIMPL; }
+HRESULT WINAPI dev_GetPixelShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, float* pConstantData, UINT Vector4fCount);
+HRESULT WINAPI dev_SetPixelShaderConstantI(IDirect3DDevice9 *This, UINT reg_idx, const int *data, UINT count);
+HRESULT WINAPI dev_GetPixelShaderConstantI(IDirect3DDevice9 *This, UINT StartRegister, int* pConstantData, UINT Vector4iCount);
+HRESULT WINAPI dev_SetPixelShaderConstantB(IDirect3DDevice9 *This, UINT reg_idx, const WINBOOL *data, UINT count);
+HRESULT WINAPI dev_GetPixelShaderConstantB(IDirect3DDevice9 *This, UINT StartRegister, WINBOOL* pConstantData, UINT BoolCount);
 static HRESULT WINAPI dev_DrawRectPatch(IDirect3DDevice9 *This, UINT handle, const float *segment_count, const D3DRECTPATCH_INFO *patch_info) { D3DPT_STUB("IDirect3DDevice9::DrawRectPatch"); return E_NOTIMPL; }
 static HRESULT WINAPI dev_DrawTriPatch(IDirect3DDevice9 *This, UINT handle, const float *segment_count, const D3DTRIPATCH_INFO *patch_info) { D3DPT_STUB("IDirect3DDevice9::DrawTriPatch"); return E_NOTIMPL; }
 static HRESULT WINAPI dev_DeletePatch(IDirect3DDevice9 *This, UINT Handle) { D3DPT_STUB("IDirect3DDevice9::DeletePatch"); return E_NOTIMPL; }
-static HRESULT WINAPI dev_CreateQuery(IDirect3DDevice9 *This, D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery) { D3DPT_STUB("IDirect3DDevice9::CreateQuery"); return E_NOTIMPL; }
+HRESULT WINAPI dev_CreateQuery(IDirect3DDevice9 *This, D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery);
 static const IDirect3DDevice9Vtbl dev_vtbl = {
     dev_QueryInterface,
     dev_AddRef,
@@ -457,6 +457,104 @@ static const IDirect3DPixelShader9Vtbl ps_vtbl = {
     ps_Release,
     ps_GetDevice,
     ps_GetFunction,
+};
+
+/* --- IDirect3DCubeTexture9: 22 methods --- */
+HRESULT WINAPI cube_QueryInterface(IDirect3DCubeTexture9 *This, REFIID riid, void** ppvObject);
+ULONG WINAPI cube_AddRef(IDirect3DCubeTexture9 *This);
+ULONG WINAPI cube_Release(IDirect3DCubeTexture9 *This);
+HRESULT WINAPI cube_GetDevice(IDirect3DCubeTexture9 *This, struct IDirect3DDevice9** ppDevice);
+HRESULT WINAPI cube_SetPrivateData(IDirect3DCubeTexture9 *This, REFGUID guid, const void *data, DWORD data_size, DWORD flags);
+HRESULT WINAPI cube_GetPrivateData(IDirect3DCubeTexture9 *This, REFGUID refguid, void* pData, DWORD* pSizeOfData);
+HRESULT WINAPI cube_FreePrivateData(IDirect3DCubeTexture9 *This, REFGUID refguid);
+DWORD WINAPI cube_SetPriority(IDirect3DCubeTexture9 *This, DWORD PriorityNew);
+DWORD WINAPI cube_GetPriority(IDirect3DCubeTexture9 *This);
+void WINAPI cube_PreLoad(IDirect3DCubeTexture9 *This);
+D3DRESOURCETYPE WINAPI cube_GetType(IDirect3DCubeTexture9 *This);
+DWORD WINAPI cube_SetLOD(IDirect3DCubeTexture9 *This, DWORD LODNew);
+DWORD WINAPI cube_GetLOD(IDirect3DCubeTexture9 *This);
+DWORD WINAPI cube_GetLevelCount(IDirect3DCubeTexture9 *This);
+HRESULT WINAPI cube_SetAutoGenFilterType(IDirect3DCubeTexture9 *This, D3DTEXTUREFILTERTYPE FilterType);
+D3DTEXTUREFILTERTYPE WINAPI cube_GetAutoGenFilterType(IDirect3DCubeTexture9 *This);
+void WINAPI cube_GenerateMipSubLevels(IDirect3DCubeTexture9 *This);
+HRESULT WINAPI cube_GetLevelDesc(IDirect3DCubeTexture9 *This, UINT Level,D3DSURFACE_DESC* pDesc);
+HRESULT WINAPI cube_GetCubeMapSurface(IDirect3DCubeTexture9 *This, D3DCUBEMAP_FACES FaceType, UINT Level, IDirect3DSurface9** ppCubeMapSurface);
+HRESULT WINAPI cube_LockRect(IDirect3DCubeTexture9 *This, D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags);
+HRESULT WINAPI cube_UnlockRect(IDirect3DCubeTexture9 *This, D3DCUBEMAP_FACES FaceType, UINT Level);
+HRESULT WINAPI cube_AddDirtyRect(IDirect3DCubeTexture9 *This, D3DCUBEMAP_FACES face, const RECT *dirty_rect);
+static const IDirect3DCubeTexture9Vtbl cube_vtbl = {
+    cube_QueryInterface,
+    cube_AddRef,
+    cube_Release,
+    cube_GetDevice,
+    cube_SetPrivateData,
+    cube_GetPrivateData,
+    cube_FreePrivateData,
+    cube_SetPriority,
+    cube_GetPriority,
+    cube_PreLoad,
+    cube_GetType,
+    cube_SetLOD,
+    cube_GetLOD,
+    cube_GetLevelCount,
+    cube_SetAutoGenFilterType,
+    cube_GetAutoGenFilterType,
+    cube_GenerateMipSubLevels,
+    cube_GetLevelDesc,
+    cube_GetCubeMapSurface,
+    cube_LockRect,
+    cube_UnlockRect,
+    cube_AddDirtyRect,
+};
+
+/* --- IDirect3DVertexDeclaration9: 5 methods --- */
+HRESULT WINAPI decl_QueryInterface(IDirect3DVertexDeclaration9 *This, REFIID riid, void** ppvObject);
+ULONG WINAPI decl_AddRef(IDirect3DVertexDeclaration9 *This);
+ULONG WINAPI decl_Release(IDirect3DVertexDeclaration9 *This);
+HRESULT WINAPI decl_GetDevice(IDirect3DVertexDeclaration9 *This, struct IDirect3DDevice9** ppDevice);
+HRESULT WINAPI decl_GetDeclaration(IDirect3DVertexDeclaration9 *This, D3DVERTEXELEMENT9*, UINT* pNumElements);
+static const IDirect3DVertexDeclaration9Vtbl decl_vtbl = {
+    decl_QueryInterface,
+    decl_AddRef,
+    decl_Release,
+    decl_GetDevice,
+    decl_GetDeclaration,
+};
+
+/* --- IDirect3DQuery9: 8 methods --- */
+HRESULT WINAPI query_QueryInterface(IDirect3DQuery9 *This, REFIID riid, void** ppvObject);
+ULONG WINAPI query_AddRef(IDirect3DQuery9 *This);
+ULONG WINAPI query_Release(IDirect3DQuery9 *This);
+HRESULT WINAPI query_GetDevice(IDirect3DQuery9 *This, struct IDirect3DDevice9** ppDevice);
+D3DQUERYTYPE WINAPI query_GetType(IDirect3DQuery9 *This);
+DWORD WINAPI query_GetDataSize(IDirect3DQuery9 *This);
+HRESULT WINAPI query_Issue(IDirect3DQuery9 *This, DWORD dwIssueFlags);
+HRESULT WINAPI query_GetData(IDirect3DQuery9 *This, void* pData, DWORD dwSize, DWORD dwGetDataFlags);
+static const IDirect3DQuery9Vtbl query_vtbl = {
+    query_QueryInterface,
+    query_AddRef,
+    query_Release,
+    query_GetDevice,
+    query_GetType,
+    query_GetDataSize,
+    query_Issue,
+    query_GetData,
+};
+
+/* --- IDirect3DStateBlock9: 6 methods --- */
+HRESULT WINAPI sb_QueryInterface(IDirect3DStateBlock9 *This, REFIID riid, void** ppvObject);
+ULONG WINAPI sb_AddRef(IDirect3DStateBlock9 *This);
+ULONG WINAPI sb_Release(IDirect3DStateBlock9 *This);
+HRESULT WINAPI sb_GetDevice(IDirect3DStateBlock9 *This, struct IDirect3DDevice9** ppDevice);
+HRESULT WINAPI sb_Capture(IDirect3DStateBlock9 *This);
+HRESULT WINAPI sb_Apply(IDirect3DStateBlock9 *This);
+static const IDirect3DStateBlock9Vtbl sb_vtbl = {
+    sb_QueryInterface,
+    sb_AddRef,
+    sb_Release,
+    sb_GetDevice,
+    sb_Capture,
+    sb_Apply,
 };
 
 #endif

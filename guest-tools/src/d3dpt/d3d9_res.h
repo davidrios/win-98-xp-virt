@@ -51,8 +51,9 @@ struct texture {
     DWORD usage;
     D3DPOOL pool;
     DWORD lod;
-    struct level lv[16];
-    struct surface *surf[16];   /* cached level surfaces (not referenced by us) */
+    int faces;                  /* 1, or 6 for a cube texture */
+    struct level lv[6][16];
+    struct surface *surf[6][16];   /* cached level surfaces (not referenced by us) */
 };
 enum surf_kind { SURF_TEXLEVEL, SURF_BACKBUFFER, SURF_AUTODEPTH, SURF_RT, SURF_DS, SURF_SYSMEM };
 struct surface {
@@ -60,7 +61,7 @@ struct surface {
     enum surf_kind kind;
     D3DSURFACE_DESC desc;
     struct texture *tex;    /* SURF_TEXLEVEL: the container (referenced) */
-    UINT level;
+    UINT face, level;
     uint8_t *mem;           /* SURF_SYSMEM */
     UINT pitch;
     int locked;
@@ -274,9 +275,9 @@ HRESULT WINAPI dev_CreateIndexBuffer(IDirect3DDevice9 *This, UINT Length, DWORD 
 }
 
 /* ----------------------------------------------------------- textures */
-static HRESULT tex_update_level(struct texture *t, UINT level, const RECT *rc)
+static HRESULT tex_update_level(struct texture *t, UINT face, UINT level, const RECT *rc)
 {
-    struct level *l = &t->lv[level];
+    struct level *l = &t->lv[face][level];
     UINT bw, bh, bytes, x0, y0, x1, y1, pitch, rows, i;
     d3dpt_tex_update *u;
     uint8_t *dst;
@@ -292,19 +293,19 @@ static HRESULT tex_update_level(struct texture *t, UINT level, const RECT *rc)
     rows = (y1 - y0 + bh - 1) / bh;
     u = d3dpt_enc_cmd(&enc, D3DPT_OP_TEXTURE_UPDATE, sizeof *u, pitch * rows);
     if (!u) return E_FAIL;
-    u->handle = t->h.handle; u->level = level; u->x = x0; u->y = y0; u->w = x1 - x0; u->h = y1 - y0;
+    u->handle = t->h.handle; u->level = level | (face << 8); u->x = x0; u->y = y0; u->w = x1 - x0; u->h = y1 - y0;
     u->pitch = pitch; u->bytes = pitch * rows;
     dst = (uint8_t *)(u + 1);
     for (i = 0; i < rows; i++)
         memcpy(dst + i * pitch, l->mem + (y0 / bh + i) * l->pitch + (x0 / bw) * bytes, pitch);
     return D3D_OK;
 }
-static HRESULT tex_lock(struct texture *t, UINT level, D3DLOCKED_RECT *lr, const RECT *rc, DWORD flags)
+static HRESULT tex_lock(struct texture *t, UINT face, UINT level, D3DLOCKED_RECT *lr, const RECT *rc, DWORD flags)
 {
     struct level *l;
     UINT bw, bh, bytes;
-    if (!lr || level >= t->levels) return D3DERR_INVALIDCALL;
-    l = &t->lv[level];
+    if (!lr || level >= t->levels || face >= (UINT)t->faces) return D3DERR_INVALIDCALL;
+    l = &t->lv[face][level];
     if (!l->mem || l->locked) { lr->pBits = NULL; lr->Pitch = 0; return D3DERR_INVALIDCALL; }
     fmt_block(t->format, &bw, &bh, &bytes);
     if (rc && ((UINT)rc->right > l->w || (UINT)rc->bottom > l->h || rc->left < 0 || rc->top < 0 || rc->left >= rc->right || rc->top >= rc->bottom))
@@ -315,15 +316,15 @@ static HRESULT tex_lock(struct texture *t, UINT level, D3DLOCKED_RECT *lr, const
     lr->pBits = l->mem + (l->lrect.top / bh) * l->pitch + (l->lrect.left / bw) * bytes;
     return D3D_OK;
 }
-static HRESULT tex_unlock(struct texture *t, UINT level)
+static HRESULT tex_unlock(struct texture *t, UINT face, UINT level)
 {
     struct level *l;
-    if (level >= t->levels) return D3DERR_INVALIDCALL;
-    l = &t->lv[level];
+    if (level >= t->levels || face >= (UINT)t->faces) return D3DERR_INVALIDCALL;
+    l = &t->lv[face][level];
     if (!l->locked) return D3DERR_INVALIDCALL;
     l->locked = 0;
     if (l->lflags & D3DLOCK_READONLY) return D3D_OK;
-    return tex_update_level(t, level, &l->lrect);
+    return tex_update_level(t, face, level, &l->lrect);
 }
 
 ULONG WINAPI tex_Release(IDirect3DTexture9 *This)
@@ -331,9 +332,9 @@ ULONG WINAPI tex_Release(IDirect3DTexture9 *This)
     struct texture *t = (struct texture *)This;
     LONG r = InterlockedDecrement(&t->h.ref);
     if (r == 0) {
-        UINT i;
+        UINT i, f;
         host_release(&t->h);
-        for (i = 0; i < t->levels; i++) HeapFree(GetProcessHeap(), 0, t->lv[i].mem);
+        for (f = 0; f < (UINT)t->faces; f++) for (i = 0; i < t->levels; i++) HeapFree(GetProcessHeap(), 0, t->lv[f][i].mem);
         res_free(&t->h);
     }
     return r;
@@ -348,7 +349,7 @@ static void level_desc(struct texture *t, UINT level, D3DSURFACE_DESC *d)
 {
     d->Format = t->format; d->Type = D3DRTYPE_SURFACE; d->Usage = t->usage; d->Pool = t->pool;
     d->MultiSampleType = D3DMULTISAMPLE_NONE; d->MultiSampleQuality = 0;
-    d->Width = t->lv[level].w; d->Height = t->lv[level].h;
+    d->Width = t->lv[0][level].w; d->Height = t->lv[0][level].h;
 }
 HRESULT WINAPI tex_GetLevelDesc(IDirect3DTexture9 *This, UINT Level, D3DSURFACE_DESC *d)
 {
@@ -357,15 +358,14 @@ HRESULT WINAPI tex_GetLevelDesc(IDirect3DTexture9 *This, UINT Level, D3DSURFACE_
     level_desc(t, Level, d);
     return D3D_OK;
 }
-HRESULT WINAPI tex_LockRect(IDirect3DTexture9 *This, UINT Level, D3DLOCKED_RECT *lr, const RECT *rc, DWORD flags) { return tex_lock((struct texture *)This, Level, lr, rc, flags); }
-HRESULT WINAPI tex_UnlockRect(IDirect3DTexture9 *This, UINT Level) { return tex_unlock((struct texture *)This, Level); }
+HRESULT WINAPI tex_LockRect(IDirect3DTexture9 *This, UINT Level, D3DLOCKED_RECT *lr, const RECT *rc, DWORD flags) { return tex_lock((struct texture *)This, 0, Level, lr, rc, flags); }
+HRESULT WINAPI tex_UnlockRect(IDirect3DTexture9 *This, UINT Level) { return tex_unlock((struct texture *)This, 0, Level); }
 HRESULT WINAPI tex_AddDirtyRect(IDirect3DTexture9 *This, const RECT *rc) { return D3D_OK; }
 
-HRESULT WINAPI dev_CreateTexture(IDirect3DDevice9 *This, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9 **pp, HANDLE *pSharedHandle)
+static HRESULT texture_create(struct device *dev, int faces, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, void **pp)
 {
-    struct device *dev = DEV(This);
     struct texture *t;
-    UINT bw, bh, bytes, i, w, h;
+    UINT bw, bh, bytes, i, w, h, f;
     int lockable;
     uint32_t off;
     d3dpt_create_texture *c;
@@ -377,20 +377,20 @@ HRESULT WINAPI dev_CreateTexture(IDirect3DDevice9 *This, UINT Width, UINT Height
     if (Levels > 16) return D3DERR_INVALIDCALL;
     t = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *t);
     if (!t) return E_OUTOFMEMORY;
-    res_init(&t->h, &tex_vtbl, dev);
-    t->width = Width; t->height = Height; t->levels = Levels; t->format = Format; t->usage = Usage; t->pool = Pool;
+    res_init(&t->h, faces == 6 ? (const void *)&cube_vtbl : (const void *)&tex_vtbl, dev);
+    t->width = Width; t->height = Height; t->levels = Levels; t->format = Format; t->usage = Usage; t->pool = Pool; t->faces = faces;
     /* lockable: anything but a plain DEFAULT-pool / render-target / depth texture */
     lockable = !(Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)) && (Pool != D3DPOOL_DEFAULT || (Usage & D3DUSAGE_DYNAMIC));
-    for (i = 0, w = Width, h = Height; i < Levels; i++) {
-        level_geometry(Format, w, h, &t->lv[i]);
+    for (f = 0; f < (UINT)faces; f++) for (i = 0, w = Width, h = Height; i < Levels; i++) {
+        level_geometry(Format, w, h, &t->lv[f][i]);
         if (lockable) {
-            t->lv[i].mem = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, t->lv[i].size);
-            if (!t->lv[i].mem) { hr = E_OUTOFMEMORY; goto fail; }
+            t->lv[f][i].mem = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, t->lv[f][i].size);
+            if (!t->lv[f][i].mem) { hr = E_OUTOFMEMORY; goto fail; }
         }
         w = w > 1 ? w >> 1 : 1; h = h > 1 ? h >> 1 : 1;
     }
     off = d3dpt_enc_ret(&enc, 0);
-    c = d3dpt_enc_cmd(&enc, D3DPT_OP_CREATE_TEXTURE, sizeof *c, 0);
+    c = d3dpt_enc_cmd(&enc, faces == 6 ? D3DPT_OP_CREATE_CUBE_TEXTURE : D3DPT_OP_CREATE_TEXTURE, sizeof *c, 0);
     if (!c) { hr = E_FAIL; goto fail; }
     memset(c, 0, sizeof *c);
     c->handle = t->h.handle; c->ret_off = off; c->width = Width; c->height = Height; c->levels = Levels;
@@ -402,13 +402,17 @@ HRESULT WINAPI dev_CreateTexture(IDirect3DDevice9 *This, UINT Width, UINT Height
         t->h.handle = 0;
         goto fail;
     }
-    *pp = (IDirect3DTexture9 *)t;
+    *pp = t;
     return D3D_OK;
 fail:
-    for (i = 0; i < Levels; i++) HeapFree(GetProcessHeap(), 0, t->lv[i].mem);
+    for (f = 0; f < (UINT)faces; f++) for (i = 0; i < Levels; i++) HeapFree(GetProcessHeap(), 0, t->lv[f][i].mem);
     res_free(&t->h);
     return hr;
 }
+HRESULT WINAPI dev_CreateTexture(IDirect3DDevice9 *This, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9 **pp, HANDLE *pSharedHandle)
+{ return texture_create(DEV(This), 1, Width, Height, Levels, Usage, Format, Pool, (void **)pp); }
+HRESULT WINAPI dev_CreateCubeTexture(IDirect3DDevice9 *This, UINT Edge, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9 **pp, HANDLE *pSharedHandle)
+{ return texture_create(DEV(This), 6, Edge, Edge, Levels, Usage, Format, Pool, (void **)pp); }
 
 /* ----------------------------------------------------------- surfaces */
 static struct surface *surface_new(struct device *dev, enum surf_kind kind, const D3DSURFACE_DESC *desc)
@@ -447,8 +451,8 @@ ULONG WINAPI surf_Release(IDirect3DSurface9 *This)
     if (r == 0) {
         host_release(&s->h);
         if (s->kind == SURF_TEXLEVEL && s->tex) {
-            s->tex->surf[s->level] = NULL;
-            IDirect3DTexture9_Release((IDirect3DTexture9 *)s->tex);
+            s->tex->surf[s->face][s->level] = NULL;
+            IUnknown_Release((IUnknown *)s->tex);
         }
         HeapFree(GetProcessHeap(), 0, s->mem);
         res_free(&s->h);
@@ -467,7 +471,7 @@ HRESULT WINAPI surf_LockRect(IDirect3DSurface9 *This, D3DLOCKED_RECT *lr, const 
 {
     struct surface *s = (struct surface *)This;
     if (!lr) return D3DERR_INVALIDCALL;
-    if (s->kind == SURF_TEXLEVEL) return tex_lock(s->tex, s->level, lr, rc, flags);
+    if (s->kind == SURF_TEXLEVEL) return tex_lock(s->tex, s->face, s->level, lr, rc, flags);
     if (s->kind != SURF_SYSMEM || s->locked) { lr->pBits = NULL; lr->Pitch = 0; return D3DERR_INVALIDCALL; }
     {
         UINT bw, bh, bytes;
@@ -481,32 +485,32 @@ HRESULT WINAPI surf_LockRect(IDirect3DSurface9 *This, D3DLOCKED_RECT *lr, const 
 HRESULT WINAPI surf_UnlockRect(IDirect3DSurface9 *This)
 {
     struct surface *s = (struct surface *)This;
-    if (s->kind == SURF_TEXLEVEL) return tex_unlock(s->tex, s->level);
+    if (s->kind == SURF_TEXLEVEL) return tex_unlock(s->tex, s->face, s->level);
     if (!s->locked) return D3DERR_INVALIDCALL;
     s->locked = 0;
     return D3D_OK;
 }
-HRESULT WINAPI tex_GetSurfaceLevel(IDirect3DTexture9 *This, UINT Level, IDirect3DSurface9 **pp)
+static HRESULT tex_level_surface(struct texture *t, UINT face, UINT Level, IDirect3DSurface9 **pp)
 {
-    struct texture *t = (struct texture *)This;
     struct surface *s;
     D3DSURFACE_DESC d;
     HRESULT hr;
     if (!pp) return D3DERR_INVALIDCALL;
     *pp = NULL;
-    if (Level >= t->levels) return D3DERR_INVALIDCALL;
-    if (t->surf[Level]) { *pp = (IDirect3DSurface9 *)t->surf[Level]; IDirect3DSurface9_AddRef(*pp); return D3D_OK; }
+    if (Level >= t->levels || face >= (UINT)t->faces) return D3DERR_INVALIDCALL;
+    if (t->surf[face][Level]) { *pp = (IDirect3DSurface9 *)t->surf[face][Level]; IDirect3DSurface9_AddRef(*pp); return D3D_OK; }
     level_desc(t, Level, &d);
     s = surface_new(t->h.dev, SURF_TEXLEVEL, &d);
     if (!s) return E_OUTOFMEMORY;
-    s->tex = t; s->level = Level;
-    IDirect3DTexture9_AddRef(This);
-    hr = surface_get_host(s, t->h.handle, Level);
+    s->tex = t; s->face = face; s->level = Level;
+    InterlockedIncrement(&t->h.ref);
+    hr = surface_get_host(s, t->h.handle, Level | (face << 8));
     if (FAILED(hr)) { s->h.handle = 0; IDirect3DSurface9_Release((IDirect3DSurface9 *)s); return hr; }
-    t->surf[Level] = s;
+    t->surf[face][Level] = s;
     *pp = (IDirect3DSurface9 *)s;
     return D3D_OK;
 }
+HRESULT WINAPI tex_GetSurfaceLevel(IDirect3DTexture9 *This, UINT Level, IDirect3DSurface9 **pp) { return tex_level_surface((struct texture *)This, 0, Level, pp); }
 static HRESULT implicit_surface(struct device *dev, int depth, struct surface **slot, IDirect3DSurface9 **pp)
 {
     D3DSURFACE_DESC d;
@@ -570,8 +574,8 @@ HRESULT WINAPI dev_SetRenderTarget(IDirect3DDevice9 *This, DWORD idx, IDirect3DS
     d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_RENDER_TARGET, idx, s ? s->h.handle : 0);
     bind_surface(&dev->rt[idx], s);
     if (idx == 0 && s) {
-        dev->vp.X = dev->vp.Y = 0; dev->vp.Width = s->desc.Width; dev->vp.Height = s->desc.Height; dev->vp.MinZ = 0.0f; dev->vp.MaxZ = 1.0f;
-        dev->scissor.left = dev->scissor.top = 0; dev->scissor.right = s->desc.Width; dev->scissor.bottom = s->desc.Height;
+        dev->st.vp.X = dev->st.vp.Y = 0; dev->st.vp.Width = s->desc.Width; dev->st.vp.Height = s->desc.Height; dev->st.vp.MinZ = 0.0f; dev->st.vp.MaxZ = 1.0f;
+        dev->st.scissor.left = dev->st.scissor.top = 0; dev->st.scissor.right = s->desc.Width; dev->st.scissor.bottom = s->desc.Height;
     }
     return D3D_OK;
 }
@@ -627,7 +631,25 @@ HRESULT WINAPI dev_CreateOffscreenPlainSurface(IDirect3DDevice9 *This, UINT W, U
     if (!pp) return D3DERR_INVALIDCALL;
     *pp = NULL;
     if (!W || !H || !fmt_block(F, &bw, &bh, &bytes)) return D3DERR_INVALIDCALL;
-    if (Pool != D3DPOOL_SYSTEMMEM && Pool != D3DPOOL_SCRATCH) { D3DPT_STUB("CreateOffscreenPlainSurface(DEFAULT pool) [later]"); return D3DERR_NOTAVAILABLE; }
+    if (Pool != D3DPOOL_SYSTEMMEM && Pool != D3DPOOL_SCRATCH) {
+        uint32_t off;
+        d3dpt_create_texture *c;
+        HRESULT hr;
+        memset(&d, 0, sizeof d);
+        d.Format = F; d.Type = D3DRTYPE_SURFACE; d.Pool = Pool; d.Width = W; d.Height = H;
+        s = surface_new(DEV(This), SURF_RT, &d);      /* host-only, not lockable from the guest yet */
+        if (!s) return E_OUTOFMEMORY;
+        off = d3dpt_enc_ret(&enc, 0);
+        c = d3dpt_enc_cmd(&enc, D3DPT_OP_CREATE_OFFSCREEN, sizeof *c, 0);
+        if (!c) { s->h.handle = 0; IDirect3DSurface9_Release((IDirect3DSurface9 *)s); return E_FAIL; }
+        memset(c, 0, sizeof *c);
+        c->handle = s->h.handle; c->ret_off = off; c->width = W; c->height = H; c->levels = 1; c->format = F; c->pool = Pool;
+        d3dpt_enc_flush(&enc);
+        hr = enc.last_status ? E_FAIL : d3dpt_enc_result(&enc, off)->hr;
+        if (FAILED(hr)) { s->h.handle = 0; IDirect3DSurface9_Release((IDirect3DSurface9 *)s); return hr; }
+        *pp = (IDirect3DSurface9 *)s;
+        return D3D_OK;
+    }
     memset(&d, 0, sizeof d);
     d.Format = F; d.Type = D3DRTYPE_SURFACE; d.Pool = Pool; d.Width = W; d.Height = H;
     s = surface_new(DEV(This), SURF_SYSMEM, &d);
@@ -671,8 +693,6 @@ HRESULT WINAPI dev_StretchRect(IDirect3DDevice9 *This, IDirect3DSurface9 *pSrc, 
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetSwapChain(IDirect3DDevice9 *This, UINT i, IDirect3DSwapChain9 **pp) { if (pp) *pp = NULL; D3DPT_STUB("IDirect3DDevice9::GetSwapChain"); return D3DERR_INVALIDCALL; }
-HRESULT WINAPI dev_SetClipPlane(IDirect3DDevice9 *This, DWORD i, const float *p) { D3DPT_STUB("IDirect3DDevice9::SetClipPlane"); return D3D_OK; }
-HRESULT WINAPI dev_GetClipPlane(IDirect3DDevice9 *This, DWORD i, float *p) { if (p) memset(p, 0, 16); return D3D_OK; }
 
 /* ------------------------------------------------------------ shaders */
 /* token stream length: skip comment blocks by their length, stop at END */
@@ -771,9 +791,10 @@ HRESULT WINAPI dev_SetTexture(IDirect3DDevice9 *This, DWORD Stage, IDirect3DBase
     struct device *dev = DEV(This);
     struct texture *t = (struct texture *)pTex;
     if (Stage >= 16) return D3DERR_INVALIDCALL;
-    if (t && t->h.vt != &tex_vtbl) { D3DPT_STUB("SetTexture(cube/volume) [later]"); return D3DERR_INVALIDCALL; }
+    if (t && t->h.vt != &tex_vtbl && t->h.vt != &cube_vtbl) { D3DPT_STUB("SetTexture(volume) [later]"); return D3DERR_INVALIDCALL; }
     d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_TEXTURE, Stage, t ? t->h.handle : 0);
-    BIND(dev->tex_bound[Stage], t, IDirect3DTexture9);
+    BIND(dev->st.tex_bound[Stage], t, IUnknown);
+    SB_MARK(dev, m_->textures |= 1u << Stage);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetTexture(IDirect3DDevice9 *This, DWORD Stage, IDirect3DBaseTexture9 **pp)
@@ -781,7 +802,7 @@ HRESULT WINAPI dev_GetTexture(IDirect3DDevice9 *This, DWORD Stage, IDirect3DBase
     struct device *dev = DEV(This);
     if (!pp) return D3DERR_INVALIDCALL;
     if (Stage >= 16) { *pp = NULL; return D3DERR_INVALIDCALL; }
-    *pp = (IDirect3DBaseTexture9 *)dev->tex_bound[Stage];
+    *pp = (IDirect3DBaseTexture9 *)dev->st.tex_bound[Stage];
     if (*pp) IDirect3DBaseTexture9_AddRef(*pp);
     return D3D_OK;
 }
@@ -791,18 +812,19 @@ HRESULT WINAPI dev_SetStreamSource(IDirect3DDevice9 *This, UINT n, IDirect3DVert
     struct vbuf *b = (struct vbuf *)pVB;
     if (n >= 16) return D3DERR_INVALIDCALL;
     d3dpt_enc_u32x4(&enc, D3DPT_OP_SET_STREAM_SOURCE, n, b ? b->h.handle : 0, off, stride);
-    BIND(dev->stream[n], b, IDirect3DVertexBuffer9);
-    dev->stream_off[n] = off; dev->stream_stride[n] = stride;
+    BIND(dev->st.stream[n], b, IDirect3DVertexBuffer9);
+    dev->st.stream_off[n] = off; dev->st.stream_stride[n] = stride;
+    SB_MARK(dev, m_->streams |= 1u << n);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetStreamSource(IDirect3DDevice9 *This, UINT n, IDirect3DVertexBuffer9 **pp, UINT *off, UINT *stride)
 {
     struct device *dev = DEV(This);
     if (!pp || n >= 16) return D3DERR_INVALIDCALL;
-    *pp = (IDirect3DVertexBuffer9 *)dev->stream[n];
+    *pp = (IDirect3DVertexBuffer9 *)dev->st.stream[n];
     if (*pp) IDirect3DVertexBuffer9_AddRef(*pp);
-    if (off) *off = dev->stream_off[n];
-    if (stride) *stride = dev->stream_stride[n];
+    if (off) *off = dev->st.stream_off[n];
+    if (stride) *stride = dev->st.stream_stride[n];
     return D3D_OK;
 }
 HRESULT WINAPI dev_SetIndices(IDirect3DDevice9 *This, IDirect3DIndexBuffer9 *pIB)
@@ -810,13 +832,14 @@ HRESULT WINAPI dev_SetIndices(IDirect3DDevice9 *This, IDirect3DIndexBuffer9 *pIB
     struct device *dev = DEV(This);
     struct ibuf *b = (struct ibuf *)pIB;
     d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_INDICES, b ? b->h.handle : 0, 0);
-    BIND(dev->indices, b, IDirect3DIndexBuffer9);
+    BIND(dev->st.indices, b, IDirect3DIndexBuffer9);
+    SB_MARK(dev, m_->misc |= SB_INDICES);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetIndices(IDirect3DDevice9 *This, IDirect3DIndexBuffer9 **pp)
 {
     if (!pp) return D3DERR_INVALIDCALL;
-    *pp = (IDirect3DIndexBuffer9 *)DEV(This)->indices;
+    *pp = (IDirect3DIndexBuffer9 *)DEV(This)->st.indices;
     if (*pp) IDirect3DIndexBuffer9_AddRef(*pp);
     return D3D_OK;
 }
@@ -825,13 +848,14 @@ HRESULT WINAPI dev_SetVertexShader(IDirect3DDevice9 *This, IDirect3DVertexShader
     struct device *dev = DEV(This);
     struct shader *s = (struct shader *)pS;
     d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_VERTEX_SHADER, s ? s->h.handle : 0, 0);
-    BIND(dev->vs, s, IDirect3DVertexShader9);
+    BIND(dev->st.vs, s, IDirect3DVertexShader9);
+    SB_MARK(dev, m_->misc |= SB_VS);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetVertexShader(IDirect3DDevice9 *This, IDirect3DVertexShader9 **pp)
 {
     if (!pp) return D3DERR_INVALIDCALL;
-    *pp = (IDirect3DVertexShader9 *)DEV(This)->vs;
+    *pp = (IDirect3DVertexShader9 *)DEV(This)->st.vs;
     if (*pp) IDirect3DVertexShader9_AddRef(*pp);
     return D3D_OK;
 }
@@ -840,23 +864,25 @@ HRESULT WINAPI dev_SetPixelShader(IDirect3DDevice9 *This, IDirect3DPixelShader9 
     struct device *dev = DEV(This);
     struct shader *s = (struct shader *)pS;
     d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_PIXEL_SHADER, s ? s->h.handle : 0, 0);
-    BIND(dev->ps, s, IDirect3DPixelShader9);
+    BIND(dev->st.ps, s, IDirect3DPixelShader9);
+    SB_MARK(dev, m_->misc |= SB_PS);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetPixelShader(IDirect3DDevice9 *This, IDirect3DPixelShader9 **pp)
 {
     if (!pp) return D3DERR_INVALIDCALL;
-    *pp = (IDirect3DPixelShader9 *)DEV(This)->ps;
+    *pp = (IDirect3DPixelShader9 *)DEV(This)->st.ps;
     if (*pp) IDirect3DPixelShader9_AddRef(*pp);
     return D3D_OK;
 }
 static void device_unbind_all(struct device *dev)
 {
     UINT i;
-    for (i = 0; i < 16; i++) { BIND(dev->tex_bound[i], NULL, IDirect3DTexture9); BIND(dev->stream[i], NULL, IDirect3DVertexBuffer9); }
-    BIND(dev->indices, NULL, IDirect3DIndexBuffer9);
-    BIND(dev->vs, NULL, IDirect3DVertexShader9);
-    BIND(dev->ps, NULL, IDirect3DPixelShader9);
+    for (i = 0; i < 16; i++) { BIND(dev->st.tex_bound[i], NULL, IUnknown); BIND(dev->st.stream[i], NULL, IDirect3DVertexBuffer9); }
+    BIND(dev->st.decl, NULL, IDirect3DVertexDeclaration9);
+    BIND(dev->st.indices, NULL, IDirect3DIndexBuffer9);
+    BIND(dev->st.vs, NULL, IDirect3DVertexShader9);
+    BIND(dev->st.ps, NULL, IDirect3DPixelShader9);
     for (i = 0; i < 4; i++) bind_surface(&dev->rt[i], NULL);
     bind_surface(&dev->ds, NULL);
     /* the implicit surfaces belong to the device; the host recreates them on Reset */

@@ -32,7 +32,7 @@ static_assert(sizeof(D3DRECT) == 16, "D3DRECT layout");
 
 namespace {
 
-enum Kind : uint8_t { K_NONE, K_DEVICE, K_VB, K_IB, K_TEX, K_SURF, K_VS, K_PS };
+enum Kind : uint8_t { K_NONE, K_DEVICE, K_VB, K_IB, K_TEX, K_SURF, K_VS, K_PS, K_CUBE, K_DECL, K_QUERY };
 
 struct Obj { Kind kind; IUnknown *p; };
 
@@ -329,8 +329,12 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
     }
     case D3DPT_OP_SET_TEXTURE: {
         auto *a = body<d3dpt_u32x2>(c, 0, b); if (!a || !need_device(b)) return;
-        IDirect3DTexture9 *t = nullptr;
-        if (a->b && !(t = x.get<IDirect3DTexture9>(a->b, K_TEX))) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        IDirect3DBaseTexture9 *t = nullptr;
+        if (a->b) {
+            auto it = x.objs.find(a->b);
+            if (it == x.objs.end() || (it->second.kind != K_TEX && it->second.kind != K_CUBE)) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+            t = static_cast<IDirect3DBaseTexture9 *>(it->second.p);
+        }
         x.dev->SetTexture(a->a, t);
         break;
     }
@@ -369,6 +373,37 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         if (!need_device(b)) return;
         if (c->op == D3DPT_OP_SET_VS_CONST_F) x.dev->SetVertexShaderConstantF(a->a, (const float *)tail(a), a->b);
         else x.dev->SetPixelShaderConstantF(a->a, (const float *)tail(a), a->b);
+        break;
+    }
+    case D3DPT_OP_SET_VS_CONST_I:
+    case D3DPT_OP_SET_PS_CONST_I: {
+        auto *a = body<d3dpt_u32x2>(c, 0, b); if (!a) return;
+        if (a->b > 16 || a->a > 16 || c->size < sizeof(d3dpt_cmd) + sizeof *a + a->b * 16) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        if (!need_device(b)) return;
+        if (c->op == D3DPT_OP_SET_VS_CONST_I) x.dev->SetVertexShaderConstantI(a->a, (const int *)tail(a), a->b);
+        else x.dev->SetPixelShaderConstantI(a->a, (const int *)tail(a), a->b);
+        break;
+    }
+    case D3DPT_OP_SET_VS_CONST_B:
+    case D3DPT_OP_SET_PS_CONST_B: {
+        auto *a = body<d3dpt_u32x2>(c, 0, b); if (!a) return;
+        if (a->b > 16 || a->a > 16 || c->size < sizeof(d3dpt_cmd) + sizeof *a + a->b * 4) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        if (!need_device(b)) return;
+        if (c->op == D3DPT_OP_SET_VS_CONST_B) x.dev->SetVertexShaderConstantB(a->a, (const BOOL *)tail(a), a->b);
+        else x.dev->SetPixelShaderConstantB(a->a, (const BOOL *)tail(a), a->b);
+        break;
+    }
+    case D3DPT_OP_SET_CLIP_PLANE: {
+        auto *a = body<d3dpt_clip_plane>(c, 0, b); if (!a || !need_device(b)) return;
+        if (a->index > 5) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        x.dev->SetClipPlane(a->index, a->plane);
+        break;
+    }
+    case D3DPT_OP_SET_VERTEX_DECL: {
+        auto *a = body<d3dpt_u32x2>(c, 0, b); if (!a || !need_device(b)) return;
+        IDirect3DVertexDeclaration9 *d = nullptr;
+        if (a->a && !(d = x.get<IDirect3DVertexDeclaration9>(a->a, K_DECL))) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        x.dev->SetVertexDeclaration(d);
         break;
     }
     case D3DPT_OP_SET_RENDER_TARGET: {
@@ -472,6 +507,72 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         if (SUCCEEDED(r->hr) && !x.put(a->handle, K_TEX, t)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
         break;
     }
+    case D3DPT_OP_CREATE_CUBE_TEXTURE: {
+        auto *a = body<d3dpt_create_texture>(c, 0, b); if (!a) return;
+        d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return;
+        if (!need_device(b)) return;
+        if (!a->width || a->width > 8192 || a->levels > 16) { r->hr = (uint32_t)D3DERR_INVALIDCALL; return; }
+        IDirect3DCubeTexture9 *t = nullptr;
+        r->hr = (uint32_t)x.dev->CreateCubeTexture(a->width, a->levels, a->usage, (D3DFORMAT)a->format, (D3DPOOL)a->pool, &t, nullptr);
+        if (SUCCEEDED(r->hr) && !x.put(a->handle, K_CUBE, t)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
+        break;
+    }
+    case D3DPT_OP_CREATE_OFFSCREEN: {
+        auto *a = body<d3dpt_create_texture>(c, 0, b); if (!a) return;
+        d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return;
+        if (!need_device(b)) return;
+        if (!a->width || !a->height || a->width > 8192 || a->height > 8192) { r->hr = (uint32_t)D3DERR_INVALIDCALL; return; }
+        IDirect3DSurface9 *s = nullptr;
+        r->hr = (uint32_t)x.dev->CreateOffscreenPlainSurface(a->width, a->height, (D3DFORMAT)a->format, (D3DPOOL)a->pool, &s, nullptr);
+        if (SUCCEEDED(r->hr) && !x.put(a->handle, K_SURF, s)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
+        break;
+    }
+    case D3DPT_OP_CREATE_VERTEX_DECL: {
+        auto *a = body<d3dpt_create_shader>(c, 0, b); if (!a) return;
+        d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return;
+        if (a->bytes < 8 || a->bytes % 8 || a->bytes > 8 * 65 || c->size < sizeof(d3dpt_cmd) + sizeof *a + a->bytes) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        if (!need_device(b)) return;
+        const D3DVERTEXELEMENT9 *el = (const D3DVERTEXELEMENT9 *)tail(a);
+        if (el[a->bytes / 8 - 1].Stream != 0xFF) { r->hr = (uint32_t)D3DERR_INVALIDCALL; return; }   /* must end with D3DDECL_END */
+        IDirect3DVertexDeclaration9 *d = nullptr;
+        r->hr = (uint32_t)x.dev->CreateVertexDeclaration(el, &d);
+        if (SUCCEEDED(r->hr) && !x.put(a->handle, K_DECL, d)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
+        break;
+    }
+    case D3DPT_OP_CREATE_QUERY: {
+        auto *a = body<d3dpt_create_query>(c, 0, b); if (!a) return;
+        d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return;
+        if (!need_device(b)) return;
+        IDirect3DQuery9 *q = nullptr;
+        r->hr = (uint32_t)x.dev->CreateQuery((D3DQUERYTYPE)a->type, &q);
+        if (SUCCEEDED(r->hr) && !x.put(a->handle, K_QUERY, q)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
+        break;
+    }
+    case D3DPT_OP_QUERY_ISSUE: {
+        auto *a = body<d3dpt_u32x2>(c, 0, b); if (!a) return;
+        IDirect3DQuery9 *q = x.get<IDirect3DQuery9>(a->a, K_QUERY);
+        if (!q) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        q->Issue(a->b & (D3DISSUE_BEGIN | D3DISSUE_END));
+        break;
+    }
+    case D3DPT_OP_QUERY_GET_DATA: {
+        auto *a = body<d3dpt_query_get>(c, 0, b); if (!a) return;
+        if (a->size > 256) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        d3dpt_ret *r = b.slot(a->ret_off, a->size); if (!r) return;
+        IDirect3DQuery9 *q = x.get<IDirect3DQuery9>(a->handle, K_QUERY);
+        if (!q) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        r->hr = (uint32_t)q->GetData(a->size ? (void *)(r + 1) : nullptr, a->size, a->flags & D3DGETDATA_FLUSH);
+        r->bytes = r->hr == S_OK ? a->size : 0;
+        break;
+    }
+    case D3DPT_OP_COLOR_FILL: {
+        auto *a = body<d3dpt_color_fill>(c, 0, b); if (!a || !need_device(b)) return;
+        IDirect3DSurface9 *s = x.get<IDirect3DSurface9>(a->handle, K_SURF);
+        if (!s) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        RECT rc = { a->rect[0], a->rect[1], a->rect[2], a->rect[3] };
+        x.dev->ColorFill(s, a->has_rect ? &rc : nullptr, a->color);
+        break;
+    }
     case D3DPT_OP_CREATE_DEPTH_STENCIL:
     case D3DPT_OP_CREATE_RENDER_TARGET: {
         auto *a = body<d3dpt_create_texture>(c, 0, b); if (!a) return;
@@ -495,9 +596,11 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
             r->hr = a->level == 0 ? (uint32_t)x.dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &s)
                                   : (uint32_t)x.dev->GetDepthStencilSurface(&s);
         } else {
-            IDirect3DTexture9 *t = x.get<IDirect3DTexture9>(a->texture, K_TEX);
-            if (!t) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
-            r->hr = (uint32_t)t->GetSurfaceLevel(a->level, &s);
+            auto it = x.objs.find(a->texture);
+            if (it == x.objs.end()) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+            if (it->second.kind == K_TEX) r->hr = (uint32_t)static_cast<IDirect3DTexture9 *>(it->second.p)->GetSurfaceLevel(a->level & 0xff, &s);
+            else if (it->second.kind == K_CUBE) r->hr = (uint32_t)static_cast<IDirect3DCubeTexture9 *>(it->second.p)->GetCubeMapSurface((D3DCUBEMAP_FACES)((a->level >> 8) & 0xf), a->level & 0xff, &s);
+            else { b.err = D3DPT_ERR_BAD_HANDLE; return; }
         }
         if (SUCCEEDED(r->hr) && !x.put(a->handle, K_SURF, s)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
         break;
@@ -525,29 +628,52 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         if (FAILED(hr)) x.log("buffer update: Lock 0x%08x", (unsigned)hr);
         break;
     }
-    case D3DPT_OP_TEXTURE_UPDATE: {
+    case D3DPT_OP_TEXTURE_UPDATE:
+    case D3DPT_OP_SURFACE_UPDATE: {
         auto *a = body<d3dpt_tex_update>(c, 0, b); if (!a) return;
         if (a->bytes == 0 || a->pitch == 0 || a->bytes % a->pitch || c->size < sizeof(d3dpt_cmd) + sizeof *a + a->bytes ||
             !a->w || !a->h) { b.err = D3DPT_ERR_BAD_ARG; return; }
-        IDirect3DTexture9 *t = x.get<IDirect3DTexture9>(a->handle, K_TEX);
-        if (!t) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        auto it = x.objs.find(a->handle);
+        if (it == x.objs.end()) { b.err = D3DPT_ERR_BAD_HANDLE; return; }
         D3DSURFACE_DESC d;
-        if (FAILED(t->GetLevelDesc(a->level, &d)) || (uint64_t)a->x + a->w > d.Width || (uint64_t)a->y + a->h > d.Height) { b.err = D3DPT_ERR_BAD_ARG; return; }
-        RECT rc = { (LONG)a->x, (LONG)a->y, (LONG)(a->x + a->w), (LONG)(a->y + a->h) };
         D3DLOCKED_RECT lr;
-        HRESULT hr = t->LockRect(a->level, &lr, &rc, 0);
+        HRESULT hr;
+        RECT rc = { (LONG)a->x, (LONG)a->y, (LONG)(a->x + a->w), (LONG)(a->y + a->h) };
+        IDirect3DTexture9 *t = nullptr; IDirect3DCubeTexture9 *ct = nullptr; IDirect3DSurface9 *sf = nullptr;
+        uint32_t level = a->level & 0xff; D3DCUBEMAP_FACES face = (D3DCUBEMAP_FACES)((a->level >> 8) & 0xf);
+        if (c->op == D3DPT_OP_TEXTURE_UPDATE && it->second.kind == K_TEX) { t = static_cast<IDirect3DTexture9 *>(it->second.p); hr = t->GetLevelDesc(level, &d); }
+        else if (c->op == D3DPT_OP_TEXTURE_UPDATE && it->second.kind == K_CUBE) { ct = static_cast<IDirect3DCubeTexture9 *>(it->second.p); hr = ct->GetLevelDesc(level, &d); }
+        else if (c->op == D3DPT_OP_SURFACE_UPDATE && it->second.kind == K_SURF) { sf = static_cast<IDirect3DSurface9 *>(it->second.p); hr = sf->GetDesc(&d); }
+        else { b.err = D3DPT_ERR_BAD_HANDLE; return; }
+        if (FAILED(hr) || (uint64_t)a->x + a->w > d.Width || (uint64_t)a->y + a->h > d.Height) { b.err = D3DPT_ERR_BAD_ARG; return; }
+        uint32_t rows = a->bytes / a->pitch;
+        uint32_t maxrows = a->h;
+        bool dxt = d.Format == D3DFMT_DXT1 || d.Format == D3DFMT_DXT2 || d.Format == D3DFMT_DXT3 || d.Format == D3DFMT_DXT4 || d.Format == D3DFMT_DXT5;
+        if (dxt) maxrows = (a->h + 3) / 4;
+        if (rows > maxrows) rows = maxrows;
+        const uint8_t *src = tail(a);
+        auto copy_rows = [&](void *bits, INT pitch) {
+            uint32_t row = a->pitch < (uint32_t)pitch ? a->pitch : (uint32_t)pitch;
+            for (uint32_t y = 0; y < rows; y++) memcpy((uint8_t *)bits + (size_t)y * pitch, src + (size_t)y * a->pitch, row);
+        };
+        hr = t ? t->LockRect(level, &lr, &rc, 0) : ct ? ct->LockRect(face, level, &lr, &rc, 0) : sf->LockRect(&lr, &rc, 0);
         if (SUCCEEDED(hr)) {
-            uint32_t rows = a->bytes / a->pitch;
-            uint32_t row = a->pitch < (uint32_t)lr.Pitch ? a->pitch : (uint32_t)lr.Pitch;
-            /* rows the locked box actually has (blocks for compressed formats) */
-            uint32_t maxrows = a->h;
-            if (d.Format == D3DFMT_DXT1 || d.Format == D3DFMT_DXT2 || d.Format == D3DFMT_DXT3 || d.Format == D3DFMT_DXT4 || d.Format == D3DFMT_DXT5)
-                maxrows = (a->h + 3) / 4;
-            if (rows > maxrows) rows = maxrows;
-            const uint8_t *src = tail(a);
-            for (uint32_t y = 0; y < rows; y++) memcpy((uint8_t *)lr.pBits + (size_t)y * lr.Pitch, src + (size_t)y * a->pitch, row);
-            t->UnlockRect(a->level);
-        } else x.log("texture update: LockRect 0x%08x", (unsigned)hr);
+            copy_rows(lr.pBits, lr.Pitch);
+            if (t) t->UnlockRect(level); else if (ct) ct->UnlockRect(face, level); else sf->UnlockRect();
+        } else {
+            /* DEFAULT-pool textures are not lockable: stage through a system-memory surface */
+            IDirect3DSurface9 *dst = nullptr, *tmp = nullptr;
+            if (t) t->GetSurfaceLevel(level, &dst); else if (ct) ct->GetCubeMapSurface(face, level, &dst); else { dst = sf; dst->AddRef(); }
+            hr = x.dev->CreateOffscreenPlainSurface(a->w, a->h, d.Format, D3DPOOL_SYSTEMMEM, &tmp, nullptr);
+            if (SUCCEEDED(hr) && dst) {
+                if (SUCCEEDED(tmp->LockRect(&lr, nullptr, 0))) { copy_rows(lr.pBits, lr.Pitch); tmp->UnlockRect(); }
+                POINT pt = { (LONG)a->x, (LONG)a->y };
+                hr = x.dev->UpdateSurface(tmp, nullptr, dst, &pt);
+            }
+            if (FAILED(hr)) x.log("%s update: staged upload 0x%08x", t ? "texture" : ct ? "cube" : "surface", (unsigned)hr);
+            if (tmp) tmp->Release();
+            if (dst) dst->Release();
+        }
         break;
     }
     case D3DPT_OP_CREATE_VERTEX_SHADER:

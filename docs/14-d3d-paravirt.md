@@ -137,7 +137,14 @@ guest (XP)                                  host (QEMU process, embed lib)
 - **P3 — Shaders + queries:** SM1–3 vertex/pixel shaders, constants,
   occlusion/event queries, StretchRect, swap-chain variants, multi-head
   ignored. Acceptance: Max Payne (D3D8 via P4 stub), GTA:VC (D3D9), the
-  doc 04 matrix.
+  doc 04 matrix. **Feature set done 2026-09-04** (protocol v3,
+  `guest-tools/src/d3dpt/d3d9_p3.h`): declarations, all constant types,
+  queries, state blocks (guest-side, never on the wire), cube textures,
+  DEFAULT offscreen surfaces, ColorFill/StretchRect/UpdateSurface/
+  UpdateTexture, clip planes. `D3DFEAT9` (hand-assembled SM1.1, no D3DX)
+  is byte-identical between the XP guest and the native DXVK build.
+  Acceptance titles still to run; swap-chain objects and volume textures
+  open.
 - **P4 — D3D8:** `d3d8.dll` over d3d9.
 - **P5 — later:** DirectDraw/D3D7 layer over the device (or keep WineD3D
   for DX7 titles), Win98 guest (the same DLLs are 9x-compatible if built
