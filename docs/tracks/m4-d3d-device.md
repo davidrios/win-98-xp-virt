@@ -33,7 +33,12 @@ track rules, then this file, then doc 14.
 P0–P4 closed: the device, both DLLs and the three test programs are
 byte-exact against the native DXVK build on Linux (details and numbers in
 the M4 row of `docs/00-status.md` and in doc 14). `scripts/test.sh all`
-is green (12 checks, ~2 min under KVM). No real game has run yet.
+is green (13 checks, ~2 min under KVM). First games tried by the user on
+2026-09-04 (status doc, M4 row, has the detail): Vice City's DirectDraw
+video-memory check is answered by the new `D3DPT\DDRAW.DLL` shim, the
+16-bit-only mode list came from the Cirrus driver's 24-bit modes and is
+fixed, GetRasterStatus and the gamma ramp are implemented; Max Payne
+still freezes on level load and needs its host log.
 
 ## Build / run / test
 
@@ -52,10 +57,10 @@ games yet); `scripts/test.sh` boots a `snapshot=on` view of it.
 
 ## Next steps, in order
 
-1. **A real game on the device.** Install Max Payne (D3D8) or GTA: Vice
-   City (D3D8) / San Andreas (D3D9) on the XP image, copy `D3DPT\D3D8.DLL`
-   or `D3D9.DLL` next to the EXE (never together with WineD3D's), run, read
-   the host log: every unimplemented method prints `not implemented` once
+1. **A real game on the device.** Max Payne (D3D8) and GTA: Vice City
+   (D3D8) are installed on the user's XP image; copy `D3DPT\D3D8.DLL`
+   (plus `DDRAW.DLL` for Vice City) next to the EXE (never together with
+   WineD3D's), run, read the host log: every unimplemented method prints `not implemented` once
    (`D3DPT_STUB`). Known stubs a game may hit: volume textures, swap-chain
    objects, GetFrontBuffer, ProcessVertices, LockRect on DEFAULT-pool
    surfaces, the lost-device protocol, palettes.

@@ -401,6 +401,9 @@ HRESULT WINAPI dev8_ResourceManagerDiscardBytes(IDirect3DDevice8 *This, DWORD b)
 HRESULT WINAPI dev8_GetDirect3D(IDirect3DDevice8 *This, IDirect3D8 **pp) { if (!pp) return D3DERR_INVALIDCALL; *pp = (IDirect3D8 *)D8(This)->d8; InterlockedIncrement(&D8(This)->d8->ref); return D3D_OK; }
 HRESULT WINAPI dev8_GetDeviceCaps(IDirect3DDevice8 *This, D3DCAPS8 *c) { return d8_GetDeviceCaps((IDirect3D8 *)D8(This)->d8, 0, D3DDEVTYPE_HAL, c); }
 HRESULT WINAPI dev8_GetDisplayMode(IDirect3DDevice8 *This, D3DDISPLAYMODE *m) { return dev_GetDisplayMode(DEV9(This), 0, m); }
+HRESULT WINAPI dev8_GetRasterStatus(IDirect3DDevice8 *This, D3DRASTER_STATUS *rs) { return dev_GetRasterStatus(DEV9(This), 0, rs); }
+void WINAPI dev8_SetGammaRamp(IDirect3DDevice8 *This, DWORD flags, const D3DGAMMARAMP *ramp) { dev_SetGammaRamp(DEV9(This), 0, flags, ramp); }
+void WINAPI dev8_GetGammaRamp(IDirect3DDevice8 *This, D3DGAMMARAMP *ramp) { dev_GetGammaRamp(DEV9(This), 0, ramp); }
 HRESULT WINAPI dev8_GetCreationParameters(IDirect3DDevice8 *This, D3DDEVICE_CREATION_PARAMETERS *p) { return dev_GetCreationParameters(DEV9(This), p); }
 HRESULT WINAPI dev8_SetCursorProperties(IDirect3DDevice8 *This, UINT x, UINT y, IDirect3DSurface8 *s) { return D3D_OK; }
 void WINAPI dev8_SetCursorPosition(IDirect3DDevice8 *This, UINT x, UINT y, DWORD f) { dev_SetCursorPosition(DEV9(This), (int)x, (int)y, f); }

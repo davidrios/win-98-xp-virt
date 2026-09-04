@@ -59,10 +59,10 @@ UINT WINAPI dev_GetNumberOfSwapChains(IDirect3DDevice9 *This);
 HRESULT WINAPI dev_Reset(IDirect3DDevice9 *This, D3DPRESENT_PARAMETERS* pPresentationParameters);
 HRESULT WINAPI dev_Present(IDirect3DDevice9 *This, const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override, const RGNDATA *dirty_region);
 HRESULT WINAPI dev_GetBackBuffer(IDirect3DDevice9 *This, UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9** ppBackBuffer);
-static HRESULT WINAPI dev_GetRasterStatus(IDirect3DDevice9 *This, UINT iSwapChain, D3DRASTER_STATUS* pRasterStatus) { D3DPT_STUB("IDirect3DDevice9::GetRasterStatus"); return E_NOTIMPL; }
+HRESULT WINAPI dev_GetRasterStatus(IDirect3DDevice9 *This, UINT iSwapChain, D3DRASTER_STATUS* pRasterStatus);
 static HRESULT WINAPI dev_SetDialogBoxMode(IDirect3DDevice9 *This, WINBOOL bEnableDialogs) { D3DPT_STUB("IDirect3DDevice9::SetDialogBoxMode"); return E_NOTIMPL; }
-static void WINAPI dev_SetGammaRamp(IDirect3DDevice9 *This, UINT swapchain_idx, DWORD flags, const D3DGAMMARAMP *ramp) { D3DPT_STUB("IDirect3DDevice9::SetGammaRamp");  }
-static void WINAPI dev_GetGammaRamp(IDirect3DDevice9 *This, UINT iSwapChain, D3DGAMMARAMP* pRamp) { D3DPT_STUB("IDirect3DDevice9::GetGammaRamp");  }
+void WINAPI dev_SetGammaRamp(IDirect3DDevice9 *This, UINT swapchain_idx, DWORD flags, const D3DGAMMARAMP *ramp);
+void WINAPI dev_GetGammaRamp(IDirect3DDevice9 *This, UINT iSwapChain, D3DGAMMARAMP* pRamp);
 HRESULT WINAPI dev_CreateTexture(IDirect3DDevice9 *This, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle);
 static HRESULT WINAPI dev_CreateVolumeTexture(IDirect3DDevice9 *This, UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture9** ppVolumeTexture, HANDLE* pSharedHandle) { D3DPT_STUB("IDirect3DDevice9::CreateVolumeTexture"); return E_NOTIMPL; }
 HRESULT WINAPI dev_CreateCubeTexture(IDirect3DDevice9 *This, UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle);

@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <math.h>
 #include "fxlib.h"
 #include "../../../d3dpt/d3dpt_enc.h"
 
@@ -208,19 +209,43 @@ static HRESULT get_adapter_info(struct d3d9 *d)
     return D3D_OK;
 }
 
-/* the guest's own display modes: what the emulated VGA driver offers */
-static D3DFORMAT bpp_format(DWORD bpp) { return bpp == 32 ? D3DFMT_X8R8G8B8 : bpp == 16 ? D3DFMT_R5G6B5 : D3DFMT_UNKNOWN; }
-static int enum_mode(UINT idx, D3DFORMAT want, D3DDISPLAYMODE *out)
+/* the guest's own display modes: what the emulated VGA driver offers.
+ * 24-bit modes count as X8R8G8B8: XP's Cirrus driver lists 24, not 32, at
+ * the larger sizes (a game then saw 16-bit modes only); the host renders
+ * 8888 regardless and the fullscreen switch below retries at 24 bpp. The
+ * list is built once and de-duplicated across the two depths. */
+static D3DFORMAT bpp_format(DWORD bpp) { return bpp == 32 || bpp == 24 ? D3DFMT_X8R8G8B8 : bpp == 16 ? D3DFMT_R5G6B5 : D3DFMT_UNKNOWN; }
+static struct { UINT w, h, hz; D3DFORMAT f; } g_modes[512];
+static UINT g_nmodes;
+static int g_modes_built;
+static void build_modes(void)
 {
     DEVMODEA dm;
-    UINT i, n = 0;
+    UINT i, j, n16 = 0, n32 = 0;
+    if (g_modes_built) return;
+    g_modes_built = 1;
     memset(&dm, 0, sizeof dm); dm.dmSize = sizeof dm;
-    for (i = 0; EnumDisplaySettingsA(NULL, i, &dm); i++) {
+    for (i = 0; EnumDisplaySettingsA(NULL, i, &dm) && g_nmodes < 512; i++) {
         D3DFORMAT f = bpp_format(dm.dmBitsPerPel);
-        if (f == D3DFMT_UNKNOWN || (want != D3DFMT_UNKNOWN && f != want)) continue;
-        if (dm.dmPelsWidth < 640) continue;
+        if (f == D3DFMT_UNKNOWN || dm.dmPelsWidth < 640) continue;
+        for (j = 0; j < g_nmodes; j++)
+            if (g_modes[j].w == dm.dmPelsWidth && g_modes[j].h == dm.dmPelsHeight && g_modes[j].hz == dm.dmDisplayFrequency && g_modes[j].f == f) break;
+        if (j < g_nmodes) continue;
+        g_modes[g_nmodes].w = dm.dmPelsWidth; g_modes[g_nmodes].h = dm.dmPelsHeight;
+        g_modes[g_nmodes].hz = dm.dmDisplayFrequency; g_modes[g_nmodes].f = f;
+        g_nmodes++;
+        if (f == D3DFMT_R5G6B5) n16++; else n32++;
+    }
+    d3dpt_log("d3dpt: %u display modes from the guest driver (%u 16-bit, %u 24/32-bit)", g_nmodes, n16, n32);
+}
+static int enum_mode(UINT idx, D3DFORMAT want, D3DDISPLAYMODE *out)
+{
+    UINT i, n = 0;
+    build_modes();
+    for (i = 0; i < g_nmodes; i++) {
+        if (want != D3DFMT_UNKNOWN && g_modes[i].f != want) continue;
         if (n == idx) {
-            if (out) { out->Width = dm.dmPelsWidth; out->Height = dm.dmPelsHeight; out->RefreshRate = dm.dmDisplayFrequency; out->Format = f; }
+            if (out) { out->Width = g_modes[i].w; out->Height = g_modes[i].h; out->RefreshRate = g_modes[i].hz; out->Format = g_modes[i].f; }
             return 1;
         }
         n++;
@@ -556,6 +581,43 @@ HRESULT WINAPI dev_GetDisplayMode(IDirect3DDevice9 *This, UINT iSwapChain, D3DDI
     if (dev->pp.Windowed) current_mode(pMode);
     else { pMode->Width = dev->pp.BackBufferWidth; pMode->Height = dev->pp.BackBufferHeight; pMode->RefreshRate = dev->pp.FullScreen_RefreshRateInHz; pMode->Format = dev->pp.BackBufferFormat; }
     return D3D_OK;
+}
+/* no raster on a paravirtual device: a 60 Hz sweep from the performance
+ * counter with ~5 % of vblank, so a wait-for-vblank loop terminates and
+ * pacing code sees the beam move */
+HRESULT WINAPI dev_GetRasterStatus(IDirect3DDevice9 *This, UINT iSwapChain, D3DRASTER_STATUS *rs)
+{
+    LARGE_INTEGER f, t;
+    UINT h, lines, line;
+    double frames;
+    if (iSwapChain || !rs) return D3DERR_INVALIDCALL;
+    h = DEV(This)->pp.BackBufferHeight ? DEV(This)->pp.BackBufferHeight : 480;
+    lines = h + h / 20;
+    QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t);
+    /* double math on purpose: a 64-bit modulo on i386 pulls libgcc_s_dw2-1.dll
+     * into the DLL's imports and the guest has no such file */
+    frames = (double)t.QuadPart * 60.0 / (double)f.QuadPart;
+    line = (UINT)((frames - floor(frames)) * (double)lines);
+    rs->InVBlank = line >= h;
+    rs->ScanLine = rs->InVBlank ? 0 : line;
+    return D3D_OK;
+}
+/* gamma: remembered and returned, not applied to the host output (logged once) */
+static D3DGAMMARAMP g_gamma;
+static int g_gamma_set;
+void WINAPI dev_SetGammaRamp(IDirect3DDevice9 *This, UINT iSwapChain, DWORD Flags, const D3DGAMMARAMP *ramp)
+{
+    static int once;
+    if (!ramp) return;
+    g_gamma = *ramp; g_gamma_set = 1;
+    if (!once) { once = 1; d3dpt_log("d3dpt: SetGammaRamp accepted (flags 0x%lx); ramps are not applied to the host output", (unsigned long)Flags); }
+}
+void WINAPI dev_GetGammaRamp(IDirect3DDevice9 *This, UINT iSwapChain, D3DGAMMARAMP *ramp)
+{
+    UINT i;
+    if (!ramp) return;
+    if (g_gamma_set) { *ramp = g_gamma; return; }
+    for (i = 0; i < 256; i++) ramp->red[i] = ramp->green[i] = ramp->blue[i] = (WORD)(i * 257);
 }
 HRESULT WINAPI dev_GetCreationParameters(IDirect3DDevice9 *This, D3DDEVICE_CREATION_PARAMETERS *p)
 {

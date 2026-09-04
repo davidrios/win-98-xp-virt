@@ -185,9 +185,9 @@ static HRESULT WINAPI dev8_CreateAdditionalSwapChain(IDirect3DDevice8 *This, D3D
 HRESULT WINAPI dev8_Reset(IDirect3DDevice8 *This, D3DPRESENT_PARAMETERS8 * pPresentationParameters);
 HRESULT WINAPI dev8_Present(IDirect3DDevice8 *This, const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override, const RGNDATA *dirty_region);
 HRESULT WINAPI dev8_GetBackBuffer(IDirect3DDevice8 *This, UINT BackBuffer,D3DBACKBUFFER_TYPE Type,IDirect3DSurface8 ** ppBackBuffer);
-static HRESULT WINAPI dev8_GetRasterStatus(IDirect3DDevice8 *This, D3DRASTER_STATUS * pRasterStatus) { D3DPT_STUB("IDirect3DDevice8::GetRasterStatus"); return E_NOTIMPL; }
-static void WINAPI dev8_SetGammaRamp(IDirect3DDevice8 *This, DWORD flags, const D3DGAMMARAMP *ramp) { D3DPT_STUB("IDirect3DDevice8::SetGammaRamp");  }
-static void WINAPI dev8_GetGammaRamp(IDirect3DDevice8 *This, D3DGAMMARAMP * pRamp) { D3DPT_STUB("IDirect3DDevice8::GetGammaRamp");  }
+HRESULT WINAPI dev8_GetRasterStatus(IDirect3DDevice8 *This, D3DRASTER_STATUS * pRasterStatus);
+void WINAPI dev8_SetGammaRamp(IDirect3DDevice8 *This, DWORD flags, const D3DGAMMARAMP *ramp);
+void WINAPI dev8_GetGammaRamp(IDirect3DDevice8 *This, D3DGAMMARAMP * pRamp);
 HRESULT WINAPI dev8_CreateTexture(IDirect3DDevice8 *This, UINT Width,UINT Height,UINT Levels,DWORD Usage,D3DFORMAT Format,D3DPOOL Pool,IDirect3DTexture8 ** ppTexture);
 static HRESULT WINAPI dev8_CreateVolumeTexture(IDirect3DDevice8 *This, UINT Width,UINT Height,UINT Depth,UINT Levels,DWORD Usage,D3DFORMAT Format,D3DPOOL Pool,IDirect3DVolumeTexture8 ** ppVolumeTexture) { D3DPT_STUB("IDirect3DDevice8::CreateVolumeTexture"); return E_NOTIMPL; }
 HRESULT WINAPI dev8_CreateCubeTexture(IDirect3DDevice8 *This, UINT EdgeLength,UINT Levels,DWORD Usage,D3DFORMAT Format,D3DPOOL Pool,IDirect3DCubeTexture8 ** ppCubeTexture);

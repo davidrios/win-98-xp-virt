@@ -172,13 +172,20 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame8.exe" "$ROOT/guest-tools/s
 mkdir -p "$OUT/iso/D3DPT"
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d9.dll" "$ROOT/guest-tools/src/d3dpt/d3d9.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
-  -Wl,--kill-at -lgdi32 -luser32
+  -static-libgcc -Wl,--kill-at -lgdi32 -luser32
 cp "$OUT/iso/GAMEDIR/d3d9test.exe" "$OUT/iso/GAMEDIR/d3dgame9.exe" "$OUT/iso/D3DPT/"
 # Direct3D 8 over the same device (doc 14 P4): d3d8.c includes d3d9.c, one DLL.
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d8.dll" "$ROOT/guest-tools/src/d3dpt/d3d8.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
-  -Wl,--kill-at -lgdi32 -luser32
+  -static-libgcc -Wl,--kill-at -lgdi32 -luser32
 cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
+# DirectDraw 7 shim (d3dpt/ddraw.c): forwards to the system ddraw.dll and
+# reports 256 MB of video memory. RenderWare launchers (GTA Vice City) ask
+# DirectDraw, not Direct3D, and refuse the Cirrus adapter's 4 MB.
+# DDVMTEST.EXE prints what such a check sees (system ddraw vs the shim).
+i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/ddraw.dll" "$ROOT/guest-tools/src/d3dpt/ddraw.c" \
+  "$ROOT/guest-tools/src/d3dpt/ddraw.def" -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c" -lddraw -ldxguid
 # Feature test (doc 14 P3): shaders, declarations, state blocks, queries, cube maps, surfaces.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src/d3dfeat9.c" -ld3d9 -lgdi32 -luser32
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
@@ -221,6 +228,11 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             D3D9TEST.EXE / D3DGAME9.EXE; needs the WIN2KXP (FXPTL.SYS) or
             WIN9X step like OPENGL32.DLL. Log: d3dpt.log next to the EXE
             (C:\d3dpt.log when run from the CD). Do not mix with WINED3D.
+            D3D8.DLL for Direct3D 8 titles. DDRAW.DLL next to the EXE too
+            when a launcher checks video memory through DirectDraw (GTA
+            Vice City: "cannot find enough available video memory"); it
+            reports 256 MB and forwards everything else to the system.
+            DDVMTEST.EXE shows what such a check sees.
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with
