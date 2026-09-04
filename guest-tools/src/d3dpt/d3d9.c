@@ -30,6 +30,9 @@
 /* ------------------------------------------------------------- logging */
 static FILE *log_file;
 static int log_enabled = 1;
+static int log_to_host = 1;         /* D3DPT_HOSTLOG=0 turns the host copy off */
+static int attached;
+static d3dpt_enc enc;
 static void d3dpt_log(const char *fmt, ...)
 {
     char buf[512];
@@ -43,6 +46,10 @@ static void d3dpt_log(const char *fmt, ...)
     buf[n++] = '\n'; buf[n] = 0;
     OutputDebugStringA(buf);
     if (log_file) { fputs(buf, log_file); fflush(log_file); }
+    if (attached && log_to_host) {
+        d3dpt_u32x2 *p = d3dpt_enc_cmd(&enc, D3DPT_OP_LOG, sizeof *p, (uint32_t)n - 1);
+        if (p) { p->a = (uint32_t)n - 1; p->b = 0; memcpy(p + 1, buf, n - 1); d3dpt_enc_flush(&enc); }
+    }
 }
 #define D3DPT_STUB(name) do { static int once; if (!once) { once = 1; d3dpt_log("d3dpt: %s not implemented", name); } } while (0)
 
@@ -50,8 +57,6 @@ static void d3dpt_log(const char *fmt, ...)
 static DRVFUNC drv;
 static volatile uint32_t *regs;
 static uint8_t *shm;
-static d3dpt_enc enc;
-static int attached;
 
 static void doorbell(d3dpt_enc *e)
 {
@@ -89,8 +94,20 @@ static int transport_init(void)
 
 static void transport_fini(void)
 {
-    if (attached) { d3dpt_enc_flush(&enc); regs[D3DPT_REG_ATTACH / 4] = 0; attached = 0; }
+    if (attached) {
+        d3dpt_log("d3dpt: detaching: %u records pending", d3dpt_enc_hdr(&enc)->cmd_count);
+        d3dpt_enc_flush(&enc);
+        d3dpt_log("d3dpt: detaching: flushed (status %u)", enc.last_status);
+        regs[D3DPT_REG_ATTACH / 4] = 0;
+        attached = 0;
+        d3dpt_log("d3dpt: detaching: host released (attach count %u)", regs[D3DPT_REG_ATTACH / 4]);
+    }
+    log_to_host = 0;                /* the window goes away now */
+    if (shm && drv.UnmapLinear) drv.UnmapLinear((unsigned long)shm, D3DPT_SHM_SIZE);
+    if (regs && drv.UnmapLinear) drv.UnmapLinear((unsigned long)regs, 0x1000);
+    shm = NULL; regs = NULL;
     if (drv.Fini) drv.Fini();
+    d3dpt_log("d3dpt: detaching: driver closed");
 }
 
 /* ------------------------------------------------------------- objects */
@@ -507,6 +524,7 @@ ULONG WINAPI dev_Release(IDirect3DDevice9 *This)
 {
     struct device *dev = DEV(This);
     LONG r = InterlockedDecrement(&dev->ref);
+    if (r < 2) d3dpt_log("d3dpt: device Release -> %ld", (long)r);
     if (r == 0) {
         d3dpt_handle *h;
         device_unbind_all(dev);
@@ -566,7 +584,11 @@ HRESULT WINAPI dev_Reset(IDirect3DDevice9 *This, D3DPRESENT_PARAMETERS *pp)
 }
 HRESULT WINAPI dev_Present(IDirect3DDevice9 *This, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion)
 {
-    uint32_t hr = d3dpt_enc_sync(&enc, D3DPT_OP_PRESENT, DEV(This)->handle);
+    static unsigned presents;
+    uint32_t hr;
+    if (++presents % 1000 == 0) d3dpt_log("d3dpt: present #%u (heap objects: handle counter %u)", presents, enc.next_handle);
+    hr = d3dpt_enc_sync(&enc, D3DPT_OP_PRESENT, DEV(This)->handle);
+    if (presents % 1000 == 0) d3dpt_log("d3dpt: present #%u done, hr 0x%08lx", presents, (unsigned long)hr);
     if (enc.last_status) { d3dpt_log("d3dpt: Present: batch error %u at record %u", enc.last_status, d3dpt_enc_hdr(&enc)->ret_index); return D3DERR_DRIVERINTERNALERROR; }
     return (HRESULT)hr;
 }
@@ -785,6 +807,8 @@ __declspec(dllexport) WINBOOL WINAPI D3DPERF_QueryRepeatFrame(void) { return FAL
 __declspec(dllexport) void WINAPI D3DPERF_SetOptions(DWORD dwOptions) { }
 __declspec(dllexport) DWORD WINAPI D3DPERF_GetStatus(void) { return 0; }
 __declspec(dllexport) HRESULT WINAPI DebugSetMute(void) { return D3D_OK; }
+/* test programs log through the device (host-visible, ordered with the device's own lines) */
+__declspec(dllexport) void WINAPI D3DPT_Log(const char *msg) { d3dpt_log("app: %s", msg ? msg : ""); }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
@@ -792,6 +816,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         char path[MAX_PATH], *p;
         const char *env = getenv("D3DPT_LOG");
         if (env && env[0] == '0') log_enabled = 0;
+        env = getenv("D3DPT_HOSTLOG");
+        if (env && env[0] == '0') log_to_host = 0;
         if (log_enabled && GetModuleFileNameA(inst, path, sizeof path)) {
             p = strrchr(path, '\\');
             if (p) { strcpy(p + 1, "d3dpt.log"); log_file = fopen(path, "a"); }
@@ -805,6 +831,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
             return FALSE;
         }
     } else if (reason == DLL_PROCESS_DETACH) {
+        d3dpt_log("d3dpt: DLL_PROCESS_DETACH (%s)", reserved ? "process exit" : "FreeLibrary");
         transport_fini();
         d3dpt_log("d3dpt: detached");
         if (log_file) fclose(log_file);
