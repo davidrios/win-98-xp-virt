@@ -128,6 +128,16 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 - Player: keys held in the guest are lifted on focus loss (2026-09-03):
   Cmd+Tab delivered the Windows-key press to the player and its release to
   the next app, leaving the guest with Win held down.
+- XP paints the whole screen white around a Cirrus mode switch (a D3D
+  title going fullscreen and back: 640×480 white, then 800×600 white for
+  ~0.6 s while the desktop repaints; seen on the VGA surface of a bare
+  `qemu-system-i386` too, so it is guest-drawn, not ours). Since
+  2026-09-04 the player publishes black instead of any uniform
+  single-colour frame within 1.5 s of a real mode switch
+  (`qemu_vm.rs`, `SWITCH_GRACE`); the log counts them
+  (`[display] N transitional frame(s) after the switch shown black`).
+  On the way in nothing shows because the VGA surface is frozen while
+  3D is active. The M7 driver path never had it (miniport zeroes VRAM).
 - Win98: after wglgears / D3D9TEST exit, the mouse stops working in the
   guest (2026-09-03, untriaged: wrapper hook/cursor state vs the
   player's tablet? check whether keyboard still works and whether a

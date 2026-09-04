@@ -130,6 +130,11 @@ struct Shared {
     width: usize,
     height: usize,
     back: Vec<u32>,
+    // a real mode change happened at this instant; while it is recent, a
+    // uniform single-colour VGA frame is the guest's transitional fill (XP
+    // paints white around a switch) and is published as black instead
+    switched_at: Option<std::time::Instant>,
+    blanked: u32,
     // published to the render thread
     front: Frame,
     // wakes the render thread after each publish (event-loop proxy)
@@ -194,6 +199,7 @@ unsafe extern "C" fn on_switch(
     // size, once per frame: log only real mode changes
     if s.width != w as usize || s.height != h as usize || s.stride != stride as usize {
         eprintln!("[display] switch {w}x{h} stride {stride}");
+        s.switched_at = Some(std::time::Instant::now());
     }
     s.surface = px;
     s.stride = stride as usize;
@@ -313,6 +319,18 @@ unsafe extern "C" fn on_3d_frame_ready(ud: *mut c_void, slot: c_int) {
     }
 }
 
+/// After a real mode switch, a uniform single-colour VGA frame within this
+/// window is the guest's transitional fill and is shown as black.
+const SWITCH_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Every pixel the same colour (sampled every 61st plus the last one).
+fn is_uniform(px: &[u32]) -> bool {
+    match px.first() {
+        Some(&v) => px[px.len() - 1] == v && px.iter().step_by(61).all(|&p| p == v),
+        None => true,
+    }
+}
+
 unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
@@ -332,9 +350,31 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
         vm,
         script,
         waker,
+        switched_at,
+        blanked,
         ..
     } = &mut *s;
-    front.pixels.copy_from_slice(back);
+    // XP paints the whole screen white around a mode switch (seen on the
+    // VGA surface of a bare qemu-system-i386 too): a uniform frame inside
+    // the grace window is that fill, show black until real content arrives
+    let transitional = match *switched_at {
+        Some(t) if t.elapsed() <= SWITCH_GRACE && is_uniform(back) => true,
+        Some(_) => {
+            *switched_at = None;
+            if *blanked > 0 {
+                eprintln!("[display] {} transitional frame(s) after the switch shown black", blanked);
+                *blanked = 0;
+            }
+            false
+        }
+        None => false,
+    };
+    if transitional {
+        *blanked += 1;
+        front.pixels.fill(0);
+    } else {
+        front.pixels.copy_from_slice(back);
+    }
     front.ext_slot = None;
     front.seq += 1;
     front.published = std::time::Instant::now();
@@ -424,6 +464,8 @@ pub fn start(
         width: 0,
         height: 0,
         back: Vec::new(),
+        switched_at: None,
+        blanked: 0,
         front: Frame {
             ext_slot: None,
             width: 0,
