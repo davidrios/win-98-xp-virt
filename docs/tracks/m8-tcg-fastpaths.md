@@ -44,7 +44,12 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   written to patch 06's pattern but **have never executed**.
 - `SSEBENCH.EXE` in XP on the Air (2026-09-04, `tools/xp-ssebench.sh`):
   SSE kernels 3.2–7.4× with patch 07, x87 kernels 10–12× with patch 06,
-  table in `reference/benchmarks/README.md`. Not yet on the rig.
+  table in `reference/benchmarks/README.md`. **Rig row done 2026-09-04**
+  (three runs, same mean; results uploaded over the LAN with
+  `tools/upload-server.py`): every `check` value identical to the Air's;
+  Air ÷ rig per kernel 97–109 % on scalar chain / convert / normalize /
+  MMX blend, 61 % packed transform, **34 % clamp+cmp**, 18 % x87 C
+  transform, 87 % x87 normalize; SSE score 3.17 vs 2.28 ns per op.
 - Patch 08 (MMX / SSE integer + permutes inline, `simd-fast`, new TCG
   `tbl_vec` opcode): on this branch, guest test 546,425 lines identical
   on/off, MMX chain 4.0×; `MMX blend` kernel added to SSEBENCH (XP
@@ -91,11 +96,13 @@ benchmark's convert kernel was fixed to stay in range).
    wrong will be in `tcg/i386/tcg-target.c.inc` (VEX `vaddss`.. `vcvtsi2ss`
    / `vcvttss2si` encodings, `vaddps`/`vaddpd` via `gen_simd`) or in
    constraints (`C_O1_I1(r, x)` added). Then merge to `main`.
-2. **SSEBENCH on the rig.** The ISO (`guest-tools/out/guest-tools-3dfx-*.iso`,
-   restaged 2026-09-04 with the PC=53 EXE) on a CD; run
-   `GAMEDIR\SSEBENCH.EXE -iter 20` twice on the P4, take the better,
-   fill the rig row of the table in `reference/benchmarks/README.md`.
-   The Air rows are done.
+2. **clamp+cmp at 34 % of the rig.** `minps`/`maxps`/`cmpps` cost 4.7 ns
+   per op on the Air against 2.1 for `mulps`/`addps` in the same TB shape;
+   find out why (the compare's mask materialisation? a per-lane check
+   that the arithmetic ops skip? look at the TB with `-d op,out_asm`) —
+   the one SSE kernel the rig still wins clearly. The x87 C transform
+   (18 %) is the cheap-op throughput of the shadow translator, a bigger
+   redesign; note it, do not start it here.
 3. **A real workload number.** A Direct3D title in XP (the M4 track's
    item) with and without both `*-fast=off`: the first end-to-end number
    for patches 06 + 07 together.

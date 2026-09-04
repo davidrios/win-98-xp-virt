@@ -28,8 +28,7 @@ PLAYER_LATENCY=1 target/release/player --shader third_party/slang-shaders/crt/cr
 (The XP runs up to 2026-09-03 used `-vga std`, for which XP has no driver:
 basic 640×480×16 VGA. Irrelevant to Super PI and 7-Zip; cirrus from now on.)
 
-Get the benchmark binary into the guest on an ISO (no network in the
-reference machine):
+Get the benchmark binary into the guest on an ISO:
 
 ```sh
 mkdir bench && cp super_pi_mod-1.5.zip bench/     # unzip inside the guest
@@ -38,7 +37,10 @@ hdiutil makehybrid -o ~/vms/bench.iso -iso -joliet bench      # macOS
 ```
 
 On the rig, run the same zip from the same ISO burned to a CD-R or copied
-over; XP is the dual-boot partition. Note the rig's actual CPU/clock and RAM
+over; XP is the dual-boot partition. Results come back over the LAN:
+`python3 tools/upload-server.py` on the Mac serves a plain upload form
+(`http://<mac>:8000/`, no JavaScript, IE6 works) and saves into
+`build/uploads/`. Note the rig's actual CPU/clock and RAM
 in the table.
 
 ## Results
@@ -107,11 +109,28 @@ better):
 
 | Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | denormal decay | MMX blend | Date |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Rig (P4 1.7), XP | | | | | | | | | | not yet run |
+| **Rig (P4 1.7), XP, real hardware** | 1.28 | 1.93 | 4.09 | 1.59 | 2.50 | 0.74 | 4.02 | 1552 | 0.44 | 2026-09-04 |
 | M1 Air, XP, defaults (patches 06 + 07 + 08) | **2.1** | **2.0** | **3.9** | **4.7** | **2.3** | **4.2** | **4.6** | 80 | **0.41** | 2026-09-04 |
 | M1 Air, XP, `simd-fast=off` (07 on) | 2.4 | 2.4 | 3.8 | 4.6 | 2.3 | 4.2 | 4.3 | 83 | 0.80 | 2026-09-04 |
 | M1 Air, XP, `sse-fast=off` (06 + 08's predecessor) | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | | 2026-09-04 |
 | M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | | 2026-09-04 |
+| Air (defaults) ÷ rig | **61 %** | **97 %** | **105 %** | **34 %** | **109 %** | **18 %** | **87 %** | 19× | **107 %** | |
+
+The rig row (2026-09-04, `reference/benchmarks/rig-2026-09-04/ssebench.log`,
+three runs with the same mean, SSE score 2.28 ns per op vs the Air's
+3.17): every `check` value is identical to the Air's, so the inline paths
+reproduce the P4 bit for bit on these kernels. Speed: the Air with all
+three patches is at or above the real P4 on the scalar chain, the
+conversions, the MMX blend and the normalize (97–109 %), at 61 % on the
+packed transform, and at **34 % on clamp+cmp** (`minps`/`maxps`/`cmpps`:
+the P4 does 1.6 ns per op, the Air 4.7 — the one SSE kernel that is
+clearly behind, next optimisation target). The x87 C transform is the
+other outlier at 18 %: a P4 pipelines plain `fmul`/`fadd` at 0.74 ns per
+op while the shadow-double translator costs 4.2 (the x87 normalize with
+its `fsqrt`/`fdiv` is at 87 %, and Super PI is at parity, so it is the
+cheap-op throughput, not the expensive ops). The P4's denormal penalty is
+its own legend: 1552 ns per op on real hardware, 19× slower than the
+emulated slow path.
 
 Patch 08 (MMX / SSE integer and permutes inline, `tbl_vec`): the MMX
 blend kernel 0.80 → 0.41 (2.0×), the packed transform's four `shufps`
