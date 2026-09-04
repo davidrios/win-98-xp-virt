@@ -37,7 +37,7 @@ pub struct Frame {
 /// numbers (headless input verification; names: a-z, 0-9, enter, esc, space,
 /// tab, up, down, left, right, f1-f12).
 struct KeyScript {
-    steps: Vec<(u64, Vec<u32>)>, // (frame seq, AT set-1 scancodes pressed together)
+    steps: Vec<(u64, Vec<u32>, bool)>, // (frame seq, AT set-1 scancodes pressed together, down)
     next: usize,
 }
 
@@ -115,7 +115,17 @@ fn key_script_from_env() -> Option<KeyScript> {
             .split('+')
             .map(|n| key_name_to_atset1(n.trim()))
             .collect();
-        steps.push((at.trim().parse().ok()?, chord?));
+        // a real press: down at the frame, up PLAYER_KEYS_HOLD frames later
+        // (default 6 ≈ 100 ms at the 16 ms refresh); a down+up in one flush is
+        // a zero-length press that a game polling the keyboard never sees
+        let hold: u64 = std::env::var("PLAYER_KEYS_HOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6);
+        let at: u64 = at.trim().parse().ok()?;
+        let chord = chord?;
+        steps.push((at, chord.clone(), true));
+        steps.push((at + hold, chord, false));
     }
     steps.sort();
     Some(KeyScript { steps, next: 0 })
@@ -130,12 +140,25 @@ struct Shared {
     width: usize,
     height: usize,
     back: Vec<u32>,
+    // a real mode change happened at this instant; while it is recent, a
+    // uniform single-colour VGA frame is the guest's transitional fill (XP
+    // paints white around a switch) and is published as black instead
+    switched_at: Option<std::time::Instant>,
+    blanked: u32,
     // published to the render thread
     front: Frame,
     // wakes the render thread after each publish (event-loop proxy)
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
-    // qemu-3dfx pass-through active: VGA updates stop, frames come from swaps
+    // 3D pass-through active (GL swaps or the Direct3D device's presents)
     three_d: bool,
+    // the last 3D frame's instant, and whether the VGA surface changed since
+    // the last publish: while 3D is active the VGA surface is shown only when
+    // no 3D frame arrived for VGA_FALLBACK and the guest drew on it (a game
+    // waiting at a DirectShow movie or a dialog, a process that died without
+    // releasing the device)
+    last_3d: Option<std::time::Instant>,
+    vga_dirty: bool,
+    showing_vga: bool,
     // zero-copy: the GPU side can import dma-bufs; offered slots wait here
     zero_copy: bool,
     dmabufs: Vec<DmaBuf>,
@@ -194,6 +217,7 @@ unsafe extern "C" fn on_switch(
     // size, once per frame: log only real mode changes
     if s.width != w as usize || s.height != h as usize || s.stride != stride as usize {
         eprintln!("[display] switch {w}x{h} stride {stride}");
+        s.switched_at = Some(std::time::Instant::now());
     }
     s.surface = px;
     s.stride = stride as usize;
@@ -202,12 +226,14 @@ unsafe extern "C" fn on_switch(
     let n = s.width * s.height;
     s.back.clear();
     s.back.resize(n, 0);
+    s.vga_dirty = true;
     copy_rect(&mut s, 0, 0, w as usize, h as usize);
 }
 
 unsafe extern "C" fn on_update(ud: *mut c_void, x: c_int, y: c_int, w: c_int, h: c_int) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    s.vga_dirty = true;
     copy_rect(&mut s, x as usize, y as usize, w as usize, h as usize);
 }
 
@@ -218,11 +244,24 @@ unsafe extern "C" fn on_3d_active(ud: *mut c_void, active: bool) {
     eprintln!("[3d] pass-through {}", if active { "on" } else { "off" });
 }
 
+/// While 3D is active, the VGA surface is shown once no 3D frame has
+/// arrived for this long and the guest has drawn on the surface since.
+const VGA_FALLBACK: std::time::Duration = std::time::Duration::from_millis(1000);
+
+fn note_3d_frame(s: &mut Shared) {
+    s.last_3d = Some(std::time::Instant::now());
+    if s.showing_vga {
+        s.showing_vga = false;
+        eprintln!("[display] 3D frames again, VGA surface hidden");
+    }
+}
+
 /// A presented 3D frame (vCPU thread): publish it directly, this is the
 /// guest's vsync point, not the refresh tick.
 unsafe extern "C" fn on_3d_frame(ud: *mut c_void, px: *const u8, w: c_int, h: c_int, stride: c_int) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    note_3d_frame(&mut s);
     let (w, h, stride) = (w as usize, h as usize, stride as usize);
     if s.front.width != w || s.front.height != h {
         s.front.width = w;
@@ -303,6 +342,7 @@ unsafe extern "C" fn on_3d_iosurface(
 unsafe extern "C" fn on_3d_frame_ready(ud: *mut c_void, slot: c_int) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    note_3d_frame(&mut s);
     s.front.ext_slot = Some(slot as usize);
     s.front.seq += 1;
     s.front.published = std::time::Instant::now();
@@ -313,13 +353,38 @@ unsafe extern "C" fn on_3d_frame_ready(ud: *mut c_void, slot: c_int) {
     }
 }
 
+/// After a real mode switch, a uniform single-colour VGA frame within this
+/// window is the guest's transitional fill and is shown as black.
+const SWITCH_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Every pixel the same colour (sampled every 61st plus the last one).
+fn is_uniform(px: &[u32]) -> bool {
+    match px.first() {
+        Some(&v) => px[px.len() - 1] == v && px.iter().step_by(61).all(|&p| p == v),
+        None => true,
+    }
+}
+
 unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
-    if s.width == 0 || s.three_d {
-        // 3D active: the VGA back buffer is stale, swaps publish instead
+    if s.width == 0 {
         return;
     }
+    if s.three_d {
+        // 3D active: recent 3D frames win; the VGA surface is shown only
+        // once they stop and the guest drew on it (GL pass-through never
+        // updates the surface, so nothing changes there)
+        let recent = s.last_3d.map_or(false, |t| t.elapsed() < VGA_FALLBACK);
+        if recent || !s.vga_dirty {
+            return;
+        }
+        if !s.showing_vga {
+            s.showing_vga = true;
+            eprintln!("[display] no 3D frame for {} ms and the guest drew on the VGA surface: showing it", VGA_FALLBACK.as_millis());
+        }
+    }
+    s.vga_dirty = false;
     let (w, h) = (s.width, s.height);
     if s.front.width != w || s.front.height != h {
         s.front.width = w;
@@ -332,9 +397,31 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
         vm,
         script,
         waker,
+        switched_at,
+        blanked,
         ..
     } = &mut *s;
-    front.pixels.copy_from_slice(back);
+    // XP paints the whole screen white around a mode switch (seen on the
+    // VGA surface of a bare qemu-system-i386 too): a uniform frame inside
+    // the grace window is that fill, show black until real content arrives
+    let transitional = match *switched_at {
+        Some(t) if t.elapsed() <= SWITCH_GRACE && is_uniform(back) => true,
+        Some(_) => {
+            *switched_at = None;
+            if *blanked > 0 {
+                eprintln!("[display] {} transitional frame(s) after the switch shown black", blanked);
+                *blanked = 0;
+            }
+            false
+        }
+        None => false,
+    };
+    if transitional {
+        *blanked += 1;
+        front.pixels.fill(0);
+    } else {
+        front.pixels.copy_from_slice(back);
+    }
     front.ext_slot = None;
     front.seq += 1;
     front.published = std::time::Instant::now();
@@ -344,20 +431,26 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     }
     if let (Some(vm), Some(sc)) = (vm.as_ref(), script.as_mut()) {
         while sc.next < sc.steps.len() && sc.steps[sc.next].0 <= front.seq {
-            let chord = &sc.steps[sc.next].1;
+            let (_, chord, down) = &sc.steps[sc.next];
             let qcodes: Vec<u32> = chord
                 .iter()
                 .map(|&c| qemu_embed::atset1_to_qcode(c))
                 .collect();
             eprintln!(
-                "[script] frame {} chord {:x?} -> qcodes {:?}",
-                front.seq, chord, qcodes
+                "[script] frame {} chord {:x?} -> qcodes {:?} {}",
+                front.seq,
+                chord,
+                qcodes,
+                if *down { "down" } else { "up" }
             );
-            for &q in &qcodes {
-                vm.key(q, true);
-            }
-            for &q in qcodes.iter().rev() {
-                vm.key(q, false);
+            if *down {
+                for &q in &qcodes {
+                    vm.key(q, true);
+                }
+            } else {
+                for &q in qcodes.iter().rev() {
+                    vm.key(q, false);
+                }
             }
             vm.input_flush();
             sc.next += 1;
@@ -424,6 +517,8 @@ pub fn start(
         width: 0,
         height: 0,
         back: Vec::new(),
+        switched_at: None,
+        blanked: 0,
         front: Frame {
             ext_slot: None,
             width: 0,
@@ -434,6 +529,9 @@ pub fn start(
         },
         waker,
         three_d: false,
+        last_3d: None,
+        vga_dirty: false,
+        showing_vga: false,
         zero_copy,
         dmabufs: Vec::new(),
         stopped: false,

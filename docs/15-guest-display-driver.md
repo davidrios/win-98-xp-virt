@@ -5,8 +5,9 @@ folder, a Windows display driver pair that owns the adapter, and later
 speaks the DirectDraw and Direct3D DDIs into the same transport and
 executor. Staged: **M7a framebuffer (landed 2026-09-04) → M7b DirectDraw
 DDI (first cut landed the same day: VRAM surfaces, page flips, cached
-mappings) → M7c Direct3D DDI**. ADR-008 (doc 10) has the why; this doc
-is the how and the state.
+mappings) → M7c Direct3D DDI (first cut 2026-09-04: the DX7 non-T&L HAL
+on the doc 14 executor, D3D7TEST's frame identical to the host-side
+test's)**. ADR-008 (doc 10) has the why; this doc is the how and the state.
 
 ## Shape (M7a)
 
@@ -14,7 +15,8 @@ is the how and the state.
 guest (XP)                                          host (QEMU process)
  win32k.sys (GDI)                                    hw/d3dpt/d3dpt_vga.c  "d3dpt-vga"
    └ d3dptdisp.dll  display driver (winddi.h)          ├ PCI 1234:3d00, class VGA, stdvga ROM
-       EngCreateBitmap over the mapped VRAM            ├ BAR 0 VRAM 32 MiB  ─── DisplaySurface points here
+       EngCreateBitmap over the mapped VRAM            ├ BAR 0 VRAM 128 MiB ─── DisplaySurface points here
+                                                       │   (top 64 MiB: the M7c command window)
        GDI draws every pixel itself                    ├ BAR 1 registers (d3dpt/d3dpt_fb.h)
  videoprt.sys                                          │   mode table, WIDTH/HEIGHT/BPP/PITCH/OFFSET,
    └ d3dptvid.sys   video miniport (video.h)           │   ENABLE, FRAMES, DEBUG (char → QEMU log)
@@ -92,9 +94,13 @@ DDK is used. What it took:
   mingw's `wdm.h` does not even compile, so leave the default). The display
   DLL takes `windef.h`, `wingdi.h`, `winddi.h`, `devioctl.h`, `ntddvdeo.h`;
   mingw 14's `winddi.h` includes `ddrawint.h`/`d3dnthal.h` which mingw does
-  not ship, so `guest-tools/src/d3dptvid/ddk-stubs/` declares the seven
-  opaque types `winddi.h` names. M7b needs the real DirectDraw DDI
-  definitions (from the public documentation).
+  not ship, so `guest-tools/src/d3dptvid/ddk/` vendors ReactOS' public-domain
+  `ddrawint.h` (+ `dvp.h`) and a **self-contained `d3dnthal.h`**: the DDK's
+  version includes `d3dtypes.h`/`d3dcaps.h` and through them the user-mode
+  `windows.h`, so the few Direct3D types the DDI structures use (caps
+  structs, D3DRECT, the DP2 command header) are spelled out in it with the
+  DDK's layouts. The DP2 token layouts themselves only the host interprets
+  (`d3dpt/exec/d3dpt_exec_ddi.cpp`).
 - The same `-march=pentium3` floor and ISA/UCRT checks as the wrappers.
 
 ## State (2026-09-04, Linux host, XP SP3 guest)
@@ -240,40 +246,222 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
 - **M7b DirectDraw DDI:** landed in its first cut (above). Left: a DX5–7
   title on it (2D titles run now; 3D ones need M7c), `DrvDeriveSurface`,
   the vblank signal.
-- **M7c Direct3D DDI — design (2026-09-04, not started):**
-  - *Transport:* BAR 0 grows to 128 MiB; the top 64 MiB is the command
-    window in the SysBus device's exact layout (`d3dpt_proto.h`: header
-    page, records, return area at 48 MiB), so `d3dpt_enc.h` and
-    `d3dpt_exec_submit` work unchanged; the DirectDraw heap ends below it.
-    A DOORBELL register on BAR 1 submits the window; the executor is the
-    same `libd3dpt_exec` (the loader moves out of `d3dpt_mm.c` into a
-    shared helper). New executor call `d3dpt_exec_set_vram(ptr, size)`.
-  - *Surfaces stay in guest VRAM.* `DdCreateSurfaceEx` (through
-    `GUID_Miscellaneous2Callbacks`) registers every texture / render
-    target / Z surface with a `VRAM_SURFACE` record (handle, VRAM offset,
-    w, h, pitch, format, caps); the executor creates the DXVK object and
-    reads texels straight from the VRAM pointer (no guest copy); `DdLock`
-    / `DdUnlock` on a texture send `VRAM_DIRTY`. Rendering goes to a host
-    render target; a `READBACK` record (at `DdFlip`, and at `DdLock` of a
-    render target) copies it back into the guest's VRAM surface (host
-    memcpy), so flips, HEL blits and screenshots see the frame. Presenting
-    the host frame straight through the 3D frame path is the later
-    optimisation.
-  - *Commands:* `D3dDrawPrimitives2` copies the DP2 command buffer and the
-    vertex data into the window as one `DP2` record (context handle,
-    vertex type, lengths) and rings the doorbell; the executor interprets
-    the tokens on DXVK d3d9. First cut = the DX7 non-T&L HAL: the runtime
-    transforms and lights in software and sends `XYZRHW` vertices, so the
-    executor only needs RENDERSTATE, TEXTURESTAGESTATE, VIEWPORTINFO,
-    WINFO, ZRANGE, SETRENDERTARGET, CLEAR, the (indexed) list / strip /
-    fan tokens → `DrawPrimitiveUP` / `DrawIndexedPrimitiveUP`. Claiming
-    T&L (SETTRANSFORM / SETLIGHT / SETMATERIAL, 1:1 on d3d9) and the DX8/9
-    tokens (streams, shaders, `D3DCAPS8` through `GUID_D3DCaps`) come after.
-  - *Caps:* `lpD3DGlobalDriverData` (`D3DNTHALDEVICEDESC_V1` + the texture
-    format list), `lpD3DHALCallbacks` (`ContextCreate` → `CREATE_DEVICE`
-    sized like the render target, `ContextDestroy`), `GUID_D3DCallbacks3`
-    (`DrawPrimitives2`, `Clear2`, `ValidateTextureStageState`),
-    `GUID_D3DExtendedCaps`, `GUID_ZPixelFormats`.
-  - *Test:* a `D3D7TEST.EXE` (IDirect3D7 HAL device, clear + textured
-    TLVERTEX triangle, BMP dump) next to DDTEST; then FIFA 2000 (doc 00).
-  Exit: doc 04 matrix with no DLL in the game folder.
+- **M7c Direct3D DDI: first cut landed (see the section below); FIFA 2000
+  runs on it out of the box (intro, title, attract-mode match).** Left:
+  a user-driven match (input, menus, frame rate), claiming T&L, DX8
+  tokens / `GUID_D3DCaps` for `D3DCAPS8`, colour keying, render-to-texture,
+  state sets. Exit: doc 04 matrix with no DLL in the game folder.
+
+## M7c — the Direct3D DDI (2026-09-04, first cut)
+
+The DX7 HAL behind the display driver, on the doc 14 protocol and executor.
+Nothing new was invented for the transport: the adapter's VRAM grew to
+128 MiB and its top 64 MiB is a command window in exactly the SysBus
+device's layout (`d3dpt_proto.h`: header page, records, return area), so
+the guest encoder `d3dpt_enc.h` and `d3dpt_exec_submit` work unchanged;
+the DOORBELL register submits the window, D3D_STATUS says whether the
+host has an executor, CMD_OFFSET where the window is (register set
+version 2, `d3dpt_fb.h`). The executor library is dlopened once per
+process (`d3dpt/hw/d3dpt_exec_load.c`, shared with the SysBus device);
+each device has its own instance.
+
+```
+guest (XP)                                      host
+ ddraw.dll (DX7 runtime: T&L in software)        d3dpt-vga: VRAM [heap | 64 MiB window]
+   └ dxg.sys ── DDI ──> d3dptdisp.dll              DOORBELL ──> libd3dpt_exec (d3dpt_exec_ddi.cpp)
+        CreateSurfaceEx → VRAM_SURFACE record        surface handle → DXVK texture / render target
+        ContextCreate  → CTX_CREATE                  d3d9 device, SetRenderTarget + depth
+        DrawPrimitives2 → DP2 record (tokens+verts)  token interpreter → DrawPrimitiveUP etc.
+        SceneCapture END / Lock / Flip → READBACK    GetRenderTargetData → memcpy into VRAM (+dirty)
+        Unlock → VRAM_DIRTY                          texels re-read from VRAM before the next draw
+```
+
+- **Surfaces stay in guest VRAM.** dxg's heap allocates every DirectDraw
+  surface below the window as before; `DdCreateSurfaceEx`
+  (`GUID_Miscellaneous2Callbacks`) registers each one by its
+  `dwSurfaceHandle` with VRAM offset, size, pitch, D3DFORMAT (translated
+  from the DDPIXELFORMAT) and caps; mip chains send the attached levels'
+  offsets. The host creates the DXVK object lazily: a MANAGED texture whose
+  levels are filled from the VRAM pointer, a render target, or a depth
+  surface (D16/D24X8/D24S8, with fallbacks). `DdUnlock` on a texture or a
+  target sends `VRAM_DIRTY` and the host re-reads the texels before the
+  next use; `DdDestroySurface` (`NOTHANDLED`, dxg frees the block) sends
+  `VRAM_RELEASE`.
+- **Rendering goes to a host render target; READBACK brings it back.**
+  A context (`D3dContextCreate`) is a render-target + Z pair; the d3d9
+  device is created on the first one (backbuffer unused) and the context's
+  targets are set on it. The frame is copied into the render target's VRAM
+  at `SceneCapture END` (EndScene), at `DdLock` of a target and in `DdFlip`
+  before the OFFSET write, so flips, HEL blits, GDI and screenshots see it;
+  the copy is skipped when nothing was drawn since (`S_FALSE`). After a
+  flip dxg exchanges the two surfaces' VRAM, so `DdFlip` re-registers both
+  with swapped offsets (the host keeps the objects, marks them dirty). A
+  full `Clear` of the target skips the upload of stale VRAM content; a
+  partial one or a draw onto a HEL-blitted background uploads it first
+  (sysmem staging → default-pool surface → StretchRect).
+- **DrawPrimitives2** copies the runtime's command buffer and the vertex
+  buffer (`D3DHALDP2_USERMEMVERTICES` is a user pointer, read directly in
+  the caller's context) into one `DP2` record and rings the doorbell; the
+  render-state array the runtime keeps next to the stream (`lpdwRStates`)
+  is mirrored from the RENDERSTATE tokens by the driver. The host
+  interprets the tokens on `IDirect3DDevice9`: RENDERSTATE (DX7 states
+  with a d3d9 twin pass through; the DX5/6 ones — texture handle, stipple,
+  ROP, colour key — are dropped, once logged), TEXTURESTAGESTATE
+  (TEXTUREMAP = surface handle → `SetTexture`; address / filter / LOD
+  states → sampler states with the DX7→d3d9 filter renumbering; the rest
+  1:1), VIEWPORTINFO + ZRANGE → the viewport (re-applied after every
+  target change, d3d9 resets it), SETRENDERTARGET, CLEAR, the list / strip
+  / fan tokens and the `_IMM` variants → `DrawPrimitiveUP`, the indexed
+  ones → `DrawIndexedPrimitiveUP` over the touched vertex range (the
+  `…2` variants add their start vertex), SETMATERIAL / SETLIGHT /
+  SETTRANSFORM (WORLD renumbered) → their d3d9 calls for the day T&L is
+  claimed, WINFO / SETPRIORITY / SETTEXLOD / CREATELIGHT accepted and
+  ignored, STATESET / TEXBLT / palettes logged and skipped. Malformed
+  streams answer `D3DERR_COMMAND_UNPARSED` with the offending offset
+  (`dwErrorOffset`); out-of-range vertex references skip the primitive.
+- **Caps:** `lpD3DGlobalDriverData` (V1 desc: FLOATTLVERTEX, DRAWPRIMITIVES2
+  + 2EX, HWRASTERIZATION, TEXTUREVIDEOMEMORY, no HWTRANSFORMANDLIGHT;
+  tri/line caps: Z, all blends and compares, Gouraud + specular, fog,
+  point/linear/mip filters, wrap/mirror/clamp/border; 9 texture formats:
+  X8R8G8B8, A8R8G8B8, R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, DXT1/3/5),
+  `lpD3DHALCallbacks` (ContextCreate/Destroy/DestroyAll, SceneCapture),
+  `GUID_D3DCallbacks3` (Clear2, ValidateTextureStageState = 1 pass,
+  DrawPrimitives2), `GUID_D3DCallbacks2` (SetRenderTarget),
+  `GUID_D3DExtendedCaps` (4096² textures, 8 stages, all texture ops,
+  stencil), `GUID_ZPixelFormats` (D16, D24X8, D24S8), `DDCAPS_3D` +
+  `DDSCAPS_3DDEVICE|TEXTURE|ZBUFFER|MIPMAP`. `DdCanCreateSurface` accepts
+  exactly the formats the host mirrors. `-device d3dpt-vga,ddflags=0x20`
+  turns Direct3D off (the M7b DirectDraw-only HAL) without a reinstall;
+  0x40 / 0x80 / 0x100 / 0x200 / 0x400 / 0x800 drop the 3D caps bits, every
+  D3D GetDriverInfo answer, the D3D buffer callbacks, Callbacks3, Misc2 and
+  ParseUnknownCommand one at a time (the bisection knobs below).
+- **The finding of the day: `GetDriverState` is mandatory.** With the
+  first cut XP's `ddraw.dll` reported `DDCAPS_NOHARDWARE` and no 3D at
+  all: the whole HAL dropped, as with `DDCAPS_GDI` in M7b. The `ddflags`
+  bisection (five runs) pinned it on the `GUID_Miscellaneous2Callbacks`
+  answer, and the disassembly of `ddraw.dll` (pulled out of the image
+  with `qemu-img convert` + `7z`) shows why: after validating that table
+  the runtime checks `lpD3DGlobalDriverData->hwCaps.dwDevCaps &
+  (D3DDEVCAPS_DRAWPRIMITIVES2EX | D3DDEVCAPS_HWTRANSFORMANDLIGHT)` and, if
+  set, requires `GetDriverState` to be non-NULL, else the object creation
+  fails and the HEL-only object is built. Neither the DDK docs nor the
+  samples say so. The same pass showed the user-mode GetDriverInfo probe
+  (a mangled `GUID_DDStereoMode` the driver must *refuse*), that
+  `dxg.sys` queries Callbacks3 and the ParseUnknownCommand pointer at
+  enable time and drops Callbacks3 when the latter is refused, and that
+  every answer must not exceed `dwExpectedSize` (guard words after the
+  buffer are checked). `DdGetDriverState` answers DD_OK with the buffer
+  untouched. The second trap of the day was cheaper: `CreateDevice` failed
+  with `DDERR_INVALIDPIXELFORMAT` at 32 bpp but worked at 16 bpp, because
+  the `DDBD_*` bit-depth flags count *down* (`DDBD_16` 0x400, `DDBD_24`
+  0x200, `DDBD_32` 0x100) and the self-contained header had them the
+  other way; `dwDeviceRenderBitDepth` is what the runtime checks the
+  render target against.
+- **Tests.** `tools/d3dpt-dp2-test.cpp` (host stage of `scripts/test.sh`)
+  registers a render target, a Z buffer and a texture in a malloc'ed
+  VRAM, opens a context and sends the D3D7TEST scene as the DP2 tokens
+  the runtime would emit (cyan triangle behind a wrapped checkerboard
+  quad, Gouraud fan in front, half-transparent strip: Z test, texture
+  wrap, alpha blend), reads back and checks pixels, then feeds hostile
+  records (surface beyond VRAM, a record lying about its length, a
+  truncated stream, out-of-range vertices, a released texture) and expects
+  each refused without killing the executor. `DRIVER\D3D7TEST.EXE`
+  draws the same scene through `IDirect3DDevice7` on XP;
+  `tools/xp-driver-test.sh <image> d3d7` runs it headless and diffs its
+  BMP against the host test's frame.
+- **What is not there yet:** T&L (the runtime transforms; claiming
+  HWTRANSFORMANDLIGHT is a caps + `D3DCAPS8` change, the tokens are
+  mapped), DX8's tokens (streams, shaders, `GUID_D3DCaps`), colour keying
+  (`D3DRENDERSTATE_COLORKEYENABLE` is dropped; the plan is key → alpha at
+  upload plus alpha test), render-to-texture (a texture with 3DDEVICE
+  becomes a render target the host cannot sample), state sets, driver-
+  managed textures (TEXBLT), palettized textures, more than one context
+  sharing device state, presenting the host frame straight through the
+  player's 3D path instead of the readback copy (every frame is a
+  1.2 MB `GetRenderTargetData` + memcpy at 640×480×32 today).
+
+Results 2026-09-04 (KVM, RADV host, XP SP3, `tools/xp-driver-test.sh
+~/vms/winxp-m7c.qcow2 d3d7`): `D3D7TEST 640 480 32 300` enumerates the
+"Direct3D HAL" device (devcaps 0x8ae51, textures 1..4096, 8 stages),
+creates the flip chain + 16-bit Z + a 64×64 A8R8G8B8 texture, renders
+the scene through DrawPrimitives2 (61 DP2 calls for the run: the runtime
+batches every draw of a frame into one call) and reports
+
+| case | result |
+|---|---|
+| 640×480×32, 300 frames, 4 draws + clear each | 2400–2700 fps |
+| 640×480×16, 60 frames | 1277 fps (first run of the session, includes the device creation) |
+| the back buffer read through `Lock` after `EndScene` | byte-identical to `build/d3dpt-dp2-test`'s frame (0 of 307200 pixels differ) |
+
+Per frame that is one 1.2 MB readback (`GetRenderTargetData` +
+memcpy) plus the page flip; the executor logs the DX7-only render
+states the runtime sends (4, 10, 30, 33, 47: texture perspective, line
+pattern, ZVISIBLE, stippled alpha, ZBIAS) once and drops them.
+
+### FIFA 2000 on the HAL (2026-09-04)
+
+The first real DX7-era title, the one that was parked on WineD3D (doc 00
+known issues, doc 14): with the WineD3D DLLs renamed out of the game
+folder (`tools/xp-fifa2000.bat`, run by `GAME_ISO=FIFA2000.ISO SHOTS=24
+tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat`)
+the game's own DirectX renderer (`THRASH\dx6z.dll`, registry `Thrash
+Driver = dx`, `Hardware Acceleration = 1`, `Thrash Resolution = 800x600`)
+runs on the HAL **unmodified**: the EA intro at 640×480×16 (19 DP2 calls,
+page flips), the title screen, then the attract-mode match at 800×600×16
+with textured players, kits, crowd, pitch and the HUD, all through
+`DrawPrimitives2` on DXVK and the readback into VRAM (screendumps in
+`build/xp-driver-test/fifa/cmd-*.png`). The match does not page-flip (4
+`scanout offset` lines for the whole run): the game blits its back buffer
+to the primary, so every frame is READBACK + a driver-side blit. Executor
+log for the run: the DX5/6 render states dropped once (1–6, 10–13, 17,
+18, 21, 30–33, 39, 40, 43–47, 49: texture handle / address / filter /
+map-blend, ROP, plane mask, stipple, ZBIAS…), DXVK's own "unhandled
+render state 26 / 62 / 128" (dither, an unknown, WRAP0), no colour keying
+requested, no unsupported token, no refused record. Nothing crashed;
+the run ends with a clean power-down while the match is still playing.
+Not yet measured: the frame rate (the player shows it), input (the
+headless loop never touches the game), a full user-driven match with the
+menus, the 640×480 in-game resolution.
+
+Played by hand the same day: graphics clean, smooth under KVM. The user
+found **the keyboard dead in the match under TCG** (`-cpu pentium3`, no
+KVM) and working under KVM. What the investigation established
+(2026-09-04, all on this Linux box, headless runs driven over QMP with
+`tools/xp-driver-test.sh`, plus the real player with `PLAYER_KEYS`):
+
+- Not the emulator's input path. `DRIVER\DITEST.EXE` (a game-style
+  DirectInput keyboard, exclusive + foreground, with a busy loop between
+  polls) sees every key under TCG, in bare QEMU and through the player's
+  own queue; the embed library's new `qemu-embed: input:` statistics show
+  no drain latency over 20 ms and no key down/up pair delivered in one
+  drain. Not XP's `LowLevelHooksTimeout` (5000 ms changes nothing). Not
+  the frame rate: the match renders at the game's own 30 fps cap under
+  TCG here (`d3dpt-vga: ddi: 30.0 frames/s` in the log).
+- The game itself. `D3DPT\DINPUT.DLL` next to the EXE (a forwarding shim
+  that logs the game's DirectInput use, `dinput_log.txt`) shows FIFA's
+  keyboard device is `DISCL_NONEXCLUSIVE | DISCL_FOREGROUND`, polled with
+  `GetDeviceState` 30 times a second, no errors — and in the match it
+  reports **no key at all**, KVM or TCG, while a sampler thread in the
+  same process sees every key through `GetAsyncKeyState`. The front end
+  (title screen, side selection) works through the same device. On XP a
+  non-exclusive DirectInput keyboard is fed by a low-level hook that runs
+  on the thread which created the device, only while that thread services
+  its message queue; FIFA's match loop does not pump. Why the user's KVM
+  session got through is not settled (likely the loop's idle time on a
+  fast CPU); the headless KVM runs did not.
+- The fix is in the shim: every key `GetAsyncKeyState` reports pressed is
+  set in the keyboard state handed back (DIK from the scan code, the
+  extended keys mapped by hand), logged once per key when DirectInput's
+  own state lacked it. With `DINPUT.DLL` in the game folder the match
+  takes 100 ms taps (F2 camera, Esc pause, F12 exit) under KVM and TCG
+  alike. The user-facing recipe: copy `D3DPT\DINPUT.DLL` next to
+  `fifa2000.exe`; `tools/xp-fifa2000.bat` does it from `E:\DINPUT.DLL`.
+- FIFA's own quirks met on the way: its front-end menus need a mouse
+  button held ≈1 s (a 100 ms click is ignored; the QMP `click` in
+  `qmpc.py` is too short, hold the button by hand in `input-send-event`);
+  the intro video can be skipped with Esc; the kickoff starts by itself
+  after ≈1 minute; F1–F4 cameras, Esc pause, F12 exit are the readme's
+  in-match keys. `tools/xp-fifa-match.sh kvm|tcg <image>` does the whole
+  thing headless (menus, side, kickoff, the tap test with screendumps,
+  `dinput_log.txt` pulled from the image): the regression check for
+  "keys in a real DX7 game" on the HAL.

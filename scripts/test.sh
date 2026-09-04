@@ -16,6 +16,9 @@
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
+#   d3dpt-dp2      tools/d3dpt-dp2-test.cpp: the display driver's records (doc 15
+#                  M7c): VRAM surfaces, a context, the D3D7TEST scene as DP2
+#                  tokens, readback pixels checked, hostile records refused
 #   d3dgame9-nat   the reference scene natively on DXVK: frame 300 within
 #                  D3D_GOLDEN_BUDGET pixels (tolerance 8, HUD masked) of the
 #                  rig golden; this frame is the oracle for the guest stage
@@ -31,7 +34,8 @@
 #   boots WINXP_IMG read-only (snapshot=on) with the newest guest-tools ISO
 #   and a fresh FAT32 scratch disk carrying RUN.BAT, drives the Run dialog
 #   over QMP, waits for the three programs to detach from the device, shuts
-#   XP down, and diffs: D3DGAME9 and D3DGAME8 pixel-identical to the native
+#   XP down (DDVMTEST first: the DirectDraw shim's video-memory answer), and
+#   diffs: D3DGAME9 and D3DGAME8 pixel-identical to the native
 #   D3DGAME9 frame outside the wall-time HUD (and within budget of the rig
 #   golden), D3DFEAT9 byte-identical to the native frame with the same
 #   query / getter lines.
@@ -109,8 +113,13 @@ host_stage() {
          -I"$DX" -I"$DX/windows" -I"$DX/directx" -ldl; then
       run_check d3dpt-exec d3dpt-exec.log build/d3dpt-exec-test "$OUT/exec-test.bmp" 120 60 || true
     else FAIL+=(d3dpt-exec); echo "  FAIL d3dpt-exec (build)"; fi
+    if c++ -std=c++17 -O2 -o build/d3dpt-dp2-test tools/d3dpt-dp2-test.cpp \
+         -I"$DX" -I"$DX/windows" -I"$DX/directx" -ldl; then
+      run_check d3dpt-dp2 d3dpt-dp2.log build/d3dpt-dp2-test "$OUT/dp2-test.bmp" || true
+    else FAIL+=(d3dpt-dp2); echo "  FAIL d3dpt-dp2 (build)"; fi
   else
     skip d3dpt-exec "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
+    skip d3dpt-dp2 "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
   fi
 
   # the reference scene and the feature test natively over DXVK (SDL2 needs a display)
@@ -175,7 +184,7 @@ guest_stage() {
   printf 'label: dos\nstart=2048, type=c\n' | sfdisk -q "$scratch" >/dev/null
   mkfs.fat -F 32 --offset 2048 "$scratch" >/dev/null
   local fat="$scratch@@1048576"
-  printf '@echo off\r\nxcopy D:\\D3DPT E:\\D3DPT\\ /I /Y\r\nmkdir E:\\OUT\r\ncd /d E:\\D3DPT\r\nD3DGAME9.EXE -frames 600 -dump 300 E:\\OUT\\G9.BMP\r\nD3DGAME8.EXE -frames 600 -dump 300 E:\\OUT\\G8.BMP\r\nD3DFEAT9.EXE -frames 600 -dump 300 E:\\OUT\\F9.BMP\r\necho done > E:\\OUT\\DONE.TXT\r\n' > "$OUT/RUN.BAT"
+  printf '@echo off\r\nxcopy D:\\D3DPT E:\\D3DPT\\ /I /Y\r\nmkdir E:\\OUT\r\ncd /d E:\\D3DPT\r\nDDVMTEST.EXE\r\nD3DGAME9.EXE -frames 600 -dump 300 E:\\OUT\\G9.BMP\r\nD3DGAME8.EXE -frames 600 -dump 300 E:\\OUT\\G8.BMP\r\nD3DFEAT9.EXE -frames 600 -dump 300 E:\\OUT\\F9.BMP\r\necho done > E:\\OUT\\DONE.TXT\r\n' > "$OUT/RUN.BAT"
   mcopy -i "$fat" "$OUT/RUN.BAT" ::/RUN.BAT
 
   SOCK="$OUT/qmp.sock"; rm -f "$SOCK"
@@ -215,6 +224,11 @@ guest_stage() {
   mcopy -n -i "$fat" ::/D3DPT/d3dgame9.log "$OUT/guest-d3dgame9.log" 2>/dev/null
   mcopy -n -i "$fat" ::/D3DPT/d3dgame8.log "$OUT/guest-d3dgame8.log" 2>/dev/null
   mcopy -n -i "$fat" ::/D3DPT/d3dfeat9.log "$OUT/guest-d3dfeat9.log" 2>/dev/null
+  mcopy -n -i "$fat" ::/D3DPT/ddvmtest.log "$OUT/guest-ddvmtest.log" 2>/dev/null
+  # the DirectDraw shim next to the EXE: a Vice City-style launcher check passes
+  if grep -q "ddraw.dll is E:" "$OUT/guest-ddvmtest.log" 2>/dev/null && grep -q ": enough" "$OUT/guest-ddvmtest.log"; then
+    PASS+=(guest-ddvm); echo "  PASS guest-ddvm"; grep "GetAvailableVidMem" "$OUT/guest-ddvmtest.log" | tr -d '\r' | sed 's/^/       /'
+  else FAIL+=(guest-ddvm); echo "  FAIL guest-ddvm — $OUT/guest-ddvmtest.log"; cat "$OUT/guest-ddvmtest.log" 2>/dev/null | tr -d '\r' | sed 's/^/       /'; fi
 
   local f
   for f in G9 G8; do

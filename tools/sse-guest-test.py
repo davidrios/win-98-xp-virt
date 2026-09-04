@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""In-guest regression test for the SSE inline fast path (patch 07, doc 16).
+"""In-guest regression test for the SSE inline fast path (patch 11, doc 16).
 
 Builds a DOS program (NASM, .COM) that enables SSE in real mode and runs a
 battery of SSE/SSE2 instruction sequences over every pair of a pool of
@@ -138,7 +138,7 @@ def mmx(body):
             "\n    movq [res], mm0\n    movups xmm0, [res]\n    emms")
 
 
-# integer / permutation ops (patch 08, simd-fast): MMX forms on the low 8
+# integer / permutation ops (patch 12, simd-fast): MMX forms on the low 8
 # bytes of the entries, XMM forms on all 16; pure bit patterns, no modes
 INT_OPS = [
     ("shufps_1b", "shufps xmm0, xmm1, 1bh"),

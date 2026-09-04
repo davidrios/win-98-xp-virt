@@ -15,6 +15,15 @@
  *   BAR 0  VRAM, prefetchable, D3DPT_FB_VRAM_MB (power of two)
  *   BAR 1  this register page, 4 KiB, 32-bit accesses
  *
+ * M7c (version 2): the top D3DPT_SHM_SIZE (64 MiB) of BAR 0 is the
+ * Direct3D command window in the d3dpt_proto.h layout (CMD_OFFSET says
+ * where it starts; 0 = no Direct3D on this adapter). The display driver
+ * appends records there and writes DOORBELL; the host executes the batch
+ * synchronously inside the write, reading texels from and writing frames
+ * into the VRAM below the window. D3D_STATUS says whether the host has
+ * an executor (reading it loads the library). The DirectDraw heap the
+ * driver exposes ends at CMD_OFFSET.
+ *
  * The guest driver reads the host's mode table (MODE_COUNT, then MODE_SEL
  * + MODE_W/H/BPP/HZ per entry), programs a linear mode (W, H, BPP, PITCH,
  * OFFSET into VRAM) and sets ENABLE = 1; the VGA core is bypassed while
@@ -29,7 +38,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_FB_VERSION      1u
+#define D3DPT_FB_VERSION      2u
 #define D3DPT_FB_MAGIC        0x42463344u          /* "D3FB" at REG_MAGIC */
 
 /* PCI identity: QEMU/Bochs pseudo vendor, our device id ("3D00"). The INF
@@ -37,7 +46,7 @@
 #define D3DPT_FB_PCI_VENDOR   0x1234u
 #define D3DPT_FB_PCI_DEVICE   0x3d00u
 
-#define D3DPT_FB_VRAM_MB      32u                  /* default BAR 0 size */
+#define D3DPT_FB_VRAM_MB      128u                 /* default BAR 0 size: 64 MiB heap + the 64 MiB window */
 #define D3DPT_FB_REGS_SIZE    0x1000u
 
 /* register page (byte offsets, 32-bit accesses) */
@@ -65,7 +74,12 @@
 #define D3DPT_FB_REG_DDFLAGS     0x74u   /* R: host test knob for the display driver's DirectDraw
                                             behaviour (-device d3dpt-vga,ddflags=N); 0 = normal */
 
+#define D3DPT_FB_REG_CMD_OFFSET  0x80u   /* R: byte offset of the command window in BAR 0 (0 = none) */
+#define D3DPT_FB_REG_DOORBELL    0x84u   /* W: 1 = execute the batch in the window; R: last D3DPT_ERR_* */
+#define D3DPT_FB_REG_D3D_STATUS  0x88u   /* R: D3DPT_STATUS_* (0 = no executor on the host, 1 = ready) */
+
 #define D3DPT_FB_CAP_BPP16       0x1u
 #define D3DPT_FB_CAP_BPP32       0x2u
+#define D3DPT_FB_CAP_D3D         0x4u    /* a command window exists (CMD_OFFSET != 0) */
 
 #endif

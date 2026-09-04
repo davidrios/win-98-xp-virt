@@ -45,9 +45,15 @@ echo "==> drvinst.exe (installer, user mode, msvcrt)"
 echo "==> setmode.exe (mode switch from a script)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/setmode.exe" "$SRC/setmode.c" -luser32
+echo "==> d3d7test.exe (Direct3D 7 HAL test)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/d3d7test.exe" "$SRC/d3d7test.c" -lddraw -ldxguid -lgdi32 -luser32
 echo "==> ddtest.exe (DirectDraw 7 flip-chain test)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/ddtest.exe" "$SRC/ddtest.c" -lddraw -ldxguid -lgdi32 -luser32
+echo "==> ditest.exe (DirectInput keyboard under load)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/ditest.exe" "$SRC/ditest.c" -ldinput -lddraw -ldxguid -lgdi32 -luser32
 cp "$SRC/d3dptvid.inf" "$OUT/d3dptvid.inf"
 
 # sanity: the kernel modules import only from their port driver, and nothing
@@ -84,7 +90,10 @@ D3DPTVID.INF, DRVINST.EXE (scripted installer: sets the driver-signing
 policy to ignore, UpdateDriverForPlugAndPlayDevices, optional reboot),
 SETMODE.EXE (lists the modes; SETMODE 1024 768 32 85 switches and saves),
 DDTEST.EXE (DirectDraw 7: HAL caps, exclusive flip chain, Lock/Blt/Flip,
-fps; DDTEST [w h bpp] [frames]; log in ddtest.log).
+fps; DDTEST [w h bpp] [frames]; log in ddtest.log),
+DITEST.EXE (DirectInput keyboard under load: DITEST [seconds] [busy-ms]
+[-window] [-nonexcl]; what DirectInput / GetAsyncKeyState / WM_KEYDOWN
+each see of the keys, log in ditest.log).
 TXT
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 

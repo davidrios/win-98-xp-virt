@@ -10,19 +10,11 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
-#include <windows.h>
-#include <d3d9.h>
 #include <dlfcn.h>
-#include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <cstdarg>
 #include <string>
-#include <unordered_map>
-#include <vector>
 
-#include "d3dpt_exec.h"
-#include "../d3dpt_proto.h"
+#include "d3dpt_exec_int.h"
 
 static_assert(sizeof(D3DCAPS9) == D3DPT_SIZEOF_CAPS9, "D3DCAPS9 layout");
 static_assert(sizeof(D3DLIGHT9) == sizeof(((d3dpt_light *)0)->light), "D3DLIGHT9 layout");
@@ -32,74 +24,7 @@ static_assert(sizeof(D3DRECT) == 16, "D3DRECT layout");
 
 namespace {
 
-enum Kind : uint8_t { K_NONE, K_DEVICE, K_VB, K_IB, K_TEX, K_SURF, K_VS, K_PS, K_CUBE, K_DECL, K_QUERY };
-
-struct Obj { Kind kind; IUnknown *p; };
-
-struct Exec {
-    d3dpt_exec_ops ops;
-    void *dxvk = nullptr;
-    IDirect3D9 *d3d = nullptr;
-    IDirect3DDevice9 *dev = nullptr;
-    uint32_t dev_handle = 0;
-    std::unordered_map<uint32_t, Obj> objs;
-    /* readback staging for Present */
-    IDirect3DSurface9 *sys = nullptr;
-    uint32_t sys_w = 0, sys_h = 0;
-    D3DFORMAT sys_fmt = D3DFMT_UNKNOWN;
-    std::vector<uint32_t> conv;
-    int attach = 0;
-
-    void log(const char *fmt, ...) {
-        char buf[512];
-        va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
-        if (ops.log) ops.log(ops.ud, buf); else fprintf(stderr, "d3dpt: %s\n", buf);
-    }
-    template<class T> T *get(uint32_t h, Kind k) {
-        auto it = objs.find(h);
-        if (it == objs.end() || it->second.kind != k) return nullptr;
-        return static_cast<T *>(it->second.p);
-    }
-    bool put(uint32_t h, Kind k, IUnknown *p) {
-        if (!h || objs.count(h)) { if (p) p->Release(); return false; }
-        objs[h] = { k, p };
-        return true;
-    }
-    void release_all() {
-        for (auto &kv : objs) if (kv.second.kind != K_DEVICE && kv.second.p) kv.second.p->Release();
-        objs.clear();
-        if (sys) { sys->Release(); sys = nullptr; }
-        sys_w = sys_h = 0;
-        if (dev) {
-            dev->Release(); dev = nullptr; dev_handle = 0;
-            if (ops.active) ops.active(ops.ud, 0);
-        }
-    }
-};
-
-/* the parse state of one batch */
-struct Batch {
-    Exec &x;
-    uint8_t *shm;
-    d3dpt_shm_hdr *hdr;
-    uint8_t *ret;       /* return area */
-    uint32_t err = D3DPT_ERR_OK;
-    uint32_t index = 0;
-
-    /* a return slot: the guest's offset must fit the whole payload */
-    d3dpt_ret *slot(uint32_t off, uint32_t payload) {
-        if (off % 8 || (uint64_t)off + sizeof(d3dpt_ret) + payload > D3DPT_RET_SIZE) { err = D3DPT_ERR_BAD_ARG; return nullptr; }
-        d3dpt_ret *r = (d3dpt_ret *)(ret + off);
-        r->hr = (uint32_t)E_FAIL; r->bytes = 0;
-        return r;
-    }
-};
-
-template<class T> static const T *body(const d3dpt_cmd *c, uint32_t extra, Batch &b) {
-    if (c->size < sizeof(d3dpt_cmd) + sizeof(T) + extra) { b.err = D3DPT_ERR_MALFORMED; return nullptr; }
-    return (const T *)(c + 1);
-}
-template<class T> static const uint8_t *tail(const T *t) { return (const uint8_t *)(t + 1); }
+using namespace d3dpt;
 
 static uint32_t prim_vertices(uint32_t type, uint32_t count, bool &ok) {
     ok = count > 0 && count < (1u << 24);
@@ -117,6 +42,29 @@ static uint32_t prim_vertices(uint32_t type, uint32_t count, bool &ok) {
 static bool need_device(Batch &b) {
     if (!b.x.dev) { b.err = D3DPT_ERR_NO_DEVICE; return false; }
     return true;
+}
+
+/* D3DPT_DUMP_DIR=dir writes every D3DPT_DUMP_EVERY-th presented frame (default
+ * 60) as dir/frame-NNNNNN.ppm: the only way to see a game's frames from a
+ * bare qemu-system-i386 (a QMP screendump shows the VGA surface, which is
+ * frozen while the device presents). */
+static void dump_frame(const uint32_t *px, int w, int h, int pitch) {
+    static const char *dir = getenv("D3DPT_DUMP_DIR");
+    static unsigned every = getenv("D3DPT_DUMP_EVERY") ? (unsigned)atoi(getenv("D3DPT_DUMP_EVERY")) : 60;
+    static unsigned n;
+    if (!dir || !*dir || !every || n++ % every) return;
+    char path[1024];
+    snprintf(path, sizeof path, "%s/frame-%06u.ppm", dir, n - 1);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    std::vector<uint8_t> row((size_t)w * 3);
+    for (int y = 0; y < h; y++) {
+        const uint32_t *s = (const uint32_t *)((const uint8_t *)px + (size_t)y * pitch);
+        for (int i = 0; i < w; i++) { row[i * 3] = s[i] >> 16; row[i * 3 + 1] = s[i] >> 8; row[i * 3 + 2] = s[i]; }
+        fwrite(row.data(), 1, row.size(), f);
+    }
+    fclose(f);
 }
 
 static void present_frame(Exec &x) {
@@ -141,6 +89,7 @@ static void present_frame(Exec &x) {
     if (x.ops.frame) {
         if (d.Format == D3DFMT_X8R8G8B8 || d.Format == D3DFMT_A8R8G8B8) {
             x.ops.frame(x.ops.ud, lr.pBits, (int)d.Width, (int)d.Height, lr.Pitch);
+            dump_frame((const uint32_t *)lr.pBits, (int)d.Width, (int)d.Height, lr.Pitch);
         } else {
             /* 16-bit backbuffers: expand to XRGB */
             x.conv.resize((size_t)d.Width * d.Height);
@@ -156,9 +105,25 @@ static void present_frame(Exec &x) {
                 }
             }
             x.ops.frame(x.ops.ud, x.conv.data(), (int)d.Width, (int)d.Height, (int)d.Width * 4);
+            dump_frame(x.conv.data(), (int)d.Width, (int)d.Height, (int)d.Width * 4);
         }
     }
     x.sys->UnlockRect();
+}
+
+/* Depth formats real 2001 cards offered but DXVK's D3D9 refuses outright
+ * (d3d9_format.cpp: D32 / D15S1 / D24X4S4 "Unsupported (everywhere)").
+ * The guest DLL advertises them in CheckDeviceFormat / CheckDepthStencilMatch
+ * — Max Payne picks D32 for 32-bit modes and got D3DERR_NOTAVAILABLE from
+ * CreateDevice — so keep the promise with the closest layout DXVK has. The
+ * guest keeps answering GetDesc with the format the game asked for. */
+static D3DFORMAT depth_norm(uint32_t f) {
+    switch (f) {
+    case D3DFMT_D32:     return D3DFMT_D24X8;
+    case D3DFMT_D15S1:   return D3DFMT_D24S8;
+    case D3DFMT_D24X4S4: return D3DFMT_D24S8;
+    default:             return (D3DFORMAT)f;
+    }
 }
 
 static void fill_pp(D3DPRESENT_PARAMETERS &pp, const d3dpt_present_params &g) {
@@ -170,7 +135,7 @@ static void fill_pp(D3DPRESENT_PARAMETERS &pp, const d3dpt_present_params &g) {
     pp.hDeviceWindow = nullptr;
     pp.Windowed = TRUE;                      /* fullscreen is the guest's business; no host window */
     pp.EnableAutoDepthStencil = g.auto_depth ? TRUE : FALSE;
-    pp.AutoDepthStencilFormat = (D3DFORMAT)g.depth_format;
+    pp.AutoDepthStencilFormat = depth_norm(g.depth_format);
     pp.Flags = g.flags & ~(DWORD)D3DPRESENTFLAG_DEVICECLIP;
     pp.FullScreen_RefreshRateInHz = 0;
     pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;   /* pacing is the guest's / the player's */
@@ -590,7 +555,7 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         if (!a->width || !a->height || a->width > 8192 || a->height > 8192) { r->hr = (uint32_t)D3DERR_INVALIDCALL; return; }
         IDirect3DSurface9 *s = nullptr;
         if (c->op == D3DPT_OP_CREATE_DEPTH_STENCIL)
-            r->hr = (uint32_t)x.dev->CreateDepthStencilSurface(a->width, a->height, (D3DFORMAT)a->format, (D3DMULTISAMPLE_TYPE)a->multisample, a->ms_quality, a->lockable ? TRUE : FALSE, &s, nullptr);
+            r->hr = (uint32_t)x.dev->CreateDepthStencilSurface(a->width, a->height, depth_norm(a->format), (D3DMULTISAMPLE_TYPE)a->multisample, a->ms_quality, a->lockable ? TRUE : FALSE, &s, nullptr);
         else
             r->hr = (uint32_t)x.dev->CreateRenderTarget(a->width, a->height, (D3DFORMAT)a->format, (D3DMULTISAMPLE_TYPE)a->multisample, a->ms_quality, a->lockable ? TRUE : FALSE, &s, nullptr);
         if (SUCCEEDED(r->hr) && !x.put(a->handle, K_SURF, s)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }
@@ -740,7 +705,7 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
     }
 
     default:
-        b.err = D3DPT_ERR_BAD_OP;
+        if (!exec_ddi_op(b, c)) b.err = D3DPT_ERR_BAD_OP;
         break;
     }
 }
@@ -795,6 +760,14 @@ void d3dpt_exec_attach(d3dpt_exec_t *xp, int attach)
     if (!x) return;
     if (attach) x->attach++;
     else if (x->attach > 0 && --x->attach == 0) x->release_all();
+}
+
+void d3dpt_exec_set_vram(d3dpt_exec_t *xp, void *vram, uint32_t size)
+{
+    Exec *x = (Exec *)xp;
+    if (!x) return;
+    x->vram = (uint8_t *)vram;
+    x->vram_size = vram ? size : 0;
 }
 
 uint32_t d3dpt_exec_submit(d3dpt_exec_t *xp, void *shm, uint32_t shm_size)

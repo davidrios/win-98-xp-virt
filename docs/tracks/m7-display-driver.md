@@ -8,18 +8,24 @@ picture and the track rules, then this file, then doc 15.
 ## Scope and files (this track owns them)
 
 - QEMU device: `d3dpt/hw/d3dpt_vga.c`, register set `d3dpt/d3dpt_fb.h`
-  (bump `D3DPT_FB_VERSION` on any change; device and miniport check it).
+  (bump `D3DPT_FB_VERSION` on any change; device and miniport check it),
+  the shared executor loader `d3dpt/hw/d3dpt_exec_load.[ch]`.
 - Guest driver: `guest-tools/src/d3dptvid/` (miniport `d3dptvid.c`, display
   driver `d3dptdisp.c`, `kcrt.c`, INF, `drvinst.c`, `setmode.c`, `ddtest.c`,
-  vendored DDK headers `ddk/`), `guest-tools/build-driver.sh` (also run by
+  `d3d7test.c`, vendored DDK headers `ddk/` incl. the self-contained
+  `d3dnthal.h`), `guest-tools/build-driver.sh` (also run by
   `build-wrappers.sh`, stages `DRIVER\` on the ISO).
+- Executor, M7c's half: `d3dpt/exec/d3dpt_exec_ddi.cpp` (the display
+  driver's records: VRAM surfaces, contexts, the DP2 interpreter,
+  readback) and `d3dpt/exec/d3dpt_exec_int.h` (state shared with the d3d9
+  half); `tools/d3dpt-dp2-test.cpp`.
 - Tests: `tools/xp-driver-test.sh`, `tools/qmpc.py` key map additions.
 - Docs: `docs/15-guest-display-driver.md`, this file, the M7 row of the
   state table and the M7 line of "Next steps" in `docs/00-status.md`.
 - Shared with the M4 track (rebase first, edit minimally, say so in the
-  commit): `d3dpt/d3dpt_proto.h` and `d3dpt/exec/` (M7c reuses the
-  executor and will add records), `d3dpt/hw/d3dpt_mm.c` (the executor
-  loader moves to a shared helper for M7c), `scripts/test.sh` (a driver
+  commit): `d3dpt/d3dpt_proto.h` (the M7c records live in it; bump the
+  version), `d3dpt/exec/d3dpt_exec.cpp` + `d3dpt_exec.h`, `d3dpt/hw/d3dpt_mm.c`,
+  `scripts/test.sh` (the `d3dpt-dp2` host check is M7's; a driver guest
   stage is still to be added), `player/`, `CLAUDE.md`.
 
 ## State (2026-09-04)
@@ -33,9 +39,54 @@ picture and the track rules, then this file, then doc 15.
   VRAM, real page flips (OFFSET register), cached VRAM mappings; DDTEST:
   640×480×16 exclusive chain 4762 fps, ×32 6383 fps, windowed HEL blit
   305 fps (doc 15 has the table and the bisection findings).
-- **M7c (Direct3D DDI): designed in doc 15, not started.**
+- **M7c first cut done (2026-09-04, branch `track/m7-d3d-ddi`):** the
+  DX7 non-T&L HAL. VRAM 128 MiB with the top 64 MiB as the command window
+  (register set v2: CMD_OFFSET, DOORBELL, D3D_STATUS), the executor shared
+  with the SysBus device, surfaces mirrored from VRAM by handle, contexts,
+  the DP2 token interpreter on DXVK, readback into VRAM at EndScene / Lock
+  / Flip. `D3D7TEST` on XP (KVM): HAL device enumerated, Z buffer, texture,
+  the reference scene at 640×480×32 renders at 2400 fps and its
+  frame is byte-identical to the host-side
+  `d3dpt-dp2-test` frame of the same DP2 tokens.
+- **FIFA 2000 renders on the HAL (2026-09-04, headless):** the game's
+  DX6 Thrash renderer (`THRASH\dx6z.dll`) unmodified, with the WineD3D
+  DLLs renamed out of its folder: intro at 640×480×16, title screen,
+  attract-mode match at 800×600×16 with textures, kits, crowd, HUD
+  (doc 15 "FIFA 2000 on the HAL"; screendumps in
+  `build/xp-driver-test/fifa/`). No unsupported token, no refused record,
+  no colour keying requested; the match blits instead of flipping. The
+  image is `~/vms/winxp-m7f.qcow2` (a copy of the user's `winxp-m7` with
+  the M7c driver reinstalled and the DLLs renamed); the user's own image
+  still has the M7b driver (register set v1) and the DLLs in place.
+- **Played by hand (user, 2026-09-04): graphics clean, smooth; the
+  keyboard dead in the match under TCG.** Root cause and fix in doc 15
+  ("FIFA 2000 on the HAL"): the game's non-exclusive DirectInput keyboard
+  never updates in the match because its thread stops pumping messages;
+  `D3DPT\DINPUT.DLL` next to the EXE merges `GetAsyncKeyState` into the
+  state and logs the game's DirectInput use. Tools that came out of it:
+  `DRIVER\DITEST.EXE`, the `qemu-embed: input:` statistics in the embed
+  library, `PLAYER_KEYS_HOLD`, the executor's `frames/s` line,
+  `xp-driver-test.sh`'s `bat` / `GAME_ISO` / `SHOTS` / `SHOT_KEYS`,
+  `qmpc.py click`.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
-  2026-09-04). New work: branch `track/m7-<topic>` off main.
+  2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
+  `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
+  2026-09-04 evening). New work: branch `track/m7-<topic>` off main.
+- **Resuming here (2026-09-04 evening):** pull main, then prepare →
+  configure → ninja (the embed library carries the input statistics),
+  `scripts/build-d3dpt-exec.sh` (the frames/s line; main also has the M4
+  track's executor changes of the same day), `guest-tools/build-driver.sh`
+  (DITEST) and `guest-tools/build-wrappers.sh` (the DINPUT shim into
+  `guest-tools/out/iso/D3DPT/`), `cargo build --release`. Images on this
+  box: `winxp-m7f` and `winxp-m7g` (copies of the user's `winxp-m7`, M7c
+  driver, WineD3D DLLs renamed, `DINPUT.DLL` already in the FIFA folder,
+  `m7g` also has `LowLevelHooksTimeout` = 5000 which proved irrelevant);
+  `tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2` is the check that the
+  match takes keys (pause menu on Esc). The user's own `winxp-m7` still
+  needs the M7c driver (`install`), the renames and the shim. First thing
+  to hear from the user: whether `D3DPT\DINPUT.DLL` next to
+  `fifa2000.exe` fixes their TCG keyboard, and on which machine they saw
+  it (Linux TCG or the Mac).
 
 ## Build / run / test
 
@@ -52,8 +103,24 @@ target/release/player -- -L $PWD/qemu/pc-bios -accel kvm -cpu host -machine pc -
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 install   # DRVINST from the ISO, reboot, desktop on the driver
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 ddtest    # DirectDraw: caps, flip chains, windowed blit, fps
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 modes     # SETMODE switches + the mode list
+tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL scene, diffed against build/d3dpt-dp2-test's frame
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
+# a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
+GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat
+# a real match, driven over QMP (menus, side, kickoff) and a keyboard test in it (F2 / Esc / F12 taps + screendumps),
+# dinput_log.txt pulled from the image at the end; ~6 min under kvm, ~9 under tcg
+tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2      # or tcg
+# the same game in the player, by hand (the image above: driver reinstalled, WineD3D DLLs renamed)
+target/release/player -- -L $PWD/qemu/pc-bios -accel kvm -cpu host -machine pc -m 512 \
+  -hda ~/vms/winxp-m7f.qcow2 -cdrom /mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO -vga none -device d3dpt-vga \
+  -net none -usb -device usb-tablet 2>&1 | tee fifa-player.log     # then Start menu → EA SPORTS → FIFA 2000
+build/d3dpt-dp2-test x.bmp                              # the same scene through the executor without a guest (host stage of scripts/test.sh)
 ```
+
+- The executor: `scripts/build-d3dpt-exec.sh` after touching `d3dpt/exec/`
+  (both `.cpp` files); the device dlopens `build/d3dpt/libd3dpt_exec.so`
+  (`D3DPT_EXEC_LIB`) and DXVK from `build/dxvk` (`D3DPT_DXVK_LIB`). A
+  worktree without `build/dxvk` can symlink the main checkout's.
 
 - Outputs in `build/xp-driver-test/`: screendumps, the guest logs, and
   the QEMU log whose `d3dpt-vga: guest: …` lines are the driver's debug
@@ -64,19 +131,22 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 
   `~/vms/winxp.qcow2` belongs to the M4 track (cirrus, untouched).
   Reinstall the driver (`install`) after every driver rebuild: XP loads the
   copy in `system32`, not the ISO's.
-- Bisection without reinstall: `-device d3dpt-vga,ddflags=N` (doc 15).
+- Bisection without reinstall: `-device d3dpt-vga,ddflags=N` (doc 15);
+  `0x20` = Direct3D off. The QEMU log's `d3dpt-vga: ddi: …` lines are the
+  executor's (unsupported states / tokens, once each), `batch N: error` a
+  refused record, `d3dptdisp: dp2 0x…` a DrawPrimitives2 the host failed.
 
 ## Next steps, in order
 
-1. **M7c — the Direct3D DDI**, design in doc 15 §"M7c": grow BAR 0 to
-   128 MiB with the top 64 MiB as the command window (SysBus layout, so
-   `d3dpt_enc.h` and `d3dpt_exec_submit` apply unchanged), a DOORBELL
-   register, the executor loader shared between `d3dpt_mm.c` and
-   `d3dpt_vga.c`, `d3dpt_exec_set_vram`; DX7 caps + `ContextCreate` +
-   `DrawPrimitives2` forwarding in the display driver; the DP2 token
-   interpreter (non-T&L subset first) and VRAM-resident textures / render
-   targets in the executor; `D3D7TEST.EXE`; then FIFA 2000 (doc 00 known
-   issues has its history).
+1. **M7c, the rest:** FIFA 2000 plays (user-verified under KVM; the TCG
+   keyboard needs `D3DPT\DINPUT.DLL` in the game folder — confirm on the
+   user's setup, then decide whether the merge belongs in a system-wide
+   place). Then what it or the next title asks for first among: colour
+   keying (key → alpha at upload + alpha test), claiming T&L
+   (`D3DDEVCAPS_HWTRANSFORMANDLIGHT`, the tokens are already mapped),
+   render-to-texture, state sets, the DX8 tokens + `GUID_D3DCaps`
+   (`D3DCAPS8`) for DX8 games without the DLL, presenting the host frame
+   through the player's 3D path instead of the per-frame readback copy.
 2. Add a `driver` stage to `scripts/test.sh` (boot on `d3dpt-vga`, `modes`
    + `ddtest` with expected numbers) once the M4 track's suite structure
    is stable; until then `tools/xp-driver-test.sh` is the check.
@@ -95,6 +165,13 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 
   mappings; win32k only for the DLL).
 - `EngModifySurface` needs `HOOK_SYNCHRONIZE`; `DDCAPS_GDI` in the caps
   makes dxg drop the HAL; the register BAR must be a kernel mapping.
+- Direct3D: a device with `DRAWPRIMITIVES2EX` caps must answer
+  `GUID_Miscellaneous2Callbacks` *with* `GetDriverState`, or ddraw.dll
+  builds a HEL-only object (`DDCAPS_NOHARDWARE`, no error anywhere);
+  `DDBD_32` is 0x100 (the DDBD flags count down); `ddraw.dll` and
+  `dxg.sys` can be pulled out of the image (`qemu-img convert` + `7z x`)
+  and disassembled with `i686-w64-mingw32-objdump` when the DDK docs run
+  out (doc 15 has the two findings).
 - XP SP3's Logo dialog ignores every registry policy; DRVINST presses it.
 - Keys typed while a full-screen DirectDraw window is up are lost: one
   chained `cmd /k a & b & c` line per test.

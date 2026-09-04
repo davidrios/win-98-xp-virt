@@ -2,7 +2,9 @@
 """Generate d3d9_vtbl.h for the paravirtual d3d9.dll from mingw's d3d9.h:
 prototypes for every IDirect3D9 / IDirect3DDevice9 method (so the
 implementations are signature-checked), E_NOTIMPL stubs (log once) for
-the ones not implemented, and the two vtables in header order.
+the ones not implemented, a call-trace wrapper per method (the vtable
+entry; logs entry/exit to d3dpt_trace.log when tracing is on, see
+d3dpt_trace in d3d9.c) and the vtables in header order.
 Usage: gen_vtbl.py /usr/i686-w64-mingw32/include/d3d9.h > d3d9_vtbl.h
 Implemented method names are read from the D3DPT_IMPL_* lists below."""
 import re, sys
@@ -41,7 +43,47 @@ CreateCubeTexture CreateVertexDeclaration SetVertexDeclaration GetVertexDeclarat
 CreateStateBlock BeginStateBlock EndStateBlock UpdateSurface UpdateTexture ColorFill
 GetVertexShaderConstantF GetPixelShaderConstantF SetVertexShaderConstantI GetVertexShaderConstantI
 SetVertexShaderConstantB GetVertexShaderConstantB SetPixelShaderConstantI GetPixelShaderConstantI
-SetPixelShaderConstantB GetPixelShaderConstantB""".split())
+SetPixelShaderConstantB GetPixelShaderConstantB GetRasterStatus SetGammaRamp GetGammaRamp""".split())
+
+
+# traced methods: creation, locks, uploads, presents and the like; the
+# per-frame state/draw calls stay direct (tracing them would be most of the
+# frame's time and megabytes per second)
+TRACE_RX = re.compile(r'^(Create|Lock|Unlock|Copy|Update|Present|Reset|Delete|TestCooperativeLevel|EvictManagedResources|ResourceManagerDiscardBytes|GetAvailableTextureMem|StretchRect|ColorFill|GetRenderTargetData|GetFrontBuffer|AddDirty|GetSurfaceLevel|GetCubeMapSurface|GetLevelDesc|GetVolumeLevel|QueryInterface|SetGammaRamp|ProcessVertices|GetDeviceCaps|CheckDevice|CheckDepthStencilMatch|EnumAdapterModes|GetAdapter|GetVertexShaderFunction|GetPixelShaderFunction|GetVertexShaderDeclaration|GetFunction|GetDeclaration|GenerateMipSubLevels|SetAutoGenFilterType|Capture|Apply|SetPriority|PreLoad|SetLOD)')
+def traced(name):
+    return TRACE_RX.match(name) is not None
+
+def named_args(args):
+    """(declaration list, names); mingw leaves some parameters unnamed"""
+    decls, names = [], []
+    for i, a in enumerate(args.split(',')):
+        a = a.strip()
+        if not a:
+            continue
+        words = [w for w in re.findall(r'\w+', a) if w not in ('const', 'CONST', 'struct')]
+        if len(words) >= 2 and not a.endswith('*') and not a.endswith('&'):
+            names.append(words[-1]); decls.append(a)
+        else:
+            names.append('a%d' % i); decls.append('%s a%d' % (a, i))
+    return ', '.join(decls), names
+
+def wrapper(iface, prefix, ret, name, args):
+    """the vtable entry: a call-trace wrapper around prefix_name (D3DPT_TRACE, d3dpt_trace.log)"""
+    label = '%s::%s' % (iface, name)
+    decls, names = named_args(args)
+    call = '%s_%s(This%s)' % (prefix, name, ''.join(', ' + n for n in names))
+    proto = 'static %s WINAPI t_%s_%s(%s *This%s)' % (ret, prefix, name, iface, (', ' + decls) if decls else '')
+    shown = names[:6]      # the first arguments as hex: sizes, formats, pools, pointers
+    enter = 'if (d3dpt_trace_on) d3dpt_trace("> %s %%p%s"%s);' % (
+        label, ''.join(' %s=%%08lx' % n for n in shown),
+        ', (void *)This' + ''.join(', (unsigned long)(uintptr_t)%s' % n for n in shown))
+    if ret == 'void':
+        body = '%s %s; if (d3dpt_trace_on) d3dpt_trace("< %s");' % (enter, call, label)
+    elif ret == 'float':
+        body = '%s r_; %s r_ = %s; if (d3dpt_trace_on) d3dpt_trace("< %s = %%g", (double)r_); return r_;' % (ret, enter, call, label)
+    else:
+        body = '%s r_; %s r_ = %s; if (d3dpt_trace_on) d3dpt_trace("< %s = 0x%%08lx", (unsigned long)r_); return r_;' % (ret, enter, call, label)
+    return '%s { %s }' % (proto, body)
 
 src = open(sys.argv[1]).read()
 rx = re.compile(r'STDMETHOD(?:_\(\s*([^,]+?)\s*,\s*(\w+)\s*\)|\((\w+)\))\s*\(\s*THIS(?:_\s*(.*?))?\s*\)\s*PURE;', re.S)
@@ -72,9 +114,11 @@ def emit(iface, prefix, impl):
             elif ret == 'void': rv = None
             else: rv = '0'
             print('static %s { D3DPT_STUB("%s::%s"); %s }' % (proto, iface, name, ('return %s;' % rv) if rv else ''))
+    for ret, name, args in ms:
+        if traced(name): print(wrapper(iface, prefix, ret, name, args))
     print('static const %sVtbl %s_vtbl = {' % (iface, prefix))
     for ret, name, args in ms:
-        print('    %s_%s,' % (prefix, name))
+        print('    %s%s_%s,' % ('t_' if traced(name) else '', prefix, name))
     print('};')
     print()
 

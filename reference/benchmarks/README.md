@@ -86,7 +86,7 @@ per-title validation in M4 decides which side dominates.
 Also record here anything the XP guest needed that Win98 did not
 (drivers, HAL, activation state is not recorded).
 
-## SSE (patch 07, doc 16)
+## SSE (patch 11, doc 16)
 
 Two instruments. `tools/sse-guest-test.py` runs `SSEBENCH.COM` (DOS,
 register-only kernels, 40M iterations, BIOS ticks) with `sse-fast=on` and
@@ -97,7 +97,7 @@ guests: D3DX-shaped SSE1 kernels and the same math in x87 C, ns per op.
 | Machine / config | packed 8-op chain (s) | scalar 7-op chain (s) | Date |
 |---|---|---|---|
 | M1 Air, TCG, helpers (`-cpu pentium3,+sse2,sse-fast=off`) | 4.56 | 2.80 | 2026-09-04 |
-| M1 Air, TCG, **patch 07** inline (default) | 0.38 (**12×**) | 0.77 (**3.6×**) | 2026-09-04 |
+| M1 Air, TCG, **patch 11** inline (default) | 0.38 (**12×**) | 0.77 (**3.6×**) | 2026-09-04 |
 
 That is ~1.2 ns per packed op and ~2.7 ns per scalar op inline against
 ~14 and ~10 for the helpers. Re-run on the Air 2026-09-04 after the
@@ -118,15 +118,15 @@ better):
 | Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | denormal decay | MMX blend | Date |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **Rig (P4 1.7), XP, real hardware** | 1.28 | 1.93 | 4.09 | 1.59 | 2.50 | 0.74 | 4.02 | 1552 | 0.44 | 2026-09-04 |
-| M1 Air, XP, defaults (patches 06 + 07 + 08) | **2.1** | **2.0** | **3.9** | **4.7** | **2.3** | **4.2** | **4.6** | 80 | **0.41** | 2026-09-04 |
+| M1 Air, XP, defaults (patches 06 + 11 + 12) | **2.1** | **2.0** | **3.9** | **4.7** | **2.3** | **4.2** | **4.6** | 80 | **0.41** | 2026-09-04 |
 | M1 Air, XP, defaults, after the x86-64 session's fixes (aarch64 fallbacks + portable packuswb) | 2.0 | 1.6 | 3.5 | 5.1 | 2.3 | 4.0 | 3.9 | 81 | 0.40 | 2026-09-04 |
-| M1 Air, XP, `simd-fast=off` (07 on) | 2.4 | 2.4 | 3.8 | 4.6 | 2.3 | 4.2 | 4.3 | 83 | 0.80 | 2026-09-04 |
-| M1 Air, XP, `sse-fast=off` (06 + 08's predecessor) | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | | 2026-09-04 |
+| M1 Air, XP, `simd-fast=off` (11 on) | 2.4 | 2.4 | 3.8 | 4.6 | 2.3 | 4.2 | 4.3 | 83 | 0.80 | 2026-09-04 |
+| M1 Air, XP, `sse-fast=off` (06 + 12's predecessor) | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | | 2026-09-04 |
 | M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | | 2026-09-04 |
 | Air (defaults) ÷ rig | **61 %** | **97 %** | **105 %** | **34 %** | **109 %** | **18 %** | **87 %** | 19× | **107 %** | |
-| x86-64 box (Ryzen 7 5700X, Arch), XP, defaults (06 + 07 + 08, native `fmin`/`fmax`/`fcmp`/`mulsh`/`*narrow` ops) | 2.6 | 2.2 | 3.5 | **3.7** | 1.9 | 4.5 | 4.1 | 63 | 0.36 | 2026-09-04 |
-| x86-64 box, XP, `sse-fast=off` (06 + 08) | 10.5 | 9.9 | 5.1 | 11.3 | 6.3 | 4.4 | 4.1 | 51 | 0.36 | 2026-09-04 |
-| x86-64 box, XP, `sse-fast=off,x87-fast=off` (08 only) | 10.4 | 9.8 | 5.1 | 11.1 | 6.4 | 27.9 | 31.1 | 49 | 0.36 | 2026-09-04 |
+| x86-64 box (Ryzen 7 5700X, Arch), XP, defaults (06 + 11 + 12, native `fmin`/`fmax`/`fcmp`/`mulsh`/`*narrow` ops) | 2.6 | 2.2 | 3.5 | **3.7** | 1.9 | 4.5 | 4.1 | 63 | 0.36 | 2026-09-04 |
+| x86-64 box, XP, `sse-fast=off` (06 + 12) | 10.5 | 9.9 | 5.1 | 11.3 | 6.3 | 4.4 | 4.1 | 51 | 0.36 | 2026-09-04 |
+| x86-64 box, XP, `sse-fast=off,x87-fast=off` (12 only) | 10.4 | 9.8 | 5.1 | 11.1 | 6.4 | 27.9 | 31.1 | 49 | 0.36 | 2026-09-04 |
 | x86-64 box (defaults) ÷ rig | 49 % | 89 % | 116 % | **43 %** | 130 % | 16 % | 99 % | 25× | 122 % | |
 
 The rig row (2026-09-04, `reference/benchmarks/rig-2026-09-04/ssebench.log`,
@@ -151,17 +151,17 @@ up from the Air's 34 %, and 3.1× over its own helper path — well short of
 the register-only `SSEBENCHC` kernel's 6.5× on the same box, because the
 XP loop is not register-only. Per iteration it does an aligned 16-byte
 load and store (two softmmu TLB lookups) and a `movmskps`, which patches
-07 and 08 never touched: it is still QEMU's stock `helper_movmskps_xmm`
+11 and 12 never touched: it is still QEMU's stock `helper_movmskps_xmm`
 call, one per iteration. So the native `minps`/`maxps`/`cmpps` are no
 longer where that loop's time goes, and the remaining gap to the P4 is a
 memory-operand and `movmskps` story. The scalar chain, the conversions,
 the MMX blend and the x87 normalize are all above the rig on this box;
 the packed transform (49 %) and the x87 C transform (16 %) are the same
 two outliers as on the Air. Every `check` is identical to the rig's.
-The `sse-fast=off` rows leave patch 08 on (`simd-fast` is its own
+The `sse-fast=off` rows leave patch 12 on (`simd-fast` is its own
 switch), hence the MMX blend at 0.36 throughout.
 
-Patch 08 (MMX / SSE integer and permutes inline, `tbl_vec`): the MMX
+Patch 12 (MMX / SSE integer and permutes inline, `tbl_vec`): the MMX
 blend kernel 0.80 → 0.41 (2.0×), the packed transform's four `shufps`
 2.38 → 2.10 per float op, normalize 2.41 → 2.03. A first version with
 scalar lane stores for the shuffles was *slower* than the helper (2.76
@@ -170,7 +170,7 @@ smaller stores; hence the table-lookup opcode. Runs with the `simd`
 rows were separate boots from the `sse-fast=off` rows, so compare
 within a pair, not across (the E-core effect, up to 2× between boots).
 
-Reading: patch 07 makes the SSE kernels 3.2–7.4× faster (packed code
+Reading: patch 11 makes the SSE kernels 3.2–7.4× faster (packed code
 gains most: the transform is 4 `mulps` + 4 `addps` + 4 `shufps`, and the
 shuffles are still helper calls); patch 06 makes the x87 kernels 10–12×
 faster; each switch touches only its own kernels. The denormal kernel is

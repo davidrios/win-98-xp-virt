@@ -75,10 +75,14 @@ static const QemuFxUiOps embed_fx_ui_ops = {
 };
 
 /* paravirtual Direct3D (hw/d3dpt): the executor's frames take the same
- * path as GL swaps; while a device exists the VGA surface is not shown */
+ * path as GL swaps. Unlike the GL path the VGA surface keeps rendering
+ * while a device exists: a game's process can die without releasing it
+ * (no DLL_PROCESS_DETACH on a crash), and games draw on the VGA surface
+ * between CreateDevice and their first Present (Vice City's intro movies
+ * through DirectShow, launcher dialogs); the player shows whichever of
+ * the two was drawn last. */
 static void d3dpt_present_active(bool on)
 {
-    graphic_hw_passthrough(qemu_console_lookup_by_index(0), on);
     embed_fx_active(on);
 }
 

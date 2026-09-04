@@ -62,7 +62,9 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 # --shader <preset.slangp> (or PLAYER_SHADER=) runs a libretro slang preset, e.g.
 #   target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- ...
 # PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
-# PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test)
+# PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test);
+#   each press is held PLAYER_KEYS_HOLD frames (default 6 ≈ 100 ms) — a down+up in one flush is a
+#   zero-length press that a game polling the keyboard state never sees
 # PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
 # PLAYER_LATENCY=1 prints publish→present latency percentiles every 240 guest frames
 # PLAYER_REFRESH_MS=16 (default) is the guest frame pull interval (QEMU's own default is 30)
@@ -74,6 +76,14 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   build/d3dpt/libd3dpt_exec.so (D3DPT_EXEC_LIB) and DXVK (D3DPT_DXVK_LIB) on the
 #   guest's first use. Build: scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh &&
 #   ninja -C build/dxvk && scripts/build-d3dpt-exec.sh; guest side: D3DPT\ on the ISO.
+#   D3DPT_DUMP_DIR=dir D3DPT_DUMP_EVERY=60 makes the executor write every 60th
+#   presented frame as dir/frame-NNNNNN.ppm (works with bare qemu-system-i386 too).
+#   Guest side: D3DPT_TRACE=1 or a file d3dpt_trace.on next to the DLL writes the
+#   creation/lock/upload/present calls to d3d8_trace.log / d3d9_trace.log; a DLL
+#   that cannot open the device forwards Direct3DCreateN to the system DLL.
+#   While the device is active the player shows the VGA surface again after 1 s
+#   without a presented frame if the guest drew on it (a game's error dialog,
+#   a DirectShow movie, a crashed process): "[display] no 3D frame for …".
 # audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.
 #   -machine pc,pcspk-audiodev=embed0   or   -device sb16,audiodev=embed0
 ```

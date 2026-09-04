@@ -173,13 +173,26 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame8.exe" "$ROOT/guest-tools/s
 mkdir -p "$OUT/iso/D3DPT"
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d9.dll" "$ROOT/guest-tools/src/d3dpt/d3d9.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
-  -Wl,--kill-at -lgdi32 -luser32
+  -static-libgcc -Wl,--kill-at -lgdi32 -luser32 -lpsapi
 cp "$OUT/iso/GAMEDIR/d3d9test.exe" "$OUT/iso/GAMEDIR/d3dgame9.exe" "$OUT/iso/D3DPT/"
 # Direct3D 8 over the same device (doc 14 P4): d3d8.c includes d3d9.c, one DLL.
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d8.dll" "$ROOT/guest-tools/src/d3dpt/d3d8.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
-  -Wl,--kill-at -lgdi32 -luser32
+  -static-libgcc -Wl,--kill-at -lgdi32 -luser32 -lpsapi
 cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
+# DirectDraw 7 shim (d3dpt/ddraw.c): forwards to the system ddraw.dll and
+# reports 256 MB of video memory. RenderWare launchers (GTA Vice City) ask
+# DirectDraw, not Direct3D, and refuse the Cirrus adapter's 4 MB.
+# DDVMTEST.EXE prints what such a check sees (system ddraw vs the shim).
+i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/ddraw.dll" "$ROOT/guest-tools/src/d3dpt/ddraw.c" \
+  "$ROOT/guest-tools/src/d3dpt/ddraw.def" -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c" -lddraw -ldxguid
+# DirectInput logging shim (d3dpt/dinput.c): forwards to the system dinput.dll
+# and writes dinput_log.txt next to the EXE — what the game asks of its
+# keyboard / mouse devices and what it gets back (FIFA 2000's match, doc 15).
+i686-w64-mingw32-gcc -O2 -Wall -shared -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
+  -o "$OUT/iso/D3DPT/dinput.dll" "$ROOT/guest-tools/src/d3dpt/dinput.c" "$ROOT/guest-tools/src/d3dpt/dinput.def" \
+  -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup -ldxguid
 # Feature test (doc 14 P3): shaders, declarations, state blocks, queries, cube maps, surfaces.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src/d3dfeat9.c" -ld3d9 -lgdi32 -luser32
 # SSE throughput (guest-tools/src/ssebench.c, doc 16): D3DX-shaped SSE1
@@ -225,6 +238,14 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             D3D9TEST.EXE / D3DGAME9.EXE; needs the WIN2KXP (FXPTL.SYS) or
             WIN9X step like OPENGL32.DLL. Log: d3dpt.log next to the EXE
             (C:\d3dpt.log when run from the CD). Do not mix with WINED3D.
+            D3D8.DLL for Direct3D 8 titles. DDRAW.DLL next to the EXE too
+            when a launcher checks video memory through DirectDraw (GTA
+            Vice City: "cannot find enough available video memory"); it
+            reports 256 MB and forwards everything else to the system.
+            DDVMTEST.EXE shows what such a check sees. DINPUT.DLL next to
+            the EXE logs the game's DirectInput use (devices, cooperative
+            level, buffer size, poll rate, every key/button it gets) to
+            dinput_log.txt: for "the keyboard does nothing in the game".
             SSEBENCH.EXE: SSE/x87 math throughput in ns per op (console and
             SSEBENCH.LOG). Run on the rig and in each guest, also with
             -cpu ...,sse-fast=off / x87-fast=off, to compare the paths.

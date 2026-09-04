@@ -162,14 +162,14 @@ scored kernels: guard 0, hand-over 1, helper exits only from the
 denormal kernel. Full table and the measurement pitfalls in
 `reference/benchmarks/README.md`. The rig has not run it yet.
 
-## Patch 08: the integer and permutation instructions (2026-09-04)
+## Patch 12: the integer and permutation instructions (2026-09-04)
 
 The transform kernel showed it: between the inlined `mulps`/`addps` of a
 D3DX vertex transform sit four `shufps`, each a helper call; the MMX
 loops of era blitters, mixers and codecs are all helper calls
 (`punpck*`, `pack*`, `pmulhw`, `pmaddwd`, `pavg*`, `psadbw`, shifts by a
 register count, `pshufw`), plus a helper call for the MMX entry
-(`fpstt`/`fptags` reset) before every one of them. Patch 08
+(`fpstt`/`fptags` reset) before every one of them. Patch 12
 (`target/i386/tcg/simd-fast.c.inc`, property `simd-fast`) translates
 those inline: the permutes (`shufps`, `shufpd`, all `unpck*`, `pshufw`)
 through a new TCG vector opcode `tbl_vec`, a byte table lookup with

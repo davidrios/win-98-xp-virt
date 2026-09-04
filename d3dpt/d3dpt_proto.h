@@ -16,6 +16,13 @@
  * synchronously inside the MMIO write and returns results through the
  * return area at the offsets the guest chose per record. No interrupts.
  *
+ * The same window layout is used a second time by the d3dpt-vga display
+ * adapter (doc 15, M7c): the top D3DPT_SHM_SIZE bytes of its VRAM BAR are
+ * a window in exactly this layout, its DOORBELL register submits it, and
+ * the XP display driver appends the D3DPT_OP_VRAM_* / CTX_* / DP2 records
+ * below (Direct3D DDI: surfaces live in guest VRAM, the host reads
+ * texels from and writes rendered frames back into that VRAM).
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #ifndef D3DPT_PROTO_H
@@ -23,7 +30,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   4u
+#define D3DPT_PROTO_VERSION   5u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -146,6 +153,16 @@ enum d3dpt_op {
     D3DPT_OP_CREATE_QUERY = 81,         /* body: d3dpt_create_query; ret */
     D3DPT_OP_QUERY_ISSUE = 82,          /* body: d3dpt_u32x2 (handle, flags) */
     D3DPT_OP_QUERY_GET_DATA = 83,       /* body: d3dpt_query_get (sync); ret: d3dpt_ret + data */
+    /* --- the display driver's Direct3D DDI (doc 15, M7c): surfaces in guest VRAM --- */
+    D3DPT_OP_VRAM_SURFACE = 96,         /* body: d3dpt_vram_surface: a DirectDraw surface in VRAM the host mirrors (forward) */
+    D3DPT_OP_VRAM_RELEASE = 97,         /* body: d3dpt_handle: the surface is gone (forward) */
+    D3DPT_OP_VRAM_DIRTY = 98,           /* body: d3dpt_handle: the guest wrote the surface's VRAM (re-read before use) */
+    D3DPT_OP_CTX_CREATE = 99,           /* body: d3dpt_ctx_create (sync): a Direct3D context on a render target + Z surface */
+    D3DPT_OP_CTX_DESTROY = 100,         /* body: d3dpt_handle */
+    D3DPT_OP_CTX_SET_RT = 101,          /* body: d3dpt_u32x3 (ctx, rt surface, z surface or 0) */
+    D3DPT_OP_CTX_CLEAR = 102,           /* body: d3dpt_ctx_clear + rects (D3DRECT) */
+    D3DPT_OP_DP2 = 103,                 /* body: d3dpt_dp2 (sync) + command bytes (8-aligned) + vertex bytes: a DrawPrimitives2 call */
+    D3DPT_OP_READBACK = 104,            /* body: d3dpt_sync (handle = surface; sync): copy the host render target into its VRAM */
     D3DPT_OP_MAX
 };
 
@@ -258,5 +275,45 @@ typedef struct d3dpt_stretch_rect {
     uint32_t src, dst, filter, has_rects;
     int32_t  src_rect[4], dst_rect[4];
 } d3dpt_stretch_rect;
+
+/* --- M7c: the display driver's records --- */
+
+/* a DirectDraw surface dxg placed in the VRAM heap: handle = the runtime's
+ * dwSurfaceHandle (unique per process), offset relative to the start of
+ * VRAM, format = D3DFORMAT (the driver translates the DDPIXELFORMAT),
+ * caps = D3DPT_VS_*; levels = mip levels for textures (each level follows
+ * the previous one in VRAM at its own pitch, DirectDraw layout) */
+typedef struct d3dpt_vram_surface {
+    uint32_t handle, offset;
+    uint32_t width, height, pitch, format;
+    uint32_t caps, levels;
+} d3dpt_vram_surface;
+#define D3DPT_VS_TEXTURE        0x1u
+#define D3DPT_VS_RENDER_TARGET  0x2u
+#define D3DPT_VS_ZBUFFER        0x4u
+#define D3DPT_VS_PRIMARY        0x8u     /* part of the primary flip chain */
+
+typedef struct d3dpt_ctx_create {
+    uint32_t handle, ret_off;       /* the context handle the guest chose; ret: d3dpt_ret */
+    uint32_t rt, z;                 /* VRAM surface handles (z may be 0) */
+} d3dpt_ctx_create;
+
+typedef struct d3dpt_ctx_clear {
+    uint32_t ctx, flags;            /* D3DCLEAR_* */
+    uint32_t color, count;          /* count D3DRECTs follow (0 = whole target) */
+    float    z;
+    uint32_t stencil;
+} d3dpt_ctx_clear;
+
+/* one D3dDrawPrimitives2 call: the DP2 token stream (D3DHAL_DP2COMMAND
+ * records, command_bytes) followed at an 8-byte boundary by the vertex
+ * buffer (vertex_bytes of fvf vertices, vertex_stride each). The host
+ * interprets the tokens on the context's render target; ret: d3dpt_ret
+ * whose bytes field is the DP2 error offset when hr fails */
+typedef struct d3dpt_dp2 {
+    uint32_t ctx, ret_off;
+    uint32_t flags, fvf;            /* D3DHALDP2_* flags, dwVertexType */
+    uint32_t vertex_stride, command_bytes, vertex_bytes, pad;
+} d3dpt_dp2;
 
 #endif /* D3DPT_PROTO_H */

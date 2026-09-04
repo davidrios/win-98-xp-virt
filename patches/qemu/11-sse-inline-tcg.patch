@@ -153,12 +153,10 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  void tcg_gen_stl_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset, TCGType t);
 --- a/tcg/tcg-op.c
 +++ b/tcg/tcg-op.c
-@@ -3117,8 +3117,74 @@
- {
-     tcg_debug_assert(tcg_f64_supported());
+@@ -3119,6 +3119,72 @@
      tcg_gen_op2_i64(INDEX_op_cvt_f32_f64, ret, a);
-+}
-+
+ }
+ 
 +void tcg_gen_add_f32(TCGv_i32 ret, TCGv_i32 a, TCGv_i32 b)
 +{
 +    tcg_debug_assert(tcg_f64_supported());
@@ -211,8 +209,8 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +{
 +    tcg_debug_assert(tcg_f64_supported());
 +    tcg_gen_op2_i32(INDEX_op_cvtt_f32_i32, ret, a);
- }
- 
++}
++
 +void tcg_gen_cvt_f64_i32(TCGv_i32 ret, TCGv_i64 a)
 +{
 +    tcg_debug_assert(tcg_f64_supported());
@@ -375,11 +373,10 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  C_O1_I1(w, wr)
 --- a/tcg/aarch64/tcg-target.c.inc
 +++ b/tcg/aarch64/tcg-target.c.inc
-@@ -533,6 +533,26 @@
-     I3F_FSQRTD      = 0x1e61c000,
+@@ -534,6 +534,26 @@
      I3F_FCVTSD      = 0x1e624000,   /* Sd = Dn */
      I3F_FCVTDS      = 0x1e22c000,   /* Dd = Sn */
-+
+ 
 +    /* Scalar binary32 FP and int32 conversions (sse-fast.c.inc). */
 +    I3F_FADDS       = 0x1e202800,
 +    I3F_FSUBS       = 0x1e203800,
@@ -399,29 +396,28 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +    I3FV_FMUL       = 0x2e20dc00,
 +    I3FV_FDIV       = 0x2e20fc00,
 +    I3FV_FSQRT      = 0x2ea1f800,
- 
++
      /* Logical shifted register instructions (without a shift).  */
      I3510_AND       = 0x0a000000,
-@@ -820,6 +840,13 @@
-                         TCGReg rd, TCGReg rn, TCGReg rm)
- {
+     I3510_BIC       = 0x0a200000,
+@@ -822,6 +842,13 @@
      tcg_out32(s, insn | (rm & 0x1f) << 16 | (rn & 0x1f) << 5 | (rd & 0x1f));
-+}
-+
+ }
+ 
 +static void tcg_out_fpv(TCGContext *s, AArch64Insn insn, bool q,
 +                        unsigned vece, TCGReg rd, TCGReg rn, TCGReg rm)
 +{
 +    tcg_out32(s, insn | q << 30 | (vece == MO_64) << 22 | (rm & 0x1f) << 16
 +              | (rn & 0x1f) << 5 | (rd & 0x1f));
- }
- 
- static void tcg_out_fp4(TCGContext *s, AArch64Insn insn,
-@@ -2546,7 +2573,41 @@
-         break;
-     case INDEX_op_cvt_f32_f64:
-         tcg_out32(s, I3F_FCVTDS | (a1 & 0x1f) << 5 | (a0 & 0x1f));
-+        break;
++}
 +
+ static void tcg_out_fp4(TCGContext *s, AArch64Insn insn,
+                         TCGReg rd, TCGReg rn, TCGReg rm, TCGReg ra)
+ {
+@@ -2548,6 +2575,40 @@
+         tcg_out32(s, I3F_FCVTDS | (a1 & 0x1f) << 5 | (a0 & 0x1f));
+         break;
+ 
 +    case INDEX_op_add_f32:
 +        tcg_out_fp3(s, I3F_FADDS, a0, a1, a2);
 +        break;
@@ -448,16 +444,17 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +        break;
 +    case INDEX_op_cvtt_f32_i32:
 +        tcg_out32(s, I3F_FCVTZSS | (a1 & 0x1f) << 5 | (a0 & 0x1f));
-         break;
++        break;
 +    case INDEX_op_cvt_f64_i32:
 +        tcg_out32(s, I3F_FCVTNSD | (a1 & 0x1f) << 5 | (a0 & 0x1f));
 +        break;
 +    case INDEX_op_cvtt_f64_i32:
 +        tcg_out32(s, I3F_FCVTZSD | (a1 & 0x1f) << 5 | (a0 & 0x1f));
 +        break;
- 
++
      case INDEX_op_mb:
          tcg_out_mb(s, a0);
+         break;
 @@ -2631,6 +2692,21 @@
      case INDEX_op_dupm_vec:
          tcg_out_dupm_vec(s, type, vece, a0, a1, a2);
@@ -494,12 +491,12 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  
      default:
          return 0;
-@@ -3033,7 +3116,28 @@
+@@ -3033,6 +3116,27 @@
      case INDEX_op_sqrt_f64:
      case INDEX_op_cvt_f64_f32:
      case INDEX_op_cvt_f32_f64:
 +    case INDEX_op_sqrt_f32:
-         return C_O1_I1(w, w);
++        return C_O1_I1(w, w);
 +    case INDEX_op_add_f32:
 +    case INDEX_op_sub_f32:
 +    case INDEX_op_mul_f32:
@@ -519,10 +516,9 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +    case INDEX_op_fdiv_vec:
 +        return C_O1_I2(w, w, w);
 +    case INDEX_op_fsqrt_vec:
-+        return C_O1_I1(w, w);
+         return C_O1_I1(w, w);
  
      case INDEX_op_ld8u_i32:
-     case INDEX_op_ld8s_i32:
 --- a/tcg/i386/tcg-target.h
 +++ b/tcg/i386/tcg-target.h
 @@ -228,6 +228,9 @@
@@ -777,7 +773,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
              u.d = env->fpregs[i].d;
 --- a/target/i386/tcg/fpu_helper.c
 +++ b/target/i386/tcg/fpu_helper.c
-@@ -3482,6 +3482,11 @@
+@@ -3480,6 +3480,11 @@
  
      /* set flush to zero */
      set_flush_to_zero((mxcsr & SSE_FZ) ? 1 : 0, &env->sse_status);
@@ -803,7 +799,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  } X87SlowBlock;
  #define X87S_MAX_SLOW 96
  #define X87S_MAX_TMPS 96
-@@ -165,6 +170,11 @@
+@@ -164,6 +169,11 @@
      TCGv x87_fdp_addr;          /* last x87 memory operand (FDP), or NULL */
      int x87_fdp_seg;
  
@@ -815,7 +811,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      /* TCG local temps */
      TCGv cc_srcT;
      TCGv A0;
-@@ -299,6 +309,7 @@
+@@ -298,6 +308,7 @@
  static void x87s_boundary(DisasContext *s);
  static void x87s_emit_slow_blocks(DisasContext *s);
  static void gen_x87_fip_fdp(DisasContext *s);
@@ -823,11 +819,10 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  static void gen_jmp_rel_csize(DisasContext *s, int diff, int tb_num);
  static void gen_exception_gpf(DisasContext *s);
  
-@@ -2383,9 +2394,28 @@
-     tcg_gen_ld_i128(t, tcg_env, offset + offsetof(YMMReg, YMM_X(1)));
+@@ -2459,8 +2470,27 @@
      tcg_gen_qemu_st_i128(t, s->tmp0, mem_index, mop);
  }
-+
+ 
 +/* sse-fast.c.inc, used by emit.c.inc */
 +static bool sses_arith(DisasContext *s, X86DecodedInsn *decode, int op,
 +                       void *pd, void *ps, void *sd, void *ss);
@@ -845,14 +840,14 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +    SSES_ADD, SSES_SUB, SSES_MUL, SSES_DIV, SSES_MIN, SSES_MAX,
 +    SSES_SQRT, SSES_RCP, SSES_RSQRT, SSES_CMP,
 +};
- 
++
  #include "emit.c.inc"
  #include "x87-shadow.c.inc"
 +#include "sse-fast.c.inc"
  
  static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
  {
-@@ -3762,6 +3792,10 @@
+@@ -3837,6 +3867,10 @@
      dc->x87s_ntmps = 0;
      x87s_reset(dc);
      dc->x87_fdp_addr = NULL;
@@ -865,7 +860,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      dc->cpuid_features = env->features[FEAT_1_EDX];
 --- a/target/i386/tcg/decode-new.c.inc
 +++ b/target/i386/tcg/decode-new.c.inc
-@@ -2876,6 +2876,7 @@
+@@ -2885,6 +2885,7 @@
          assert(!!decode.cc_src == !!(cc_live & USES_CC_SRC));
          assert(!!decode.cc_src2 == !!(cc_live & USES_CC_SRC2));
      }
@@ -967,7 +962,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  
  /*
   * 66 = v*pd Vpd, Hpd, Wpd
-@@ -2013,8 +2033,8 @@
+@@ -2009,8 +2029,8 @@
      } else {
          x87s_boundary(s);
          gen_helper_fxrstor(tcg_env, s->A0);
@@ -978,7 +973,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
          }
      }
  }
-@@ -2360,6 +2380,7 @@
+@@ -2355,6 +2375,7 @@
  {
      tcg_gen_trunc_tl_i32(s->tmp2_i32, s->T0);
      gen_helper_ldmxcsr(tcg_env, s->tmp2_i32);
@@ -986,7 +981,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  }
  
  static void gen_lxx_seg(DisasContext *s, X86DecodedInsn *decode, int seg)
-@@ -4229,6 +4250,9 @@
+@@ -4210,6 +4231,9 @@
          s->prefix & PREFIX_REPNZ ? 3 /* sd */ :
          !!(s->prefix & PREFIX_DATA) /* pd */ + (s->vex_l << 2);
  
@@ -996,7 +991,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      gen_helper_cmp_funcs[index][b](tcg_env, OP_PTR0, OP_PTR1, OP_PTR2);
  }
  
-@@ -4236,6 +4260,9 @@
+@@ -4217,6 +4241,9 @@
  {
      SSEFunc_0_epp fn;
      fn = s->prefix & PREFIX_DATA ? gen_helper_comisd : gen_helper_comiss;
@@ -1006,7 +1001,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      fn(tcg_env, OP_PTR1, OP_PTR2);
      assume_cc_op(s, CC_OP_EFLAGS);
  }
-@@ -4274,11 +4301,18 @@
+@@ -4255,11 +4282,18 @@
  
  static void gen_VCVTSD2SS(DisasContext *s, X86DecodedInsn *decode)
  {
@@ -1025,7 +1020,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      gen_helper_cvtss2sd(tcg_env, OP_PTR0, OP_PTR1, OP_PTR2);
  }
  
-@@ -4305,11 +4339,15 @@
+@@ -4286,11 +4320,15 @@
      in = s->T1;
  #endif
  
@@ -1041,7 +1036,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  }
  
  static inline void gen_VCVTtSx2SI(DisasContext *s, X86DecodedInsn *decode,
-@@ -4333,6 +4371,10 @@
+@@ -4314,6 +4352,10 @@
  #else
      out = s->T0;
  #endif
@@ -1052,7 +1047,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      if (s->prefix & PREFIX_REPNZ) {
          sd2si(out, tcg_env, OP_PTR2);
      } else {
-@@ -4341,6 +4383,7 @@
+@@ -4322,6 +4364,7 @@
  #ifdef TARGET_X86_64
      tcg_gen_extu_i32_tl(s->T0, out);
  #endif
@@ -1060,7 +1055,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  }
  
  #ifndef TARGET_X86_64
-@@ -4623,6 +4666,9 @@
+@@ -4604,6 +4647,9 @@
  {
      SSEFunc_0_epp fn;
      fn = s->prefix & PREFIX_DATA ? gen_helper_ucomisd : gen_helper_ucomiss;
@@ -1070,7 +1065,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      fn(tcg_env, OP_PTR1, OP_PTR2);
      assume_cc_op(s, CC_OP_EFLAGS);
  }
-@@ -4753,8 +4799,8 @@
+@@ -4734,8 +4780,8 @@
      tcg_gen_concat_tl_i64(features, cpu_regs[R_EAX], cpu_regs[R_EDX]);
      x87s_boundary(s);
      gen_helper_xrstor(tcg_env, s->A0, features);

@@ -16,6 +16,8 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#define D3DPT_DLL_NAME "d3d8.dll"
+#define D3DPT_IS_D3D8 1
 #include "d3d9.c"
 
 /* ------------------------------------------------------ D3D8-only types */
@@ -109,13 +111,28 @@ struct dev8 {
 /* one wrapper shape for every resource: inner is the d3d9 object (referenced) */
 struct w8 { const void *vt; LONG ref; void *inner; struct dev8 *dev8; };
 
+/* One wrapper per inner object, for as long as the object lives: the same
+ * IDirect3DSurface8 comes back from every GetRenderTarget / GetSurfaceLevel
+ * (identity), and a wrapper the application released stays usable while the
+ * object lives on under its owner (real D3D8 behaviour — Vice City keeps
+ * using its released render-target surface; the freed wrapper was its
+ * "Unhandled exception at address 00000001"). The caller passes a reference
+ * on inner (from a Get* / Create*); a live wrapper already holds one. The
+ * wrapper is freed by res_free together with the object. */
 static void *w8_new(const void *vt, void *inner, struct dev8 *d)
 {
+    struct res_hdr *h = inner;
     struct w8 *w;
     if (!inner) return NULL;
+    if ((w = h->w8) != NULL) {
+        if (InterlockedIncrement(&w->ref) == 1) InterlockedIncrement(&d->ref);    /* revived at ref 0: keeps the caller's reference */
+        else IUnknown_Release((IUnknown *)inner);
+        return w;
+    }
     w = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *w);
     if (!w) { IUnknown_Release((IUnknown *)inner); return NULL; }
     w->vt = vt; w->ref = 1; w->inner = inner; w->dev8 = d;
+    h->w8 = w;
     InterlockedIncrement(&d->ref);
     return w;
 }
@@ -125,9 +142,11 @@ static ULONG w8_release(struct w8 *w)
 {
     LONG r = InterlockedDecrement(&w->ref);
     if (r == 0) {
+        /* drop our references; the wrapper itself stays as the object's identity
+         * (freed with the object by res_free — possibly right here) */
+        struct dev8 *d = w->dev8;
         IUnknown_Release((IUnknown *)w->inner);
-        dev8_Release((IDirect3DDevice8 *)w->dev8);
-        HeapFree(GetProcessHeap(), 0, w);
+        dev8_Release((IDirect3DDevice8 *)d);
     }
     return r;
 }
@@ -401,6 +420,9 @@ HRESULT WINAPI dev8_ResourceManagerDiscardBytes(IDirect3DDevice8 *This, DWORD b)
 HRESULT WINAPI dev8_GetDirect3D(IDirect3DDevice8 *This, IDirect3D8 **pp) { if (!pp) return D3DERR_INVALIDCALL; *pp = (IDirect3D8 *)D8(This)->d8; InterlockedIncrement(&D8(This)->d8->ref); return D3D_OK; }
 HRESULT WINAPI dev8_GetDeviceCaps(IDirect3DDevice8 *This, D3DCAPS8 *c) { return d8_GetDeviceCaps((IDirect3D8 *)D8(This)->d8, 0, D3DDEVTYPE_HAL, c); }
 HRESULT WINAPI dev8_GetDisplayMode(IDirect3DDevice8 *This, D3DDISPLAYMODE *m) { return dev_GetDisplayMode(DEV9(This), 0, m); }
+HRESULT WINAPI dev8_GetRasterStatus(IDirect3DDevice8 *This, D3DRASTER_STATUS *rs) { return dev_GetRasterStatus(DEV9(This), 0, rs); }
+void WINAPI dev8_SetGammaRamp(IDirect3DDevice8 *This, DWORD flags, const D3DGAMMARAMP *ramp) { dev_SetGammaRamp(DEV9(This), 0, flags, ramp); }
+void WINAPI dev8_GetGammaRamp(IDirect3DDevice8 *This, D3DGAMMARAMP *ramp) { dev_GetGammaRamp(DEV9(This), 0, ramp); }
 HRESULT WINAPI dev8_GetCreationParameters(IDirect3DDevice8 *This, D3DDEVICE_CREATION_PARAMETERS *p) { return dev_GetCreationParameters(DEV9(This), p); }
 HRESULT WINAPI dev8_SetCursorProperties(IDirect3DDevice8 *This, UINT x, UINT y, IDirect3DSurface8 *s) { return D3D_OK; }
 void WINAPI dev8_SetCursorPosition(IDirect3DDevice8 *This, UINT x, UINT y, DWORD f) { dev_SetCursorPosition(DEV9(This), (int)x, (int)y, f); }
@@ -909,7 +931,9 @@ HRESULT WINAPI dev8_GetPixelShaderFunction(IDirect3DDevice8 *This, DWORD h, void
 __declspec(dllexport) IDirect3D8 *WINAPI Direct3DCreate8(UINT SDKVersion)
 {
     struct d3d8 *d;
-    IDirect3D9 *d9 = Direct3DCreate9(D3D_SDK_VERSION);
+    IDirect3D9 *d9;
+    if (!attached && sys_create) { d3dpt_log("d3d8: Direct3DCreate8(sdk %u) forwarded to the system d3d8", SDKVersion); return ((IDirect3D8 *(WINAPI *)(UINT))sys_create)(SDKVersion); }
+    d9 = Direct3DCreate9(D3D_SDK_VERSION);
     if (!d9) return NULL;
     d = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *d);
     if (!d) { IDirect3D9_Release(d9); return NULL; }

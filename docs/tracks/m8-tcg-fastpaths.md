@@ -2,7 +2,7 @@
 
 The handoff for a session that works on how fast the emulated CPU runs
 floating-point code: the x87 shadow-double translator (patch 06, doc 13),
-the SSE inline path (patch 07, doc 16), the TCG float opcodes they added
+the SSE inline path (patch 11, doc 16), the TCG float opcodes they added
 to both backends, and their tests and benchmarks. Read `docs/00-status.md`
 first for the global picture and the track rules, then this file, then
 docs 13 and 16. Branch: `track/m8-tcg-fp`.
@@ -30,13 +30,18 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   `scripts/test.sh`, `guest-tools/build-wrappers.sh`, `CLAUDE.md`,
   `docs/00-status.md` outside the M8 row. The QEMU tree files above are
   also touched by patch 40 (M4) only in `hw/`, so the queues do not
-  overlap today; keep it that way (new CPU work goes into 05–09).
+  overlap today; keep it that way. Numbering: 05–09 are the x87 patches
+  and the upstream i386 backports (07–09 came in from `main` on
+  2026-09-04 with the M8 merge), 10 is the embed API (meson + `embed/`,
+  disjoint files), 11–19 continue the CPU work — the SSE and SIMD patches
+  were 07/08 on the track branch until that merge; older commit messages
+  and the Air's notes still say so.
 
 ## State (2026-09-04)
 
 - **Patches 05 + 06 (x87):** merged on `main`. XP Super PI 1M on the Air
   1:57 vs the rig's 2:02; PC=53 and PC=24 inline; both x87 tests pass.
-- **Patch 07 (SSE) and 08 (MMX/integer + permutes, `simd-fast`,
+- **Patch 11 (SSE) and 12 (MMX/integer + permutes, `simd-fast`,
   `tbl_vec`):** on this branch, aarch64-authored. `sse-guest-test.py`
   546,425 lines identical `*-fast=on/off` on both the Air and this
   x86-64 box; `x87-guest-test.py` still passes with both on. Register-
@@ -100,9 +105,9 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
      isolated `SSEBENCHC` kernel (mirrors `ssebench.c`'s `k_clamp`)
      added to the same tool: **6.5×** on its own.
 
-  Patches 07 and 08 were regenerated four times total across these
+  Patches 11 and 12 were regenerated four times total across these
   fixes (recipe below); the last time both had to move together since
-  08's context sits right where 07's clamp+cmp fix now inserts code.
+  12's context sits right where 11's clamp+cmp fix now inserts code.
   **aarch64 validated 2026-09-04 (the Air, macOS 26.6.2)** after the
   four fixes: the queue applies and builds clean, `sse-guest-test.py`
   546,425 and `x87-guest-test.py` 382,251 lines identical on/off, so
@@ -114,6 +119,17 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   cheap enough there that the x86-64 native-op win is specifically a
   clamp+cmp-vs-P4 story, not an aarch64 problem). Both guest checks
   PASS in `scripts/test.sh all`.
+- **Merged to `main` 2026-09-04.** `main` had meanwhile grown three
+  upstream backports in the 07–09 slots (x87 helper fixes, i386 decoder
+  fixes, the 10.0 rep-string series) touching the same translator files,
+  so the SSE and SIMD patches were re-sequenced after them as
+  `11-sse-inline-tcg` / `12-simd-inline-tcg` (upstream fixes first, ours
+  on top), regenerated with the recipe below (both applied over the
+  backports with offsets only, no rejects, no source edits), forward-
+  applied twice from pristine and byte-compared, `scripts/test.sh all`
+  green on x86-64. Numbers, docs and tools say 11/12 from here on; the
+  Air still needs one build + `scripts/test.sh all` on the merged `main`
+  to confirm the aarch64 side over the re-sequenced queue.
 - **XP-guest `SSEBENCH.EXE` on the x86-64 box, 2026-09-04** (Ryzen 7
   5700X, `-iter 20`, best of two passes; rows in
   `reference/benchmarks/README.md`): clamp+cmp **3.68 ns/op = 43 % of
@@ -121,7 +137,7 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   register-only kernel's 6.5×). The XP loop is not register-only: per
   iteration it does an aligned 16-byte load and store (two softmmu TLB
   lookups) and a `movmskps`, which is still QEMU's stock helper call
-  (`gen_MOVMSK` → `helper_movmskps_xmm`; patches 07/08 never touched it),
+  (`gen_MOVMSK` → `helper_movmskps_xmm`; patches 11/08 never touched it),
   so the native min/max/cmp are no longer where that loop's time goes.
   Everything else vs the rig on this box: normalize 89 %, scalar chain
   116 %, convert 130 %, MMX blend 122 %, C normalize 99 %, packed xform
@@ -157,10 +173,10 @@ regenerate the patch with `diff -u` against the copies with `--- a/` /
 `prepare-qemu.sh` twice and compare the tree with the copies byte for
 byte. The 2026-09-04 session did exactly this four times (three
 single-patch, one compound — next paragraph). If the patch being
-edited isn't the last one touching a given shared file (07 isn't: 08
+edited isn't the last one touching a given shared file (11 isn't: 12
 edits the same handful of TCG files afterward), pull out every later
 patch that shares a touched file too, or the later patch's own apply
-breaks on the shifted context — it did for 08 when 07's clamp+cmp fix
+breaks on the shifted context — it did for 12 when 11's clamp+cmp fix
 landed, `git apply` gave no partial credit for hunks whose context
 didn't move. Recovery is the same two-step diff, just also done for
 the bumped patch: save its *payload* (the files it produces) before
@@ -168,8 +184,8 @@ removing it, restore the edited patch first and reapply the payload by
 hand at the new position, then diff that hand-merged result against
 the edited-patch-only tree to get the bumped patch's regenerated
 hunks. Not needed when the edited patch is the queue's last toucher of
-every file it owns (true for 08 itself, and for 07 on its first three
-edits this session, before clamp+cmp added content 08 also touches).
+every file it owns (true for 12 itself, and for 11 on its first three
+edits this session, before clamp+cmp added content 12 also touches).
 
 Slow-path counters: `info registers` (QMP `human-monitor-command`) prints
 `SSE-fast slow paths: guard= handover= helper= cvt/comis=`; a workload
@@ -185,7 +201,8 @@ benchmark's convert kernel was fixed to stay in range).
    green. ~~XP-guest `SSEBENCH.EXE` clamp+cmp on an x86-64 host~~ done
    the same day (State above): 43 % of the rig, up from the Air's 34 %,
    the rest of that loop being its load/store and the `movmskps` helper.
-   **The branch is ready to merge to `main`.** Cheap follow-ups if
+   ~~The branch is ready to merge to `main`~~ merged 2026-09-04 (State
+   above; patches now 11/12). Cheap follow-ups if
    clamp+cmp is ever revisited: inline `movmskps`/`movmskpd` (a
    `cmp_vec`-free sign-bit gather, both hosts), then the per-operand TLB
    cost, which is item 3's memory-operand story. The x87
@@ -193,7 +210,7 @@ benchmark's convert kernel was fixed to stay in range).
    shadow translator, a bigger redesign; note it, do not start it here.
 2. **A real workload number.** A Direct3D title in XP (the M4 track's
    item) with and without both `*-fast=off`: the first end-to-end number
-   for patches 06 + 07 together.
+   for patches 06 + 11 together.
 3. Cheaper packed checks: hoist the vector constants (two instructions
    each per packed op on aarch64); a vector-to-scalar move opcode would
    remove the `env->sses_scratch` round trip and let scalar ops use the

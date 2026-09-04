@@ -383,7 +383,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      DEFINE_PROP_UINT32("phys-bits", X86CPU, phys_bits, 0),
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
-@@ -174,6 +174,7 @@
+@@ -173,6 +173,7 @@
      bool sses_on;               /* TB translated with TB_FLAG_SSE_FAST */
      bool sses_guarded;          /* runtime guard emitted */
      bool sses_pending;          /* hand-over check due at the end of the insn */
@@ -391,7 +391,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  
      /* TCG local temps */
      TCGv cc_srcT;
-@@ -2408,6 +2409,23 @@
+@@ -2483,6 +2484,23 @@
  static void sses_helper_done(DisasContext *s);
  static void sses_emit_pending(DisasContext *s);
  static void sses_end_tb(DisasContext *s);
@@ -415,7 +415,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  enum {
      SSES_ADD, SSES_SUB, SSES_MUL, SSES_DIV, SSES_MIN, SSES_MAX,
      SSES_SQRT, SSES_RCP, SSES_RSQRT, SSES_CMP,
-@@ -2416,6 +2434,7 @@
+@@ -2491,6 +2509,7 @@
  #include "emit.c.inc"
  #include "x87-shadow.c.inc"
  #include "sse-fast.c.inc"
@@ -423,7 +423,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  
  static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
  {
-@@ -3796,6 +3815,7 @@
+@@ -3871,6 +3890,7 @@
          && !(flags & (HF_TF_MASK | HF_INHIBIT_IRQ_MASK));
      dc->sses_guarded = false;
      dc->sses_pending = false;
@@ -487,6 +487,12 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 -BINARY_INT_MMX(PUNPCKHWD,  punpckhwd)
 -BINARY_INT_MMX(PUNPCKHDQ,  punpckhdq)
 -BINARY_INT_MMX(PACKSSDW,   packssdw)
+-
+-BINARY_INT_MMX(PAVGB,   pavgb)
+-BINARY_INT_MMX(PAVGW,   pavgw)
+-BINARY_INT_MMX(PMADDWD, pmaddwd)
+-BINARY_INT_MMX(PMULHUW, pmulhuw)
+-BINARY_INT_MMX(PMULHW,  pmulhw)
 +BINARY_INT_MMX_FAST(PUNPCKLBW,  punpcklbw, SIMD_PUNPCKLBW)
 +BINARY_INT_MMX_FAST(PUNPCKLWD,  punpcklwd, SIMD_PUNPCKLWD)
 +BINARY_INT_MMX_FAST(PUNPCKLDQ,  punpckldq, SIMD_PUNPCKLDQ)
@@ -496,12 +502,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 +BINARY_INT_MMX_FAST(PUNPCKHWD,  punpckhwd, SIMD_PUNPCKHWD)
 +BINARY_INT_MMX_FAST(PUNPCKHDQ,  punpckhdq, SIMD_PUNPCKHDQ)
 +BINARY_INT_MMX_FAST(PACKSSDW,   packssdw, SIMD_PACKSSDW)
- 
--BINARY_INT_MMX(PAVGB,   pavgb)
--BINARY_INT_MMX(PAVGW,   pavgw)
--BINARY_INT_MMX(PMADDWD, pmaddwd)
--BINARY_INT_MMX(PMULHUW, pmulhuw)
--BINARY_INT_MMX(PMULHW,  pmulhw)
++
 +BINARY_INT_MMX_FAST(PAVGB,   pavgb, SIMD_PAVGB)
 +BINARY_INT_MMX_FAST(PAVGW,   pavgw, SIMD_PAVGW)
 +BINARY_INT_MMX_FAST(PMADDWD, pmaddwd, SIMD_PMADDWD)
@@ -553,7 +554,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  BINARY_INT_SSE(VPACKUSDW,  packusdw)
  BINARY_INT_SSE(VPERMILPS,  vpermilps)
  BINARY_INT_SSE(VPERMILPD,  vpermilpd)
-@@ -1915,7 +1936,7 @@
+@@ -1911,7 +1932,7 @@
  static void gen_CVTPI2Px(DisasContext *s, X86DecodedInsn *decode)
  {
      x87s_boundary(s);
@@ -562,7 +563,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      if (s->prefix & PREFIX_DATA) {
          gen_helper_cvtpi2pd(tcg_env, OP_PTR0, OP_PTR2);
      } else {
-@@ -1926,7 +1947,7 @@
+@@ -1922,7 +1943,7 @@
  static void gen_CVTPx2PI(DisasContext *s, X86DecodedInsn *decode)
  {
      x87s_boundary(s);
@@ -571,7 +572,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      if (s->prefix & PREFIX_DATA) {
          gen_helper_cvtpd2pi(tcg_env, OP_PTR0, OP_PTR2);
      } else {
-@@ -1937,7 +1958,7 @@
+@@ -1933,7 +1954,7 @@
  static void gen_CVTTPx2PI(DisasContext *s, X86DecodedInsn *decode)
  {
      x87s_boundary(s);
@@ -580,7 +581,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      if (s->prefix & PREFIX_DATA) {
          gen_helper_cvttpd2pi(tcg_env, OP_PTR0, OP_PTR2);
      } else {
-@@ -2629,7 +2650,7 @@
+@@ -2620,7 +2641,7 @@
  static void gen_MOVq_dq(DisasContext *s, X86DecodedInsn *decode)
  {
      x87s_boundary(s);
@@ -589,7 +590,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      /* Otherwise the same as any other movq.  */
      return gen_MOVQ(s, decode);
  }
-@@ -3110,6 +3131,9 @@
+@@ -3093,6 +3114,9 @@
  static void gen_PSHUFW(DisasContext *s, X86DecodedInsn *decode)
  {
      TCGv_i32 imm = tcg_constant8u_i32(decode->immediate);
@@ -599,7 +600,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      gen_helper_pshufw_mmx(OP_PTR0, OP_PTR1, imm);
  }
  
-@@ -4656,6 +4680,9 @@
+@@ -4637,6 +4661,9 @@
  {
      TCGv_i32 imm = tcg_constant_i32(decode->immediate);
      SSEFunc_0_pppi ps, pd, fn;
@@ -611,7 +612,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      fn = s->prefix & PREFIX_DATA ? pd : ps;
 --- a/target/i386/tcg/decode-new.c.inc
 +++ b/target/i386/tcg/decode-new.c.inc
-@@ -2823,7 +2823,7 @@
+@@ -2832,7 +2832,7 @@
      if (decode.e.special == X86_SPECIAL_MMX &&
          !(s->prefix & (PREFIX_REPZ | PREFIX_REPNZ | PREFIX_DATA))) {
          x87s_boundary(s);
