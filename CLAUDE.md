@@ -45,10 +45,10 @@ backend later.
   a guest program under TCG, a frame diffed against a golden BMP), never a
   function in isolation. Don't write `#[cfg(test)]` modules or per-function
   test cases; when something starts working, add or extend a tool in the
-  table below so it guards against regressions (the existing `#[test]`s in
-  `libdisc/src/msf.rs` predate this policy; don't add more). There is no
-  single runner yet: host-only tools build from the command in their
-  source header, guest tools run from the cheat sheet in `docs/00-status.md`.
+  table below and wire it into `scripts/test.sh` so it guards against
+  regressions (the existing `#[test]`s in `libdisc/src/msf.rs` predate this
+  policy; don't add more). Run `scripts/test.sh all` before every commit
+  that touches QEMU, the embed library, the D3D device or the guest DLLs.
 
 ## Build / run
 
@@ -87,10 +87,15 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 
 ## Testing tools
 
-All integration / e2e (see policy above); none are wired into CI yet.
+All integration / e2e (see policy above). `scripts/test.sh` runs them:
+`host` (default, ~30 s: everything without a guest) or `all` (adds the
+guest stage, ~2 min: XP headless on the D3D device from a snapshot of
+`~/vms/winxp.qcow2`, plus the DOS x87 battery). Not in CI yet (needs the
+images and a GPU).
 
 | Tool | What it proves |
 |---|---|
+| `scripts/test.sh [host\|guest\|all]` | the whole suite below, PASS/FAIL/SKIP per check, outputs in `build/test/`; `TEST_KEEP=1` leaves XP running on failure |
 | `tools/x87-fast-test.c` | patch 05's x87 fast path equals the real x87 (x86-64 host oracle) |
 | `tools/x87-guest-test.py` | DOS program under TCG: results identical with the fast path on/off (needs nasm, mtools, FreeDOS floppy) |
 | `guest-tools/src/d3dfeat9.c` (+ `tools/d3dfeat9-native.cpp`) | the D3D9 feature test (shaders without D3DX, declarations, state blocks, queries, cube maps, surfaces): the XP guest's frame must be byte-identical to the native DXVK build's |

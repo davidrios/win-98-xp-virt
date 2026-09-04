@@ -7,7 +7,7 @@
  * for the integer conversions.
  *
  * Build & run (Linux x86-64):
- *   cc -O2 -std=gnu11 -Iqemu/target/i386/tcg -o build/x87-fast-test \
+ *   cc -O2 -std=gnu11 -Iqemu/target/i386/tcg -o build/x87-fast-test -lm \
  *      tools/x87-fast-test.c && build/x87-fast-test
  */
 #include <stdint.h>
