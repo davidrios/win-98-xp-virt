@@ -29,7 +29,8 @@ for cfg in "${CONFIGS[@]}"; do
   tag="$(echo "$cfg" | tr ',=' '__')"
   FDD="$OUT/fdd-$tag.img"; rm -f "$FDD"
   mformat -C -f 1440 -i "$FDD" ::
-  SOCK="$OUT/qmp-$tag.sock"; rm -f "$SOCK"
+  # a short path: AF_UNIX names cap at ~104 bytes and $OUT can sit deep in a worktree
+  n=$(( ${n:-0} + 1 )); SOCK="/tmp/xpsb-$$-$n.sock"; rm -f "$SOCK"
   LOG="$OUT/qemu-$tag.log"
   "$ROOT/build/qemu/qemu-system-i386" -L "$ROOT/qemu/pc-bios" -machine pc -cpu "$cfg" -m 512 \
     -drive "file=$IMG,if=ide,index=0,snapshot=on" -drive "file=$FDD,if=floppy,format=raw" \
@@ -57,7 +58,7 @@ for cfg in "${CONFIGS[@]}"; do
   echo "   slow paths before: $(cat "$OUT/stat-$tag-before.txt")"; echo "   slow paths after:  $(cat "$OUT/stat-$tag-after.txt")"
   Q json '{"execute":"system_powerdown"}' >/dev/null || true
   for _ in $(seq 40); do kill -0 $QPID 2>/dev/null || break; sleep 2; done
-  kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true
+  kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true; rm -f "$SOCK"
   if mcopy -n -i "$FDD" ::/SSEBENCH.TXT "$OUT/ssebench-$tag.txt" 2>/dev/null; then
     mcopy -n -i "$FDD" ::/SSEBENC2.TXT "$OUT/ssebench-$tag-2.txt" 2>/dev/null || true
     echo "-- $OUT/ssebench-$tag.txt (pass 1; pass 2 in ssebench-$tag-2.txt; best of the two per kernel:)"

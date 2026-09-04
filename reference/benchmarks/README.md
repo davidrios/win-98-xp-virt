@@ -124,6 +124,10 @@ better):
 | M1 Air, XP, `sse-fast=off` (06 + 08's predecessor) | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | | 2026-09-04 |
 | M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | | 2026-09-04 |
 | Air (defaults) ÷ rig | **61 %** | **97 %** | **105 %** | **34 %** | **109 %** | **18 %** | **87 %** | 19× | **107 %** | |
+| x86-64 box (Ryzen 7 5700X, Arch), XP, defaults (06 + 07 + 08, native `fmin`/`fmax`/`fcmp`/`mulsh`/`*narrow` ops) | 2.6 | 2.2 | 3.5 | **3.7** | 1.9 | 4.5 | 4.1 | 63 | 0.36 | 2026-09-04 |
+| x86-64 box, XP, `sse-fast=off` (06 + 08) | 10.5 | 9.9 | 5.1 | 11.3 | 6.3 | 4.4 | 4.1 | 51 | 0.36 | 2026-09-04 |
+| x86-64 box, XP, `sse-fast=off,x87-fast=off` (08 only) | 10.4 | 9.8 | 5.1 | 11.1 | 6.4 | 27.9 | 31.1 | 49 | 0.36 | 2026-09-04 |
+| x86-64 box (defaults) ÷ rig | 49 % | 89 % | 116 % | **43 %** | 130 % | 16 % | 99 % | 25× | 122 % | |
 
 The rig row (2026-09-04, `reference/benchmarks/rig-2026-09-04/ssebench.log`,
 three runs with the same mean, SSE score 2.28 ns per op vs the Air's
@@ -140,6 +144,22 @@ its `fsqrt`/`fdiv` is at 87 %, and Super PI is at parity, so it is the
 cheap-op throughput, not the expensive ops). The P4's denormal penalty is
 its own legend: 1552 ns per op on real hardware, 19× slower than the
 emulated slow path.
+
+The x86-64 rows (2026-09-04, this time with the native x86-64 opcodes of
+the M8 track's second session): clamp+cmp lands at **43 % of the rig**,
+up from the Air's 34 %, and 3.1× over its own helper path — well short of
+the register-only `SSEBENCHC` kernel's 6.5× on the same box, because the
+XP loop is not register-only. Per iteration it does an aligned 16-byte
+load and store (two softmmu TLB lookups) and a `movmskps`, which patches
+07 and 08 never touched: it is still QEMU's stock `helper_movmskps_xmm`
+call, one per iteration. So the native `minps`/`maxps`/`cmpps` are no
+longer where that loop's time goes, and the remaining gap to the P4 is a
+memory-operand and `movmskps` story. The scalar chain, the conversions,
+the MMX blend and the x87 normalize are all above the rig on this box;
+the packed transform (49 %) and the x87 C transform (16 %) are the same
+two outliers as on the Air. Every `check` is identical to the rig's.
+The `sse-fast=off` rows leave patch 08 on (`simd-fast` is its own
+switch), hence the MMX blend at 0.36 throughout.
 
 Patch 08 (MMX / SSE integer and permutes inline, `tbl_vec`): the MMX
 blend kernel 0.80 → 0.41 (2.0×), the packed transform's four `shufps`

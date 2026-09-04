@@ -113,10 +113,22 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   clamp+cmp 8.7× on the key-transform path (the isolated kernel is
   cheap enough there that the x86-64 native-op win is specifically a
   clamp+cmp-vs-P4 story, not an aarch64 problem). Both guest checks
-  PASS in `scripts/test.sh all`. **Still open:** an XP-guest
-  `SSEBENCH.EXE` clamp+cmp number on an x86-64 host to compare directly
-  against the rig's original 34 % (no guest-tools ISO built in that
-  worktree yet).
+  PASS in `scripts/test.sh all`.
+- **XP-guest `SSEBENCH.EXE` on the x86-64 box, 2026-09-04** (Ryzen 7
+  5700X, `-iter 20`, best of two passes; rows in
+  `reference/benchmarks/README.md`): clamp+cmp **3.68 ns/op = 43 % of
+  the rig** (Air 34 %; helper path on this box 11.33, so 3.1× — vs the
+  register-only kernel's 6.5×). The XP loop is not register-only: per
+  iteration it does an aligned 16-byte load and store (two softmmu TLB
+  lookups) and a `movmskps`, which is still QEMU's stock helper call
+  (`gen_MOVMSK` → `helper_movmskps_xmm`; patches 07/08 never touched it),
+  so the native min/max/cmp are no longer where that loop's time goes.
+  Everything else vs the rig on this box: normalize 89 %, scalar chain
+  116 %, convert 130 %, MMX blend 122 %, C normalize 99 %, packed xform
+  49 %, C xform 16 % (the shadow translator's cheap-op throughput, as on
+  the Air). Every `check` identical to the rig's. Side fix: the script's
+  QMP socket now lives in `/tmp` (the worktree path plus the config tag
+  blew the AF_UNIX name limit on the third config).
 
 ## Build / test loop
 
@@ -170,11 +182,13 @@ benchmark's convert kernel was fixed to stay in range).
 1. ~~**x86-64 host run + clamp+cmp.**~~ Done 2026-09-04 — see State
    above for the four fixes and ratios. ~~aarch64 validation~~ done the
    same day on the Air (State above): both batteries identical, suite
-   green. Still open: an XP-guest `SSEBENCH.EXE` clamp+cmp number on an
-   x86-64 host, directly comparable to the rig's original 34 % (needs
-   `guest-tools/build-wrappers.sh` + `tools/xp-ssebench.sh
-   ~/vms/winxp.qcow2` there — no ISO built in that worktree yet). With
-   that number in hand the branch is ready to merge to `main`. The x87
+   green. ~~XP-guest `SSEBENCH.EXE` clamp+cmp on an x86-64 host~~ done
+   the same day (State above): 43 % of the rig, up from the Air's 34 %,
+   the rest of that loop being its load/store and the `movmskps` helper.
+   **The branch is ready to merge to `main`.** Cheap follow-ups if
+   clamp+cmp is ever revisited: inline `movmskps`/`movmskpd` (a
+   `cmp_vec`-free sign-bit gather, both hosts), then the per-operand TLB
+   cost, which is item 3's memory-operand story. The x87
    C transform (18 % on the Air) is the cheap-op throughput of the
    shadow translator, a bigger redesign; note it, do not start it here.
 2. **A real workload number.** A Direct3D title in XP (the M4 track's
