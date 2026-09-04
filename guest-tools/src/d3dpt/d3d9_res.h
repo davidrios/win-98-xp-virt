@@ -19,6 +19,8 @@ struct res_hdr {
     struct device *dev;
     uint32_t handle;        /* host handle, 0 = guest-only object */
     DWORD priority;
+    void *w8;               /* the d3d8.dll wrapper of this object (one per object: identity across
+                               Get* calls, kept while the object lives), see w8_new in d3d8.c */
 };
 
 struct vbuf {
@@ -127,8 +129,25 @@ static void res_free(struct res_hdr *r)
 {
     struct device *dev = r->dev;
     int owned = r->vt == &surf_vtbl && (((struct surface *)r)->kind == SURF_BACKBUFFER || ((struct surface *)r)->kind == SURF_AUTODEPTH);
+    if (r->w8) HeapFree(GetProcessHeap(), 0, r->w8);    /* its d3d8 wrapper (ref 0 by now) goes with it */
     HeapFree(GetProcessHeap(), 0, r);
     if (!owned) IDirect3DDevice9_Release((IDirect3DDevice9 *)dev);
+}
+/* Reference model (real D3D's): an object owned by another — the implicit
+ * back buffer / depth surface (device), a texture's level surfaces (texture)
+ * — survives the application's last Release at ref 0 while its owner lives
+ * (Vice City fetches the render target once, releases it and keeps using
+ * the pointer), and is destroyed with the owner. A level surface holds a
+ * reference on its texture only while the application holds it. */
+static void surf_destroy(struct surface *s);
+static ULONG res_addref(struct res_hdr *r)
+{
+    LONG n = InterlockedIncrement(&r->ref);
+    if (n == 1 && r->vt == &surf_vtbl) {
+        struct surface *s = (struct surface *)r;
+        if (s->kind == SURF_TEXLEVEL && s->tex) InterlockedIncrement(&s->tex->h.ref);
+    }
+    return (ULONG)n;
 }
 /* the common methods, generated per interface */
 #define RES_COMMON(pfx, IFACE, IID_, TYPE_)                                                                  \
@@ -136,10 +155,10 @@ HRESULT WINAPI pfx##_QueryInterface(IFACE *This, REFIID riid, void **ppv)       
 {                                                                                                            \
     if (!ppv) return E_POINTER;                                                                              \
     if (IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, &IID_) || IsEqualGUID(riid, &IID_IDirect3DResource9)) { \
-        *ppv = This; InterlockedIncrement(&((struct res_hdr *)This)->ref); return S_OK; }                  \
+        *ppv = This; res_addref((struct res_hdr *)This); return S_OK; }                                     \
     *ppv = NULL; return E_NOINTERFACE;                                                                       \
 }                                                                                                            \
-ULONG WINAPI pfx##_AddRef(IFACE *This) { return InterlockedIncrement(&((struct res_hdr *)This)->ref); }     \
+ULONG WINAPI pfx##_AddRef(IFACE *This) { return res_addref((struct res_hdr *)This); }                       \
 HRESULT WINAPI pfx##_GetDevice(IFACE *This, IDirect3DDevice9 **pp)                                           \
 {                                                                                                            \
     if (!pp) return D3DERR_INVALIDCALL;                                                                      \
@@ -335,7 +354,10 @@ ULONG WINAPI tex_Release(IDirect3DTexture9 *This)
     if (r == 0) {
         UINT i, f;
         host_release(&t->h);
-        for (f = 0; f < (UINT)t->faces; f++) for (i = 0; i < t->levels; i++) HeapFree(GetProcessHeap(), 0, t->lv[f][i].mem);
+        for (f = 0; f < (UINT)t->faces; f++) for (i = 0; i < t->levels; i++) {
+            if (t->surf[f][i]) surf_destroy(t->surf[f][i]);      /* level surfaces the application released (ref 0) */
+            HeapFree(GetProcessHeap(), 0, t->lv[f][i].mem);
+        }
         res_free(&t->h);
     }
     return r;
@@ -445,18 +467,23 @@ static HRESULT surface_get_host(struct surface *s, uint32_t texture, UINT level)
     if (FAILED(hr)) d3dpt_log("d3dpt: GetSurface(texture %u, level %u) -> 0x%08lx", texture, level, (unsigned long)hr);
     return hr;
 }
+static void surf_destroy(struct surface *s)
+{
+    host_release(&s->h);
+    HeapFree(GetProcessHeap(), 0, s->mem);
+    res_free(&s->h);
+}
 ULONG WINAPI surf_Release(IDirect3DSurface9 *This)
 {
     struct surface *s = (struct surface *)This;
     LONG r = InterlockedDecrement(&s->h.ref);
     if (r == 0) {
-        host_release(&s->h);
         if (s->kind == SURF_TEXLEVEL && s->tex) {
-            s->tex->surf[s->face][s->level] = NULL;
+            /* owned by the texture: stays (at ref 0, same identity) until the texture goes */
             IUnknown_Release((IUnknown *)s->tex);
+            return 0;
         }
-        HeapFree(GetProcessHeap(), 0, s->mem);
-        res_free(&s->h);
+        surf_destroy(s);
     }
     return r;
 }

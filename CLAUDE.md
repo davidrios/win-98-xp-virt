@@ -123,6 +123,7 @@ GPU); don't propose wiring it in.
 | `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; `scanout offset` lines in the QEMU log are the page flips |
 | `DRIVER\D3D7TEST.EXE` (guest-tools ISO) | Direct3D 7 through our driver's HAL (M7c): device enumeration, Z buffer, texture, the reference scene, fps, `d3d7test.log`/`.bmp` (the BMP must match `d3dpt-dp2-test`'s) |
 | `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|d3d7\|cmd\|bat` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log; `d3d7` also diffs the guest frame against the host test's; `bat` stages a batch file as `E:\RUN.BAT` (the Run dialog truncates long lines), `GAME_ISO=` attaches a game disc as D:, `SHOTS=n` screendumps every 5 s, `SHOT_KEYS="12:esc"` presses keys before given screendumps |
+| `tools/xp-game-test.sh <image> "<game dir>" <exe> [name]` | a game on the M4 Direct3D device, headless: snapshot boot with the discs in `CDS=a.iso:b.iso` on the same IDE slots as under the player, a USB stick carrying `RUN.BAT` and receiving the logs, `FRESH_DLLS=1` (D3DPT DLLs from the ISO next to the EXE), `TRACE=1` (the DLL's call trace), `KEYS=8:ret,25:esc`, `SHOTS=n` (VGA screendumps: launchers, error boxes), `DUMP_EVERY=n` (the executor's frames), `DRW_AFTER=s` (Dr. Watson attached to the game: every thread's stack), `PAGEHEAP=1` (heap overruns fault where they happen), `CPU=pentium3`; `stacks <drwtsn32.log>` prints a report's stacks |
 | `tools/xp-fifa2000.bat` (+ `GAME_ISO=FIFA2000.ISO`) | FIFA 2000 on the M7c HAL: renames the WineD3D DLLs out of the game folder, installs `E:\DINPUT.DLL` if staged, dumps its registry, starts the game; the screendumps show the intro, title and attract-mode match |
 | `DRIVER\DITEST.EXE` (guest-tools ISO) | a game-style DirectInput keyboard (exclusive + foreground, busy loop between polls): what DirectInput buffered data, DirectInput state, GetAsyncKeyState and WM_KEYDOWN each see of the keys; `ditest.log` |
 | `D3DPT\DINPUT.DLL` (guest-tools ISO) | next to a game's EXE: logs its DirectInput use (`dinput_log.txt`: devices, cooperative level, poll rate, every key/button, what Windows sees) and merges `GetAsyncKeyState` into the keyboard state — the FIFA 2000 match keyboard fix (doc 15) |
@@ -161,6 +162,17 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   plain VGA (vga.sys, 800×600×4), and `-vga std` has no XP driver at all.
   Kernel-mode debugging = the device's DEBUG register → QEMU log; never a
   debugger. Miniport headers: `ntdef.h`+`ddk/miniport.h`, **not** `ntddk.h`.
+- **A game that "freezes" on the D3D device is usually showing a message box
+  you cannot see**: the player used to show only 3D frames once a device
+  existed. Since 2026-09-04 it falls back to the VGA surface after 1 s without
+  a presented frame when the guest drew on it; `tools/xp-game-test.sh` with
+  `SHOTS=` and `DRW_AFTER=` shows the box and the stacks headless.
+- **KVM `-cpu host` breaks Max Payne's level loading** ("Corrupt JPEG data"
+  boxes: its CPUID-dispatched JPEG decoder mis-decodes on a modern family);
+  `-cpu pentium3` under KVM loads and plays. Prefer an era CPU model for games.
+- Guest DLLs built with modern mingw-w64: `psapi.h` maps to Windows 7's
+  `K32*` kernel32 exports unless `PSAPI_VERSION 1` is defined; XP's loader
+  then blocks the process in a hard-error dialog before `DllMain` runs.
 - x87 under TCG is helper calls into 80-bit softfloat; patch 05 does the
   53/24-bit common case on the host FPU and patch 06 (doc 13) keeps the
   stack as host doubles inside TCG at PC=53 and PC=24. Test any change

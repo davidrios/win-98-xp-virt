@@ -28,7 +28,7 @@ track rules, then this file, then doc 14.
   VRAM pointer), `d3dpt/hw/d3dpt_mm.c` (the executor loader becomes a
   shared helper), `scripts/test.sh`, `player/`, `CLAUDE.md`.
 
-## State (2026-09-04)
+## State (2026-09-04, night)
 
 P0–P4 closed: the device, both DLLs and the three test programs are
 byte-exact against the native DXVK build on Linux (details and numbers in
@@ -46,13 +46,40 @@ it stays covered). Vice City's silent exit was then explained by the
 user: they had deleted `D3D8.DLL` from the game folder believing VC is a
 D3D9 title — it is D3D8 (all RenderWare GTAs through VC; San Andreas is
 the D3D9 one), so the game ran on XP's stock d3d8 over Cirrus, exactly
-the environment it cannot start in. Still open, both waiting on the
-user's next guest run (fresh ISO DLLs next to both EXEs, player
-restarted so the rebuilt executor is live): does Max Payne 32-bit now
-start (the depth fix is host-side), does it still freeze on level load
-(host log — any stub prints `not implemented` once), and does Vice City
-run with `D3D8.DLL` restored (if not: `d3dpt_ddraw.log` next to the EXE
-now records every DirectDraw call — the last line says where it died).
+the environment it cannot start in. The retest (same evening) gave "Max Payne
+opens in 32-bit, same freeze during load; Vice City freezes the PC
+showing the desktop". Both diagnosed headless the same night (details in
+the M4 row of `docs/00-status.md`): neither was a hang — both games were
+in a **message box behind their fullscreen window** that the player
+could not show. Max Payne's box is a corrupt-JPEG error from its
+CPUID-dispatched decoder under KVM `-cpu host`; with `-cpu pentium3`
+(KVM or TCG) the tutorial level loads and plays on the device. Vice
+City's box was a real bug of ours: the D3D8 wrapper objects had no
+identity and died with the game's last Release, while real D3D8 keeps
+device-/texture-owned objects alive at ref 0 — fixed (`w8_new`,
+`surf_Release`/`res_addref`). Plus: the DLL forwards to the system DLL
+when it cannot open the device (Vice City's process loads both d3d8 and
+d3d9), the player shows the VGA surface again when 3D frames stop and
+the guest draws (dialogs, movies, dead processes), and the diagnostics
+below exist now. `scripts/test.sh all` green (14 checks).
+
+## Diagnosing a game (the loop that found the above)
+
+```sh
+D=/path/to/discs
+CDS="$D/DINO-MAP.iso:$D/FLT-VCB.iso01.iso:guest-tools/out/guest-tools-3dfx-d00e858.iso" \
+  FRESH_DLLS=1 TRACE=1 SHOTS=10 DUMP_EVERY=60 DRW_AFTER=90 CPU=pentium3 \
+  tools/xp-game-test.sh ~/vms/winxp-m7.qcow2 'C:\Arquivos de programas\Max Payne' MaxPayne.exe
+```
+
+Discs go on the same IDE slots as under the player (letters match), the
+stick gets `RUN.BAT` and receives the game folder's logs, Dr. Watson's
+report and minidump. `SHOTS` catches launchers and error boxes on the VGA
+surface, `DUMP_EVERY` the frames the game presents, `KEYS=8:ret,25:esc`
+drives menus, `DRW_AFTER` gives every thread's stack, `PAGEHEAP=1` makes a
+heap overrun fault where it happens, `stacks <drwtsn32.log>` re-reads a
+report. In the player: `D3DPT_DUMP_DIR`/`D3DPT_DUMP_EVERY` for frames,
+`d3dpt_trace.on` next to the EXE for the DLL's call trace.
 
 ## Build / run / test
 
@@ -71,13 +98,19 @@ games yet); `scripts/test.sh` boots a `snapshot=on` view of it.
 
 ## Next steps, in order
 
-1. **A real game on the device.** Max Payne (D3D8) and GTA: Vice City
-   (D3D8) are installed on the user's XP image; copy `D3DPT\D3D8.DLL`
-   (plus `DDRAW.DLL` for Vice City) next to the EXE (never together with
-   WineD3D's), run, read the host log: every unimplemented method prints `not implemented` once
-   (`D3DPT_STUB`). Known stubs a game may hit: volume textures, swap-chain
-   objects, GetFrontBuffer, ProcessVertices, LockRect on DEFAULT-pool
-   surfaces, the lost-device protocol, palettes.
+1. **The games, by hand in the player** (`-cpu pentium3` under KVM, the
+   fresh ISO's `D3DPT\*.DLL` next to both EXEs): Max Payne's tutorial
+   level plays headless — is it playable (input, fps, sound)? Vice City
+   reaches its main menu with the wrapper fix (`build/xp-game-test/vc-fixed/frames`)
+   but the menu background is grey noise: **palettized (P8) textures are
+   stubs** (`SetPaletteEntries` / `SetCurrentTexturePalette`; DXVK's D3D9
+   has no P8 — expand to A8R8G8B8 on upload in the guest DLL, re-upload on
+   palette change), that is the next thing to build. Every unimplemented
+   method still prints `not implemented` once (`D3DPT_STUB`); Max Payne
+   hit `GetFrontBuffer`. Known stubs: volume textures, swap-chain objects,
+   GetFrontBuffer, ProcessVertices, LockRect on DEFAULT-pool surfaces, the
+   lost-device protocol, palettes. Also worth a look: which CPU model to
+   recommend (an era family that keeps the host's speed; `pentium3` works).
 2. **Performance shape when a game asks for it:** zero-copy present (DXVK
    Vulkan interop → dma-buf / IOSurface ring instead of
    GetRenderTargetData), Present pacing against the player's vsync, a

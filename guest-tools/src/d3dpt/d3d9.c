@@ -25,6 +25,8 @@
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
+#define PSAPI_VERSION 1              /* psapi.dll exports, not Windows 7's K32* kernel32 names (XP) */
+#include <psapi.h>
 #include "fxlib.h"
 #include "../../../d3dpt/d3dpt_enc.h"
 
@@ -32,6 +34,15 @@
 static FILE *log_file;
 static int log_enabled = 1;
 static int log_to_host = 1;         /* D3DPT_HOSTLOG=0 turns the host copy off */
+#ifndef D3DPT_DLL_NAME
+#define D3DPT_DLL_NAME "d3d9.dll"
+#endif
+/* no device for this instance (FXPTL.SYS missing, or another d3dpt DLL in the
+ * same process holds it: Vice City's process loads d3d9 next to our d3d8, for
+ * its movie renderer): forward Direct3DCreateN to the system DLL instead of
+ * failing to load, which would fail the caller's LoadLibrary */
+static HMODULE sys_dll;
+static FARPROC sys_create;
 static int attached;
 static d3dpt_enc enc;
 static void d3dpt_log(const char *fmt, ...)
@@ -51,6 +62,26 @@ static void d3dpt_log(const char *fmt, ...)
         d3dpt_u32x2 *p = d3dpt_enc_cmd(&enc, D3DPT_OP_LOG, sizeof *p, (uint32_t)n - 1);
         if (p) { p->a = (uint32_t)n - 1; p->b = 0; memcpy(p + 1, buf, n - 1); d3dpt_enc_flush(&enc); }
     }
+}
+/* Call trace (every vtable entry, generated wrappers in d3d9_vtbl.h /
+ * d3d8_vtbl.h): D3DPT_TRACE=1 in the environment or a file named
+ * d3dpt_trace.on next to the DLL turns it on; lines go to d3d9_trace.log /
+ * d3d8_trace.log next to the DLL, flushed per line so the last one
+ * survives a crash. For "the game hangs / dies silently" questions. */
+static int d3dpt_trace_on;
+static FILE *trace_file;
+static void d3dpt_trace(const char *fmt, ...)
+{
+    char buf[256];
+    va_list ap;
+    int n;
+    if (!trace_file) return;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof buf - 2, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    buf[n++] = '\n'; buf[n] = 0;
+    fputs(buf, trace_file); fflush(trace_file);
 }
 #define D3DPT_STUB(name) do { static int once; if (!once) { once = 1; d3dpt_log("d3dpt: %s not implemented", name); } } while (0)
 
@@ -73,7 +104,7 @@ static int transport_init(void)
 
     GetVersionExA(&os);
     if (os.dwPlatformId == VER_PLATFORM_WIN32_NT) kmdDrvInit(&drv); else vxdDrvInit(&drv);
-    if (!drv.Init()) { d3dpt_log("d3dpt: no FXPTL.SYS / FXMEMMAP.VXD (install the WIN2KXP / WIN9X step)"); return 0; }
+    if (!drv.Init()) { d3dpt_log("d3dpt: cannot open FXPTL.SYS / FXMEMMAP.VXD (error %lu): not installed (WIN2KXP / WIN9X step), or another d3dpt DLL in this process holds it", (unsigned long)GetLastError()); return 0; }
     len = 0x1000;
     if (!drv.MapLinear(0, D3DPT_MM_BASE, &va, &len)) { d3dpt_log("d3dpt: cannot map the register page"); return 0; }
     regs = (volatile uint32_t *)va;
@@ -96,6 +127,29 @@ static int transport_init(void)
         d3dpt_log("d3dpt: device v%u at %08x, window at %08x, attached (%u) by %s", ver, D3DPT_MM_BASE, D3DPT_SHM_BASE, regs[D3DPT_REG_ATTACH / 4], base);
     }
     return 1;
+}
+
+static void fallback_init(void)
+{
+    char path[MAX_PATH];
+    HMODULE mods[128];
+    DWORD n = 0, i;
+    UINT len = GetSystemDirectoryA(path, MAX_PATH - 16);
+    if (!len) return;
+    strcat(path, "\\" D3DPT_DLL_NAME);
+    sys_dll = LoadLibraryA(path);
+    if (sys_dll) sys_create = GetProcAddress(sys_dll, D3DPT_DLL_NAME[3] == '8' ? "Direct3DCreate8" : "Direct3DCreate9");
+    d3dpt_log("d3dpt: forwarding to %s (%s)", path, sys_create ? "loaded" : "not found");
+    if (EnumProcessModules(GetCurrentProcess(), mods, sizeof mods, &n)) {
+        char line[400]; int w = 0;
+        for (i = 0; i < n / sizeof mods[0]; i++) {
+            char name[64]; name[0] = 0;
+            GetModuleBaseNameA(GetCurrentProcess(), mods[i], name, sizeof name);
+            if (w + strlen(name) + 2 > sizeof line) { d3dpt_log("d3dpt: modules: %s", line); w = 0; }
+            w += sprintf(line + w, "%s%s", w ? " " : "", name);
+        }
+        if (w) d3dpt_log("d3dpt: modules: %s", line);
+    }
 }
 
 static void transport_fini(void)
@@ -858,6 +912,9 @@ HRESULT WINAPI dev_SetPixelShaderConstantF(IDirect3DDevice9 *This, UINT StartReg
 __declspec(dllexport) IDirect3D9 *WINAPI Direct3DCreate9(UINT SDKVersion)
 {
     struct d3d9 *d;
+#ifndef D3DPT_IS_D3D8
+    if (!attached && sys_create) { d3dpt_log("d3dpt: Direct3DCreate9(sdk %u) forwarded to the system d3d9", SDKVersion); return ((IDirect3D9 *(WINAPI *)(UINT))sys_create)(SDKVersion); }
+#endif
     if (!attached) { d3dpt_log("d3dpt: Direct3DCreate9: no device"); return NULL; }
     d = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *d);
     if (!d) return NULL;
@@ -890,17 +947,31 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
             if (p) { strcpy(p + 1, "d3dpt.log"); log_file = fopen(path, "a"); }
             if (!log_file) log_file = fopen("C:\\d3dpt.log", "a");   /* read-only media (the ISO) */
         }
-        d3dpt_log("d3dpt: d3d9.dll (paravirtual Direct3D, protocol %u) attached to process %lu", D3DPT_PROTO_VERSION, (unsigned long)GetCurrentProcessId());
+        env = getenv("D3DPT_TRACE");
+        if (GetModuleFileNameA(inst, path, sizeof path) && (p = strrchr(path, '\\')) != NULL) {
+            strcpy(p + 1, "d3dpt_trace.on");
+            if ((env && env[0] == '1') || GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+                strcpy(p + 1, D3DPT_DLL_NAME[3] == '8' ? "d3d8_trace.log" : "d3d9_trace.log");
+                trace_file = fopen(path, "w");
+                d3dpt_trace_on = trace_file != NULL;
+                d3dpt_log("d3dpt: call trace on -> %s", path);
+            }
+        }
+        d3dpt_log("d3dpt: " D3DPT_DLL_NAME " (paravirtual Direct3D, protocol %u) attached to process %lu", D3DPT_PROTO_VERSION, (unsigned long)GetCurrentProcessId());
         DisableThreadLibraryCalls(inst);
         if (!transport_init()) {
-            d3dpt_log("d3dpt: refusing to load without the device");
-            if (log_file) { fclose(log_file); log_file = NULL; }
-            return FALSE;
+            fallback_init();
+            if (!sys_create) {
+                d3dpt_log("d3dpt: refusing to load without the device");
+                if (log_file) { fclose(log_file); log_file = NULL; }
+                return FALSE;
+            }
         }
     } else if (reason == DLL_PROCESS_DETACH) {
         d3dpt_log("d3dpt: DLL_PROCESS_DETACH (%s)", reserved ? "process exit" : "FreeLibrary");
         transport_fini();
         d3dpt_log("d3dpt: detached");
+        if (trace_file) { d3dpt_trace_on = 0; fclose(trace_file); trace_file = NULL; }
         if (log_file) fclose(log_file);
     }
     return TRUE;

@@ -172,12 +172,12 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame8.exe" "$ROOT/guest-tools/s
 mkdir -p "$OUT/iso/D3DPT"
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d9.dll" "$ROOT/guest-tools/src/d3dpt/d3d9.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
-  -static-libgcc -Wl,--kill-at -lgdi32 -luser32
+  -static-libgcc -Wl,--kill-at -lgdi32 -luser32 -lpsapi
 cp "$OUT/iso/GAMEDIR/d3d9test.exe" "$OUT/iso/GAMEDIR/d3dgame9.exe" "$OUT/iso/D3DPT/"
 # Direct3D 8 over the same device (doc 14 P4): d3d8.c includes d3d9.c, one DLL.
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d8.dll" "$ROOT/guest-tools/src/d3dpt/d3d8.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
-  -static-libgcc -Wl,--kill-at -lgdi32 -luser32
+  -static-libgcc -Wl,--kill-at -lgdi32 -luser32 -lpsapi
 cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
 # DirectDraw 7 shim (d3dpt/ddraw.c): forwards to the system ddraw.dll and
 # reports 256 MB of video memory. RenderWare launchers (GTA Vice City) ask

@@ -44,6 +44,29 @@ static bool need_device(Batch &b) {
     return true;
 }
 
+/* D3DPT_DUMP_DIR=dir writes every D3DPT_DUMP_EVERY-th presented frame (default
+ * 60) as dir/frame-NNNNNN.ppm: the only way to see a game's frames from a
+ * bare qemu-system-i386 (a QMP screendump shows the VGA surface, which is
+ * frozen while the device presents). */
+static void dump_frame(const uint32_t *px, int w, int h, int pitch) {
+    static const char *dir = getenv("D3DPT_DUMP_DIR");
+    static unsigned every = getenv("D3DPT_DUMP_EVERY") ? (unsigned)atoi(getenv("D3DPT_DUMP_EVERY")) : 60;
+    static unsigned n;
+    if (!dir || !*dir || !every || n++ % every) return;
+    char path[1024];
+    snprintf(path, sizeof path, "%s/frame-%06u.ppm", dir, n - 1);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    std::vector<uint8_t> row((size_t)w * 3);
+    for (int y = 0; y < h; y++) {
+        const uint32_t *s = (const uint32_t *)((const uint8_t *)px + (size_t)y * pitch);
+        for (int i = 0; i < w; i++) { row[i * 3] = s[i] >> 16; row[i * 3 + 1] = s[i] >> 8; row[i * 3 + 2] = s[i]; }
+        fwrite(row.data(), 1, row.size(), f);
+    }
+    fclose(f);
+}
+
 static void present_frame(Exec &x) {
     IDirect3DSurface9 *bb = nullptr;
     if (FAILED(x.dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
@@ -66,6 +89,7 @@ static void present_frame(Exec &x) {
     if (x.ops.frame) {
         if (d.Format == D3DFMT_X8R8G8B8 || d.Format == D3DFMT_A8R8G8B8) {
             x.ops.frame(x.ops.ud, lr.pBits, (int)d.Width, (int)d.Height, lr.Pitch);
+            dump_frame((const uint32_t *)lr.pBits, (int)d.Width, (int)d.Height, lr.Pitch);
         } else {
             /* 16-bit backbuffers: expand to XRGB */
             x.conv.resize((size_t)d.Width * d.Height);
@@ -81,6 +105,7 @@ static void present_frame(Exec &x) {
                 }
             }
             x.ops.frame(x.ops.ud, x.conv.data(), (int)d.Width, (int)d.Height, (int)d.Width * 4);
+            dump_frame(x.conv.data(), (int)d.Width, (int)d.Height, (int)d.Width * 4);
         }
     }
     x.sys->UnlockRect();

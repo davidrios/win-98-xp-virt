@@ -48,23 +48,36 @@ HRESULT WINAPI d8_CheckDepthStencilMatch(IDirect3D8 *This, UINT Adapter, D3DDEVT
 HRESULT WINAPI d8_GetDeviceCaps(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType, D3DCAPS8 * pCaps);
 HMONITOR WINAPI d8_GetAdapterMonitor(IDirect3D8 *This, UINT Adapter);
 HRESULT WINAPI d8_CreateDevice(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType,HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS8 * pPresentationParameters, IDirect3DDevice8 ** ppReturnedDeviceInterface);
+static HRESULT WINAPI t_d8_QueryInterface(IDirect3D8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = d8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static UINT WINAPI t_d8_GetAdapterCount(IDirect3D8 *This) { UINT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::GetAdapterCount %p", (void *)This); r_ = d8_GetAdapterCount(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::GetAdapterCount = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_GetAdapterIdentifier(IDirect3D8 *This, UINT Adapter, DWORD Flags, D3DADAPTER_IDENTIFIER8 * pIdentifier) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::GetAdapterIdentifier %p Adapter=%08lx Flags=%08lx pIdentifier=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)Flags, (unsigned long)(uintptr_t)pIdentifier); r_ = d8_GetAdapterIdentifier(This, Adapter, Flags, pIdentifier); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::GetAdapterIdentifier = 0x%08lx", (unsigned long)r_); return r_; }
+static UINT WINAPI t_d8_GetAdapterModeCount(IDirect3D8 *This, UINT Adapter) { UINT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::GetAdapterModeCount %p Adapter=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter); r_ = d8_GetAdapterModeCount(This, Adapter); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::GetAdapterModeCount = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_EnumAdapterModes(IDirect3D8 *This, UINT Adapter, UINT Mode, D3DDISPLAYMODE * pMode) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::EnumAdapterModes %p Adapter=%08lx Mode=%08lx pMode=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)Mode, (unsigned long)(uintptr_t)pMode); r_ = d8_EnumAdapterModes(This, Adapter, Mode, pMode); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::EnumAdapterModes = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_GetAdapterDisplayMode(IDirect3D8 *This, UINT Adapter, D3DDISPLAYMODE * pMode) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::GetAdapterDisplayMode %p Adapter=%08lx pMode=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)pMode); r_ = d8_GetAdapterDisplayMode(This, Adapter, pMode); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::GetAdapterDisplayMode = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_CheckDeviceType(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE CheckType, D3DFORMAT DisplayFormat, D3DFORMAT BackBufferFormat, WINBOOL Windowed) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::CheckDeviceType %p Adapter=%08lx CheckType=%08lx DisplayFormat=%08lx BackBufferFormat=%08lx Windowed=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)CheckType, (unsigned long)(uintptr_t)DisplayFormat, (unsigned long)(uintptr_t)BackBufferFormat, (unsigned long)(uintptr_t)Windowed); r_ = d8_CheckDeviceType(This, Adapter, CheckType, DisplayFormat, BackBufferFormat, Windowed); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::CheckDeviceType = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_CheckDeviceFormat(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType, D3DFORMAT AdapterFormat, DWORD Usage, D3DRESOURCETYPE RType, D3DFORMAT CheckFormat) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::CheckDeviceFormat %p Adapter=%08lx DeviceType=%08lx AdapterFormat=%08lx Usage=%08lx RType=%08lx CheckFormat=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)DeviceType, (unsigned long)(uintptr_t)AdapterFormat, (unsigned long)(uintptr_t)Usage, (unsigned long)(uintptr_t)RType, (unsigned long)(uintptr_t)CheckFormat); r_ = d8_CheckDeviceFormat(This, Adapter, DeviceType, AdapterFormat, Usage, RType, CheckFormat); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::CheckDeviceFormat = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_CheckDeviceMultiSampleType(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType, D3DFORMAT SurfaceFormat, WINBOOL Windowed, D3DMULTISAMPLE_TYPE MultiSampleType) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::CheckDeviceMultiSampleType %p Adapter=%08lx DeviceType=%08lx SurfaceFormat=%08lx Windowed=%08lx MultiSampleType=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)DeviceType, (unsigned long)(uintptr_t)SurfaceFormat, (unsigned long)(uintptr_t)Windowed, (unsigned long)(uintptr_t)MultiSampleType); r_ = d8_CheckDeviceMultiSampleType(This, Adapter, DeviceType, SurfaceFormat, Windowed, MultiSampleType); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::CheckDeviceMultiSampleType = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_CheckDepthStencilMatch(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType, D3DFORMAT AdapterFormat, D3DFORMAT RenderTargetFormat, D3DFORMAT DepthStencilFormat) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::CheckDepthStencilMatch %p Adapter=%08lx DeviceType=%08lx AdapterFormat=%08lx RenderTargetFormat=%08lx DepthStencilFormat=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)DeviceType, (unsigned long)(uintptr_t)AdapterFormat, (unsigned long)(uintptr_t)RenderTargetFormat, (unsigned long)(uintptr_t)DepthStencilFormat); r_ = d8_CheckDepthStencilMatch(This, Adapter, DeviceType, AdapterFormat, RenderTargetFormat, DepthStencilFormat); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::CheckDepthStencilMatch = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_GetDeviceCaps(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType, D3DCAPS8 * pCaps) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::GetDeviceCaps %p Adapter=%08lx DeviceType=%08lx pCaps=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)DeviceType, (unsigned long)(uintptr_t)pCaps); r_ = d8_GetDeviceCaps(This, Adapter, DeviceType, pCaps); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::GetDeviceCaps = 0x%08lx", (unsigned long)r_); return r_; }
+static HMONITOR WINAPI t_d8_GetAdapterMonitor(IDirect3D8 *This, UINT Adapter) { HMONITOR r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::GetAdapterMonitor %p Adapter=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter); r_ = d8_GetAdapterMonitor(This, Adapter); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::GetAdapterMonitor = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_d8_CreateDevice(IDirect3D8 *This, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS8 * pPresentationParameters, IDirect3DDevice8 ** ppReturnedDeviceInterface) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3D8::CreateDevice %p Adapter=%08lx DeviceType=%08lx hFocusWindow=%08lx BehaviorFlags=%08lx pPresentationParameters=%08lx ppReturnedDeviceInterface=%08lx", (void *)This, (unsigned long)(uintptr_t)Adapter, (unsigned long)(uintptr_t)DeviceType, (unsigned long)(uintptr_t)hFocusWindow, (unsigned long)(uintptr_t)BehaviorFlags, (unsigned long)(uintptr_t)pPresentationParameters, (unsigned long)(uintptr_t)ppReturnedDeviceInterface); r_ = d8_CreateDevice(This, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface); if (d3dpt_trace_on) d3dpt_trace("< IDirect3D8::CreateDevice = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3D8Vtbl d8_vtbl = {
-    d8_QueryInterface,
+    t_d8_QueryInterface,
     d8_AddRef,
     d8_Release,
     d8_RegisterSoftwareDevice,
-    d8_GetAdapterCount,
-    d8_GetAdapterIdentifier,
-    d8_GetAdapterModeCount,
-    d8_EnumAdapterModes,
-    d8_GetAdapterDisplayMode,
-    d8_CheckDeviceType,
-    d8_CheckDeviceFormat,
-    d8_CheckDeviceMultiSampleType,
-    d8_CheckDepthStencilMatch,
-    d8_GetDeviceCaps,
-    d8_GetAdapterMonitor,
-    d8_CreateDevice,
+    t_d8_GetAdapterCount,
+    t_d8_GetAdapterIdentifier,
+    t_d8_GetAdapterModeCount,
+    t_d8_EnumAdapterModes,
+    t_d8_GetAdapterDisplayMode,
+    t_d8_CheckDeviceType,
+    t_d8_CheckDeviceFormat,
+    t_d8_CheckDeviceMultiSampleType,
+    t_d8_CheckDepthStencilMatch,
+    t_d8_GetDeviceCaps,
+    t_d8_GetAdapterMonitor,
+    t_d8_CreateDevice,
 };
 
 typedef struct IDirect3DDevice8Vtbl {
@@ -265,38 +278,71 @@ HRESULT WINAPI dev8_GetPixelShaderFunction(IDirect3DDevice8 *This, DWORD Handle,
 static HRESULT WINAPI dev8_DrawRectPatch(IDirect3DDevice8 *This, UINT handle, const float *segment_count, const D3DRECTPATCH_INFO *patch_info) { D3DPT_STUB("IDirect3DDevice8::DrawRectPatch"); return E_NOTIMPL; }
 static HRESULT WINAPI dev8_DrawTriPatch(IDirect3DDevice8 *This, UINT handle, const float *segment_count, const D3DTRIPATCH_INFO *patch_info) { D3DPT_STUB("IDirect3DDevice8::DrawTriPatch"); return E_NOTIMPL; }
 static HRESULT WINAPI dev8_DeletePatch(IDirect3DDevice8 *This, UINT Handle) { D3DPT_STUB("IDirect3DDevice8::DeletePatch"); return E_NOTIMPL; }
+static HRESULT WINAPI t_dev8_QueryInterface(IDirect3DDevice8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = dev8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_TestCooperativeLevel(IDirect3DDevice8 *This) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::TestCooperativeLevel %p", (void *)This); r_ = dev8_TestCooperativeLevel(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::TestCooperativeLevel = 0x%08lx", (unsigned long)r_); return r_; }
+static UINT WINAPI t_dev8_GetAvailableTextureMem(IDirect3DDevice8 *This) { UINT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::GetAvailableTextureMem %p", (void *)This); r_ = dev8_GetAvailableTextureMem(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::GetAvailableTextureMem = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_ResourceManagerDiscardBytes(IDirect3DDevice8 *This, DWORD Bytes) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::ResourceManagerDiscardBytes %p Bytes=%08lx", (void *)This, (unsigned long)(uintptr_t)Bytes); r_ = dev8_ResourceManagerDiscardBytes(This, Bytes); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::ResourceManagerDiscardBytes = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_GetDeviceCaps(IDirect3DDevice8 *This, D3DCAPS8 * pCaps) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::GetDeviceCaps %p pCaps=%08lx", (void *)This, (unsigned long)(uintptr_t)pCaps); r_ = dev8_GetDeviceCaps(This, pCaps); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::GetDeviceCaps = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateAdditionalSwapChain(IDirect3DDevice8 *This, D3DPRESENT_PARAMETERS8 * pPresentationParameters, IDirect3DSwapChain8 ** pSwapChain) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateAdditionalSwapChain %p pPresentationParameters=%08lx pSwapChain=%08lx", (void *)This, (unsigned long)(uintptr_t)pPresentationParameters, (unsigned long)(uintptr_t)pSwapChain); r_ = dev8_CreateAdditionalSwapChain(This, pPresentationParameters, pSwapChain); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateAdditionalSwapChain = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_Reset(IDirect3DDevice8 *This, D3DPRESENT_PARAMETERS8 * pPresentationParameters) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::Reset %p pPresentationParameters=%08lx", (void *)This, (unsigned long)(uintptr_t)pPresentationParameters); r_ = dev8_Reset(This, pPresentationParameters); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::Reset = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_Present(IDirect3DDevice8 *This, const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override, const RGNDATA *dirty_region) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::Present %p src_rect=%08lx dst_rect=%08lx dst_window_override=%08lx dirty_region=%08lx", (void *)This, (unsigned long)(uintptr_t)src_rect, (unsigned long)(uintptr_t)dst_rect, (unsigned long)(uintptr_t)dst_window_override, (unsigned long)(uintptr_t)dirty_region); r_ = dev8_Present(This, src_rect, dst_rect, dst_window_override, dirty_region); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::Present = 0x%08lx", (unsigned long)r_); return r_; }
+static void WINAPI t_dev8_SetGammaRamp(IDirect3DDevice8 *This, DWORD flags, const D3DGAMMARAMP *ramp) { if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::SetGammaRamp %p flags=%08lx ramp=%08lx", (void *)This, (unsigned long)(uintptr_t)flags, (unsigned long)(uintptr_t)ramp); dev8_SetGammaRamp(This, flags, ramp); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::SetGammaRamp"); }
+static HRESULT WINAPI t_dev8_CreateTexture(IDirect3DDevice8 *This, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture8 ** ppTexture) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateTexture %p Width=%08lx Height=%08lx Levels=%08lx Usage=%08lx Format=%08lx Pool=%08lx", (void *)This, (unsigned long)(uintptr_t)Width, (unsigned long)(uintptr_t)Height, (unsigned long)(uintptr_t)Levels, (unsigned long)(uintptr_t)Usage, (unsigned long)(uintptr_t)Format, (unsigned long)(uintptr_t)Pool); r_ = dev8_CreateTexture(This, Width, Height, Levels, Usage, Format, Pool, ppTexture); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateTexture = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateVolumeTexture(IDirect3DDevice8 *This, UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture8 ** ppVolumeTexture) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateVolumeTexture %p Width=%08lx Height=%08lx Depth=%08lx Levels=%08lx Usage=%08lx Format=%08lx", (void *)This, (unsigned long)(uintptr_t)Width, (unsigned long)(uintptr_t)Height, (unsigned long)(uintptr_t)Depth, (unsigned long)(uintptr_t)Levels, (unsigned long)(uintptr_t)Usage, (unsigned long)(uintptr_t)Format); r_ = dev8_CreateVolumeTexture(This, Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateVolumeTexture = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateCubeTexture(IDirect3DDevice8 *This, UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture8 ** ppCubeTexture) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateCubeTexture %p EdgeLength=%08lx Levels=%08lx Usage=%08lx Format=%08lx Pool=%08lx ppCubeTexture=%08lx", (void *)This, (unsigned long)(uintptr_t)EdgeLength, (unsigned long)(uintptr_t)Levels, (unsigned long)(uintptr_t)Usage, (unsigned long)(uintptr_t)Format, (unsigned long)(uintptr_t)Pool, (unsigned long)(uintptr_t)ppCubeTexture); r_ = dev8_CreateCubeTexture(This, EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateCubeTexture = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateVertexBuffer(IDirect3DDevice8 *This, UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer8 ** ppVertexBuffer) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateVertexBuffer %p Length=%08lx Usage=%08lx FVF=%08lx Pool=%08lx ppVertexBuffer=%08lx", (void *)This, (unsigned long)(uintptr_t)Length, (unsigned long)(uintptr_t)Usage, (unsigned long)(uintptr_t)FVF, (unsigned long)(uintptr_t)Pool, (unsigned long)(uintptr_t)ppVertexBuffer); r_ = dev8_CreateVertexBuffer(This, Length, Usage, FVF, Pool, ppVertexBuffer); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateVertexBuffer = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateIndexBuffer(IDirect3DDevice8 *This, UINT Length, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DIndexBuffer8 ** ppIndexBuffer) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateIndexBuffer %p Length=%08lx Usage=%08lx Format=%08lx Pool=%08lx ppIndexBuffer=%08lx", (void *)This, (unsigned long)(uintptr_t)Length, (unsigned long)(uintptr_t)Usage, (unsigned long)(uintptr_t)Format, (unsigned long)(uintptr_t)Pool, (unsigned long)(uintptr_t)ppIndexBuffer); r_ = dev8_CreateIndexBuffer(This, Length, Usage, Format, Pool, ppIndexBuffer); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateIndexBuffer = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateRenderTarget(IDirect3DDevice8 *This, UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, WINBOOL Lockable, IDirect3DSurface8 ** ppSurface) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateRenderTarget %p Width=%08lx Height=%08lx Format=%08lx MultiSample=%08lx Lockable=%08lx ppSurface=%08lx", (void *)This, (unsigned long)(uintptr_t)Width, (unsigned long)(uintptr_t)Height, (unsigned long)(uintptr_t)Format, (unsigned long)(uintptr_t)MultiSample, (unsigned long)(uintptr_t)Lockable, (unsigned long)(uintptr_t)ppSurface); r_ = dev8_CreateRenderTarget(This, Width, Height, Format, MultiSample, Lockable, ppSurface); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateRenderTarget = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateDepthStencilSurface(IDirect3DDevice8 *This, UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, IDirect3DSurface8 ** ppSurface) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateDepthStencilSurface %p Width=%08lx Height=%08lx Format=%08lx MultiSample=%08lx ppSurface=%08lx", (void *)This, (unsigned long)(uintptr_t)Width, (unsigned long)(uintptr_t)Height, (unsigned long)(uintptr_t)Format, (unsigned long)(uintptr_t)MultiSample, (unsigned long)(uintptr_t)ppSurface); r_ = dev8_CreateDepthStencilSurface(This, Width, Height, Format, MultiSample, ppSurface); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateDepthStencilSurface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateImageSurface(IDirect3DDevice8 *This, UINT Width, UINT Height, D3DFORMAT Format, IDirect3DSurface8 ** ppSurface) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateImageSurface %p Width=%08lx Height=%08lx Format=%08lx ppSurface=%08lx", (void *)This, (unsigned long)(uintptr_t)Width, (unsigned long)(uintptr_t)Height, (unsigned long)(uintptr_t)Format, (unsigned long)(uintptr_t)ppSurface); r_ = dev8_CreateImageSurface(This, Width, Height, Format, ppSurface); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateImageSurface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CopyRects(IDirect3DDevice8 *This, IDirect3DSurface8 *src_surface, const RECT *src_rects, UINT rect_count, IDirect3DSurface8 *dst_surface, const POINT *dst_points) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CopyRects %p src_surface=%08lx src_rects=%08lx rect_count=%08lx dst_surface=%08lx dst_points=%08lx", (void *)This, (unsigned long)(uintptr_t)src_surface, (unsigned long)(uintptr_t)src_rects, (unsigned long)(uintptr_t)rect_count, (unsigned long)(uintptr_t)dst_surface, (unsigned long)(uintptr_t)dst_points); r_ = dev8_CopyRects(This, src_surface, src_rects, rect_count, dst_surface, dst_points); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CopyRects = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_UpdateTexture(IDirect3DDevice8 *This, IDirect3DBaseTexture8 * pSourceTexture, IDirect3DBaseTexture8 * pDestinationTexture) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::UpdateTexture %p pSourceTexture=%08lx pDestinationTexture=%08lx", (void *)This, (unsigned long)(uintptr_t)pSourceTexture, (unsigned long)(uintptr_t)pDestinationTexture); r_ = dev8_UpdateTexture(This, pSourceTexture, pDestinationTexture); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::UpdateTexture = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_GetFrontBuffer(IDirect3DDevice8 *This, IDirect3DSurface8 * pDestSurface) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::GetFrontBuffer %p pDestSurface=%08lx", (void *)This, (unsigned long)(uintptr_t)pDestSurface); r_ = dev8_GetFrontBuffer(This, pDestSurface); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::GetFrontBuffer = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_ApplyStateBlock(IDirect3DDevice8 *This, DWORD Token) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::ApplyStateBlock %p Token=%08lx", (void *)This, (unsigned long)(uintptr_t)Token); r_ = dev8_ApplyStateBlock(This, Token); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::ApplyStateBlock = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CaptureStateBlock(IDirect3DDevice8 *This, DWORD Token) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CaptureStateBlock %p Token=%08lx", (void *)This, (unsigned long)(uintptr_t)Token); r_ = dev8_CaptureStateBlock(This, Token); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CaptureStateBlock = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_DeleteStateBlock(IDirect3DDevice8 *This, DWORD Token) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::DeleteStateBlock %p Token=%08lx", (void *)This, (unsigned long)(uintptr_t)Token); r_ = dev8_DeleteStateBlock(This, Token); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::DeleteStateBlock = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateStateBlock(IDirect3DDevice8 *This, D3DSTATEBLOCKTYPE Type, DWORD * pToken) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateStateBlock %p Type=%08lx pToken=%08lx", (void *)This, (unsigned long)(uintptr_t)Type, (unsigned long)(uintptr_t)pToken); r_ = dev8_CreateStateBlock(This, Type, pToken); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateStateBlock = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_ProcessVertices(IDirect3DDevice8 *This, UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer8 * pDestBuffer, DWORD Flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::ProcessVertices %p SrcStartIndex=%08lx DestIndex=%08lx VertexCount=%08lx pDestBuffer=%08lx Flags=%08lx", (void *)This, (unsigned long)(uintptr_t)SrcStartIndex, (unsigned long)(uintptr_t)DestIndex, (unsigned long)(uintptr_t)VertexCount, (unsigned long)(uintptr_t)pDestBuffer, (unsigned long)(uintptr_t)Flags); r_ = dev8_ProcessVertices(This, SrcStartIndex, DestIndex, VertexCount, pDestBuffer, Flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::ProcessVertices = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreateVertexShader(IDirect3DDevice8 *This, const DWORD *declaration, const DWORD *byte_code, DWORD *shader, DWORD usage) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreateVertexShader %p declaration=%08lx byte_code=%08lx shader=%08lx usage=%08lx", (void *)This, (unsigned long)(uintptr_t)declaration, (unsigned long)(uintptr_t)byte_code, (unsigned long)(uintptr_t)shader, (unsigned long)(uintptr_t)usage); r_ = dev8_CreateVertexShader(This, declaration, byte_code, shader, usage); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreateVertexShader = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_DeleteVertexShader(IDirect3DDevice8 *This, DWORD Handle) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::DeleteVertexShader %p Handle=%08lx", (void *)This, (unsigned long)(uintptr_t)Handle); r_ = dev8_DeleteVertexShader(This, Handle); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::DeleteVertexShader = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_GetVertexShaderDeclaration(IDirect3DDevice8 *This, DWORD Handle, void * pData, DWORD * pSizeOfData) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::GetVertexShaderDeclaration %p Handle=%08lx pData=%08lx pSizeOfData=%08lx", (void *)This, (unsigned long)(uintptr_t)Handle, (unsigned long)(uintptr_t)pData, (unsigned long)(uintptr_t)pSizeOfData); r_ = dev8_GetVertexShaderDeclaration(This, Handle, pData, pSizeOfData); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::GetVertexShaderDeclaration = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_GetVertexShaderFunction(IDirect3DDevice8 *This, DWORD Handle, void * pData, DWORD * pSizeOfData) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::GetVertexShaderFunction %p Handle=%08lx pData=%08lx pSizeOfData=%08lx", (void *)This, (unsigned long)(uintptr_t)Handle, (unsigned long)(uintptr_t)pData, (unsigned long)(uintptr_t)pSizeOfData); r_ = dev8_GetVertexShaderFunction(This, Handle, pData, pSizeOfData); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::GetVertexShaderFunction = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_CreatePixelShader(IDirect3DDevice8 *This, const DWORD *byte_code, DWORD *shader) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::CreatePixelShader %p byte_code=%08lx shader=%08lx", (void *)This, (unsigned long)(uintptr_t)byte_code, (unsigned long)(uintptr_t)shader); r_ = dev8_CreatePixelShader(This, byte_code, shader); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::CreatePixelShader = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_DeletePixelShader(IDirect3DDevice8 *This, DWORD Handle) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::DeletePixelShader %p Handle=%08lx", (void *)This, (unsigned long)(uintptr_t)Handle); r_ = dev8_DeletePixelShader(This, Handle); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::DeletePixelShader = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_GetPixelShaderFunction(IDirect3DDevice8 *This, DWORD Handle, void * pData, DWORD * pSizeOfData) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::GetPixelShaderFunction %p Handle=%08lx pData=%08lx pSizeOfData=%08lx", (void *)This, (unsigned long)(uintptr_t)Handle, (unsigned long)(uintptr_t)pData, (unsigned long)(uintptr_t)pSizeOfData); r_ = dev8_GetPixelShaderFunction(This, Handle, pData, pSizeOfData); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::GetPixelShaderFunction = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_dev8_DeletePatch(IDirect3DDevice8 *This, UINT Handle) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DDevice8::DeletePatch %p Handle=%08lx", (void *)This, (unsigned long)(uintptr_t)Handle); r_ = dev8_DeletePatch(This, Handle); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DDevice8::DeletePatch = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DDevice8Vtbl dev8_vtbl = {
-    dev8_QueryInterface,
+    t_dev8_QueryInterface,
     dev8_AddRef,
     dev8_Release,
-    dev8_TestCooperativeLevel,
-    dev8_GetAvailableTextureMem,
-    dev8_ResourceManagerDiscardBytes,
+    t_dev8_TestCooperativeLevel,
+    t_dev8_GetAvailableTextureMem,
+    t_dev8_ResourceManagerDiscardBytes,
     dev8_GetDirect3D,
-    dev8_GetDeviceCaps,
+    t_dev8_GetDeviceCaps,
     dev8_GetDisplayMode,
     dev8_GetCreationParameters,
     dev8_SetCursorProperties,
     dev8_SetCursorPosition,
     dev8_ShowCursor,
-    dev8_CreateAdditionalSwapChain,
-    dev8_Reset,
-    dev8_Present,
+    t_dev8_CreateAdditionalSwapChain,
+    t_dev8_Reset,
+    t_dev8_Present,
     dev8_GetBackBuffer,
     dev8_GetRasterStatus,
-    dev8_SetGammaRamp,
+    t_dev8_SetGammaRamp,
     dev8_GetGammaRamp,
-    dev8_CreateTexture,
-    dev8_CreateVolumeTexture,
-    dev8_CreateCubeTexture,
-    dev8_CreateVertexBuffer,
-    dev8_CreateIndexBuffer,
-    dev8_CreateRenderTarget,
-    dev8_CreateDepthStencilSurface,
-    dev8_CreateImageSurface,
-    dev8_CopyRects,
-    dev8_UpdateTexture,
-    dev8_GetFrontBuffer,
+    t_dev8_CreateTexture,
+    t_dev8_CreateVolumeTexture,
+    t_dev8_CreateCubeTexture,
+    t_dev8_CreateVertexBuffer,
+    t_dev8_CreateIndexBuffer,
+    t_dev8_CreateRenderTarget,
+    t_dev8_CreateDepthStencilSurface,
+    t_dev8_CreateImageSurface,
+    t_dev8_CopyRects,
+    t_dev8_UpdateTexture,
+    t_dev8_GetFrontBuffer,
     dev8_SetRenderTarget,
     dev8_GetRenderTarget,
     dev8_GetDepthStencilSurface,
@@ -320,10 +366,10 @@ static const IDirect3DDevice8Vtbl dev8_vtbl = {
     dev8_GetRenderState,
     dev8_BeginStateBlock,
     dev8_EndStateBlock,
-    dev8_ApplyStateBlock,
-    dev8_CaptureStateBlock,
-    dev8_DeleteStateBlock,
-    dev8_CreateStateBlock,
+    t_dev8_ApplyStateBlock,
+    t_dev8_CaptureStateBlock,
+    t_dev8_DeleteStateBlock,
+    t_dev8_CreateStateBlock,
     dev8_SetClipStatus,
     dev8_GetClipStatus,
     dev8_GetTexture,
@@ -340,29 +386,29 @@ static const IDirect3DDevice8Vtbl dev8_vtbl = {
     dev8_DrawIndexedPrimitive,
     dev8_DrawPrimitiveUP,
     dev8_DrawIndexedPrimitiveUP,
-    dev8_ProcessVertices,
-    dev8_CreateVertexShader,
+    t_dev8_ProcessVertices,
+    t_dev8_CreateVertexShader,
     dev8_SetVertexShader,
     dev8_GetVertexShader,
-    dev8_DeleteVertexShader,
+    t_dev8_DeleteVertexShader,
     dev8_SetVertexShaderConstant,
     dev8_GetVertexShaderConstant,
-    dev8_GetVertexShaderDeclaration,
-    dev8_GetVertexShaderFunction,
+    t_dev8_GetVertexShaderDeclaration,
+    t_dev8_GetVertexShaderFunction,
     dev8_SetStreamSource,
     dev8_GetStreamSource,
     dev8_SetIndices,
     dev8_GetIndices,
-    dev8_CreatePixelShader,
+    t_dev8_CreatePixelShader,
     dev8_SetPixelShader,
     dev8_GetPixelShader,
-    dev8_DeletePixelShader,
+    t_dev8_DeletePixelShader,
     dev8_SetPixelShaderConstant,
     dev8_GetPixelShaderConstant,
-    dev8_GetPixelShaderFunction,
+    t_dev8_GetPixelShaderFunction,
     dev8_DrawRectPatch,
     dev8_DrawTriPatch,
-    dev8_DeletePatch,
+    t_dev8_DeletePatch,
 };
 
 typedef struct IDirect3DSurface8Vtbl {
@@ -391,8 +437,11 @@ HRESULT WINAPI surf8_GetContainer(IDirect3DSurface8 *This, REFIID riid, void ** 
 HRESULT WINAPI surf8_GetDesc(IDirect3DSurface8 *This, D3DSURFACE_DESC8 * pDesc);
 HRESULT WINAPI surf8_LockRect(IDirect3DSurface8 *This, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags);
 HRESULT WINAPI surf8_UnlockRect(IDirect3DSurface8 *This);
+static HRESULT WINAPI t_surf8_QueryInterface(IDirect3DSurface8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DSurface8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = surf8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DSurface8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_surf8_LockRect(IDirect3DSurface8 *This, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DSurface8::LockRect %p locked_rect=%08lx rect=%08lx flags=%08lx", (void *)This, (unsigned long)(uintptr_t)locked_rect, (unsigned long)(uintptr_t)rect, (unsigned long)(uintptr_t)flags); r_ = surf8_LockRect(This, locked_rect, rect, flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DSurface8::LockRect = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_surf8_UnlockRect(IDirect3DSurface8 *This) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DSurface8::UnlockRect %p", (void *)This); r_ = surf8_UnlockRect(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DSurface8::UnlockRect = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DSurface8Vtbl surf8_vtbl = {
-    surf8_QueryInterface,
+    t_surf8_QueryInterface,
     surf8_AddRef,
     surf8_Release,
     surf8_GetDevice,
@@ -401,8 +450,8 @@ static const IDirect3DSurface8Vtbl surf8_vtbl = {
     surf8_FreePrivateData,
     surf8_GetContainer,
     surf8_GetDesc,
-    surf8_LockRect,
-    surf8_UnlockRect,
+    t_surf8_LockRect,
+    t_surf8_UnlockRect,
 };
 
 typedef struct IDirect3DTexture8Vtbl {
@@ -447,26 +496,35 @@ HRESULT WINAPI tex8_GetSurfaceLevel(IDirect3DTexture8 *This, UINT Level,IDirect3
 HRESULT WINAPI tex8_LockRect(IDirect3DTexture8 *This, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags);
 HRESULT WINAPI tex8_UnlockRect(IDirect3DTexture8 *This, UINT Level);
 HRESULT WINAPI tex8_AddDirtyRect(IDirect3DTexture8 *This, const RECT *dirty_rect);
+static HRESULT WINAPI t_tex8_QueryInterface(IDirect3DTexture8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = tex8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static DWORD WINAPI t_tex8_SetPriority(IDirect3DTexture8 *This, DWORD PriorityNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::SetPriority %p PriorityNew=%08lx", (void *)This, (unsigned long)(uintptr_t)PriorityNew); r_ = tex8_SetPriority(This, PriorityNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::SetPriority = 0x%08lx", (unsigned long)r_); return r_; }
+static void WINAPI t_tex8_PreLoad(IDirect3DTexture8 *This) { if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::PreLoad %p", (void *)This); tex8_PreLoad(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::PreLoad"); }
+static DWORD WINAPI t_tex8_SetLOD(IDirect3DTexture8 *This, DWORD LODNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::SetLOD %p LODNew=%08lx", (void *)This, (unsigned long)(uintptr_t)LODNew); r_ = tex8_SetLOD(This, LODNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::SetLOD = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_tex8_GetLevelDesc(IDirect3DTexture8 *This, UINT Level, D3DSURFACE_DESC8 * pDesc) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::GetLevelDesc %p Level=%08lx pDesc=%08lx", (void *)This, (unsigned long)(uintptr_t)Level, (unsigned long)(uintptr_t)pDesc); r_ = tex8_GetLevelDesc(This, Level, pDesc); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::GetLevelDesc = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_tex8_GetSurfaceLevel(IDirect3DTexture8 *This, UINT Level, IDirect3DSurface8 ** ppSurfaceLevel) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::GetSurfaceLevel %p Level=%08lx ppSurfaceLevel=%08lx", (void *)This, (unsigned long)(uintptr_t)Level, (unsigned long)(uintptr_t)ppSurfaceLevel); r_ = tex8_GetSurfaceLevel(This, Level, ppSurfaceLevel); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::GetSurfaceLevel = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_tex8_LockRect(IDirect3DTexture8 *This, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::LockRect %p level=%08lx locked_rect=%08lx rect=%08lx flags=%08lx", (void *)This, (unsigned long)(uintptr_t)level, (unsigned long)(uintptr_t)locked_rect, (unsigned long)(uintptr_t)rect, (unsigned long)(uintptr_t)flags); r_ = tex8_LockRect(This, level, locked_rect, rect, flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::LockRect = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_tex8_UnlockRect(IDirect3DTexture8 *This, UINT Level) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::UnlockRect %p Level=%08lx", (void *)This, (unsigned long)(uintptr_t)Level); r_ = tex8_UnlockRect(This, Level); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::UnlockRect = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_tex8_AddDirtyRect(IDirect3DTexture8 *This, const RECT *dirty_rect) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DTexture8::AddDirtyRect %p dirty_rect=%08lx", (void *)This, (unsigned long)(uintptr_t)dirty_rect); r_ = tex8_AddDirtyRect(This, dirty_rect); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DTexture8::AddDirtyRect = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DTexture8Vtbl tex8_vtbl = {
-    tex8_QueryInterface,
+    t_tex8_QueryInterface,
     tex8_AddRef,
     tex8_Release,
     tex8_GetDevice,
     tex8_SetPrivateData,
     tex8_GetPrivateData,
     tex8_FreePrivateData,
-    tex8_SetPriority,
+    t_tex8_SetPriority,
     tex8_GetPriority,
-    tex8_PreLoad,
+    t_tex8_PreLoad,
     tex8_GetType,
-    tex8_SetLOD,
+    t_tex8_SetLOD,
     tex8_GetLOD,
     tex8_GetLevelCount,
-    tex8_GetLevelDesc,
-    tex8_GetSurfaceLevel,
-    tex8_LockRect,
-    tex8_UnlockRect,
-    tex8_AddDirtyRect,
+    t_tex8_GetLevelDesc,
+    t_tex8_GetSurfaceLevel,
+    t_tex8_LockRect,
+    t_tex8_UnlockRect,
+    t_tex8_AddDirtyRect,
 };
 
 typedef struct IDirect3DCubeTexture8Vtbl {
@@ -511,26 +569,35 @@ HRESULT WINAPI cube8_GetCubeMapSurface(IDirect3DCubeTexture8 *This, D3DCUBEMAP_F
 HRESULT WINAPI cube8_LockRect(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags);
 HRESULT WINAPI cube8_UnlockRect(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES FaceType,UINT Level);
 HRESULT WINAPI cube8_AddDirtyRect(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES face, const RECT *dirty_rect);
+static HRESULT WINAPI t_cube8_QueryInterface(IDirect3DCubeTexture8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = cube8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static DWORD WINAPI t_cube8_SetPriority(IDirect3DCubeTexture8 *This, DWORD PriorityNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::SetPriority %p PriorityNew=%08lx", (void *)This, (unsigned long)(uintptr_t)PriorityNew); r_ = cube8_SetPriority(This, PriorityNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::SetPriority = 0x%08lx", (unsigned long)r_); return r_; }
+static void WINAPI t_cube8_PreLoad(IDirect3DCubeTexture8 *This) { if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::PreLoad %p", (void *)This); cube8_PreLoad(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::PreLoad"); }
+static DWORD WINAPI t_cube8_SetLOD(IDirect3DCubeTexture8 *This, DWORD LODNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::SetLOD %p LODNew=%08lx", (void *)This, (unsigned long)(uintptr_t)LODNew); r_ = cube8_SetLOD(This, LODNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::SetLOD = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_cube8_GetLevelDesc(IDirect3DCubeTexture8 *This, UINT Level, D3DSURFACE_DESC8 * pDesc) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::GetLevelDesc %p Level=%08lx pDesc=%08lx", (void *)This, (unsigned long)(uintptr_t)Level, (unsigned long)(uintptr_t)pDesc); r_ = cube8_GetLevelDesc(This, Level, pDesc); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::GetLevelDesc = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_cube8_GetCubeMapSurface(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES FaceType, UINT Level, IDirect3DSurface8 ** ppCubeMapSurface) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::GetCubeMapSurface %p FaceType=%08lx Level=%08lx ppCubeMapSurface=%08lx", (void *)This, (unsigned long)(uintptr_t)FaceType, (unsigned long)(uintptr_t)Level, (unsigned long)(uintptr_t)ppCubeMapSurface); r_ = cube8_GetCubeMapSurface(This, FaceType, Level, ppCubeMapSurface); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::GetCubeMapSurface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_cube8_LockRect(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked_rect, const RECT *rect, DWORD flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::LockRect %p face=%08lx level=%08lx locked_rect=%08lx rect=%08lx flags=%08lx", (void *)This, (unsigned long)(uintptr_t)face, (unsigned long)(uintptr_t)level, (unsigned long)(uintptr_t)locked_rect, (unsigned long)(uintptr_t)rect, (unsigned long)(uintptr_t)flags); r_ = cube8_LockRect(This, face, level, locked_rect, rect, flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::LockRect = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_cube8_UnlockRect(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES FaceType, UINT Level) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::UnlockRect %p FaceType=%08lx Level=%08lx", (void *)This, (unsigned long)(uintptr_t)FaceType, (unsigned long)(uintptr_t)Level); r_ = cube8_UnlockRect(This, FaceType, Level); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::UnlockRect = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_cube8_AddDirtyRect(IDirect3DCubeTexture8 *This, D3DCUBEMAP_FACES face, const RECT *dirty_rect) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DCubeTexture8::AddDirtyRect %p face=%08lx dirty_rect=%08lx", (void *)This, (unsigned long)(uintptr_t)face, (unsigned long)(uintptr_t)dirty_rect); r_ = cube8_AddDirtyRect(This, face, dirty_rect); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DCubeTexture8::AddDirtyRect = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DCubeTexture8Vtbl cube8_vtbl = {
-    cube8_QueryInterface,
+    t_cube8_QueryInterface,
     cube8_AddRef,
     cube8_Release,
     cube8_GetDevice,
     cube8_SetPrivateData,
     cube8_GetPrivateData,
     cube8_FreePrivateData,
-    cube8_SetPriority,
+    t_cube8_SetPriority,
     cube8_GetPriority,
-    cube8_PreLoad,
+    t_cube8_PreLoad,
     cube8_GetType,
-    cube8_SetLOD,
+    t_cube8_SetLOD,
     cube8_GetLOD,
     cube8_GetLevelCount,
-    cube8_GetLevelDesc,
-    cube8_GetCubeMapSurface,
-    cube8_LockRect,
-    cube8_UnlockRect,
-    cube8_AddDirtyRect,
+    t_cube8_GetLevelDesc,
+    t_cube8_GetCubeMapSurface,
+    t_cube8_LockRect,
+    t_cube8_UnlockRect,
+    t_cube8_AddDirtyRect,
 };
 
 typedef struct IDirect3DVertexBuffer8Vtbl {
@@ -565,20 +632,25 @@ D3DRESOURCETYPE WINAPI vb8_GetType(IDirect3DVertexBuffer8 *This);
 HRESULT WINAPI vb8_Lock(IDirect3DVertexBuffer8 *This, UINT OffsetToLock, UINT SizeToLock, BYTE ** ppbData, DWORD Flags);
 HRESULT WINAPI vb8_Unlock(IDirect3DVertexBuffer8 *This);
 HRESULT WINAPI vb8_GetDesc(IDirect3DVertexBuffer8 *This, D3DVERTEXBUFFER_DESC * pDesc);
+static HRESULT WINAPI t_vb8_QueryInterface(IDirect3DVertexBuffer8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVertexBuffer8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = vb8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVertexBuffer8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static DWORD WINAPI t_vb8_SetPriority(IDirect3DVertexBuffer8 *This, DWORD PriorityNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVertexBuffer8::SetPriority %p PriorityNew=%08lx", (void *)This, (unsigned long)(uintptr_t)PriorityNew); r_ = vb8_SetPriority(This, PriorityNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVertexBuffer8::SetPriority = 0x%08lx", (unsigned long)r_); return r_; }
+static void WINAPI t_vb8_PreLoad(IDirect3DVertexBuffer8 *This) { if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVertexBuffer8::PreLoad %p", (void *)This); vb8_PreLoad(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVertexBuffer8::PreLoad"); }
+static HRESULT WINAPI t_vb8_Lock(IDirect3DVertexBuffer8 *This, UINT OffsetToLock, UINT SizeToLock, BYTE ** ppbData, DWORD Flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVertexBuffer8::Lock %p OffsetToLock=%08lx SizeToLock=%08lx ppbData=%08lx Flags=%08lx", (void *)This, (unsigned long)(uintptr_t)OffsetToLock, (unsigned long)(uintptr_t)SizeToLock, (unsigned long)(uintptr_t)ppbData, (unsigned long)(uintptr_t)Flags); r_ = vb8_Lock(This, OffsetToLock, SizeToLock, ppbData, Flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVertexBuffer8::Lock = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vb8_Unlock(IDirect3DVertexBuffer8 *This) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVertexBuffer8::Unlock %p", (void *)This); r_ = vb8_Unlock(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVertexBuffer8::Unlock = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DVertexBuffer8Vtbl vb8_vtbl = {
-    vb8_QueryInterface,
+    t_vb8_QueryInterface,
     vb8_AddRef,
     vb8_Release,
     vb8_GetDevice,
     vb8_SetPrivateData,
     vb8_GetPrivateData,
     vb8_FreePrivateData,
-    vb8_SetPriority,
+    t_vb8_SetPriority,
     vb8_GetPriority,
-    vb8_PreLoad,
+    t_vb8_PreLoad,
     vb8_GetType,
-    vb8_Lock,
-    vb8_Unlock,
+    t_vb8_Lock,
+    t_vb8_Unlock,
     vb8_GetDesc,
 };
 
@@ -614,20 +686,25 @@ D3DRESOURCETYPE WINAPI ib8_GetType(IDirect3DIndexBuffer8 *This);
 HRESULT WINAPI ib8_Lock(IDirect3DIndexBuffer8 *This, UINT OffsetToLock, UINT SizeToLock, BYTE ** ppbData, DWORD Flags);
 HRESULT WINAPI ib8_Unlock(IDirect3DIndexBuffer8 *This);
 HRESULT WINAPI ib8_GetDesc(IDirect3DIndexBuffer8 *This, D3DINDEXBUFFER_DESC * pDesc);
+static HRESULT WINAPI t_ib8_QueryInterface(IDirect3DIndexBuffer8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DIndexBuffer8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = ib8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DIndexBuffer8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static DWORD WINAPI t_ib8_SetPriority(IDirect3DIndexBuffer8 *This, DWORD PriorityNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DIndexBuffer8::SetPriority %p PriorityNew=%08lx", (void *)This, (unsigned long)(uintptr_t)PriorityNew); r_ = ib8_SetPriority(This, PriorityNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DIndexBuffer8::SetPriority = 0x%08lx", (unsigned long)r_); return r_; }
+static void WINAPI t_ib8_PreLoad(IDirect3DIndexBuffer8 *This) { if (d3dpt_trace_on) d3dpt_trace("> IDirect3DIndexBuffer8::PreLoad %p", (void *)This); ib8_PreLoad(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DIndexBuffer8::PreLoad"); }
+static HRESULT WINAPI t_ib8_Lock(IDirect3DIndexBuffer8 *This, UINT OffsetToLock, UINT SizeToLock, BYTE ** ppbData, DWORD Flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DIndexBuffer8::Lock %p OffsetToLock=%08lx SizeToLock=%08lx ppbData=%08lx Flags=%08lx", (void *)This, (unsigned long)(uintptr_t)OffsetToLock, (unsigned long)(uintptr_t)SizeToLock, (unsigned long)(uintptr_t)ppbData, (unsigned long)(uintptr_t)Flags); r_ = ib8_Lock(This, OffsetToLock, SizeToLock, ppbData, Flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DIndexBuffer8::Lock = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_ib8_Unlock(IDirect3DIndexBuffer8 *This) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DIndexBuffer8::Unlock %p", (void *)This); r_ = ib8_Unlock(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DIndexBuffer8::Unlock = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DIndexBuffer8Vtbl ib8_vtbl = {
-    ib8_QueryInterface,
+    t_ib8_QueryInterface,
     ib8_AddRef,
     ib8_Release,
     ib8_GetDevice,
     ib8_SetPrivateData,
     ib8_GetPrivateData,
     ib8_FreePrivateData,
-    ib8_SetPriority,
+    t_ib8_SetPriority,
     ib8_GetPriority,
-    ib8_PreLoad,
+    t_ib8_PreLoad,
     ib8_GetType,
-    ib8_Lock,
-    ib8_Unlock,
+    t_ib8_Lock,
+    t_ib8_Unlock,
     ib8_GetDesc,
 };
 
@@ -645,11 +722,13 @@ static ULONG WINAPI swap8_AddRef(IDirect3DSwapChain8 *This) { D3DPT_STUB("IDirec
 static ULONG WINAPI swap8_Release(IDirect3DSwapChain8 *This) { D3DPT_STUB("IDirect3DSwapChain8::Release"); return 0; }
 static HRESULT WINAPI swap8_Present(IDirect3DSwapChain8 *This, const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override, const RGNDATA *dirty_region) { D3DPT_STUB("IDirect3DSwapChain8::Present"); return E_NOTIMPL; }
 static HRESULT WINAPI swap8_GetBackBuffer(IDirect3DSwapChain8 *This, UINT BackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface8 ** ppBackBuffer) { D3DPT_STUB("IDirect3DSwapChain8::GetBackBuffer"); return E_NOTIMPL; }
+static HRESULT WINAPI t_swap8_QueryInterface(IDirect3DSwapChain8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DSwapChain8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = swap8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DSwapChain8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_swap8_Present(IDirect3DSwapChain8 *This, const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override, const RGNDATA *dirty_region) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DSwapChain8::Present %p src_rect=%08lx dst_rect=%08lx dst_window_override=%08lx dirty_region=%08lx", (void *)This, (unsigned long)(uintptr_t)src_rect, (unsigned long)(uintptr_t)dst_rect, (unsigned long)(uintptr_t)dst_window_override, (unsigned long)(uintptr_t)dirty_region); r_ = swap8_Present(This, src_rect, dst_rect, dst_window_override, dirty_region); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DSwapChain8::Present = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DSwapChain8Vtbl swap8_vtbl = {
-    swap8_QueryInterface,
+    t_swap8_QueryInterface,
     swap8_AddRef,
     swap8_Release,
-    swap8_Present,
+    t_swap8_Present,
     swap8_GetBackBuffer,
 };
 
@@ -695,26 +774,35 @@ static HRESULT WINAPI vtex8_GetVolumeLevel(IDirect3DVolumeTexture8 *This, UINT L
 static HRESULT WINAPI vtex8_LockBox(IDirect3DVolumeTexture8 *This, UINT level, D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) { D3DPT_STUB("IDirect3DVolumeTexture8::LockBox"); return E_NOTIMPL; }
 static HRESULT WINAPI vtex8_UnlockBox(IDirect3DVolumeTexture8 *This, UINT Level) { D3DPT_STUB("IDirect3DVolumeTexture8::UnlockBox"); return E_NOTIMPL; }
 static HRESULT WINAPI vtex8_AddDirtyBox(IDirect3DVolumeTexture8 *This, const D3DBOX *dirty_box) { D3DPT_STUB("IDirect3DVolumeTexture8::AddDirtyBox"); return E_NOTIMPL; }
+static HRESULT WINAPI t_vtex8_QueryInterface(IDirect3DVolumeTexture8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = vtex8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static DWORD WINAPI t_vtex8_SetPriority(IDirect3DVolumeTexture8 *This, DWORD PriorityNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::SetPriority %p PriorityNew=%08lx", (void *)This, (unsigned long)(uintptr_t)PriorityNew); r_ = vtex8_SetPriority(This, PriorityNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::SetPriority = 0x%08lx", (unsigned long)r_); return r_; }
+static void WINAPI t_vtex8_PreLoad(IDirect3DVolumeTexture8 *This) { if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::PreLoad %p", (void *)This); vtex8_PreLoad(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::PreLoad"); }
+static DWORD WINAPI t_vtex8_SetLOD(IDirect3DVolumeTexture8 *This, DWORD LODNew) { DWORD r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::SetLOD %p LODNew=%08lx", (void *)This, (unsigned long)(uintptr_t)LODNew); r_ = vtex8_SetLOD(This, LODNew); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::SetLOD = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vtex8_GetLevelDesc(IDirect3DVolumeTexture8 *This, UINT Level, D3DVOLUME_DESC8 * pDesc) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::GetLevelDesc %p Level=%08lx pDesc=%08lx", (void *)This, (unsigned long)(uintptr_t)Level, (unsigned long)(uintptr_t)pDesc); r_ = vtex8_GetLevelDesc(This, Level, pDesc); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::GetLevelDesc = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vtex8_GetVolumeLevel(IDirect3DVolumeTexture8 *This, UINT Level, IDirect3DVolume8 ** ppVolumeLevel) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::GetVolumeLevel %p Level=%08lx ppVolumeLevel=%08lx", (void *)This, (unsigned long)(uintptr_t)Level, (unsigned long)(uintptr_t)ppVolumeLevel); r_ = vtex8_GetVolumeLevel(This, Level, ppVolumeLevel); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::GetVolumeLevel = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vtex8_LockBox(IDirect3DVolumeTexture8 *This, UINT level, D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::LockBox %p level=%08lx locked_box=%08lx box=%08lx flags=%08lx", (void *)This, (unsigned long)(uintptr_t)level, (unsigned long)(uintptr_t)locked_box, (unsigned long)(uintptr_t)box, (unsigned long)(uintptr_t)flags); r_ = vtex8_LockBox(This, level, locked_box, box, flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::LockBox = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vtex8_UnlockBox(IDirect3DVolumeTexture8 *This, UINT Level) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::UnlockBox %p Level=%08lx", (void *)This, (unsigned long)(uintptr_t)Level); r_ = vtex8_UnlockBox(This, Level); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::UnlockBox = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vtex8_AddDirtyBox(IDirect3DVolumeTexture8 *This, const D3DBOX *dirty_box) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolumeTexture8::AddDirtyBox %p dirty_box=%08lx", (void *)This, (unsigned long)(uintptr_t)dirty_box); r_ = vtex8_AddDirtyBox(This, dirty_box); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolumeTexture8::AddDirtyBox = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DVolumeTexture8Vtbl vtex8_vtbl = {
-    vtex8_QueryInterface,
+    t_vtex8_QueryInterface,
     vtex8_AddRef,
     vtex8_Release,
     vtex8_GetDevice,
     vtex8_SetPrivateData,
     vtex8_GetPrivateData,
     vtex8_FreePrivateData,
-    vtex8_SetPriority,
+    t_vtex8_SetPriority,
     vtex8_GetPriority,
-    vtex8_PreLoad,
+    t_vtex8_PreLoad,
     vtex8_GetType,
-    vtex8_SetLOD,
+    t_vtex8_SetLOD,
     vtex8_GetLOD,
     vtex8_GetLevelCount,
-    vtex8_GetLevelDesc,
-    vtex8_GetVolumeLevel,
-    vtex8_LockBox,
-    vtex8_UnlockBox,
-    vtex8_AddDirtyBox,
+    t_vtex8_GetLevelDesc,
+    t_vtex8_GetVolumeLevel,
+    t_vtex8_LockBox,
+    t_vtex8_UnlockBox,
+    t_vtex8_AddDirtyBox,
 };
 
 typedef struct IDirect3DVolume8Vtbl {
@@ -743,8 +831,11 @@ static HRESULT WINAPI vol8_GetContainer(IDirect3DVolume8 *This, REFIID riid, voi
 static HRESULT WINAPI vol8_GetDesc(IDirect3DVolume8 *This, D3DVOLUME_DESC8 * pDesc) { D3DPT_STUB("IDirect3DVolume8::GetDesc"); return E_NOTIMPL; }
 static HRESULT WINAPI vol8_LockBox(IDirect3DVolume8 *This, D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) { D3DPT_STUB("IDirect3DVolume8::LockBox"); return E_NOTIMPL; }
 static HRESULT WINAPI vol8_UnlockBox(IDirect3DVolume8 *This) { D3DPT_STUB("IDirect3DVolume8::UnlockBox"); return E_NOTIMPL; }
+static HRESULT WINAPI t_vol8_QueryInterface(IDirect3DVolume8 *This, REFIID riid, void** ppvObject) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolume8::QueryInterface %p riid=%08lx ppvObject=%08lx", (void *)This, (unsigned long)(uintptr_t)riid, (unsigned long)(uintptr_t)ppvObject); r_ = vol8_QueryInterface(This, riid, ppvObject); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolume8::QueryInterface = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vol8_LockBox(IDirect3DVolume8 *This, D3DLOCKED_BOX *locked_box, const D3DBOX *box, DWORD flags) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolume8::LockBox %p locked_box=%08lx box=%08lx flags=%08lx", (void *)This, (unsigned long)(uintptr_t)locked_box, (unsigned long)(uintptr_t)box, (unsigned long)(uintptr_t)flags); r_ = vol8_LockBox(This, locked_box, box, flags); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolume8::LockBox = 0x%08lx", (unsigned long)r_); return r_; }
+static HRESULT WINAPI t_vol8_UnlockBox(IDirect3DVolume8 *This) { HRESULT r_; if (d3dpt_trace_on) d3dpt_trace("> IDirect3DVolume8::UnlockBox %p", (void *)This); r_ = vol8_UnlockBox(This); if (d3dpt_trace_on) d3dpt_trace("< IDirect3DVolume8::UnlockBox = 0x%08lx", (unsigned long)r_); return r_; }
 static const IDirect3DVolume8Vtbl vol8_vtbl = {
-    vol8_QueryInterface,
+    t_vol8_QueryInterface,
     vol8_AddRef,
     vol8_Release,
     vol8_GetDevice,
@@ -753,8 +844,8 @@ static const IDirect3DVolume8Vtbl vol8_vtbl = {
     vol8_FreePrivateData,
     vol8_GetContainer,
     vol8_GetDesc,
-    vol8_LockBox,
-    vol8_UnlockBox,
+    t_vol8_LockBox,
+    t_vol8_UnlockBox,
 };
 
 typedef struct IDirect3DBaseTexture8Vtbl {

@@ -149,8 +149,16 @@ struct Shared {
     front: Frame,
     // wakes the render thread after each publish (event-loop proxy)
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
-    // qemu-3dfx pass-through active: VGA updates stop, frames come from swaps
+    // 3D pass-through active (GL swaps or the Direct3D device's presents)
     three_d: bool,
+    // the last 3D frame's instant, and whether the VGA surface changed since
+    // the last publish: while 3D is active the VGA surface is shown only when
+    // no 3D frame arrived for VGA_FALLBACK and the guest drew on it (a game
+    // waiting at a DirectShow movie or a dialog, a process that died without
+    // releasing the device)
+    last_3d: Option<std::time::Instant>,
+    vga_dirty: bool,
+    showing_vga: bool,
     // zero-copy: the GPU side can import dma-bufs; offered slots wait here
     zero_copy: bool,
     dmabufs: Vec<DmaBuf>,
@@ -218,12 +226,14 @@ unsafe extern "C" fn on_switch(
     let n = s.width * s.height;
     s.back.clear();
     s.back.resize(n, 0);
+    s.vga_dirty = true;
     copy_rect(&mut s, 0, 0, w as usize, h as usize);
 }
 
 unsafe extern "C" fn on_update(ud: *mut c_void, x: c_int, y: c_int, w: c_int, h: c_int) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    s.vga_dirty = true;
     copy_rect(&mut s, x as usize, y as usize, w as usize, h as usize);
 }
 
@@ -234,11 +244,24 @@ unsafe extern "C" fn on_3d_active(ud: *mut c_void, active: bool) {
     eprintln!("[3d] pass-through {}", if active { "on" } else { "off" });
 }
 
+/// While 3D is active, the VGA surface is shown once no 3D frame has
+/// arrived for this long and the guest has drawn on the surface since.
+const VGA_FALLBACK: std::time::Duration = std::time::Duration::from_millis(1000);
+
+fn note_3d_frame(s: &mut Shared) {
+    s.last_3d = Some(std::time::Instant::now());
+    if s.showing_vga {
+        s.showing_vga = false;
+        eprintln!("[display] 3D frames again, VGA surface hidden");
+    }
+}
+
 /// A presented 3D frame (vCPU thread): publish it directly, this is the
 /// guest's vsync point, not the refresh tick.
 unsafe extern "C" fn on_3d_frame(ud: *mut c_void, px: *const u8, w: c_int, h: c_int, stride: c_int) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    note_3d_frame(&mut s);
     let (w, h, stride) = (w as usize, h as usize, stride as usize);
     if s.front.width != w || s.front.height != h {
         s.front.width = w;
@@ -319,6 +342,7 @@ unsafe extern "C" fn on_3d_iosurface(
 unsafe extern "C" fn on_3d_frame_ready(ud: *mut c_void, slot: c_int) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    note_3d_frame(&mut s);
     s.front.ext_slot = Some(slot as usize);
     s.front.seq += 1;
     s.front.published = std::time::Instant::now();
@@ -344,10 +368,23 @@ fn is_uniform(px: &[u32]) -> bool {
 unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
-    if s.width == 0 || s.three_d {
-        // 3D active: the VGA back buffer is stale, swaps publish instead
+    if s.width == 0 {
         return;
     }
+    if s.three_d {
+        // 3D active: recent 3D frames win; the VGA surface is shown only
+        // once they stop and the guest drew on it (GL pass-through never
+        // updates the surface, so nothing changes there)
+        let recent = s.last_3d.map_or(false, |t| t.elapsed() < VGA_FALLBACK);
+        if recent || !s.vga_dirty {
+            return;
+        }
+        if !s.showing_vga {
+            s.showing_vga = true;
+            eprintln!("[display] no 3D frame for {} ms and the guest drew on the VGA surface: showing it", VGA_FALLBACK.as_millis());
+        }
+    }
+    s.vga_dirty = false;
     let (w, h) = (s.width, s.height);
     if s.front.width != w || s.front.height != h {
         s.front.width = w;
@@ -492,6 +529,9 @@ pub fn start(
         },
         waker,
         three_d: false,
+        last_3d: None,
+        vga_dirty: false,
+        showing_vga: false,
         zero_copy,
         dmabufs: Vec::new(),
         stopped: false,
