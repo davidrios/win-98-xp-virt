@@ -93,8 +93,21 @@ pub fn user_data_range(kind: SectorKind) -> Option<(usize, usize)> {
     }
 }
 
+/// Sync pattern present and the header's mode byte matches the kind.
+pub fn has_sync_header(raw: &[u8; 2352], kind: SectorKind) -> bool {
+    raw[..12] == SYNC
+        && match kind {
+            SectorKind::Mode1 => raw[15] == 1,
+            SectorKind::Mode2Form1 | SectorKind::Mode2Form2 | SectorKind::Mode2Formless => raw[15] == 2,
+            _ => true,
+        }
+}
+
 /// L-EC verification of a raw sector of the given kind.
 pub fn verify(raw: &[u8; 2352], kind: SectorKind) -> ecc::Lec {
+    if kind.is_data() && !has_sync_header(raw, kind) {
+        return ecc::Lec::NoSync;
+    }
     match kind {
         SectorKind::Mode1 => ecc::verify_mode1(raw),
         SectorKind::Mode2Form1 => ecc::verify_mode2_form1(raw),

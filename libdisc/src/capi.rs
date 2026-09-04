@@ -100,6 +100,8 @@ pub unsafe extern "C" fn libdisc_probe(head: *const u8, len: usize, filename: *c
             100
         } else if name.ends_with(".ccd") && sniffed == Some("ccd") {
             100
+        } else if name.ends_with(".mds") && sniffed == Some("mds") {
+            100
         } else {
             0
         }

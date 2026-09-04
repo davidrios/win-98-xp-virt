@@ -34,13 +34,17 @@
 #
 # Guest stage
 #   sse-guest      tools/sse-guest-test.py: the SSE battery, sse-fast on/off identical (doc 16)
+#   atapi-guest    tools/atapi-guest-test.py: a DOS program drives the ATAPI drive
+#                  on the selftest's flipped-sector cue by PIO (patch 51); every
+#                  reply identical to discx's at byte-count limits 512 and 65534
 #   x87-guest      tools/x87-guest-test.py: a DOS x87 battery under TCG,
 #                  identical with the fast path on and off (needs nasm,
 #                  mtools and the FreeDOS floppy the tool fetches on first use)
 #   guest-cdimage  tools/xp-cdimage-test.sh: XP boots with the guest-tools ISO
-#                  converted to a cue (+ an audio track) as -cdrom (probe path)
-#                  and copies the whole disc through cdrom.sys; every file
-#                  must match the ISO's
+#                  converted to a cue (+ a 1 kHz tone track) as its CD-ROM and
+#                  copies the whole disc through cdrom.sys; every file must
+#                  match the ISO's; with mingw, CDTEST.EXE then plays the tone
+#                  through MCI and the drive's audiodev (a wav) must carry it
 #   XP (Linux; KVM when /dev/kvm is usable, TCG otherwise):
 #   boots WINXP_IMG read-only (snapshot=on) with the newest guest-tools ISO
 #   and a fresh FAT32 scratch disk carrying RUN.BAT, drives the Run dialog
@@ -202,6 +206,7 @@ guest_stage() {
     if [ -f build/images/144m/x86BOOT.img ]; then
       run_check x87-guest x87-guest.log python3 tools/x87-guest-test.py || true
       run_check sse-guest sse-guest.log python3 tools/sse-guest-test.py || true
+      run_check atapi-guest atapi-guest.log python3 tools/atapi-guest-test.py || true
     else skip x87-guest "no FreeDOS floppy yet: run tools/x87-guest-test.py once to fetch it"; fi
   else skip x87-guest "needs nasm, mtools and build/qemu"; fi
   if [ "$OS" != Linux ]; then skip guest "Linux only for now (mkfs.fat, sfdisk, mtools)"; return; fi
@@ -214,7 +219,13 @@ guest_stage() {
     rm -rf "$OUT/gt-iso"; mkdir -p "$OUT/gt-iso" "$OUT/disc"
     if bsdtar -xf "$iso" -C "$OUT/gt-iso" 2>/dev/null \
        && target/release/discx convert "$iso" "$OUT/disc/gt.cue" --audio "$OUT/disc/tone.wav" >/dev/null 2>&1; then
-      run_check guest-cdimage guest-cdimage.log tools/xp-cdimage-test.sh "$img" "$OUT/disc/gt.cue" "$OUT/gt-iso" "$OUT/cdimage-xp" || true
+      # with mingw the run also plays the tone track through MCI into a wav (CD-DA, doc 17 §5.4)
+      cdtest=""
+      if command -v i686-w64-mingw32-gcc >/dev/null && i686-w64-mingw32-gcc -O2 -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
+           -march=pentium3 -mtune=generic -o "$OUT/CDTEST.EXE" guest-tools/src/cdtest.c -lwinmm 2>"$OUT/cdtest-build.log"; then
+        cdtest="$OUT/CDTEST.EXE"
+      else echo "  (no mingw: guest-cdimage runs without the CD audio part)"; fi
+      CDTEST="$cdtest" run_check guest-cdimage guest-cdimage.log tools/xp-cdimage-test.sh "$img" "$OUT/disc/gt.cue" "$OUT/gt-iso" "$OUT/cdimage-xp" || true
     else skip guest-cdimage "could not extract or convert $iso"; fi
   else skip guest-cdimage "needs target/release/discx and bsdtar"; fi
   [ -f "$D3DPT_EXEC_LIB" ] || { skip guest "no $D3DPT_EXEC_LIB"; return; }

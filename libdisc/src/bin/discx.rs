@@ -2,6 +2,7 @@
 //!
 //!   discx selftest <outdir>            write synthetic images, check the model through them
 //!   discx info <image>                 sessions, tracks, indices, extents
+//!   discx scan <image> [first] [count] every sector classified and L-EC verified: kinds, failures, ranges
 //!   discx dump <image> <what> [args]   hex of one answer: readraw <lba> | readcooked <lba> | sub <lba> | info <lba>
 //!                                      | toc <format> [msf] [start] | subq <lba> [format] [msf] [track] | discinfo
 //!                                      | readcd <lba> <type> <byte9> <byte10>
@@ -104,6 +105,20 @@ const T3_PREGAP: i32 = 150; // PREGAP, not in the file
 const T3_LEN: i32 = 1500;
 const MCN: &str = "1234567890123";
 const ISRC: &str = "USABC0912345";
+
+/// stdout writes that survive a closed pipe (`discx dump … | head`)
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        let _ = write!(std::io::stdout(), $($arg)*);
+    }};
+}
 
 struct Checks {
     fails: u32,
@@ -358,6 +373,12 @@ fn check_lec(dir: &Path) -> Result<(), String> {
     expect("flipped byte", r[500], bin[at])?;
     let info = disc.sector_info(1000).map_err(|e| e.to_string())?;
     expect("sector_info", info, LibdiscSectorInfo { kind: 1, track: 1, index: 1, lec: 0 })?;
+    // READ CD: a cooked request (user data, no EDC/ECC) fails like READ(10); a raw one delivers the bytes
+    expect("read_cd cooked of the flipped sector", disc.read_cd(1000, 2, 0x10, 0).err(), Some(capi::LIBDISC_EMEDIUM))?;
+    expect("read_cd type 0 cooked of the flipped sector", disc.read_cd(1000, 0, 0x10, 0).err(), Some(capi::LIBDISC_EMEDIUM))?;
+    expect("read_cd header+user of the flipped sector", disc.read_cd(1000, 2, 0x30, 0).err(), Some(capi::LIBDISC_EMEDIUM))?;
+    expect("read_cd raw of the flipped sector", disc.read_cd(1000, 2, 0xF8, 0).map(|v| v.len()), Ok(2352))?;
+    expect("read_cd user+edc of the flipped sector", disc.read_cd(1000, 2, 0x18, 0).map(|v| v.len()), Ok(2336))?;
     // READ CD with C2 pointers: ≥ 1 bit set, block error byte set; the raw bytes still delivered
     let rc = disc.read_cd(1000, 2, 0xFA, 0).map_err(|e| format!("read_cd c2: {e}"))?;
     expect("read_cd c2 length", rc.len(), 2352 + 294)?;
@@ -377,6 +398,17 @@ fn check_lec(dir: &Path) -> Result<(), String> {
     for lba in [999, 1001] {
         disc.read_cooked(lba).map_err(|e| format!("neighbour {lba}: {e}"))?;
         expect(&format!("neighbour {lba} lec"), disc.sector_info(lba).map_err(|e| e.to_string())?.lec, 1)?;
+    }
+    // a zero-filled sector (what a dump tool writes for an unreadable one) fails too
+    let mut bin3 = fs::read(dir.join("mixed.bin")).map_err(|e| e.to_string())?;
+    bin3[1200 * 2352..1201 * 2352].fill(0);
+    fs::write(dir.join("lec.bin"), &bin3).map_err(|e| e.to_string())?;
+    let d = CDisc::open(&dir.join("lec.cue"))?;
+    expect("zero-filled sector cooked", d.read_cooked(1200).err(), Some(capi::LIBDISC_EMEDIUM))?;
+    expect("zero-filled sector info", d.sector_info(1200).map(|i| i.lec), Ok(0))?;
+    let rc = d.read_cd(1200, 2, 0xFA, 0).map_err(|e| e.to_string())?;
+    if rc[2352..].iter().any(|&b| b != 0xFF) {
+        return Err("C2 bits of a zero-filled sector are not all set".into());
     }
     // an EDC-only mismatch (byte 2064) and a parity-only mismatch (byte 2100) both fail
     for (off, name) in [(2064usize, "edc"), (2100usize, "parity")] {
@@ -824,21 +856,21 @@ fn selftest(dir: &Path) -> i32 {
 
 fn hex(bytes: &[u8]) {
     for (i, row) in bytes.chunks(16).enumerate() {
-        print!("{:06x} ", i * 16);
+        out!("{:06x} ", i * 16);
         for b in row {
-            print!(" {b:02x}");
+            out!(" {b:02x}");
         }
-        println!();
+        outln!();
     }
 }
 
 fn info(disc: &Disc) {
-    println!("sectors {}  sessions {}  tracks {}", disc.sector_count(), disc.sessions.len(), disc.track_count());
+    outln!("sectors {}  sessions {}  tracks {}", disc.sector_count(), disc.sessions.len(), disc.track_count());
     if let Some(m) = disc.mcn {
-        println!("catalog {}", String::from_utf8_lossy(&m));
+        outln!("catalog {}", String::from_utf8_lossy(&m));
     }
     for s in &disc.sessions {
-        println!("session {}  lead-out {}", s.number, s.leadout_lba);
+        outln!("session {}  lead-out {}", s.number, s.leadout_lba);
         for t in &s.tracks {
             let mode = match t.mode {
                 TrackMode::Audio => "audio",
@@ -849,16 +881,79 @@ fn info(disc: &Disc) {
                 TrackMode::Mode2Formless => "cdi",
             };
             let idx: Vec<String> = t.indices.iter().map(|(i, l)| format!("{i:02}@{l}")).collect();
-            print!("  track {:02} {mode:<8} ctl {:x}  [{} .. {})  indices {}", t.number, t.control, t.first_lba(), t.end_lba, idx.join(" "));
+            out!("  track {:02} {mode:<8} ctl {:x}  [{} .. {})  indices {}", t.number, t.control, t.first_lba(), t.end_lba, idx.join(" "));
             if let Some(i) = t.isrc {
-                print!("  isrc {}", String::from_utf8_lossy(&i));
+                out!("  isrc {}", String::from_utf8_lossy(&i));
             }
-            println!();
+            outln!();
             for e in &t.extents {
-                println!("    extent {} +{}  {:?}{}", e.lba, e.count, e.source, if e.sub.is_some() { " +sub" } else { "" });
+                outln!("    extent {} +{}  {:?}{}", e.lba, e.count, e.source, if e.sub.is_some() { " +sub" } else { "" });
             }
         }
     }
+}
+
+/// Walk the disc: kind histogram, L-EC failures (listed as ranges), and
+/// whether stored subchannel frames verify.
+fn scan(disc: &Disc, first: i32, count: Option<i32>) -> Result<(), String> {
+    let n = disc.sector_count() as i32;
+    let end = count.map(|c| (first + c).min(n)).unwrap_or(n);
+    let mut kinds = [0u64; 6];
+    let mut lec_fail: Vec<i32> = Vec::new();
+    let mut edc_only = 0u64;
+    let mut no_sync = 0u64;
+    let mut q_bad = 0u64;
+    let mut q_seen = 0u64;
+    let mut raw = [0u8; 2352];
+    let mut sub = [0u8; 96];
+    let t0 = std::time::Instant::now();
+    for lba in first..end {
+        let (kind, _, _) = disc.classify(lba).map_err(|e| format!("{lba}: {e}"))?;
+        kinds[kind.code() as usize] += 1;
+        if kind.is_data() {
+            disc.read_raw(lba, &mut raw).map_err(|e| format!("{lba}: {e}"))?;
+            match sector::verify(&raw, kind) {
+                libdisc::ecc::Lec::Ok => {}
+                libdisc::ecc::Lec::EdcMismatch => {
+                    edc_only += 1;
+                    lec_fail.push(lba);
+                }
+                libdisc::ecc::Lec::EccMismatch => lec_fail.push(lba),
+                libdisc::ecc::Lec::NoSync => {
+                    no_sync += 1;
+                    lec_fail.push(lba);
+                }
+            }
+        }
+        if lba % 7 == 0 {
+            disc.read_sub(lba, &mut sub).map_err(|e| format!("{lba}: {e}"))?;
+            q_seen += 1;
+            if !subq::q_crc_ok(&sub[12..24]) {
+                q_bad += 1;
+            }
+        }
+    }
+    let names = ["audio", "mode1", "mode2 form1", "mode2 form2", "mode2 formless", "gap"];
+    outln!("sectors {first}..{end} of {n} in {:.1} s", t0.elapsed().as_secs_f64());
+    for (i, k) in kinds.iter().enumerate() {
+        if *k > 0 {
+            outln!("  {:<15} {k}", names[i]);
+        }
+    }
+    outln!("  L-EC failures   {} ({} with the EDC wrong too, {} without a sync pattern)", lec_fail.len(), edc_only, no_sync);
+    if !lec_fail.is_empty() {
+        let mut ranges: Vec<(i32, i32)> = Vec::new();
+        for &l in &lec_fail {
+            match ranges.last_mut() {
+                Some(r) if r.1 + 1 == l => r.1 = l,
+                _ => ranges.push((l, l)),
+            }
+        }
+        let shown: Vec<String> = ranges.iter().take(40).map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect();
+        outln!("  failing LBAs    {}{}", shown.join(" "), if ranges.len() > 40 { format!(" … ({} ranges)", ranges.len()) } else { String::new() });
+    }
+    outln!("  Q frames        {q_seen} sampled, {q_bad} with a bad CRC");
+    Ok(())
 }
 
 fn dump(disc: &Disc, what: &str, args: &[String]) -> Result<(), String> {
@@ -888,7 +983,7 @@ fn dump(disc: &Disc, what: &str, args: &[String]) -> Result<(), String> {
         }
         "info" => {
             let i = disc.sector_info(lba(0)?).map_err(|e| e.to_string())?;
-            println!("{i:?}");
+            outln!("{i:?}");
         }
         "toc" => {
             // toc <format> [msf] [start]
@@ -955,12 +1050,12 @@ fn convert(input: &Path, out_cue: &Path, wavs: &[PathBuf]) -> Result<(), String>
         pos += count;
     }
     fs::write(out_cue, cue).map_err(|e| e.to_string())?;
-    println!("{}: {} data sectors, {} audio tracks", out_cue.display(), n, wavs.len());
+    outln!("{}: {} data sectors, {} audio tracks", out_cue.display(), n, wavs.len());
     Ok(())
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: discx selftest <outdir> | info <image> | dump <image> <what> [args] | convert <in.iso> <out.cue> [--audio a.wav ...]");
+    eprintln!("usage: discx selftest <outdir> | info <image> | scan <image> [first] [count] | dump <image> <what> [args] | convert <in.iso> <out.cue> [--audio a.wav ...]");
     2
 }
 
@@ -971,6 +1066,23 @@ fn main() {
     }
     let rc = match args[1].as_str() {
         "selftest" => selftest(Path::new(&args[2])),
+        "scan" => match Disc::open(Path::new(&args[2])) {
+            Ok(d) => {
+                let first = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let count = args.get(4).and_then(|v| v.parse().ok());
+                match scan(&d, first, count) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        },
         "info" => match Disc::open(Path::new(&args[2])) {
             Ok(d) => {
                 info(&d);

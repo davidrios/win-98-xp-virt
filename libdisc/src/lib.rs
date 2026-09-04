@@ -14,6 +14,7 @@ pub mod ccd;
 pub mod cue;
 pub mod ecc;
 pub mod iso;
+pub mod mds;
 pub mod mmc;
 pub mod msf;
 pub mod sector;
@@ -343,6 +344,7 @@ impl Disc {
         match ext.as_str() {
             "cue" => cue::open(path),
             "ccd" => ccd::open(path),
+            "mds" => mds::open(path),
             "iso" => iso::open(path),
             _ => {
                 let mut head = [0u8; 4096];
@@ -362,6 +364,7 @@ impl Disc {
                 match sniff(&head[..n]) {
                     Some("cue") => cue::open(path),
                     Some("ccd") => ccd::open(path),
+                    Some("mds") => mds::open(path),
                     Some("iso") => iso::open(path),
                     _ => Err(Error::Invalid(format!("{}: not a disc image libdisc reads", path.display()))),
                 }
@@ -591,6 +594,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     let t = text.to_ascii_uppercase();
     if t.trim_start().starts_with("[CLONECD]") {
         return Some("ccd");
+    }
+    if head.starts_with(b"MEDIA DESCRIPTOR") {
+        return Some("mds");
     }
     if t.contains("TRACK ") && t.contains("FILE ") && t.contains("INDEX ") {
         return Some("cue");

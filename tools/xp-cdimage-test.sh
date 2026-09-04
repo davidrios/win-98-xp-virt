@@ -12,6 +12,11 @@
 # Prints PASS/FAIL, the copied file count, DIR output head and the QEMU log's
 # cdimage lines. Exit 1 on any difference. Env: TEST_ACCEL=kvm|tcg,
 # BOOT_TIMEOUT (300 s), TEST_KEEP=1 leaves XP running on failure.
+# CDTEST=<path to CDTEST.EXE>: also CD audio (doc 17 §5.4) — the drive gets
+# `-device ide-cd,audiodev=` on a `-audiodev wav` so the tone the guest plays
+# through MCI (CDTEST.EXE from the scratch disk after the copy) lands in
+# <outdir>/cd.wav, whose loudest second must be a 1 kHz tone (the selftest
+# disc's / `discx convert --audio tone.wav`'s track 2); cdtest.log is pulled.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -22,19 +27,30 @@ for t in mkfs.fat sfdisk mcopy mmd; do command -v $t >/dev/null || { echo "needs
 accel="${TEST_ACCEL:-}"; if [ -z "$accel" ]; then if [ -w /dev/kvm ]; then accel=kvm; else accel=tcg; fi; fi
 cpu=(-cpu pentium3); [ "$accel" = kvm ] && cpu=(-cpu host)
 
-scratch="$OUT/scratch.img"; rm -f "$scratch"; truncate -s 64M "$scratch"
+# scratch FAT32 sized for the disc: the reference's bytes + 64 MB (sparse)
+need=$(( ($(du -sb "$REF" | cut -f1) / 1048576 + 64) ))
+scratch="$OUT/scratch.img"; rm -f "$scratch"; truncate -s "${need}M" "$scratch"
 printf 'label: dos\nstart=2048, type=c\n' | sfdisk -q "$scratch" >/dev/null
 mkfs.fat -F 32 --offset 2048 "$scratch" >/dev/null
 fat="$scratch@@1048576"
 printf '@echo off\r\nmkdir E:\\OUT\r\necho started > E:\\OUT\\STARTED.TXT\r\ndir D:\\ /S > E:\\OUT\\DIR.TXT\r\nxcopy D:\\ E:\\CD\\ /I /Y /S /E /H > E:\\OUT\\XCOPY.TXT\r\necho %%ERRORLEVEL%% > E:\\OUT\\XCOPYRC.TXT\r\necho done > E:\\OUT\\DONE.TXT\r\n' > "$OUT/RUN.BAT"
 mcopy -i "$fat" "$OUT/RUN.BAT" ::/RUN.BAT
+cdargs=(-cdrom "$DISC")
+if [ -n "${CDTEST:-}" ]; then
+  [ -f "$CDTEST" ] || { echo "CDTEST=$CDTEST not found"; exit 2; }
+  mcopy -i "$fat" "$CDTEST" ::/CDTEST.EXE
+  printf '@echo off\r\nmkdir E:\\OUT\r\necho started > E:\\OUT\\STARTED.TXT\r\ndir D:\\ /S > E:\\OUT\\DIR.TXT\r\nxcopy D:\\ E:\\CD\\ /I /Y /S /E /H > E:\\OUT\\XCOPY.TXT\r\necho %%ERRORLEVEL%% > E:\\OUT\\XCOPYRC.TXT\r\ncd /d E:\\OUT\r\nE:\\CDTEST.EXE D 4 > E:\\OUT\\CDTEST.TXT\r\necho done > E:\\OUT\\DONE.TXT\r\n' > "$OUT/RUN.BAT"
+  mcopy -o -i "$fat" "$OUT/RUN.BAT" ::/RUN.BAT
+  rm -f "$OUT/cd.wav"
+  cdargs=(-audiodev "wav,id=cd0,path=$OUT/cd.wav" -drive "if=none,id=cd0,media=cdrom,file=$DISC" -device "ide-cd,bus=ide.1,drive=cd0,audiodev=cd0")
+fi
 
 SOCK="$OUT/qmp.sock"; rm -f "$SOCK"; qlog="$OUT/qemu.log"
 qmp() { python3 tools/qmpc.py "$SOCK" "$@" >/dev/null; }
 echo "XP: $IMG (snapshot), disc: $DISC, accel: $accel"
 build/qemu/qemu-system-i386 -L qemu/pc-bios -accel "$accel" "${cpu[@]}" -machine pc -m 512 \
   -drive "file=$IMG,if=ide,index=0,media=disk,snapshot=on" -drive "file=$scratch,format=raw,if=ide,index=1,media=disk" \
-  -cdrom "$DISC" -vga cirrus -net none -usb -device usb-tablet -display none -serial none -monitor none \
+  "${cdargs[@]}" -vga cirrus -net none -usb -device usb-tablet -display none -serial none -monitor none \
   -qmp "unix:$SOCK,server,nowait" >"$qlog" 2>&1 &
 QEMU_PID=$!
 teardown() {
@@ -80,5 +96,40 @@ while IFS= read -r -d '' f; do
 done < <(find "$REF" -type f -print0)
 extra=$(( $(find "$OUT/cd" -type f | wc -l) - n ))
 [ "$extra" -ne 0 ] && echo "  $extra file(s) on the copy that are not in the reference"
+[ "$n" -gt 0 ] || { echo "FAIL: no reference files under $REF (extract the ISO with bsdtar, or xorriso -osirrox on -indev x.iso -extract / dir)"; rc=1; }
+if [ -n "${CDTEST:-}" ]; then
+  mcopy -n -i "$fat" ::/OUT/cdtest.log "$OUT/cdtest.log" 2>/dev/null || mcopy -n -i "$fat" ::/OUT/CDTEST.LOG "$OUT/cdtest.log" 2>/dev/null
+  echo "cdtest.log:"; tr -d '\r' < "$OUT/cdtest.log" 2>/dev/null | grep -E 'tracks|play|position|mode|RESULT|error' | head -30 | sed 's/^/    /'
+  if grep -q 'RESULT ok' "$OUT/cdtest.log" 2>/dev/null && python3 - "$OUT/cd.wav" <<'PY'
+import struct, sys, math
+p = sys.argv[1]
+d = open(p, 'rb').read()
+i = d.find(b'data'); assert i > 0, "no data chunk"
+n = struct.unpack('<I', d[i+4:i+8])[0]; pcm = d[i+8:i+8+n]
+rate = struct.unpack('<I', d[24:28])[0]; ch = struct.unpack('<H', d[22:24])[0]
+frames = len(pcm) // (2 * ch)
+print("wav: %d frames, %d Hz, %d ch, %.1f s" % (frames, rate, ch, frames / rate))
+best = (0, 0)
+for sec in range(int(frames / rate)):
+    s = pcm[sec * rate * 2 * ch:(sec + 1) * rate * 2 * ch]
+    v = struct.unpack('<%dh' % (len(s) // 2), s)[::ch]
+    rms = math.sqrt(sum(x * x for x in v) / len(v))
+    if rms > best[0]: best = (rms, sec)
+rms, sec = best
+print("loudest second: %d (rms %.0f)" % (sec, rms))
+assert rms > 500, "silence"
+s = pcm[sec * rate * 2 * ch:(sec + 1) * rate * 2 * ch]
+v = struct.unpack('<%dh' % (len(s) // 2), s)[::ch][:4096]
+N = len(v); bestf = (0, 0)
+for k in range(50, 3000, 10):
+    re = sum(v[t] * math.cos(2 * math.pi * k * t / rate) for t in range(N))
+    im = sum(v[t] * math.sin(2 * math.pi * k * t / rate) for t in range(N))
+    m = re * re + im * im
+    if m > bestf[0]: bestf = (m, k)
+print("dominant frequency ~%d Hz" % bestf[1])
+assert 950 <= bestf[1] <= 1050, "not the 1 kHz tone"
+PY
+  then echo "PASS: CD audio: the 1 kHz tone reached the audiodev"; else echo "FAIL: CD audio (cdtest.log / cd.wav under $OUT)"; rc=1; fi
+fi
 if [ $rc -eq 0 ]; then echo "PASS: $n files copied from the disc match the reference"; else echo "FAIL: differences above ($n reference files)"; fi
 exit $rc

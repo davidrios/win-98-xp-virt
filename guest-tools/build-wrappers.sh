@@ -198,6 +198,8 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src
 # SSE throughput (guest-tools/src/ssebench.c, doc 16): D3DX-shaped SSE1
 # kernels plus the same math in x87 C; ns per op, console + ssebench.log.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/ssebench.exe" "$ROOT/guest-tools/src/ssebench.c"
+# CDTEST.EXE: CD audio through MCI (doc 17 §6.3), the CD-ROM backend's in-guest check
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/cdtest.exe" "$ROOT/guest-tools/src/cdtest.c" -lwinmm
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \

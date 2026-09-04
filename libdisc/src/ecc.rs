@@ -119,6 +119,9 @@ pub enum Lec {
     Ok,
     EdcMismatch,
     EccMismatch,
+    /// No sync pattern / wrong mode byte: not a data sector at all (an
+    /// audio-format tail of a data track, a zero-filled unreadable sector).
+    NoSync,
 }
 
 impl Lec {
@@ -175,6 +178,10 @@ pub fn verify_mode2_form2(raw: &[u8; 2352]) -> Lec {
 /// bits set.
 pub fn c2_bits(raw: &[u8; 2352], kind: crate::SectorKind, out: &mut [u8; 294]) -> u32 {
     out.fill(0);
+    if kind.is_data() && !crate::sector::has_sync_header(raw, kind) {
+        out.fill(0xFF);
+        return 2352;
+    }
     let mut scratch = *raw;
     let (edc_range, edc_at, parity) = match kind {
         crate::SectorKind::Mode1 => {

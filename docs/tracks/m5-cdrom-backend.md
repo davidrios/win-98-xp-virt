@@ -39,6 +39,65 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 
 ## State (2026-09-04, evening)
 
+- **Step 6 done** (same commit as step 5): the voice in patch 51
+  (`ide-dev.h` `QEMUSoundCard card` on `IDEDevice`, `ide-dev.c`
+  `DEFINE_AUDIO_PROPERTIES` + `AUD_register_card` at realize when
+  `audiodev=` is set, `ide_atapi_audio_init` opens `cd-audio` at 44100 Hz
+  S16 stereo; `atapi_audio_cb` writes one routed sector at a time, carries
+  a partial write, flips to 0x13 at the end and 0x14 on a data sector or a
+  lost medium; without a voice the timer/clock position of step 5 stays),
+  MODE SELECT(10) PIO and DMA, `guest-tools/src/cdtest.c` (+
+  `build-wrappers.sh` line), `CDTEST=` in `tools/xp-cdimage-test.sh`,
+  `scripts/test.sh` builds `CDTEST.EXE` with mingw for the
+  `guest-cdimage` check, the DOS test's data-out op (MODE SELECT page 0E
+  then MODE SENSE readback, a short list → 05/1A/00). **Gotcha:** a new
+  PIO end-transfer function must be added to core.c's `ide_is_pio_out`
+  (and `transfer_end_table`) or QEMU aborts on the first data word; a
+  static function in atapi.c cannot be, hence the exported
+  `ide_atapi_data_out_done`. **Gotcha:** meson does not track
+  `liblibdisc.a`: after a libdisc change run `scripts/build-libdisc.sh`
+  (cargo + relink), a plain ninja keeps the old code in the binaries (an
+  MDS "not a disc image libdisc reads" from qemu-img was that).
+  **Gotcha:** `pkill -f <pattern>` matches the shell that runs it when
+  the pattern is on its own command line (memory note; bitten again).
+  **From the XP trace:** cdrom.sys probes GET CONFIGURATION per feature
+  (starting feature 001E, 001F, 0020…, 0103 with RT 0) — stock QEMU (and
+  the no-disc path) answer 05/24/00 to any start but 0; the disc path now
+  lists the features from the starting one on (RT 2: that one alone,
+  header only when unsupported). XP's MCI `play cd from 2` is MODE SELECT
+  page 0E, PAUSE, SEEK, PAUSE, PLAY AUDIO MSF (track start → lead-out),
+  PAUSE, RESUME; an MCI `resume` after the play completed re-issues the
+  whole sequence, so `CDTEST.EXE`'s wav holds the track twice (expected).
+  One of three CD-DA runs lost `cdtest.log` after the polling loop
+  (CDTEST.EXE exited silently, no crash dialog on this image); the reruns
+  passed — watch for it.
+- **Step 5 done** (commit "M5 step 5"): patch `51-atapi-disc-model`
+  (945 lines; `atapi.c`, `ide-internal.h`, `core.c`, `ide-dev.h`; README
+  row), `tools/atapi-guest-test.py` (wired as `atapi-guest`), `discx
+  scan`, `mds.rs` (M5e's MDS/MDF brought forward: real dumps exist).
+  Findings: the DMA path fills whole chunks from the model and re-enters
+  through `replay_bh_schedule_oneshot_event` (stack flat, completion
+  asynchronous, XP's cdrom.sys copies 49 files by DMA); the PIO loop's
+  disc branch fills synchronously and never recurses; READ CD requests
+  without the EDC/ECC field verify L-EC (so READ(10) through the same
+  fill fails a bad sector with 03/11/05) while raw requests deliver the
+  bytes; the audio position is computed from the virtual clock (no
+  per-sector timer), one timer flips to "completed"; QEMU's `-cdrom`
+  path lands on the secondary master, so the DOS program owns 0x170 with
+  nIEN set and polls. Real dumps on the Linux box:
+  `/mnt/data2/david/Downloads/oldstuff` — cue/bin (Death Rally, Blood 1+2,
+  Duke Atomic, Fire Fight, Vice City "FLT"), MDS/MDF RAW+SUB (AOE Gold,
+  Moto Racer, 14 / 12 audio tracks); every cue and mds opens, `scan`
+  finds 0 L-EC failures except Fire Fight's 149 audio-format sectors at
+  the end of its data track. **None of them is a protected disc**
+  (AOE Gold 1999 has no SafeDisc bad sectors); step 7 still needs one.
+  MDS layout rule (checked against the AOE dump's own Q frames): the
+  `.mdf` holds each track from `start_sector` (index 1) for `length`
+  sectors at `start_offset`; the `pregap` sectors are not in the file
+  (like a cue `PREGAP`); track 1's pregap 150 is the lead-in pause.
+  A data-track sector without a sync pattern (an all-zero filler) is an
+  L-EC failure (`Lec::NoSync`, C2 all set): an all-zero sector's EDC and
+  parity are zero and would otherwise verify.
 - **Step 4 done** (commit "M5 step 4"): `libdisc/qemu/cdimage.c` (~170
   lines, modelled on `block/bochs.c`: `bdrv_apply_auto_read_only`,
   `bdrv_open_file_child`, path from `bs->file->bs->exact_filename`,
@@ -125,11 +184,12 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   DVD-ROM profile whenever the image is larger than a CD. Every reply the
   guest gets today for anything but a plain data ISO is wrong or missing;
   that is the gap the plan below closes in order.
-- Images on hand: `~/vms/bench.iso`, `~/vms/FIFA2000.ISO` (cooked ISOs);
-  **no raw dump (cue/bin or CCD) exists on either machine yet.** Until one
-  does, EDC/ECC is verified by the `ecm` oracle above and Q synthesis only
-  by self-consistency (doc 17 §6.1). The first real dump of an owned disc
-  is a milestone in itself (step 7).
+- Images on hand: `~/vms/bench.iso`, `~/vms/FIFA2000.ISO` (cooked ISOs)
+  and, since the evening of 2026-09-04, the user's raw dumps under
+  `/mnt/data2/david/Downloads/oldstuff` (cue/bin and MDS/MDF with
+  subchannel, see step 5 above): unprotected mixed-mode discs. **No
+  SafeDisc / SecuROM dump yet** (step 7): the L-EC path is proven on
+  synthetic bad sectors and clean real discs only.
 - This track's worktree (`.claude/worktrees/m5-cdrom`) has its own
   submodules (`git submodule update --init --depth 1 …`) and QEMU build
   (`build/qemu` there, ~15 min from scratch on the Linux box).
@@ -144,6 +204,8 @@ ninja -C build/qemu qemu-system-i386 qemu-img libqemu-embed-i386.dylib   # .so o
 build/qemu/qemu-img info build/test/disc/mixed.cue   # must say "file format: cdimage"
 python3 tools/atapi-guest-test.py                    # DOS ATAPI battery vs discx dump (step 5)
 scripts/test.sh all                                  # before every commit (policy)
+# CD audio headless: the tone track into a wav through MCI (needs mingw for CDTEST.EXE)
+CDTEST=build/test/CDTEST.EXE tools/xp-cdimage-test.sh ~/vms/winxp.qcow2 build/test/disc/gt.cue build/test/gt-iso
 # XP / Win98 on a converted ISO (step 6), player on the Air:
 target/release/discx convert guest-tools/out/guest-tools-3dfx-<rev>.iso build/test/disc/gt.cue
 target/release/player -- -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 512 -hda ~/vms/winxp.qcow2 \
@@ -212,7 +274,7 @@ State section) — they are the handoff.
    `-cdrom build/test/disc/gt.cue` (probe path) and lists `D:\`; the
    `cdimage` check joins `scripts/test.sh`; on Linux the `nm -D … _ZN3std`
    check from doc 17 §5.2 is done and recorded here.
-5. **Patch 51, data path + TOC + subchannel** (doc 17 §5.3 without
+5. **Patch 51, data path + TOC + subchannel** — *done 2026-09-04* (audio position tracking included; the voice is step 6) (doc 17 §5.3 without
    §5.4): `atapi_disc_read` PIO and DMA paths, READ(10)/(12) through
    libdisc with the audio-track check and L-EC sense, READ CD / READ CD
    MSF full table, READ SUB-CHANNEL, READ TOC 0/1/2, READ DISC
@@ -228,7 +290,7 @@ State section) — they are the handoff.
    including the existing XP guest stage still on `-cdrom <iso>` (the
    no-disc path must be untouched: diff the QEMU log's ATAPI trace lines
    before/after on the ISO boot, `-trace 'ide_atapi*'`).
-6. **CD-DA** (doc 17 §5.4): `audiodev` property, the voice, play / pause /
+6. **CD-DA** (doc 17 §5.4) — *done 2026-09-04 except the by-ear Win98 CD Player run and the swap-while-playing check*: `audiodev` property, the voice, play / pause /
    resume / stop / position, page 0x0E + MODE SELECT, the timer fallback,
    `guest-tools/src/cdtest.c` + `build-wrappers.sh` line, the player /
    cheat-sheet `-drive` + `-device ide-cd` lines (doc 00, README),

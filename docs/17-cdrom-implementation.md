@@ -209,6 +209,23 @@ Semantics (these are where cue parsers go wrong):
   adr, control, min/sec/frame, pmin/psec/pframe). READ TOC format 2 replays
   them (§4.1); that is the fidelity SecuROM-era checks want.
 
+### 2.4b MDS/MDF (`mds.rs`, brought forward from M5e on 2026-09-04)
+
+Alcohol 120% / Daemon Tools: `.mds` header (`MEDIA DESCRIPTOR`, version
+1.x), session blocks at the offset in header byte 0x50 (24 bytes each:
+start, end, number, block counts, first/last track, tracks offset), track
+blocks of 80 bytes (mode `0xA9` audio / `0xAA` Mode 1 / `0xAB` Mode 2 /
+`0xAC`/`0xAD` form 1/2, subchannel flag `0x08` = 96 bytes interleaved
+appended, ADR/control, point, MSF, PMSF, extra-block offset, sector size
+2048/2352/2448, start sector, 64-bit start offset, footer offset with the
+`.mdf` name), extra blocks (pregap, length). Every block with a point is
+kept as a raw TOC entry. **Layout rule, checked against a RAW+SUB dump's
+own Q frames:** the `.mdf` holds each track from `start_sector` (index 1)
+for `length` sectors at `start_offset`; the `pregap` sectors are *not* in
+the file and are synthesized (silence / zero data) as the track's index 0;
+track 1's pregap of 150 is the lead-in pause and is never addressed. DPM
+blocks (header byte 0x54) are ignored until a title needs timing.
+
 ### 2.5 Raw ⇄ cooked and L-EC (`sector.rs`, `ecc.rs`)
 
 Raw Mode 1 sector (2352 bytes): `sync[12] header[4] data[2048] edc[4]
@@ -247,8 +264,11 @@ the standard `ecc_b_lut` (inverse of α³ ⊕ 1 table); store
 (source size 2064 + 172).
 
 `verify_mode1(raw)`: recompute EDC and both parities into scratch and
-compare with the stored bytes. Result `Ok`, `EdcMismatch` or
-`EccMismatch`. **No correction is attempted**: a dump made by a drive
+compare with the stored bytes. Result `Ok`, `EdcMismatch`, `EccMismatch`
+or `NoSync` (no sync pattern / wrong mode byte in a data track: an
+audio-format tail, or the zero filler a dump tool writes for an
+unreadable sector — an all-zero sector's EDC and parity are zero and would
+verify otherwise; C2 reports every byte bad). **No correction is attempted**: a dump made by a drive
 already holds what that drive read; a mismatch means "this sector fails
 L-EC on a real drive", which is exactly the SafeDisc signal. Cooked reads
 of a mismatching sector return `Err(Medium)`. Raw reads return the bytes.
