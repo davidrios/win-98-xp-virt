@@ -1,0 +1,36 @@
+diff --git a/src/dxvk/dxvk_instance.cpp b/src/dxvk/dxvk_instance.cpp
+index 3041def..eee36a6 100644
+--- a/src/dxvk/dxvk_instance.cpp
++++ b/src/dxvk/dxvk_instance.cpp
+@@ -255,6 +255,11 @@ namespace dxvk {
+       info.enabledExtensionCount    = extensionNames.size();
+       info.ppEnabledExtensionNames  = extensionNames.data();
+ 
++      // Vulkan-on-Metal drivers (MoltenVK, KosmicKrisp) are portability
++      // implementations the loader hides unless the app opts in
++      if (m_extensionInfo.khrPortabilityEnumeration.specVersion)
++        info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
++
+       VkResult status = m_vkl->vkCreateInstance(&info, nullptr, &instance);
+ 
+       if (status != VK_SUCCESS) {
+@@ -373,6 +378,7 @@ namespace dxvk {
+       &extensions.extDebugUtils,
+       &extensions.extSurfaceMaintenance1,
+       &extensions.khrGetSurfaceCapabilities2,
++      &extensions.khrPortabilityEnumeration,
+       &extensions.khrSurface,
+       &extensions.khrSurfaceMaintenance1,
+     }};
+diff --git a/src/dxvk/dxvk_instance.h b/src/dxvk/dxvk_instance.h
+index 1b0263e..258aa08 100644
+--- a/src/dxvk/dxvk_instance.h
++++ b/src/dxvk/dxvk_instance.h
+@@ -29,6 +29,7 @@ namespace dxvk {
+     VkExtensionProperties extDebugUtils               = vk::makeExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+     VkExtensionProperties extSurfaceMaintenance1      = vk::makeExtension(VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+     VkExtensionProperties khrGetSurfaceCapabilities2  = vk::makeExtension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
++    VkExtensionProperties khrPortabilityEnumeration   = vk::makeExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+     VkExtensionProperties khrSurface                  = vk::makeExtension(VK_KHR_SURFACE_EXTENSION_NAME);
+     VkExtensionProperties khrSurfaceMaintenance1      = vk::makeExtension(VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+   };

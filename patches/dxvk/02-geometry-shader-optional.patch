@@ -1,0 +1,15 @@
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 63d89d9..444fc2c 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -831,7 +831,9 @@ namespace dxvk {
+       ENABLE_FEATURE(core.features, fillModeNonSolid, true),
+       ENABLE_FEATURE(core.features, fragmentStoresAndAtomics, true),
+       ENABLE_FEATURE(core.features, fullDrawIndexUint32, true),
+-      ENABLE_FEATURE(core.features, geometryShader, true),
++      /* d3d9 never creates a geometry shader; Vulkan-on-Metal drivers
++       * (KosmicKrisp, MoltenVK) have none. Required again with d3d10/11. */
++      ENABLE_FEATURE(core.features, geometryShader, false),
+       ENABLE_FEATURE(core.features, imageCubeArray, true),
+       ENABLE_FEATURE(core.features, independentBlend, true),
+       ENABLE_FEATURE(core.features, largePoints, false),

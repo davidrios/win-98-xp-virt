@@ -55,6 +55,23 @@ presenter/swapchain: the device renders to an off-screen target the
 player imports (IOSurface/dma-buf, as the GL path does today), so a tiny
 "embed" WSI (no window) replaces SDL2 — needed on Linux too.
 
+## Verified end to end (same day)
+
+With `patches/dxvk/01–03` (macOS shim, geometry shaders optional,
+portability enumeration) `libdxvk_d3d9.0.dylib` builds in `build/dxvk`
+and `tools/dxvk-d3d9-test.cpp` (hidden SDL2 window, fixed-function lit
+textured triangle, `GetRenderTargetData` → BMP) reaches the M1 through
+MoltenVK and gets DXVK's refusal verbatim:
+
+```
+info:  Found device: Apple M1 (MoltenVK 0.2.2210)
+info:    Skipping: Device does not support required feature 'shaderCullDistance'
+```
+
+(the first missing feature in DXVK's list order; the robustness pair
+follows). The same binary is the acceptance test for KosmicKrisp after
+the macOS 26 upgrade.
+
 ## Options for the macOS executor
 
 1. **DXVK + MoltenVK with a DXVK patch queue** (what Gcenx's DXVK-macOS

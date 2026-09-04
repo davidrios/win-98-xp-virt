@@ -1,0 +1,114 @@
+diff --git a/src/d3d9/d3d9.exports b/src/d3d9/d3d9.exports
+new file mode 100644
+index 0000000..e0f04d4
+--- /dev/null
++++ b/src/d3d9/d3d9.exports
+@@ -0,0 +1,20 @@
++_Direct3DCreate9
++_Direct3DCreate9Ex
++_D3DPERF_BeginEvent
++_D3DPERF_EndEvent
++_D3DPERF_SetMarker
++_D3DPERF_SetRegion
++_D3DPERF_QueryRepeatFrame
++_D3DPERF_SetOptions
++_D3DPERF_GetStatus
++_DebugSetMute
++_DebugSetLevel
++_PSGPError
++_PSGPSampleTexture
++_Direct3DShaderValidatorCreate9
++_Direct3D9EnableMaximizedWindowedModeShim
++_DXVK_RegisterAnnotation
++_DXVK_UnRegisterAnnotation
++_Direct3D9ForceHybridEnumeration
++_Direct3DCreate9On12
++_Direct3DCreate9On12Ex
+diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
+index 1ce6f2e..76201ed 100644
+--- a/src/d3d9/meson.build
++++ b/src/d3d9/meson.build
+@@ -56,7 +56,10 @@ d3d9_src = [
+ d3d9_ld_args      = []
+ d3d9_link_depends = []
+ 
+-if platform != 'windows'
++if platform == 'darwin'
++  d3d9_ld_args      += [ '-Wl,-exported_symbols_list,' + join_paths(meson.current_source_dir(), 'd3d9.exports') ]
++  d3d9_link_depends += files('d3d9.exports')
++elif platform != 'windows'
+   d3d9_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3d9.sym') ]
+   d3d9_link_depends += files('d3d9.sym')
+ endif
+diff --git a/src/util/util_env.cpp b/src/util/util_env.cpp
+index 556327c..8fb5390 100644
+--- a/src/util/util_env.cpp
++++ b/src/util/util_env.cpp
+@@ -10,6 +10,10 @@
+ #include <sys/sysctl.h>
+ #include <unistd.h>
+ #include <limits.h>
++#elif defined(__APPLE__)
++#include <mach-o/dyld.h>
++#include <unistd.h>
++#include <limits.h>
+ #endif
+ 
+ #include "util_env.h"
+@@ -113,6 +117,14 @@ namespace dxvk::env {
+     }
+ 
+     return std::string(exePath);
++#elif defined(__APPLE__)
++    std::array<char, PATH_MAX> exePath = {};
++    uint32_t size = exePath.size();
++
++    if (_NSGetExecutablePath(exePath.data(), &size) != 0)
++      return "";
++
++    return std::string(exePath.data());
+ #endif
+   }
+   
+@@ -136,7 +148,11 @@ namespace dxvk::env {
+ #else
+     std::array<char, 16> posixName = {};
+     dxvk::str::strlcpy(posixName.data(), name.c_str(), 16);
++#ifdef __APPLE__
++    ::pthread_setname_np(posixName.data());
++#else
+     ::pthread_setname_np(pthread_self(), posixName.data());
++#endif
+ #endif
+   }
+ 
+diff --git a/src/util/util_win32_compat.h b/src/util/util_win32_compat.h
+index b706dca..7a4b4a1 100644
+--- a/src/util/util_win32_compat.h
++++ b/src/util/util_win32_compat.h
+@@ -1,6 +1,6 @@
+ #pragma once
+ 
+-#if defined(__unix__)
++#if defined(__unix__) || defined(__APPLE__)
+ 
+ #include <windows.h>
+ #include <dlfcn.h>
+diff --git a/src/vulkan/vulkan_loader.cpp b/src/vulkan/vulkan_loader.cpp
+index f9d1e98..8d9413d 100644
+--- a/src/vulkan/vulkan_loader.cpp
++++ b/src/vulkan/vulkan_loader.cpp
+@@ -11,9 +11,12 @@ namespace dxvk::vk {
+ 
+   static std::pair<HMODULE, PFN_vkGetInstanceProcAddr> loadVulkanLibrary() {
+     static const std::array<const char*, 2> dllNames = {{
+-#ifdef _WIN32
++#if defined(_WIN32)
+       "winevulkan.dll",
+       "vulkan-1.dll",
++#elif defined(__APPLE__)
++      "libvulkan.1.dylib",
++      "libvulkan.dylib",
+ #else
+       "libvulkan.so",
+       "libvulkan.so.1",
