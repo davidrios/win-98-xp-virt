@@ -216,8 +216,10 @@ guest_stage() {
   [ -x build/qemu/qemu-system-i386 ] || { skip guest "no build/qemu/qemu-system-i386"; return; }
   # the CD-ROM backend: XP copies a converted guest-tools disc through cdrom.sys (doc 17 §6.3)
   if [ -x target/release/discx ] && command -v bsdtar >/dev/null; then
+    # bsdtar keeps the ISO's read-only modes: make the previous extraction deletable first
+    [ -d "$OUT/gt-iso" ] && chmod -R u+w "$OUT/gt-iso"
     rm -rf "$OUT/gt-iso"; mkdir -p "$OUT/gt-iso" "$OUT/disc"
-    if bsdtar -xf "$iso" -C "$OUT/gt-iso" 2>/dev/null \
+    if bsdtar -xf "$iso" -C "$OUT/gt-iso" 2>/dev/null && chmod -R u+w "$OUT/gt-iso" \
        && target/release/discx convert "$iso" "$OUT/disc/gt.cue" --audio "$OUT/disc/tone.wav" >/dev/null 2>&1; then
       # with mingw the run also plays the tone track through MCI into a wav (CD-DA, doc 17 §5.4)
       cdtest=""

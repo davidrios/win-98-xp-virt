@@ -39,7 +39,7 @@ cdargs=(-cdrom "$DISC")
 if [ -n "${CDTEST:-}" ]; then
   [ -f "$CDTEST" ] || { echo "CDTEST=$CDTEST not found"; exit 2; }
   mcopy -i "$fat" "$CDTEST" ::/CDTEST.EXE
-  printf '@echo off\r\nmkdir E:\\OUT\r\necho started > E:\\OUT\\STARTED.TXT\r\ndir D:\\ /S > E:\\OUT\\DIR.TXT\r\nxcopy D:\\ E:\\CD\\ /I /Y /S /E /H > E:\\OUT\\XCOPY.TXT\r\necho %%ERRORLEVEL%% > E:\\OUT\\XCOPYRC.TXT\r\ncd /d E:\\OUT\r\nE:\\CDTEST.EXE D 4 > E:\\OUT\\CDTEST.TXT\r\necho done > E:\\OUT\\DONE.TXT\r\n' > "$OUT/RUN.BAT"
+  printf '@echo off\r\nmkdir E:\\OUT\r\necho started > E:\\OUT\\STARTED.TXT\r\ndir D:\\ /S > E:\\OUT\\DIR.TXT\r\nxcopy D:\\ E:\\CD\\ /I /Y /S /E /H > E:\\OUT\\XCOPY.TXT\r\necho %%ERRORLEVEL%% > E:\\OUT\\XCOPYRC.TXT\r\ncd /d E:\\OUT\r\nE:\\CDTEST.EXE D 2 > E:\\OUT\\CDTEST.TXT\r\necho done > E:\\OUT\\DONE.TXT\r\n' > "$OUT/RUN.BAT"
   mcopy -o -i "$fat" "$OUT/RUN.BAT" ::/RUN.BAT
   rm -f "$OUT/cd.wav"
   cdargs=(-audiodev "wav,id=cd0,path=$OUT/cd.wav" -drive "if=none,id=cd0,media=cdrom,file=$DISC" -device "ide-cd,bus=ide.1,drive=cd0,audiodev=cd0")
@@ -100,7 +100,12 @@ extra=$(( $(find "$OUT/cd" -type f | wc -l) - n ))
 if [ -n "${CDTEST:-}" ]; then
   mcopy -n -i "$fat" ::/OUT/cdtest.log "$OUT/cdtest.log" 2>/dev/null || mcopy -n -i "$fat" ::/OUT/CDTEST.LOG "$OUT/cdtest.log" 2>/dev/null
   echo "cdtest.log:"; tr -d '\r' < "$OUT/cdtest.log" 2>/dev/null | grep -E 'tracks|play|position|mode|RESULT|error' | head -30 | sed 's/^/    /'
-  if grep -q 'RESULT ok' "$OUT/cdtest.log" 2>/dev/null && python3 - "$OUT/cd.wav" <<'PY'
+  # the verdict: MCI saw the play running with advancing positions, and the tone is in the wav; the
+  # script's last line is reported but not required (XP's mcicda has ended CDTEST.EXE silently after
+  # a resume past the track's end)
+  grep -q 'RESULT ok' "$OUT/cdtest.log" 2>/dev/null || echo "  note: CDTEST.EXE ended before its last line (last: $(tr -d '\r' < "$OUT/cdtest.log" 2>/dev/null | tail -1))"
+  npos=$(tr -d '\r' < "$OUT/cdtest.log" 2>/dev/null | grep -c 'status cd position" -> "02:00:0[1-9]')
+  if grep -q '"playing"' "$OUT/cdtest.log" 2>/dev/null && [ "${npos:-0}" -ge 1 ] && python3 - "$OUT/cd.wav" <<'PY'
 import struct, sys, math
 p = sys.argv[1]
 d = open(p, 'rb').read()

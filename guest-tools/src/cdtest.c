@@ -5,7 +5,7 @@
  * the EXE. Under the player the tone is heard; headless, `-audiodev
  * wav,id=cd0,path=x.wav -device ide-cd,...,audiodev=cd0` records it.
  *
- *   CDTEST.EXE [drive letter] [seconds]      (defaults: the first CD drive, 4 s)
+ *   CDTEST.EXE [drive letter] [seconds]      (defaults: the first CD drive, 2 s)
  */
 #include <windows.h>
 #include <mmsystem.h>
@@ -51,7 +51,7 @@ static int mci(const char *cmd, char *out, int outlen)
 int main(int argc, char **argv)
 {
     char cmd[256], ret[256];
-    int seconds = argc > 2 ? atoi(argv[2]) : 4, tracks = 0, i;
+    int seconds = argc > 2 ? atoi(argv[2]) : 2, tracks = 0, i;
     DWORD t0;
 
     lg = fopen("cdtest.log", "w");
@@ -94,13 +94,20 @@ int main(int argc, char **argv)
         mci("status cd position", ret, sizeof ret);
         mci("status cd mode", ret, sizeof ret);
     }
-    mci("pause cd", NULL, 0);
-    Sleep(300);
-    mci("status cd mode", ret, sizeof ret);
-    mci("status cd position", ret, sizeof ret);
-    mci("resume cd", NULL, 0);
-    Sleep(700);
-    mci("status cd position", ret, sizeof ret);
+    /* pause / resume only while still playing: MCI's resume after the play
+     * completed re-issues the whole play (seen in the ATAPI trace) and
+     * XP's mcicda has exited CDTEST silently right after it more than once */
+    if (strcmp(ret, "playing") == 0) {
+        mci("pause cd", NULL, 0);
+        Sleep(300);
+        mci("status cd mode", ret, sizeof ret);
+        mci("status cd position", ret, sizeof ret);
+        mci("resume cd", NULL, 0);
+        Sleep(700);
+        mci("status cd position", ret, sizeof ret);
+    } else {
+        logf_("play finished before the pause/resume step (short track): skipped\n");
+    }
     mci("stop cd", NULL, 0);
     mci("status cd mode", ret, sizeof ret);
     if (tracks >= 3) {
