@@ -63,7 +63,7 @@ QEMU's result differs from the host's (NaN payload rules). One table:
 | add, sub, sqrt (ps/pd/ss/sd) | result exponent field not all ones | no NaN operand, no infinity, no overflow; a tiny add/sub result is exact (both operands are multiples of the smallest denormal) and sqrt cannot underflow |
 | mul, div, cvtsd2ss | result exponent field in [2, max−1], or an exact zero because a factor / the dividend is zero | excludes NaN, inf, overflow, division by zero and any underflow whether tininess is detected before or after rounding (a result that rounded up into field 1 is tiny before rounding) |
 | rcp, rsqrt (ps/ss) | normal result | the helpers restore the flags, so only the value matters |
-| min, max, cmp (8 predicates), comis, ucomis | no NaN operand | the compare is an integer compare of total-order keys (−0 folded to +0); NaN would need QEMU's NaN selection and IE |
+| min, max, cmp (8 predicates), comis, ucomis | no NaN operand | the compare is an integer compare of total-order keys (−0 folded to +0) when there's no native vector min/max/cmp (aarch64); on x86-64 (2026-09-04) `fmin_vec`/`fmax_vec`/`fcmp_vec` use the host's own `VMINPS`/`VMAXPS`/`VCMPPS` instead — same ISA as the guest, so −0/+0 tie-break and NaN-operand-selection are already correct, only the NaN-presence check remains. NaN would need QEMU's NaN selection and IE either way |
 | cvt(t)ss2si, cvt(t)sd2si | \|x\| < 2^31 − 1/2 | the host conversion is exact for both roundings; softfloat returns 0x80000000 with IE otherwise |
 | cvtsi2ss, cvtsi2sd | always | only PE |
 | cvtss2sd | result not NaN/inf | an SNaN input raises IE |

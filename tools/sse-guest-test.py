@@ -527,6 +527,35 @@ start:
     push ax
     mov si, str_benchm
     call report
+
+    movaps xmm1, [va]
+    movaps xmm2, [vlo]
+    movaps xmm3, [vhi]
+    movaps xmm4, [vth]
+    mov si, [es:046Ch]
+.sync4:
+    mov ax, [es:046Ch]
+    cmp ax, si
+    je .sync4
+    mov [t0], ax
+    mov ecx, ITER
+.loop4:                        ; clamp (max/min) + cmp (mulps, cmpltps, movmskps), registers only
+    movaps xmm0, xmm1
+    maxps xmm0, xmm2
+    minps xmm0, xmm3
+    movaps xmm6, xmm0
+    mulps xmm6, xmm6
+    movaps xmm5, xmm4
+    mulps xmm5, xmm4
+    cmpltps xmm6, xmm5
+    movmskps eax, xmm6
+    dec ecx
+    jnz .loop4
+    mov ax, [es:046Ch]
+    sub ax, [t0]
+    push ax
+    mov si, str_benchc
+    call report
     int 20h
 
 report:                     ; si = tag, [sp+2] = ticks
@@ -589,6 +618,7 @@ put_nib:
 str_bench:  db "SSEBENCH ", 0
 str_benchs: db "SSEBENCHS ", 0
 str_benchm: db "SSEBENCHM ", 0
+str_benchc: db "SSEBENCHC ", 0
 shcnt: dd 3, 0
 mx: dd 1FA0h
 t0: dw 0
@@ -600,6 +630,9 @@ vd: dd 3.0, 7.0, 1.25, 9.5
 ve: dd 100.0, 100.0, 100.0, 100.0
 one: dd 1.0, 1.0, 1.0, 1.0
 vr: dd 0, 0, 0, 0
+vlo: dd -50.0, -50.0, -50.0, -50.0
+vhi: dd 50.0, 50.0, 50.0, 50.0
+vth: dd 10.0, 10.0, 10.0, 10.0
 """
 
 
@@ -694,7 +727,8 @@ def main():
                 tag, it, tk = line.split()
                 ticks[(tag.decode(), fast)] = (int(it, 16), int(tk, 16))
     for tag, what in (("SSEBENCH", "packed, 8 ops, registers"), ("SSEBENCHS", "scalar, 7 ops, registers"),
-                      ("SSEBENCHM", "MMX, 8 ops, registers (simd-fast)")):
+                      ("SSEBENCHM", "MMX, 8 ops, registers (simd-fast)"),
+                      ("SSEBENCHC", "clamp+cmp, 8 ops, registers")):
         if (tag, "off") in ticks and (tag, "on") in ticks:
             off, on = ticks[(tag, "off")], ticks[(tag, "on")]
             ratio = off[1] / max(1, on[1])

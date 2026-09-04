@@ -129,6 +129,45 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   byte-identical after two `prepare-qemu.sh` runs. `scripts/test.sh all`
   green (4 passed, the d3d/guest-ISO checks skip in this worktree as
   before, unrelated to this change).
+- **clamp+cmp, 2026-09-04 (continued):** item 2 of the next steps below,
+  chased on this host. `minps`/`maxps`/`cmpps` had no native TCG vector
+  op (unlike `fadd_vec` etc, patch 07), so they were synthesized from a
+  16-18-op "total-order key" transform (fold −0/+0 to a common key, flip
+  the magnitude bits of negative values, feed the result to the
+  integer-only `cmp_vec`) purely to give `cmp_vec` a monotonic float
+  ordering — that transform, not a mask-materialisation cost or a
+  per-lane check the arithmetic ops skip (the two things the item
+  suspected), is what made clamp+cmp cost 5-6× add/mul's op count. On
+  x86-64 it's unnecessary: the host already speaks the guest's ISA, so
+  two new generic TCG vector opcodes — `fmin_vec`/`fmax_vec` (plain
+  3-operand, mirrors `fadd_vec`) and `fcmp_vec` (a `cmp_vec`-shaped op
+  whose third argument is literally the guest's own CMPPS/CMPPD
+  predicate immediate 0-7, no `TCGCond` translation needed) — map
+  straight onto native `VMINPS`/`VMAXPS`/`VCMPPS`
+  (`TCG_TARGET_HAS_fp_minmax_vec`/`_fp_cmp_vec`, `have_avx1`-gated like
+  `fp_vec`; aarch64 macros `0`, keeps the key-transform path there
+  unvalidated, same caveat as this whole x86-64-only thread). Native
+  min/max/cmp already implement the guest's -0/+0 tie-break and
+  NaN-operand-selection exactly (bit-for-bit the same hardware), so the
+  guard only needs a NaN-presence check (`sses_vnan_ok`, 6 ops: two
+  `shli_vec` + two `cmp_vec` GTU against `nan_limit` + `or` + `not`) to
+  decide the slow-path branch, not the key computation — `sses_vkeys`'s
+  4-op-per-operand `sses_vkey` (`andc`/`sari`/`shri`/`xor`) is dead
+  weight here and skipped entirely on this path. `tools/sse-guest-test.py`
+  packed chain (already exercises `minps`/`maxps` inline) 8.1× → 10.0×;
+  a new isolated kernel added to the same tool, `SSEBENCHC`
+  (`maxps`/`minps`/`mulps`×2/`cmpltps`/`movmskps`, mirroring
+  `ssebench.c`'s `k_clamp`), measures clamp+cmp on its own: **6.5×**
+  over the helper. Guest test still 546,425 lines bit-identical (the
+  packed chain already covered min/max; cmpps forms are in the integer
+  battery). `scripts/test.sh all` green. Patches 07 (the new opcodes +
+  `sse-fast.c.inc`) and 08 (its `tbl_vec`/mulh/pack additions share the
+  same TCG files, rebased past 07's new content, same payload)
+  regenerated per the recipe below — this time both had to move
+  together, since 08's context sits right where 07 now inserts code;
+  verified byte-identical after two `prepare-qemu.sh` runs each. aarch64
+  side of both patches (07's key-transform fallback, 08's SWAR path)
+  unvalidated as before, needs the Air.
 
 ## Build / test loop
 
@@ -155,7 +194,19 @@ of the patch may also linger and must not be in the "pre" diff),
 regenerate the patch with `diff -u` against the copies with `--- a/` /
 `+++ b/` headers (new files `--- /dev/null`), put it back, then
 `prepare-qemu.sh` twice and compare the tree with the copies byte for
-byte. The 2026-09-04 session did exactly this twice.
+byte. The 2026-09-04 session did exactly this three times. If the patch
+being edited isn't the last one touching a given shared file (07 isn't:
+08 edits the same handful of TCG files afterward), pull out every
+later patch that shares a touched file too, or the later patch's own
+apply breaks on the shifted context — it did here, `git apply` gave no
+partial credit for hunks whose context didn't move. Recovery is the
+same two-step diff, just also done for the bumped patch: save its
+*payload* (the files it produces) before removing it, restore the
+edited patch first and reapply the payload by hand at the new
+position, then diff that hand-merged result against the edited-patch-only
+tree to get the bumped patch's regenerated hunks. Not needed when the
+edited patch is the queue's last toucher of every file it owns (true
+for 08, hence "did this three times" not four).
 
 Slow-path counters: `info registers` (QMP `human-monitor-command`) prints
 `SSE-fast slow paths: guard= handover= helper= cvt/comis=`; a workload
@@ -179,13 +230,19 @@ benchmark's convert kernel was fixed to stay in range).
    still be exercised there unchanged, but `bitsel_vec`/`dup_i64_vec` are
    portable stock ops so the aarch64 pack path changed too and needs the
    same check; needs the Air, not started here).
-2. **clamp+cmp at 34 % of the rig.** `minps`/`maxps`/`cmpps` cost 4.7 ns
-   per op on the Air against 2.1 for `mulps`/`addps` in the same TB shape;
-   find out why (the compare's mask materialisation? a per-lane check
-   that the arithmetic ops skip? look at the TB with `-d op,out_asm`) —
-   the one SSE kernel the rig still wins clearly. The x87 C transform
-   (18 %) is the cheap-op throughput of the shadow translator, a bigger
-   redesign; note it, do not start it here.
+2. ~~**clamp+cmp at 34 % of the rig.**~~ Done 2026-09-04 on x86-64 (see
+   State above): the cost was neither mask materialisation nor a
+   per-lane check the arithmetic ops skip, but `sses_vkeys`'s
+   total-order key transform, needed only because `cmp_vec` has no
+   float form — new `fmin_vec`/`fmax_vec`/`fcmp_vec` opcodes give
+   x86-64 the native instruction instead, `SSEBENCHC` 6.5× over the
+   helper. **Still open:** an XP-guest `SSEBENCH.EXE` run on this host
+   to get a number directly comparable to the rig's original 34 %
+   (needs `guest-tools/build-wrappers.sh` + `tools/xp-ssebench.sh
+   ~/vms/winxp.qcow2`, not run this session — no ISO built in this
+   worktree); aarch64 validation (see item 1). The x87 C transform
+   (18 % on the Air) is the cheap-op throughput of the shadow
+   translator, a bigger redesign; note it, do not start it here.
 3. **A real workload number.** A Direct3D title in XP (the M4 track's
    item) with and without both `*-fast=off`: the first end-to-end number
    for patches 06 + 07 together.

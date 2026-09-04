@@ -21,10 +21,10 @@ identical on/off (MMX and XMM forms, memory operands, chains, a mixed
 x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
 --- a/include/tcg/tcg-opc.h
 +++ b/include/tcg/tcg-opc.h
-@@ -342,6 +342,28 @@
- DEF(fmul_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
- DEF(fdiv_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
- DEF(fsqrt_vec, 1, 1, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
+@@ -356,6 +356,28 @@
+ DEF(fmin_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_minmax_vec))
+ DEF(fmax_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_minmax_vec))
+ DEF(fcmp_vec, 1, 2, 1, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_cmp_vec))
 +/*
 + * Byte table lookup: r[i] = idx[i] & 0x80 ? 0 : a[idx[i] & 15] (pshufb /
 + * tbl semantics; any index >= 16 also gives 0 on aarch64, keep tables to
@@ -52,10 +52,10 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  
 --- a/include/tcg/tcg.h
 +++ b/include/tcg/tcg.h
-@@ -157,6 +157,9 @@
- #define TCG_TARGET_HAS_cmpsel_vec       0
- #define TCG_TARGET_HAS_tst_vec          0
+@@ -159,6 +159,9 @@
  #define TCG_TARGET_HAS_fp_vec           0
+ #define TCG_TARGET_HAS_fp_minmax_vec    0
+ #define TCG_TARGET_HAS_fp_cmp_vec       0
 +#define TCG_TARGET_HAS_tbl_vec          0
 +#define TCG_TARGET_HAS_mulh_vec         0
 +#define TCG_TARGET_HAS_pack_vec         0
@@ -64,10 +64,10 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  #endif
 --- a/include/tcg/tcg-op-common.h
 +++ b/include/tcg/tcg-op-common.h
-@@ -498,6 +498,19 @@
- void tcg_gen_fmul_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
- void tcg_gen_fdiv_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
- void tcg_gen_fsqrt_vec(unsigned vece, TCGv_vec r, TCGv_vec a);
+@@ -512,6 +512,19 @@
+  */
+ bool tcg_fp_cmp_vec_supported(unsigned vece);
+ void tcg_gen_fcmp_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b, int pred);
 +/* byte table lookup with zeroing (pshufb / tbl); only when tcg_tbl_vec_supported() */
 +bool tcg_tbl_vec_supported(void);
 +void tcg_gen_tbl_vec(TCGv_vec r, TCGv_vec a, TCGv_vec idx);
@@ -86,8 +86,8 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  void tcg_gen_stl_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset, TCGType t);
 --- a/tcg/tcg-op-vec.c
 +++ b/tcg/tcg-op-vec.c
-@@ -612,6 +612,63 @@
-     do_op3_nofail(vece, r, a, b, INDEX_op_fdiv_vec);
+@@ -649,6 +649,63 @@
+              temp_arg(rt), temp_arg(at), temp_arg(bt), pred);
  }
  
 +bool tcg_tbl_vec_supported(void)
@@ -152,10 +152,10 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      TCGTemp *rt = tcgv_vec_temp(r);
 --- a/tcg/tcg.c
 +++ b/tcg/tcg.c
-@@ -2196,6 +2196,14 @@
-     case INDEX_op_fdiv_vec:
-     case INDEX_op_fsqrt_vec:
-         return have_vec && TCG_TARGET_HAS_fp_vec;
+@@ -2201,6 +2201,14 @@
+         return have_vec && TCG_TARGET_HAS_fp_minmax_vec;
+     case INDEX_op_fcmp_vec:
+         return have_vec && TCG_TARGET_HAS_fp_cmp_vec;
 +    case INDEX_op_tbl_vec:
 +        return have_vec && TCG_TARGET_HAS_tbl_vec;
 +    case INDEX_op_mulsh_vec:
@@ -169,10 +169,10 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      case INDEX_op_and_vec:
 --- a/tcg/aarch64/tcg-target.h
 +++ b/tcg/aarch64/tcg-target.h
-@@ -170,6 +170,11 @@
- #define TCG_TARGET_HAS_cmpsel_vec       0
- #define TCG_TARGET_HAS_tst_vec          1
- #define TCG_TARGET_HAS_fp_vec           1
+@@ -174,6 +174,11 @@
+  * (target/i386/tcg/sse-fast.c.inc) covers min/max/cmp on this host. */
+ #define TCG_TARGET_HAS_fp_minmax_vec    0
+ #define TCG_TARGET_HAS_fp_cmp_vec       0
 +#define TCG_TARGET_HAS_tbl_vec          1
 +/* multiply-high and saturating-narrow: not implemented here, the
 + * generic per-lane path (target/i386/tcg/simd-fast.c.inc) covers MMX. */
@@ -215,10 +215,10 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      case INDEX_op_ld8s_i32:
 --- a/tcg/i386/tcg-target.h
 +++ b/tcg/i386/tcg-target.h
-@@ -229,6 +229,9 @@
- #define TCG_TARGET_HAS_cmpsel_vec       1
- #define TCG_TARGET_HAS_tst_vec          have_avx512bw
+@@ -231,6 +231,9 @@
  #define TCG_TARGET_HAS_fp_vec           have_avx1
+ #define TCG_TARGET_HAS_fp_minmax_vec    have_avx1
+ #define TCG_TARGET_HAS_fp_cmp_vec       have_avx1
 +#define TCG_TARGET_HAS_tbl_vec          have_avx1
 +#define TCG_TARGET_HAS_mulh_vec         1
 +#define TCG_TARGET_HAS_pack_vec         1
@@ -236,7 +236,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  #define OPC_POR         (0xeb | P_EXT | P_DATA16)
  #define OPC_PSHUFB      (0x00 | P_EXT38 | P_DATA16)
  #define OPC_PSHUFD      (0x70 | P_EXT | P_DATA16)
-@@ -3408,6 +3410,25 @@
+@@ -3414,6 +3416,25 @@
      static int const packus_insn[4] = {
          OPC_PACKUSWB, OPC_PACKUSDW, OPC_UD2, OPC_UD2
      };
@@ -262,10 +262,10 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      static int const smin_insn[4] = {
          OPC_PMINSB, OPC_PMINSW, OPC_PMINSD, OPC_VPMINSQ
      };
-@@ -3580,6 +3601,21 @@
-         a2 = a1;
-         a1 = 0;
-         goto gen_simd;
+@@ -3596,6 +3617,21 @@
+         insn = vece == MO_64 ? OPC_VCMPPD : OPC_VCMPPS;
+         sub = args[3];
+         goto gen_simd_imm8;
 +    case INDEX_op_tbl_vec:
 +        insn = OPC_PSHUFB;
 +        goto gen_simd;
@@ -284,7 +284,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
      gen_simd:
          tcg_debug_assert(insn != OPC_UD2);
          tcg_out_vex_modrm_type(s, insn, a0, a1, a2, type);
-@@ -3755,6 +3791,8 @@
+@@ -3774,6 +3810,8 @@
          return C_O1_I2(x, x, x);
      case INDEX_op_fsqrt_vec:
          return C_O1_I1(x, x);
@@ -293,7 +293,7 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  
      case INDEX_op_ld8u_i32:
      case INDEX_op_ld8u_i64:
-@@ -3983,6 +4021,10 @@
+@@ -4002,6 +4040,10 @@
      case INDEX_op_x86_punpckl_vec:
      case INDEX_op_x86_punpckh_vec:
      case INDEX_op_x86_vpshldi_vec:
@@ -304,9 +304,9 @@ x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
  #if TCG_TARGET_REG_BITS == 32
      case INDEX_op_dup2_vec:
  #endif
-@@ -4034,6 +4076,15 @@
-     case INDEX_op_fdiv_vec:
-     case INDEX_op_fsqrt_vec:
+@@ -4056,6 +4098,15 @@
+     case INDEX_op_fmax_vec:
+     case INDEX_op_fcmp_vec:
          return vece >= MO_32;
 +    case INDEX_op_tbl_vec:
 +        return type <= TCG_TYPE_V128;       /* vpshufb shuffles within 128-bit lanes */
