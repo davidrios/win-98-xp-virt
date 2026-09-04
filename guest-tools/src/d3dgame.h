@@ -64,13 +64,31 @@ static void game_log(const char *fmt, ...)
     }
 }
 
-static void game_log_open(const char *path, int argc, char **argv)
+/* a bare file name goes next to the EXE, whatever the shortcut's "Start in" is */
+static void game_path_near_exe(char *out, size_t n, const char *name)
+{
+    char exe[MAX_PATH], *slash;
+    if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':')) {
+        strncpy(out, name, n - 1);
+        out[n - 1] = 0;
+        return;
+    }
+    GetModuleFileNameA(NULL, exe, MAX_PATH);
+    slash = strrchr(exe, '\\');
+    if (slash) slash[1] = 0; else exe[0] = 0;
+    snprintf(out, n, "%s%s", exe, name);
+}
+
+static void game_log_open(const char *name, int argc, char **argv)
 {
     SYSTEMTIME st;
     int i;
+    char path[MAX_PATH];
+    game_path_near_exe(path, sizeof(path), name);
     g_log = fopen(path, "at");
     GetLocalTime(&st);
     game_log("---- %04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    game_log("log %s", path);
     for (i = 0; i < argc; i++) game_log("arg[%d] %s", i, argv[i]);
     {
         OSVERSIONINFOA v;
@@ -104,7 +122,7 @@ static void opts_parse(struct opts *o, int argc, char **argv)
         else if (!strcmp(argv[i], "-frames") && i + 1 < argc) o->frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-dump") && i + 2 < argc) {
             o->dump_frame = atoi(argv[++i]);
-            strncpy(o->dump_file, argv[++i], MAX_PATH - 1);
+            game_path_near_exe(o->dump_file, MAX_PATH, argv[++i]);
         }
         else if (!strcmp(argv[i], "-log") && i + 1 < argc) strncpy(o->log_file, argv[++i], MAX_PATH - 1);
     }
