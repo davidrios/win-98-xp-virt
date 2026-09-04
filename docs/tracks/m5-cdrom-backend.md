@@ -39,6 +39,28 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 
 ## State (2026-09-04, evening)
 
+- **Step 4 done** (commit "M5 step 4"): `libdisc/qemu/cdimage.c` (~170
+  lines, modelled on `block/bochs.c`: `bdrv_apply_auto_read_only`,
+  `bdrv_open_file_child`, path from `bs->file->bs->exact_filename`,
+  `request_alignment` 2048, `bdrv_co_preadv` = `libdisc_read_cooked` per
+  sector, `cdimage_disc()` under `GRAPH_RDLOCK_GUARD_MAINLOOP`),
+  `cdimage.h`, patch `50-cdimage-block-driver` (README row), the overlay
+  lines in `prepare-qemu.sh`, `cargo build -p libdisc` + `-Dlibdisc_dir`
+  in `configure-qemu.sh`. Acceptance all met on the Linux box: `qemu-img
+  info` → `cdimage`, 6800 × 2048 for the three selftest images and `raw`
+  for `plain.iso`; `qemu-img dd` of the data track == `plain.iso`; audio /
+  flipped sectors → `-EIO`; write refused; `nm -D libqemu-embed-i386.so |
+  grep -c ' T _ZN3std'` = **0** on Linux (no `--exclude-libs` needed; the
+  17 `libdisc_*` functions and `cdimage_disc` are exported, harmless);
+  **XP with `-cdrom build/test/disc/gt.cue` (the guest-tools ISO converted
+  + a tone track) lists `D:\` as GUESTTOOLS and copies all 49 files
+  byte-identical** (`tools/xp-cdimage-test.sh`, KVM, 46 s). `scripts/test.sh`
+  gained `cdimage` (host: qemu-img / qemu-io on the selftest images) and
+  `guest-cdimage` (guest stage, the XP copy). Header fix on the way: C
+  refuses a typedef named like a function, so the structs are
+  `LibdiscSectorInfo` / `LibdiscTrackInfo` (doc 17 §3 updated). Gotcha
+  for shell checks: `cmd | grep -q` under `set -o pipefail` fails when the
+  producer gets SIGPIPE — capture then match.
 - **Step 3 done** (commit "M5 step 3"): `ccd.rs`. Tracks from the
   `[Entry]` records with ADR 1 and Point 1..99 (`PLBA` = index 1,
   `Control` = the nibble), modes and `INDEX n=` from `[TRACK n]`, one
@@ -108,11 +130,9 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   does, EDC/ECC is verified by the `ecm` oracle above and Q synthesis only
   by self-consistency (doc 17 §6.1). The first real dump of an owned disc
   is a milestone in itself (step 7).
-- This track's worktree (`.claude/worktrees/m5-cdrom`) has no prepared
-  `qemu/` tree yet: `git submodule update --init --depth 1 qemu
-  third_party/qemu-3dfx` then the usual prepare → configure → ninja before
-  step 4; `scripts/test.sh`'s `x87-fast` reports a build failure there
-  until then (it compiles against `qemu/target/i386/tcg` headers).
+- This track's worktree (`.claude/worktrees/m5-cdrom`) has its own
+  submodules (`git submodule update --init --depth 1 …`) and QEMU build
+  (`build/qemu` there, ~15 min from scratch on the Linux box).
 
 ## Build / test loop
 
@@ -182,7 +202,7 @@ State section) — they are the handoff.
    the cross-format identity checks (`toc*` identical across cue, ccd,
    cooked cue; `subq-synth` now stored vs synthesized). Acceptance: all
    `selftest` checks PASS; a CCD without `.sub` opens and synthesizes.
-4. **The `cdimage` block driver + patch 50** (`libdisc/qemu/cdimage.c`,
+4. **The `cdimage` block driver + patch 50** — *done 2026-09-04* (`libdisc/qemu/cdimage.c`,
    `cdimage.h`, overlay lines in `prepare-qemu.sh`, cargo + `-Dlibdisc_dir`
    in `configure-qemu.sh`, `50-cdimage-block-driver.patch`, README row;
    doc 17 §5.1–5.2). Acceptance: `qemu-img info mixed.cue` → `cdimage`,

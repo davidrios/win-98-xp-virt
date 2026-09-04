@@ -33,11 +33,12 @@ lost the 3dfx meson hunk (symptom: `unknown type 'glidept'`).
 | `31-mesa-ctx-weak` | `hw/mesa/mglcntx_linux.c` (GLX) and `mglcntx_sdlgl.c` (macOS, incl. `dllname`) export weak so `embed/mglcntx_embed.c` overrides them inside libqemu-embed while qemu-system keeps the native backend. Embed backend: Linux = EGL surfaceless + pbuffer as FBO 0; macOS = CGL context without a drawable + an FBO standing in for the default framebuffer; both read FBO 0 back on swap (bring-up) | a per-consumer backend selection in meson |
 | `32-mesa-setfunc` | `MesaGLSetFunc(fenum, fn)`: swap one guest-dispatch entry. The macOS embed backend redirects `glBindFramebuffer(…, 0)` to its stand-in FBO | upstream exposes the table |
 | `40-d3dpt-device` | instantiate the paravirtual Direct3D device (`hw/d3dpt`, overlaid from `d3dpt/hw` by prepare; doc 14) on the pc machine next to the qemu-3dfx devices and add its meson subdir. The device itself is ours, not a patch: SysBus, register page at 0xdfffe000, 64 MiB RAM window at 0xd8000000, executor library dlopened on first guest attach (`d3dpt_exec_load.c`, shared). The same overlay carries `d3dpt_vga.c`, the `d3dpt-vga` PCI framebuffer adapter for the XP display driver (doc 15): stdvga core + register BAR, 128 MiB VRAM whose top 64 MiB is the Direct3D command window of the driver's DDI (M7c), `-vga none -device d3dpt-vga` | never (our device) |
+| `50-cdimage-block-driver` | **doc 17 §5.2 (M5)**: meson option `libdisc_dir` (the directory holding `liblibdisc.a`, the Rust staticlib of the CD-ROM image model in `libdisc/`, built by `scripts/configure-qemu.sh` which passes `-Dlibdisc_dir=target/release`), the `libdisc` dependency (+ threads, dl, m, rt, util, gcc_s on Linux; iconv on macOS), `CONFIG_CDIMAGE`, a summary line, and `block/cdimage.c` in `block_ss`. The driver itself is ours, not a patch: `libdisc/qemu/cdimage.[ch]` and `libdisc/libdisc.h` are overlaid into `block/` and `include/block/` by prepare. `-cdrom x.cue` / `x.ccd` probe to `cdimage` (a plain `.iso` stays on `raw`), the block layer sees the L-EC-verified 2048-byte view, `cdimage_disc(bs)` hands the raw model to atapi.c (patch 51). Migration / snapshots with a `cdimage` medium: unsupported (no vmstate for the ATAPI disc fields) | never (our driver), or an upstream cdimage |
 | `90-debug-sdl-keydebug` | `QEMU_SDL_KEYDEBUG=1` logs SDL keydown/modifier state (diagnostic) | any time |
 
 Planned: dma-buf / IOSurface export instead of readback, Glide offscreen
-path (doc 12); `50-cdimage-block-driver` and `51-atapi-disc-model` for the
-CD-ROM backend (M5 track, doc 17; numbers 50–59 reserved).
+path (doc 12); `51-atapi-disc-model` for the CD-ROM backend (M5 track,
+doc 17; numbers 50–59 reserved).
 
 Regenerating a patch: apply the queue, edit the file(s) in `qemu/`, produce
 `diff -u` against a copy of the pre-edit state with `a/`/`b/` paths, then

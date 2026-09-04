@@ -20,7 +20,7 @@ pub const LIBDISC_EIO: i32 = -5;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct libdisc_sector_info {
+pub struct LibdiscSectorInfo {
     pub kind: u8,
     pub track: u8,
     pub index: u8,
@@ -29,7 +29,7 @@ pub struct libdisc_sector_info {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct libdisc_track_info {
+pub struct LibdiscTrackInfo {
     pub number: u8,
     pub session: u8,
     pub control: u8,
@@ -164,14 +164,14 @@ pub unsafe extern "C" fn libdisc_track_count(d: *const Disc) -> u8 {
 }
 
 /// # Safety
-/// `d` is an open handle; `out` points to a writable `libdisc_track_info`.
+/// `d` is an open handle; `out` points to a writable `LibdiscTrackInfo`.
 #[no_mangle]
-pub unsafe extern "C" fn libdisc_track_info(d: *const Disc, track: u8, out: *mut libdisc_track_info) -> i32 {
+pub unsafe extern "C" fn libdisc_track_info(d: *const Disc, track: u8, out: *mut LibdiscTrackInfo) -> i32 {
     guard(|| {
         let (Some(d), false) = (disc(d), out.is_null()) else { return LIBDISC_EINVAL };
         match d.track(track) {
             Some((s, t)) => {
-                *out = libdisc_track_info {
+                *out = LibdiscTrackInfo {
                     number: t.number,
                     session: s.number,
                     control: t.control,
@@ -188,9 +188,9 @@ pub unsafe extern "C" fn libdisc_track_info(d: *const Disc, track: u8, out: *mut
 }
 
 /// # Safety
-/// `d` is an open handle; `out` points to a writable `libdisc_sector_info`.
+/// `d` is an open handle; `out` points to a writable `LibdiscSectorInfo`.
 #[no_mangle]
-pub unsafe extern "C" fn libdisc_sector_info(d: *const Disc, lba: u32, out: *mut libdisc_sector_info) -> i32 {
+pub unsafe extern "C" fn libdisc_sector_info(d: *const Disc, lba: u32, out: *mut LibdiscSectorInfo) -> i32 {
     guard(|| {
         let (Some(d), false) = (disc(d), out.is_null()) else { return LIBDISC_EINVAL };
         if lba > i32::MAX as u32 {
@@ -198,7 +198,7 @@ pub unsafe extern "C" fn libdisc_sector_info(d: *const Disc, lba: u32, out: *mut
         }
         match d.sector_info(lba as i32) {
             Ok(i) => {
-                *out = libdisc_sector_info { kind: i.kind.code(), track: i.track, index: i.index, lec: if i.lec_ok == Some(false) { 0 } else { 1 } };
+                *out = LibdiscSectorInfo { kind: i.kind.code(), track: i.track, index: i.index, lec: if i.lec_ok == Some(false) { 0 } else { 1 } };
                 LIBDISC_OK
             }
             Err(e) => code(&e),

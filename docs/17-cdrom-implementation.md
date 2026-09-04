@@ -316,23 +316,23 @@ enum {
     LIBDISC_EIO     = -5,   /* host file read failed                   → sense 04/xx: report and fail */
 };
 
-/* sector kinds, as libdisc_sector_info.kind */
+/* sector kinds, as LibdiscSectorInfo.kind */
 enum { LIBDISC_KIND_AUDIO = 0, LIBDISC_KIND_MODE1 = 1, LIBDISC_KIND_MODE2F1 = 2,
        LIBDISC_KIND_MODE2F2 = 3, LIBDISC_KIND_MODE2 = 4, LIBDISC_KIND_GAP = 5 };
 
-typedef struct libdisc_sector_info {
+typedef struct LibdiscSectorInfo {
     uint8_t kind;        /* LIBDISC_KIND_* */
     uint8_t track;       /* 1..99 */
     uint8_t index;       /* 0..99 */
     uint8_t lec;         /* data kinds: 1 ok, 0 fails; audio/gap: 1 */
-} libdisc_sector_info;
+} LibdiscSectorInfo;
 
-typedef struct libdisc_track_info {
+typedef struct LibdiscTrackInfo {
     uint8_t number, session, control, mode;   /* mode = LIBDISC_KIND_* of the track */
     int32_t start_lba;   /* index 1 */
     int32_t pregap_lba;  /* index 0 start, == start_lba when there is none */
     int32_t end_lba;     /* exclusive */
-} libdisc_track_info;
+} LibdiscTrackInfo;
 
 uint32_t libdisc_api_version(void);
 /* 0..100: how sure libdisc is that `filename` (first `len` bytes in `head`) is an image it reads.
@@ -345,8 +345,8 @@ void     libdisc_close(libdisc *d);
 uint32_t libdisc_sector_count(const libdisc *d);          /* lead-out LBA of the last session */
 uint8_t  libdisc_session_count(const libdisc *d);
 uint8_t  libdisc_track_count(const libdisc *d);           /* across sessions */
-int      libdisc_track_info(const libdisc *d, uint8_t track, libdisc_track_info *out); /* ERANGE if no such track */
-int      libdisc_sector_info(const libdisc *d, uint32_t lba, libdisc_sector_info *out);
+int      libdisc_track_info(const libdisc *d, uint8_t track, LibdiscTrackInfo *out); /* ERANGE if no such track */
+int      libdisc_sector_info(const libdisc *d, uint32_t lba, LibdiscSectorInfo *out);
 
 int      libdisc_read_cooked(const libdisc *d, uint32_t lba, uint8_t out[2048]);  /* L-EC verified user data */
 int      libdisc_read_raw(const libdisc *d, uint32_t lba, uint8_t out[2352]);
@@ -365,6 +365,10 @@ int libdisc_mmc_read_cd_sector(const libdisc *d, uint32_t lba, uint8_t expected_
                                uint8_t byte10, uint8_t *out, size_t cap);
 #endif
 ```
+
+(The two structs were first named `libdisc_sector_info` / `libdisc_track_info`,
+which C refuses because the functions of the same name exist; renamed
+2026-09-04.)
 
 Rust side: `capi.rs` holds `#[no_mangle] pub extern "C" fn libdisc_open(…)`
 etc.; `libdisc` is `Box<Disc>` cast to a pointer; `err` is filled with a

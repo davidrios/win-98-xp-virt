@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use std::ffi::CString;
 
-use libdisc::capi::{self, libdisc_sector_info, libdisc_track_info};
+use libdisc::capi::{self, LibdiscSectorInfo, LibdiscTrackInfo};
 use libdisc::msf::Msf;
 use libdisc::{sector, subq, Disc, TrackMode};
 
@@ -40,13 +40,13 @@ impl CDisc {
     fn track_count(&self) -> u8 {
         unsafe { capi::libdisc_track_count(self.0) }
     }
-    fn track_info(&self, n: u8) -> Result<libdisc_track_info, i32> {
-        let mut t = libdisc_track_info::default();
+    fn track_info(&self, n: u8) -> Result<LibdiscTrackInfo, i32> {
+        let mut t = LibdiscTrackInfo::default();
         let rc = unsafe { capi::libdisc_track_info(self.0, n, &mut t) };
         if rc == 0 { Ok(t) } else { Err(rc) }
     }
-    fn sector_info(&self, lba: u32) -> Result<libdisc_sector_info, i32> {
-        let mut i = libdisc_sector_info::default();
+    fn sector_info(&self, lba: u32) -> Result<LibdiscSectorInfo, i32> {
+        let mut i = LibdiscSectorInfo::default();
         let rc = unsafe { capi::libdisc_sector_info(self.0, lba, &mut i) };
         if rc == 0 { Ok(i) } else { Err(rc) }
     }
@@ -211,6 +211,25 @@ fn generate(dir: &Path) -> Result<Vec<u8>, String> {
     // 4. plain.iso
     fs::write(dir.join("plain.iso"), &data).map_err(|e| e.to_string())?;
 
+    // 5. tone.wav: 3 s of the 1 kHz tone as a WAVE, for `convert --audio`
+    let mut wav = Vec::new();
+    tone(1000.0, 0, 225, &mut wav);
+    let mut riff = Vec::new();
+    riff.extend_from_slice(b"RIFF");
+    riff.extend_from_slice(&(36 + wav.len() as u32).to_le_bytes());
+    riff.extend_from_slice(b"WAVEfmt ");
+    riff.extend_from_slice(&16u32.to_le_bytes());
+    riff.extend_from_slice(&1u16.to_le_bytes());
+    riff.extend_from_slice(&2u16.to_le_bytes());
+    riff.extend_from_slice(&44100u32.to_le_bytes());
+    riff.extend_from_slice(&(44100u32 * 4).to_le_bytes());
+    riff.extend_from_slice(&4u16.to_le_bytes());
+    riff.extend_from_slice(&16u16.to_le_bytes());
+    riff.extend_from_slice(b"data");
+    riff.extend_from_slice(&(wav.len() as u32).to_le_bytes());
+    riff.extend_from_slice(&wav);
+    fs::write(dir.join("tone.wav"), &riff).map_err(|e| e.to_string())?;
+
     // 2. mixed.ccd/.img/.sub: the same disc as CloneCD, written from the model (checked by `ccd`)
     let disc = Disc::open(&dir.join("mixed.cue")).map_err(|e| e.to_string())?;
     let n = disc.sector_count() as i32;
@@ -338,7 +357,7 @@ fn check_lec(dir: &Path) -> Result<(), String> {
     let r = disc.read_raw(1000).map_err(|e| e.to_string())?;
     expect("flipped byte", r[500], bin[at])?;
     let info = disc.sector_info(1000).map_err(|e| e.to_string())?;
-    expect("sector_info", info, libdisc_sector_info { kind: 1, track: 1, index: 1, lec: 0 })?;
+    expect("sector_info", info, LibdiscSectorInfo { kind: 1, track: 1, index: 1, lec: 0 })?;
     // READ CD with C2 pointers: ≥ 1 bit set, block error byte set; the raw bytes still delivered
     let rc = disc.read_cd(1000, 2, 0xFA, 0).map_err(|e| format!("read_cd c2: {e}"))?;
     expect("read_cd c2 length", rc.len(), 2352 + 294)?;
@@ -380,9 +399,9 @@ fn check_edges(dir: &Path) -> Result<(), String> {
     expect("sector_count", disc.sector_count() as i32, leadout)?;
     expect("track_count", disc.track_count(), 3)?;
     expect("session_count", unsafe { capi::libdisc_session_count(disc.0) }, 1)?;
-    expect("track 1", disc.track_info(1), Ok(libdisc_track_info { number: 1, session: 1, control: 4, mode: 1, start_lba: 0, pregap_lba: 0, end_lba: DATA_SECTORS }))?;
-    expect("track 2", disc.track_info(2), Ok(libdisc_track_info { number: 2, session: 1, control: 0, mode: 0, start_lba: t2_i1, pregap_lba: DATA_SECTORS, end_lba: t3_i0 }))?;
-    expect("track 3", disc.track_info(3), Ok(libdisc_track_info { number: 3, session: 1, control: 0, mode: 0, start_lba: t3_i1, pregap_lba: t3_i0, end_lba: leadout }))?;
+    expect("track 1", disc.track_info(1), Ok(LibdiscTrackInfo { number: 1, session: 1, control: 4, mode: 1, start_lba: 0, pregap_lba: 0, end_lba: DATA_SECTORS }))?;
+    expect("track 2", disc.track_info(2), Ok(LibdiscTrackInfo { number: 2, session: 1, control: 0, mode: 0, start_lba: t2_i1, pregap_lba: DATA_SECTORS, end_lba: t3_i0 }))?;
+    expect("track 3", disc.track_info(3), Ok(LibdiscTrackInfo { number: 3, session: 1, control: 0, mode: 0, start_lba: t3_i1, pregap_lba: t3_i0, end_lba: leadout }))?;
     expect("track 4", disc.track_info(4), Err(capi::LIBDISC_ERANGE))?;
     expect("track 0", disc.track_info(0), Err(capi::LIBDISC_ERANGE))?;
     let k = |lba: i32| disc.sector_info(lba as u32).map(|i| (i.kind, i.track, i.index)).map_err(|e| format!("info {lba}: {e}"));
@@ -454,8 +473,8 @@ fn check_panic_safety(dir: &Path) -> Result<(), String> {
         return Err("NULL path opened".into());
     }
     // NULL handles and NULL buffers on every entry point
-    let mut i = libdisc_sector_info::default();
-    let mut t = libdisc_track_info::default();
+    let mut i = LibdiscSectorInfo::default();
+    let mut t = LibdiscTrackInfo::default();
     unsafe {
         expect("sector_count(NULL)", capi::libdisc_sector_count(std::ptr::null()), 0)?;
         expect("track_info(NULL)", capi::libdisc_track_info(std::ptr::null(), 1, &mut t), capi::LIBDISC_EINVAL)?;
