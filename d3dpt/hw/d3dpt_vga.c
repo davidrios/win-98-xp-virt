@@ -13,6 +13,14 @@
  * embed listener takes one format. ENABLE = 0 returns the console to the
  * VGA core (BSOD, reboot, the BIOS).
  *
+ * M7c (doc 15): the top 64 MiB of BAR 0 is a command window in the
+ * d3dpt_proto.h layout. The display driver's Direct3D DDI appends records
+ * there (surfaces it registers by VRAM offset, contexts, DrawPrimitives2
+ * token streams) and writes DOORBELL; the batch runs synchronously in
+ * the same libd3dpt_exec as the SysBus device (its own instance), which
+ * reads texels straight out of VRAM and writes rendered frames back into
+ * the render target's VRAM (marked dirty here so the scanout shows them).
+ *
  * The device is not a QEMU patch: prepare-qemu.sh overlays d3dpt/hw into
  * qemu/hw/d3dpt and patch 40 adds the meson subdir. Use it as
  *   -vga none -device d3dpt-vga
@@ -32,6 +40,8 @@
 #include "../display/vga_int.h"
 
 #include "hw/d3dpt/d3dpt_fb.h"
+#include "hw/d3dpt/d3dpt_proto.h"
+#include "hw/d3dpt/d3dpt_exec_load.h"
 
 #define TYPE_D3DPT_VGA "d3dpt-vga"
 OBJECT_DECLARE_SIMPLE_TYPE(D3dptVgaState, D3DPT_VGA)
@@ -61,6 +71,14 @@ struct D3dptVgaState {
 
     char dbg[256];
     unsigned dbg_len;
+
+    /* M7c: the command window at the top of VRAM and its executor */
+    uint32_t cmd_offset;        /* 0 = VRAM too small for a window */
+    const D3dptExecLib *lib;
+    d3dpt_exec_t *exec;
+    bool exec_tried;
+    uint32_t d3d_err;           /* last D3DPT_ERR_* of the doorbell */
+    uint32_t batches;
 };
 
 /* ------------------------------------------------------------ mode table
@@ -256,6 +274,86 @@ static const GraphicHwOps d3dpt_vga_gfx_ops = {
     .text_update = d3dpt_vga_text_update,
 };
 
+/* ------------------------------------------------------------- Direct3D */
+
+static void d3d_log(void *ud, const char *msg)
+{
+    info_report("d3dpt-vga: %s", msg);
+}
+
+static void d3d_active(void *ud, int on)
+{
+    /* frames land in VRAM: nothing to switch in the presenter */
+}
+
+static void d3d_vram_dirty(void *ud, uint32_t offset, uint32_t bytes)
+{
+    D3dptVgaState *s = ud;
+
+    if ((uint64_t)offset + bytes <= s->cmd_offset) {
+        memory_region_set_dirty(&s->vga.vram, offset, bytes);
+    }
+}
+
+static bool d3d_load(D3dptVgaState *s)
+{
+    d3dpt_exec_ops ops = { s, d3d_log, d3d_active, NULL, d3d_vram_dirty };
+
+    if (s->exec_tried || !s->cmd_offset) {
+        return s->exec != NULL;
+    }
+    s->exec_tried = true;
+    s->lib = d3dpt_exec_lib();
+    if (!s->lib) {
+        return false;
+    }
+    s->exec = s->lib->create(&ops);
+    if (!s->exec) {
+        warn_report("d3dpt-vga: executor refused to start (no DXVK / Vulkan device)");
+        return false;
+    }
+    s->lib->set_vram(s->exec, memory_region_get_ram_ptr(&s->vga.vram), s->cmd_offset);
+    s->lib->attach(s->exec, 1);
+    info_report("d3dpt-vga: Direct3D executor ready, window at %u MiB", s->cmd_offset >> 20);
+    return true;
+}
+
+static void d3d_doorbell(D3dptVgaState *s)
+{
+    uint8_t *win = memory_region_get_ram_ptr(&s->vga.vram) + s->cmd_offset;
+    d3dpt_shm_hdr *h = (d3dpt_shm_hdr *)win;
+
+    if (!s->cmd_offset) {
+        return;
+    }
+    s->batches++;
+    if (d3d_load(s)) {
+        s->d3d_err = s->lib->submit(s->exec, win, D3DPT_SHM_SIZE);
+    } else {
+        s->d3d_err = D3DPT_ERR_HOST;
+        h->ret_status = D3DPT_ERR_HOST;
+        h->cmd_bytes = 0;
+        h->cmd_count = 0;
+    }
+    if (s->d3d_err && s->batches <= 8) {
+        info_report("d3dpt-vga: batch %u: error %u at record %u", s->batches, s->d3d_err, h->ret_index);
+    }
+}
+
+/* guest reset: every context and surface the driver registered is gone */
+static void d3d_reset(D3dptVgaState *s)
+{
+    if (s->exec) {
+        s->lib->attach(s->exec, 0);
+        s->lib->attach(s->exec, 1);
+    }
+    if (s->cmd_offset) {
+        memset(memory_region_get_ram_ptr(&s->vga.vram) + s->cmd_offset, 0, sizeof(d3dpt_shm_hdr));
+    }
+    s->d3d_err = 0;
+    s->batches = 0;
+}
+
 /* ------------------------------------------------------------- registers */
 
 static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
@@ -271,7 +369,7 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
     case D3DPT_FB_REG_VRAM_SIZE:
         return s->vga.vram_size;
     case D3DPT_FB_REG_CAPS:
-        return D3DPT_FB_CAP_BPP16 | D3DPT_FB_CAP_BPP32;
+        return D3DPT_FB_CAP_BPP16 | D3DPT_FB_CAP_BPP32 | (s->cmd_offset ? D3DPT_FB_CAP_D3D : 0);
     case D3DPT_FB_REG_MODE_COUNT:
         return FB_MODE_COUNT;
     case D3DPT_FB_REG_MODE_SEL:
@@ -302,6 +400,13 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
         return s->frames;
     case D3DPT_FB_REG_DDFLAGS:
         return s->ddflags;
+    case D3DPT_FB_REG_CMD_OFFSET:
+        return s->cmd_offset;
+    case D3DPT_FB_REG_DOORBELL:
+        return s->d3d_err;
+    case D3DPT_FB_REG_D3D_STATUS:
+        /* probing loads the executor: the answer must be honest */
+        return d3d_load(s) ? D3DPT_STATUS_READY : D3DPT_STATUS_NO_EXEC;
     default:
         return 0;
     }
@@ -369,6 +474,9 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
     }
+    case D3DPT_FB_REG_DOORBELL:
+        d3d_doorbell(s);
+        break;
     default:
         break;
     }
@@ -402,6 +510,15 @@ static void d3dpt_vga_realize(PCIDevice *dev, Error **errp)
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_MEM_PREFETCH, &vga->vram);
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->regs);
+
+    /* the command window takes the top 64 MiB when at least as much is
+     * left below it for the frame buffer and the DirectDraw heap */
+    if (vga->vram_size >= 2 * D3DPT_SHM_SIZE) {
+        s->cmd_offset = vga->vram_size - D3DPT_SHM_SIZE;
+    } else {
+        warn_report("d3dpt-vga: vgamem_mb=%u leaves no room for the Direct3D window (needs 128)",
+                    vga->vram_size_mb);
+    }
 }
 
 static void d3dpt_vga_reset(DeviceState *dev)
@@ -414,6 +531,7 @@ static void d3dpt_vga_reset(DeviceState *dev)
     s->frames = 0;
     s->vga_grace = 0;
     s->dbg_len = 0;
+    d3d_reset(s);
 }
 
 static Property d3dpt_vga_properties[] = {

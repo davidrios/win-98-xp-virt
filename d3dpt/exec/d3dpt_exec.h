@@ -27,6 +27,10 @@ typedef struct d3dpt_exec_ops {
     void (*active)(void *ud, int on);
     /* a frame was presented: XRGB8888, top-down, stride in bytes; valid during the call */
     void (*frame)(void *ud, const void *pixels, int width, int height, int stride);
+    /* M7c: the executor wrote [offset, offset + bytes) of the guest VRAM
+     * handed over by d3dpt_exec_set_vram (a READBACK); the device marks the
+     * range dirty for its scanout. May be NULL. */
+    void (*vram_dirty)(void *ud, uint32_t offset, uint32_t bytes);
 } d3dpt_exec_ops;
 
 typedef struct d3dpt_exec d3dpt_exec_t;
@@ -43,6 +47,11 @@ D3DPT_EXEC_API void d3dpt_exec_attach(d3dpt_exec_t *x, int attach);
 /* execute the batch described by the window's header; returns D3DPT_ERR_*
  * and writes ret_status/ret_index into the header */
 D3DPT_EXEC_API uint32_t d3dpt_exec_submit(d3dpt_exec_t *x, void *shm, uint32_t shm_size);
+/* M7c: the guest VRAM the display driver's D3DPT_OP_VRAM_* records refer
+ * to (the d3dpt-vga adapter's BAR 0 below its command window). The host
+ * reads texels from it and READBACK writes rendered frames into it; the
+ * pointer must stay valid until the executor is destroyed. */
+D3DPT_EXEC_API void d3dpt_exec_set_vram(d3dpt_exec_t *x, void *vram, uint32_t size);
 
 #ifdef __cplusplus
 }

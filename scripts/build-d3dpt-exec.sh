@@ -9,5 +9,5 @@ DX="$ROOT/third_party/dxvk/include/native"
 if [ "$(uname -s)" = Darwin ]; then LIB="$OUT/libd3dpt_exec.dylib"; SHARED=(-dynamiclib -install_name "$LIB"); else LIB="$OUT/libd3dpt_exec.so"; SHARED=(-shared); fi
 CXX="${CXX:-c++}"
 "$CXX" -std=c++17 -O2 -fPIC -fvisibility=hidden -Wall -Wno-unused-function "${SHARED[@]}" -o "$LIB" \
-  "$ROOT/d3dpt/exec/d3dpt_exec.cpp" -I"$DX" -I"$DX/windows" -I"$DX/directx" -ldl
+  "$ROOT/d3dpt/exec/d3dpt_exec.cpp" "$ROOT/d3dpt/exec/d3dpt_exec_ddi.cpp" -I"$DX" -I"$DX/windows" -I"$DX/directx" -ldl
 echo "==> $LIB"

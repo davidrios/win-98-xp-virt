@@ -1,41 +1,149 @@
 /*
- * d3dnthal.h
+ * d3dnthal.h — the Direct3D NT driver interface as the d3dptdisp display
+ * driver needs it (doc 15, M7c): the DX7 HAL callbacks dxg.sys calls, the
+ * caps structures, the DrawPrimitives2 command header.
  *
- * Direct3D NT driver interface
+ * Derived from ReactOS' public-domain d3dnthal.h (Ge van Geldorp) and
+ * the DDK documentation, made self-contained for the kernel build: the
+ * DDK's version drags in d3dtypes.h / d3dcaps.h and through them the
+ * user-mode windows.h, so the handful of Direct3D types the structures
+ * use are spelled out here instead. Layouts are the DDK's.
  *
- * Contributors:
- *   Created by Ge van Geldorp
- *
- * THIS SOFTWARE IS NOT COPYRIGHTED
- *
- * This source code is offered for use in the public domain. You may
- * use, modify or distribute it freely.
- *
- * This code is distributed in the hope that it will be useful but
- * WITHOUT ANY WARRANTY. ALL WARRANTIES, EXPRESS OR IMPLIED ARE HEREBY
- * DISCLAIMED. This includes but is not limited to warranties of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *
+ * THIS SOFTWARE IS NOT COPYRIGHTED (the ReactOS base); additions
+ * SPDX-License-Identifier: GPL-2.0-or-later
  */
-
 #ifndef __DDK_D3DNTHAL_H
 #define __DDK_D3DNTHAL_H
 
 #include <ddrawint.h>
-#include <d3dtypes.h>
-#include <d3dcaps.h>
-/* win98-xp-virt: d3dkmthk.h (WDDM) dropped, nothing below uses it */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* --- the Direct3D types the DDI structures use (d3dtypes.h / d3dcaps.h) --- */
+
+typedef float D3DVALUE;
+typedef DWORD D3DCOLOR;
+typedef struct _D3DRECT_ { LONG x1, y1, x2, y2; } D3DRECT_, *LPD3DRECT_;
+typedef enum _D3DCOLORMODEL_ { D3DCOLOR_MONO_ = 1, D3DCOLOR_RGB_ = 2 } D3DCOLORMODEL_;
+
+typedef struct _D3DTRANSFORMCAPS_ { DWORD dwSize; DWORD dwCaps; } D3DTRANSFORMCAPS_;
+typedef struct _D3DLIGHTINGCAPS_ { DWORD dwSize; DWORD dwCaps; DWORD dwLightingModel; DWORD dwNumLights; } D3DLIGHTINGCAPS_;
+typedef struct _D3DPRIMCAPS_ {
+    DWORD dwSize;
+    DWORD dwMiscCaps;
+    DWORD dwRasterCaps;
+    DWORD dwZCmpCaps;
+    DWORD dwSrcBlendCaps;
+    DWORD dwDestBlendCaps;
+    DWORD dwAlphaCmpCaps;
+    DWORD dwShadeCaps;
+    DWORD dwTextureCaps;
+    DWORD dwTextureFilterCaps;
+    DWORD dwTextureBlendCaps;
+    DWORD dwTextureAddressCaps;
+    DWORD dwStippleWidth;
+    DWORD dwStippleHeight;
+} D3DPRIMCAPS_;
+
+#define D3DDD_COLORMODEL              0x00000001
+#define D3DDD_DEVCAPS                 0x00000002
+#define D3DDD_TRANSFORMCAPS           0x00000004
+#define D3DDD_LIGHTINGCAPS            0x00000008
+#define D3DDD_BCLIPPING               0x00000010
+#define D3DDD_LINECAPS                0x00000020
+#define D3DDD_TRICAPS                 0x00000040
+#define D3DDD_DEVICERENDERBITDEPTH    0x00000080
+#define D3DDD_DEVICEZBUFFERBITDEPTH   0x00000100
+#define D3DDD_MAXBUFFERSIZE           0x00000200
+#define D3DDD_MAXVERTEXCOUNT          0x00000400
+
+#define D3DDEVCAPS_FLOATTLVERTEX      0x00000001
+#define D3DDEVCAPS_EXECUTESYSTEMMEMORY 0x00000010
+#define D3DDEVCAPS_TLVERTEXSYSTEMMEMORY 0x00000040
+#define D3DDEVCAPS_TEXTUREVIDEOMEMORY 0x00000200
+#define D3DDEVCAPS_DRAWPRIMTLVERTEX   0x00000400
+#define D3DDEVCAPS_CANRENDERAFTERFLIP 0x00000800
+#define D3DDEVCAPS_DRAWPRIMITIVES2    0x00002000
+#define D3DDEVCAPS_DRAWPRIMITIVES2EX  0x00008000
+#define D3DDEVCAPS_HWTRANSFORMANDLIGHT 0x00010000
+#define D3DDEVCAPS_HWRASTERIZATION    0x00080000
+
+#define D3DPMISCCAPS_MASKZ            0x00000002
+#define D3DPMISCCAPS_CULLNONE         0x00000010
+#define D3DPMISCCAPS_CULLCW           0x00000020
+#define D3DPMISCCAPS_CULLCCW          0x00000040
+#define D3DPRASTERCAPS_DITHER         0x00000001
+#define D3DPRASTERCAPS_ZTEST          0x00000010
+#define D3DPRASTERCAPS_SUBPIXEL       0x00000020
+#define D3DPRASTERCAPS_FOGVERTEX      0x00000080
+#define D3DPRASTERCAPS_FOGTABLE       0x00000100
+#define D3DPRASTERCAPS_ZBIAS          0x00004000
+#define D3DPRASTERCAPS_FOGRANGE       0x00010000
+#define D3DPRASTERCAPS_ANISOTROPY     0x00020000
+#define D3DPRASTERCAPS_WBUFFER        0x00040000
+#define D3DPRASTERCAPS_ZFOG           0x00100000
+#define D3DPCMPCAPS_ALL               0x000000ff
+#define D3DPBLENDCAPS_ALL             0x00001fff
+#define D3DPSHADECAPS_COLORFLATRGB    0x00000002
+#define D3DPSHADECAPS_COLORGOURAUDRGB 0x00000008
+#define D3DPSHADECAPS_SPECULARFLATRGB 0x00000080
+#define D3DPSHADECAPS_SPECULARGOURAUDRGB 0x00000200
+#define D3DPSHADECAPS_ALPHAFLATBLEND  0x00001000
+#define D3DPSHADECAPS_ALPHAGOURAUDBLEND 0x00004000
+#define D3DPSHADECAPS_FOGFLAT         0x00040000
+#define D3DPSHADECAPS_FOGGOURAUD      0x00080000
+#define D3DPTEXTURECAPS_PERSPECTIVE   0x00000001
+#define D3DPTEXTURECAPS_POW2          0x00000002
+#define D3DPTEXTURECAPS_ALPHA         0x00000004
+#define D3DPTEXTURECAPS_TRANSPARENCY  0x00000008
+#define D3DPTEXTURECAPS_SQUAREONLY    0x00000020
+#define D3DPTEXTURECAPS_PROJECTED     0x00000400
+#define D3DPTFILTERCAPS_NEAREST       0x00000001
+#define D3DPTFILTERCAPS_LINEAR        0x00000002
+#define D3DPTFILTERCAPS_MIPNEAREST    0x00000004
+#define D3DPTFILTERCAPS_MIPLINEAR     0x00000008
+#define D3DPTFILTERCAPS_LINEARMIPNEAREST 0x00000010
+#define D3DPTFILTERCAPS_LINEARMIPLINEAR 0x00000020
+#define D3DPTFILTERCAPS_MINFPOINT     0x00000100
+#define D3DPTFILTERCAPS_MINFLINEAR    0x00000200
+#define D3DPTFILTERCAPS_MIPFPOINT     0x00010000
+#define D3DPTFILTERCAPS_MIPFLINEAR    0x00020000
+#define D3DPTFILTERCAPS_MAGFPOINT     0x01000000
+#define D3DPTFILTERCAPS_MAGFLINEAR    0x02000000
+#define D3DPTBLENDCAPS_DECAL          0x00000001
+#define D3DPTBLENDCAPS_MODULATE       0x00000002
+#define D3DPTBLENDCAPS_DECALALPHA     0x00000004
+#define D3DPTBLENDCAPS_MODULATEALPHA  0x00000008
+#define D3DPTBLENDCAPS_COPY           0x00000040
+#define D3DPTBLENDCAPS_ADD            0x00000080
+#define D3DPTADDRESSCAPS_WRAP         0x00000001
+#define D3DPTADDRESSCAPS_MIRROR       0x00000002
+#define D3DPTADDRESSCAPS_CLAMP        0x00000004
+#define D3DPTADDRESSCAPS_BORDER       0x00000008
+#define D3DPTADDRESSCAPS_INDEPENDENTUV 0x00000010
+#define D3DSTENCILCAPS_ALL            0x000000ff
+#define D3DTEXOPCAPS_ALL              0x00ffffff
+#define D3DFVFCAPS_TEXCOORDCOUNTMASK  0x0000ffff
+#define D3DLIGHTINGMODEL_RGB          0x00000001
+#define D3DLIGHTCAPS_POINT            0x00000001
+#define D3DLIGHTCAPS_SPOT             0x00000002
+#define D3DLIGHTCAPS_DIRECTIONAL      0x00000004
+#define DDBD_16_                      0x00000400
+#define DDBD_24_                      0x00000200
+#define DDBD_32_                      0x00000100
+
+/* --- GUIDs dxg asks GetDriverInfo about --- */
 DEFINE_GUID(GUID_D3DCallbacks,                   0x7BF06990, 0x8794, 0x11D0, 0x91, 0x39, 0x08, 0x00, 0x36, 0xD2, 0xEF, 0x02);
+DEFINE_GUID(GUID_D3DCallbacks2,                  0x0BA584E1, 0x70B6, 0x11D0, 0x88, 0x9D, 0x00, 0xAA, 0x00, 0xBB, 0xB7, 0x6A);
 DEFINE_GUID(GUID_D3DCallbacks3,                  0xDDF41230, 0xEC0A, 0x11D0, 0xA9, 0xB6, 0x00, 0xAA, 0x00, 0xC0, 0x99, 0x3E);
 DEFINE_GUID(GUID_D3DExtendedCaps,                0x7DE41F80, 0x9D93, 0x11D0, 0x89, 0xAB, 0x00, 0xA0, 0xC9, 0x05, 0x41, 0x29);
 DEFINE_GUID(GUID_D3DParseUnknownCommandCallback, 0x2E04FFA0, 0x98E4, 0x11D1, 0x8C, 0xE1, 0x00, 0xA0, 0xC9, 0x06, 0x29, 0xA8);
 DEFINE_GUID(GUID_ZPixelFormats,                  0x93869880, 0x36CF, 0x11D1, 0x9B, 0x1B, 0x00, 0xAA, 0x00, 0xBB, 0xB8, 0xAE);
 DEFINE_GUID(GUID_DDStereoMode,                   0xF828169C, 0xA8E8, 0x11D2, 0xA1, 0xF2, 0x00, 0xA0, 0xC9, 0x83, 0xEA, 0xF6);
+
+/* --- contexts --- */
 
 typedef struct _D3DNTHAL_CONTEXTCREATEDATA {
   __GNU_EXTENSION union {
@@ -70,6 +178,8 @@ typedef struct _D3DNTHAL_SCENECAPTUREDATA {
   DWORD dwFlag;
   HRESULT ddrval;
 } D3DNTHAL_SCENECAPTUREDATA, *LPD3DNTHAL_SCENECAPTUREDATA;
+#define D3DNTHAL_SCENE_CAPTURE_START  0x00000000
+#define D3DNTHAL_SCENE_CAPTURE_END    0x00000001
 
 typedef struct _D3DNTHAL_TEXTURECREATEDATA {
   ULONG_PTR dwhContext;
@@ -107,16 +217,18 @@ typedef DWORD (APIENTRY *LPD3DNTHAL_TEXTUREDESTROYCB)(LPD3DNTHAL_TEXTUREDESTROYD
 typedef DWORD (APIENTRY *LPD3DNTHAL_TEXTURESWAPCB)(LPD3DNTHAL_TEXTURESWAPDATA);
 typedef DWORD (APIENTRY *LPD3DNTHAL_TEXTUREGETSURFCB)(LPD3DNTHAL_TEXTUREGETSURFDATA);
 
+/* --- caps --- */
+
 typedef struct _D3DNTHALDeviceDesc_V1 {
   DWORD dwSize;
   DWORD dwFlags;
-  D3DCOLORMODEL dcmColorModel;
+  D3DCOLORMODEL_ dcmColorModel;
   DWORD dwDevCaps;
-  D3DTRANSFORMCAPS dtcTransformCaps;
+  D3DTRANSFORMCAPS_ dtcTransformCaps;
   BOOL bClipping;
-  D3DLIGHTINGCAPS dlcLightingCaps;
-  D3DPRIMCAPS dpcLineCaps;
-  D3DPRIMCAPS dpcTriCaps;
+  D3DLIGHTINGCAPS_ dlcLightingCaps;
+  D3DPRIMCAPS_ dpcLineCaps;
+  D3DPRIMCAPS_ dpcTriCaps;
   DWORD dwDeviceRenderBitDepth;
   DWORD dwDeviceZBufferBitDepth;
   DWORD dwMaxBufferSize;
@@ -131,6 +243,38 @@ typedef struct _D3DNTHAL_GLOBALDRIVERDATA {
   DWORD dwNumTextureFormats;
   LPDDSURFACEDESC lpTextureFormats;
 } D3DNTHAL_GLOBALDRIVERDATA, *LPD3DNTHAL_GLOBALDRIVERDATA;
+
+typedef struct _D3DNTHAL_D3DEXTENDEDCAPS {
+  DWORD dwSize;
+  DWORD dwMinTextureWidth, dwMaxTextureWidth;
+  DWORD dwMinTextureHeight, dwMaxTextureHeight;
+  DWORD dwMinStippleWidth, dwMaxStippleWidth;
+  DWORD dwMinStippleHeight, dwMaxStippleHeight;
+  DWORD dwMaxTextureRepeat;
+  DWORD dwMaxTextureAspectRatio;
+  DWORD dwMaxAnisotropy;
+  D3DVALUE dvGuardBandLeft;
+  D3DVALUE dvGuardBandTop;
+  D3DVALUE dvGuardBandRight;
+  D3DVALUE dvGuardBandBottom;
+  D3DVALUE dvExtentsAdjust;
+  DWORD dwStencilCaps;
+  DWORD dwFVFCaps;
+  DWORD dwTextureOpCaps;
+  WORD wMaxTextureBlendStages;
+  WORD wMaxSimultaneousTextures;
+  DWORD dwMaxActiveLights;
+  D3DVALUE dvMaxVertexW;
+  WORD wMaxUserClipPlanes;
+  WORD wMaxVertexBlendMatrices;
+  DWORD dwVertexProcessingCaps;
+  DWORD dwReserved1;
+  DWORD dwReserved2;
+  DWORD dwReserved3;
+  DWORD dwReserved4;
+} D3DNTHAL_D3DEXTENDEDCAPS, *LPD3DNTHAL_D3DEXTENDEDCAPS;
+
+/* --- callback tables --- */
 
 typedef struct _D3DNTHAL_CALLBACKS {
   DWORD dwSize;
@@ -176,7 +320,6 @@ typedef struct _D3DNTHAL_SETRENDERTARGETDATA {
   PDD_SURFACE_LOCAL lpDDSZ;
   HRESULT ddrval;
 } D3DNTHAL_SETRENDERTARGETDATA, *LPD3DNTHAL_SETRENDERTARGETDATA;
-
 typedef DWORD (APIENTRY *LPD3DNTHAL_SETRENDERTARGETCB)(LPD3DNTHAL_SETRENDERTARGETDATA);
 
 typedef struct _D3DNTHAL_CALLBACKS2 {
@@ -188,6 +331,7 @@ typedef struct _D3DNTHAL_CALLBACKS2 {
   LPVOID dwReserved3;
   LPVOID dwReserved4;
 } D3DNTHAL_CALLBACKS2, *LPD3DNTHAL_CALLBACKS2;
+#define D3DNTHAL2_CB32_SETRENDERTARGET  0x00000001
 
 typedef struct _D3DNTHAL_CLEAR2DATA {
   ULONG_PTR dwhContext;
@@ -195,10 +339,10 @@ typedef struct _D3DNTHAL_CLEAR2DATA {
   DWORD dwFillColor;
   D3DVALUE dvFillDepth;
   DWORD dwFillStencil;
-  LPD3DRECT lpRects;
+  LPD3DRECT_ lpRects;
   DWORD dwNumRects;
   HRESULT ddrval;
-} D3DNTHAL_CLEAR2DATA, FAR *LPD3DNTHAL_CLEAR2DATA;
+} D3DNTHAL_CLEAR2DATA, *LPD3DNTHAL_CLEAR2DATA;
 
 typedef struct _D3DNTHAL_VALIDATETEXTURESTAGESTATEDATA {
   ULONG_PTR dwhContext;
@@ -206,7 +350,7 @@ typedef struct _D3DNTHAL_VALIDATETEXTURESTAGESTATEDATA {
   ULONG_PTR dwReserved;
   DWORD dwNumPasses;
   HRESULT ddrval;
-} D3DNTHAL_VALIDATETEXTURESTAGESTATEDATA, FAR *LPD3DNTHAL_VALIDATETEXTURESTAGESTATEDATA;
+} D3DNTHAL_VALIDATETEXTURESTAGESTATEDATA, *LPD3DNTHAL_VALIDATETEXTURESTAGESTATEDATA;
 
 typedef struct _D3DNTHAL_DRAWPRIMITIVES2DATA {
   ULONG_PTR dwhContext;
@@ -229,7 +373,14 @@ typedef struct _D3DNTHAL_DRAWPRIMITIVES2DATA {
     HRESULT ddrval;
   };
   DWORD dwErrorOffset;
-} D3DNTHAL_DRAWPRIMITIVES2DATA, FAR *LPD3DNTHAL_DRAWPRIMITIVES2DATA;
+} D3DNTHAL_DRAWPRIMITIVES2DATA, *LPD3DNTHAL_DRAWPRIMITIVES2DATA;
+
+#define D3DNTHALDP2_USERMEMVERTICES     0x00000001
+#define D3DNTHALDP2_EXECUTEBUFFER       0x00000002
+#define D3DNTHALDP2_SWAPVERTEXBUFFER    0x00000004
+#define D3DNTHALDP2_SWAPCOMMANDBUFFER   0x00000008
+#define D3DNTHALDP2_REQVERTEXBUFSIZE    0x00000010
+#define D3DNTHALDP2_REQCOMMANDBUFSIZE   0x00000020
 
 typedef DWORD (APIENTRY *LPD3DNTHAL_CLEAR2CB)(LPD3DNTHAL_CLEAR2DATA);
 typedef DWORD (APIENTRY *LPD3DNTHAL_VALIDATETEXTURESTAGESTATECB)(LPD3DNTHAL_VALIDATETEXTURESTAGESTATEDATA);
@@ -243,9 +394,27 @@ typedef struct _D3DNTHAL_CALLBACKS3 {
   LPD3DNTHAL_VALIDATETEXTURESTAGESTATECB ValidateTextureStageState;
   LPD3DNTHAL_DRAWPRIMITIVES2CB DrawPrimitives2;
 } D3DNTHAL_CALLBACKS3, *LPD3DNTHAL_CALLBACKS3;
+#define D3DNTHAL3_CB32_CLEAR2                     0x00000001
+#define D3DNTHAL3_CB32_RESERVED                   0x00000002
+#define D3DNTHAL3_CB32_VALIDATETEXTURESTAGESTATE  0x00000004
+#define D3DNTHAL3_CB32_DRAWPRIMITIVES2            0x00000008
+
+/* --- the DrawPrimitives2 token stream (d3dhal.h) --- */
+
+typedef struct _D3DNTHAL_DP2COMMAND {
+  BYTE bCommand;
+  BYTE bReserved;
+  __GNU_EXTENSION union {
+    WORD wPrimitiveCount;
+    WORD wStateCount;
+  };
+} D3DNTHAL_DP2COMMAND, *LPD3DNTHAL_DP2COMMAND;
+#define D3DDP2OP_RENDERSTATE_ 8
+
+#define D3DERR_COMMAND_UNPARSED_ 0x88760BB8
 
 #ifdef __cplusplus
-} /* extern "C" */
+}
 #endif
 
 #endif /* __DDK_D3DNTHAL_H */

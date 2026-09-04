@@ -40,6 +40,8 @@ backend later.
   (miniport + display DLL + INF, mingw-w64 DDK headers, no Microsoft DDK),
   `guest-tools/build-driver.sh`. Register set `d3dpt/d3dpt_fb.h` is shared
   by the QEMU device and the miniport; bump `D3DPT_FB_VERSION` on change.
+  The driver's Direct3D DDI (M7c) reuses the doc 14 protocol and executor
+  through a command window at the top of the adapter's VRAM.
   Win98 stays on `-vga cirrus`.
 
 ## Conventions
@@ -112,13 +114,15 @@ GPU); don't propose wiring it in.
 | `tools/string-bench.py` | rep movs/stos/scas throughput under TCG, side-by-side for two QEMU binaries (the number behind patch 09) |
 | `guest-tools/src/d3dfeat9.c` (+ `tools/d3dfeat9-native.cpp`) | the D3D9 feature test (shaders without D3DX, declarations, state blocks, queries, cube maps, surfaces): the XP guest's frame must be byte-identical to the native DXVK build's |
 | `tools/d3dpt-exec-test.cpp` | the paravirtual D3D decoder + DXVK executor without a guest: D3D9TEST's batches through the guest encoder → BMP; hostile batch refused |
+| `tools/d3dpt-dp2-test.cpp` | the display driver's records (doc 15 M7c) without a guest: VRAM surfaces, a context, the D3D7TEST scene as DX7 DP2 tokens, readback pixels checked, hostile records refused; its BMP is the oracle for the guest's `D3D7TEST` |
 | `tools/embed-3d-test.c` | drives the window-less Mesa backend without a guest: context, frame, orientation, dma-buf ring (Linux) |
 | `tools/qmpc.py` | drives a guest over an extra `-qmp unix:…,server,nowait` socket: keys, typing, screendumps |
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
 | `DRIVER\SETMODE.EXE` (guest-tools ISO) | lists / switches XP display modes from a script; the QEMU log shows the device side (`d3dpt-vga: linear mode on …`, `guest: …` = the driver's debug register) |
 | `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; `scanout offset` lines in the QEMU log are the page flips |
-| `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|cmd` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log |
+| `DRIVER\D3D7TEST.EXE` (guest-tools ISO) | Direct3D 7 through our driver's HAL (M7c): device enumeration, Z buffer, texture, the reference scene, fps, `d3d7test.log`/`.bmp` (the BMP must match `d3dpt-dp2-test`'s) |
+| `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|d3d7\|cmd` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log; `d3d7` also diffs the guest frame against the host test's |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`, `~/vms/winxp.qcow2`;
 wglgears lives at `C:\WINDOWS\Desktop\GAMEDIR`; on Linux `~/vms/scratch.img`

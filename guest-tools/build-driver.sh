@@ -45,6 +45,9 @@ echo "==> drvinst.exe (installer, user mode, msvcrt)"
 echo "==> setmode.exe (mode switch from a script)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/setmode.exe" "$SRC/setmode.c" -luser32
+echo "==> d3d7test.exe (Direct3D 7 HAL test)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/d3d7test.exe" "$SRC/d3d7test.c" -lddraw -ldxguid -lgdi32 -luser32
 echo "==> ddtest.exe (DirectDraw 7 flip-chain test)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/ddtest.exe" "$SRC/ddtest.c" -lddraw -ldxguid -lgdi32 -luser32

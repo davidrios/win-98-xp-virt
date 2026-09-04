@@ -7,8 +7,9 @@
  * The guest writes command records into the window and rings
  * D3DPT_REG_DOORBELL; the write handler executes the batch synchronously
  * on the vCPU thread (BQL held) through libd3dpt_exec (d3dpt/exec, C++
- * over DXVK), dlopened on the first attach so a machine without the
- * library (or without Vulkan) boots and only reports D3DPT_STATUS_NO_EXEC.
+ * over DXVK), dlopened on the first attach (d3dpt_exec_load.c, shared
+ * with the d3dpt-vga adapter) so a machine without the library (or
+ * without Vulkan) boots and only reports D3DPT_STATUS_NO_EXEC.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -21,11 +22,10 @@
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
 #include "qom/object.h"
-#include <dlfcn.h>
 
 #include "hw/d3dpt/d3dpt.h"
 #include "hw/d3dpt/d3dpt_proto.h"
-#include "hw/d3dpt/d3dpt_exec.h"
+#include "hw/d3dpt/d3dpt_exec_load.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(D3dptState, D3DPT)
 
@@ -35,13 +35,8 @@ struct D3dptState {
     MemoryRegion shm;
     uint8_t *shm_ptr;
 
-    void *lib;
+    const D3dptExecLib *lib;
     d3dpt_exec_t *exec;
-    uint32_t (*p_version)(void);
-    d3dpt_exec_t *(*p_create)(const d3dpt_exec_ops *);
-    void (*p_destroy)(d3dpt_exec_t *);
-    void (*p_attach)(d3dpt_exec_t *, int);
-    uint32_t (*p_submit)(d3dpt_exec_t *, void *, uint32_t);
     bool exec_tried;
     bool active;
     uint32_t attach;
@@ -82,49 +77,17 @@ static void exec_frame(void *ud, const void *px, int w, int h, int stride)
 
 static bool exec_load(D3dptState *s)
 {
-    const char *env = getenv("D3DPT_EXEC_LIB");
-    const char *candidates[] = {
-        env,
-#ifdef __APPLE__
-        "build/d3dpt/libd3dpt_exec.dylib", "libd3dpt_exec.dylib",
-#else
-        "build/d3dpt/libd3dpt_exec.so", "libd3dpt_exec.so",
-#endif
-    };
-    d3dpt_exec_ops ops = { s, exec_log, exec_active, exec_frame };
+    d3dpt_exec_ops ops = { s, exec_log, exec_active, exec_frame, NULL };
 
     if (s->exec_tried) {
         return s->exec != NULL;
     }
     s->exec_tried = true;
-    for (size_t i = 0; i < ARRAY_SIZE(candidates); i++) {
-        if (!candidates[i]) {
-            continue;
-        }
-        s->lib = dlopen(candidates[i], RTLD_NOW | RTLD_LOCAL);
-        if (s->lib) {
-            info_report("d3dpt: executor %s", candidates[i]);
-            break;
-        }
-    }
+    s->lib = d3dpt_exec_lib();
     if (!s->lib) {
-        warn_report("d3dpt: libd3dpt_exec not found (D3DPT_EXEC_LIB); Direct3D pass-through off");
         return false;
     }
-    s->p_version = dlsym(s->lib, "d3dpt_exec_version");
-    s->p_create = dlsym(s->lib, "d3dpt_exec_create");
-    s->p_destroy = dlsym(s->lib, "d3dpt_exec_destroy");
-    s->p_attach = dlsym(s->lib, "d3dpt_exec_attach");
-    s->p_submit = dlsym(s->lib, "d3dpt_exec_submit");
-    if (!s->p_version || !s->p_create || !s->p_destroy || !s->p_attach || !s->p_submit ||
-        s->p_version() != D3DPT_PROTO_VERSION) {
-        warn_report("d3dpt: executor library mismatch (protocol %u, need %u)",
-                    s->p_version ? s->p_version() : 0, D3DPT_PROTO_VERSION);
-        dlclose(s->lib);
-        s->lib = NULL;
-        return false;
-    }
-    s->exec = s->p_create(&ops);
+    s->exec = s->lib->create(&ops);
     if (!s->exec) {
         warn_report("d3dpt: executor refused to start (no DXVK / Vulkan device)");
         return false;
@@ -160,7 +123,7 @@ static void d3dpt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     switch (addr) {
     case D3DPT_REG_DOORBELL:
         if (s->exec) {
-            s->last_err = s->p_submit(s->exec, s->shm_ptr, D3DPT_SHM_SIZE);
+            s->last_err = s->lib->submit(s->exec, s->shm_ptr, D3DPT_SHM_SIZE);
         } else {
             d3dpt_shm_hdr *h = (d3dpt_shm_hdr *)s->shm_ptr;
             s->last_err = D3DPT_ERR_HOST;
@@ -173,11 +136,11 @@ static void d3dpt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         if (val) {
             if (exec_load(s)) {
                 s->attach++;
-                s->p_attach(s->exec, 1);
+                s->lib->attach(s->exec, 1);
             }
         } else if (s->attach) {
             s->attach--;
-            s->p_attach(s->exec, 0);
+            s->lib->attach(s->exec, 0);
         }
         break;
     default:
@@ -200,7 +163,7 @@ static void d3dpt_reset(DeviceState *dev)
     /* guest reboot: every attached process is gone */
     while (s->attach) {
         s->attach--;
-        s->p_attach(s->exec, 0);
+        s->lib->attach(s->exec, 0);
     }
     s->last_err = 0;
     memset(s->shm_ptr, 0, sizeof(d3dpt_shm_hdr));

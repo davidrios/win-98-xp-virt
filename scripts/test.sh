@@ -16,6 +16,9 @@
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
+#   d3dpt-dp2      tools/d3dpt-dp2-test.cpp: the display driver's records (doc 15
+#                  M7c): VRAM surfaces, a context, the D3D7TEST scene as DP2
+#                  tokens, readback pixels checked, hostile records refused
 #   d3dgame9-nat   the reference scene natively on DXVK: frame 300 within
 #                  D3D_GOLDEN_BUDGET pixels (tolerance 8, HUD masked) of the
 #                  rig golden; this frame is the oracle for the guest stage
@@ -95,8 +98,13 @@ host_stage() {
          -I"$DX" -I"$DX/windows" -I"$DX/directx" -ldl; then
       run_check d3dpt-exec d3dpt-exec.log build/d3dpt-exec-test "$OUT/exec-test.bmp" 120 60 || true
     else FAIL+=(d3dpt-exec); echo "  FAIL d3dpt-exec (build)"; fi
+    if c++ -std=c++17 -O2 -o build/d3dpt-dp2-test tools/d3dpt-dp2-test.cpp \
+         -I"$DX" -I"$DX/windows" -I"$DX/directx" -ldl; then
+      run_check d3dpt-dp2 d3dpt-dp2.log build/d3dpt-dp2-test "$OUT/dp2-test.bmp" || true
+    else FAIL+=(d3dpt-dp2); echo "  FAIL d3dpt-dp2 (build)"; fi
   else
     skip d3dpt-exec "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
+    skip d3dpt-dp2 "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
   fi
 
   # the reference scene and the feature test natively over DXVK (SDL2 needs a display)
