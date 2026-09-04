@@ -40,6 +40,15 @@ backend later.
 - CI (`.github/workflows/ci.yml`) is manual-trigger only for now.
 - Docs are part of every change: update `docs/00-status.md` (and the
   relevant design doc / patch README row) in the same commit.
+- **Testing policy: no unit tests. Integration and end-to-end tests only.**
+  A test must exercise a real boundary (decoder + executor on a real batch,
+  a guest program under TCG, a frame diffed against a golden BMP), never a
+  function in isolation. Don't write `#[cfg(test)]` modules or per-function
+  test cases; when something starts working, add or extend a tool in the
+  table below so it guards against regressions (the existing `#[test]`s in
+  `libdisc/src/msf.rs` predate this policy; don't add more). There is no
+  single runner yet: host-only tools build from the command in their
+  source header, guest tools run from the cheat sheet in `docs/00-status.md`.
 
 ## Build / run
 
@@ -77,6 +86,8 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
   rebuild the library before the player links.
 
 ## Testing tools
+
+All integration / e2e (see policy above); none are wired into CI yet.
 
 | Tool | What it proves |
 |---|---|
