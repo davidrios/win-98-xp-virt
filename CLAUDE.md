@@ -89,8 +89,10 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
 
-Guest images are not in the repo (`~/vms/win98.qcow2`; wglgears lives at
-`C:\WINDOWS\Desktop\GAMEDIR`). **End scripted Win98 runs with a
+Guest images are not in the repo (`~/vms/win98.qcow2`, `~/vms/winxp.qcow2`;
+wglgears lives at `C:\WINDOWS\Desktop\GAMEDIR`; on Linux `~/vms/scratch.img`
+is a FAT32 disk attached as `-hdb`, E: in XP, read with `mcopy -i img@@1048576`).
+The Direct3D device test loop is in `docs/00-status.md`'s cheat sheet. **End scripted Win98 runs with a
 Start-menu shutdown** (`qmpc.py … keys ctrl+esc`, `keys u`, `keys ret`),
 never by killing the player — a killed VM leaves the FAT dirty and every
 next boot runs ScanDisk. A QMP `screendump` shows only the VGA surface,

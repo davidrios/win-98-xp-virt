@@ -1,4 +1,4 @@
-# 0. Status and how to resume (updated 2026-09-03)
+# 0. Status and how to resume (updated 2026-09-04)
 
 Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 
@@ -10,8 +10,8 @@ Read this first in a new session. Decisions: doc 10. Plan: doc 08.
 | Player (Rust, `player/`) | Boots a machine in-process via `libqemu-embed-<target>`; wgpu presentation, librashader CRT chain, keyboard/mouse, audio, QMP over a socketpair (`PLAYER_QMP`, `PLAYER_QMP_EXEC`). **Win98 and XP run in it on the M1 Air** with sound and tablet mouse. |
 | 3D | **GL pass-through runs inside the player on Linux** (doc 12 steps 1–2, 2026-09-02): patches 30/31 + `embed/mglcntx_embed.c` (EGL surfaceless pbuffer as FBO 0, `glReadPixels` on swap) + API v4. Win98 wglgears in the player: 420 fps at 800×600 with the readback path, desktop returns on exit. Standalone `-display sdl` still works (500+ fps on the Air). **macOS too** (CGL, no drawable, FBO stand-in; `GL 2.1 Metal / Apple M1`, wglgears in the player on the Air). **Linux zero-copy** (GBM dma-buf ring → Vulkan import, API v5, 2026-09-03): 575–600 fps wglgears, nothing copied per frame. **macOS zero-copy** (IOSurface ring → Metal, API v6) verified on the Air. Glide: no window, reported cleanly. |
 | Guest tools | `guest-tools/build-wrappers.sh` builds the qemu-3dfx guest wrappers (msvcrt-linked, `-march=pentium3`, wglgears test EXE) and, since 2026-09-03, the WineD3D set from JHRobotics/wine9x (Wine 1.7.55 for 9x/XP: per-game D3D8/D3D9/WINED3D DLLs + system-wide switchers) with a D3D9 smoke test (`D3D9TEST.EXE`), the display-mode probe (`MODETEST.EXE`) and the reference workloads `D3DGAME9.EXE` / `D3DGAME8.EXE` (doc 14 P0a) into an ISO. **Rig (P4 + GeForce 6200), 2026-09-03: both run.** First-run fixes: ground triangle winding (top face was culled), shader path now applies the per-cube material (all cubes were one colour), d3dgame8 windowed swaps with COPY_VSYNC so both pace at the refresh rate by default (85 fps on the rig's monitor is vsync, `-novsync` for throughput), console output also goes to `d3dgameN.log`. **Golden captures landed 2026-09-03** (`reference/d3d/rig-2026-09-03/`, diff with `tools/bmpdiff.py`): d3dgame9 frame 300 windowed, fixed function and `-shader`. The rig's log explained the `-shader` oddity: d3dx9_36's HLSL compiler refuses ps_1_1 (X3539), so the cubes ran vs_1_1 + fixed-function pixel stage while the log claimed fixed function. **Rendering is frozen at that build** (the golden set must stay comparable; the rig stays off for now): only the log line naming the shader case and the elapsed-ms summary were fixed, no pixel changes. Mask the HUD bars (wall time) when diffing. d3dgame8 windowed with COPY_VSYNC runs at half refresh (43 fps at 85 Hz) on the GeForce driver: real behaviour, recorded. Must match the host's qemu-3dfx commit. **Win98 and XP (2026-09-03): wglgears and D3D9TEST run in the player on both** (WineD3D needs no Microsoft DX runtime in the guest; XP needs the FXPTL.SYS step first, see gotchas). XP D3D9TEST on the Air: adapter reported as "GeForce 6800" (WineD3D's GL-renderer mapping), x87 PC=24 after CreateDevice, 377–504 fps windowed 640×480. |
-| Guests | Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % on softfloat (Super PI 1M 9:49 vs 2:02), 104 % with patch 06 (1:57) — `reference/benchmarks/`. |
-| D3D executor (M4) | **ADR-007 (2026-09-03): DXVK d3d9 native everywhere; macOS over Mesa's KosmicKrisp (needs macOS 26), MoltenVK unsupported** — spike C (`docs/spikes/spike-c-dxvk-native-macos.md`): DXVK master hard-requires five features MoltenVK 1.4.2 lacks. `third_party/dxvk` submodule (3.1.0 d7ac258), patch queue `patches/dxvk/` (01 macOS shim, 02 geometry shaders optional, 03 portability enumeration, 04 headless WSI, 05 fill-mode-non-solid optional; `scripts/prepare-dxvk.sh` + `configure-dxvk.sh` → `build/dxvk`). `libdxvk_d3d9` builds on the Air; `tools/dxvk-d3d9-test.cpp` (off-screen triangle → BMP) runs up to DXVK's refusal on MoltenVK (`shaderCullDistance`), the same binary is the KosmicKrisp acceptance test. **`tools/d3dgame9-native.cpp`** compiles the unmodified reference scene (`guest-tools/src/d3dgame9.c`) as a native program over a 150-line Win32-on-SDL2 shim (`tools/d3dgame-native/win32_sdl.h`) against `libdxvk_d3d9`: same options, log and `-dump` BMPs. **First executor-vs-rig diff, Linux 2026-09-03 (RADV, RX 9060 XT):** the queue builds unchanged on Linux, the off-screen test passes, and the fixed-function frame 300 vs `reference/d3d/rig-2026-09-03/d3dgame9-w300-ff.bmp` (HUD masked) differs in 32.9 % of pixels but only 1089 pixels (0.35 %) beyond a channel tolerance of 8 and 16 pixels beyond 32: edge rasterization and texture-filter noise, visually identical. The `-shader` golden cannot be compared natively (no d3dx9 to compile vs_1_1; the harness falls back to fixed function) and stays untouched with the frozen build. **macOS 26 over KosmicKrisp, same day (Air, LunarG SDK 1.4.357.1, `docs/build-macos.md`):** one more refusal (`fillModeNonSolid`, patch 05: optional, wireframe → solid), then both harnesses pass: 1095 pixels beyond tolerance 8 / 16 beyond 32 (RADV: 1089 / 16), 120 fps windowed; the headless WSI (patch 04) gives the identical BMP, 384 fps. The executor is verified on both platforms. **P1 host side (2026-09-03):** protocol `d3dpt/d3dpt_proto.h` (one header for guest DLL, QEMU device, executor), guest encoder `d3dpt/d3dpt_enc.h`, executor `d3dpt/exec` (C++ over DXVK, dlopened by the device so QEMU stays C; `scripts/build-d3dpt-exec.sh` → `build/d3dpt/libd3dpt_exec.so`), DXVK patch 04 (headless WSI). `tools/d3dpt-exec-test.cpp` replays D3D9TEST through the executor with the guest's own encoder: 120 frames, one batch per frame, 4300 fps with readback at 640×480, oversized draws refused. **P1 host side (2026-09-03):** protocol `d3dpt/d3dpt_proto.h` (one header for guest DLL, QEMU device, executor), guest encoder `d3dpt/d3dpt_enc.h`, executor `d3dpt/exec` (C++ over DXVK, dlopened by the device so QEMU stays C; `scripts/build-d3dpt-exec.sh` → `build/d3dpt/libd3dpt_exec.so`), DXVK patch 04 (headless WSI). `tools/d3dpt-exec-test.cpp` replays D3D9TEST through the executor with the guest's own encoder: 120 frames, one batch per frame, 4300 fps with readback at 640×480, oversized draws refused. **P1 closed 2026-09-03 on Linux: the XP guest's D3D9TEST draws through the device.** QEMU patch 40 + overlay `d3dpt/hw` (SysBus, register page at 0xdfffe000, 64 MiB window at 0xd8000000, executor dlopened on first attach; `embed/embedfx.c` routes frames into the GL frame path), guest `guest-tools/src/d3dpt/d3d9.c` (C COM, 129 methods via a generated vtable, msvcrt, fxlib mapper; ISO folder `D3DPT\`). XP in the player, 640×480 windowed, 3000 frames: **2840 fps on the device vs 1100 fps for WineD3D-in-guest** on the same test and host (RADV); native host replay of the same batches 4300 fps. **P2 closed 2026-09-04:** buffers, textures (all D3D9 formats, mip chains, DXT), surfaces (texture levels, backbuffer, render targets, depth, system-memory), GetRenderTargetData, StretchRect, shaders (bytecode passthrough), scissor; every lockable resource has a guest shadow and Unlock forwards the dirty box. **`D3DGAME9 -frames 600 -dump 300` from XP on the device is byte-identical to the native DXVK frame** and sits at the same 1089 pixels from the rig golden; fullscreen 8888 identical, fullscreen 565 3884 pixels (no rig 565 golden yet), mode switches through ChangeDisplaySettings. 600 frames in 750 ms (windowed 8888) with the dynamic vertex buffer and the render-to-texture pass. **P3 (2026-09-04, protocol v3):** vertex declarations, int/bool constants, queries, state blocks (guest-side: recorded and D3DSBT_ALL/PIXEL/VERTEX), cube textures, DEFAULT-pool offscreen surfaces, ColorFill, StretchRect, UpdateSurface/UpdateTexture (host stages through a system-memory surface when the target is not lockable), clip planes, scissor. The feature test `guest-tools/src/d3dfeat9.c` (hand-assembled vs_1_1/ps_1_1, no D3DX; native build `tools/d3dfeat9-native.cpp`) **is byte-identical between the XP guest and the native DXVK build**, logs included (occlusion count, constant getters). **P4 (2026-09-04): `d3d8.dll`** = `guest-tools/src/d3dpt/d3d8.c`, Direct3D 8 as C wrappers over the d3d9 object model in one translation unit (caps/identifier/present-parameter layouts, sampler states as texture-stage states, ZBIAS, D3DVSD_* declarations → D3DVERTEXELEMENT9 + dcl instructions, DWORD shader and state-block handles, SetIndices' base vertex, CopyRects). **D3DGAME8 from XP is byte-identical to D3DGAME9** (windowed and fullscreen), 1165 fps with `-novsync`. Fixed 2026-09-04 (user report, KVM): the process hung on return from main because `d3d8.c`'s own `D3DADAPTER_IDENTIFIER8` was 4 bytes longer than mingw's packed one and `GetAdapterIdentifier` cleared past the caller's stack buffer; the D3D8-only structs are now `#pragma pack(4)` with compile-time size checks. Same commit: the DLL unmaps its windows at detach, implicit surfaces no longer keep the device alive (refcount cycle), every DLL log line is also sent to the host (`D3DPT_OP_LOG`, protocol v4; `D3DPT_HOSTLOG=0` turns it off) and test programs can log through `D3DPT_Log`. Method gaps show up in `d3dpt.log` as "not implemented". |
+| Guests | Images live outside the repo: `~/vms/win98.qcow2` and `~/vms/winxp.qcow2` on both machines (the XP image was copied to the Linux box 2026-09-03; it has FXPTL.SYS installed, no d3dx9, no games yet), plus `~/vms/scratch.img` on Linux (64 MB FAT32, seen as E:, for files out of the guest). Win98 SE on the Air: installed, repaired to PCI-bus enumeration (must be an ACPI `SETUP /p j` install or repaired — doc 06/build-macos). XP on the Air: installed, boots in the player in ~30 s (same as the rig, P4 1.7); integer 1.3–2× the rig (7-Zip), x87 FP 21 % on softfloat (Super PI 1M 9:49 vs 2:02), 104 % with patch 06 (1:57) — `reference/benchmarks/`. |
+| Direct3D device (M4) | **Works end to end on Linux, P0–P4 closed 2026-09-03/04** (doc 14 has the per-milestone detail and numbers). Executor: DXVK d3d9 native (ADR-007), `third_party/dxvk` + `patches/dxvk/` (01 macOS shim, 02/05 optional features, 03 portability, 04 headless WSI), verified on RADV and on the Air over KosmicKrisp (macOS 26). Transport: SysBus device `d3dpt/hw` (QEMU patch 40; register page 0xdfffe000, 64 MiB window 0xd8000000), protocol `d3dpt/d3dpt_proto.h` **v4**, decoder+executor `d3dpt/exec` → `build/d3dpt/libd3dpt_exec.so` dlopened by the device, frames through the GL frame path (`embed/embedfx.c`). Guest: `guest-tools/src/d3dpt/` — `d3d9.c` (+`d3d9_res.h`, `d3d9_p3.h`: resources, surfaces, shaders, declarations, queries, guest-side state blocks, cube maps) and `d3d8.c` (D3D8 wrappers in the same TU); vtables generated from mingw's headers (`gen_vtbl.py`, `gen_vtbl8.py`); ISO folder `D3DPT\` with D3D9.DLL, D3D8.DLL and the test EXEs. **Acceptance so far:** XP D3DGAME9 and D3DGAME8 frames on the device are byte-identical to the native DXVK build and 1089 pixels (tolerance 8) from the rig golden; D3DFEAT9 (hand-assembled SM1.1, no D3DX) byte-identical guest vs native including query results; D3D9TEST 2840 fps vs 1100 on WineD3D-in-guest. Open: no real game run yet (needs a title on the XP image), volume textures, swap-chain objects, GetFrontBuffer, lockable DEFAULT surfaces, lost-device protocol, zero-copy present (readback via GetRenderTargetData today), macOS build of `libd3dpt_exec`, decoder thread (everything runs on the vCPU thread under the BQL). |
 | CD backend (libdisc) | vocabulary types + MSF/LBA only (M5). |
 | Launcher | stub (M6). |
 
@@ -32,6 +32,20 @@ cargo build --release
 target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- \
   -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 256 -hda ~/vms/win98.qcow2 \
   -vga cirrus -net none -usb -device usb-tablet -device sb16,audiodev=embed0
+# Direct3D device: build the executor once, then the ISO after every guest change
+scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja -C build/dxvk && scripts/build-d3dpt-exec.sh
+build/d3dpt-exec-test x.bmp 120 60                 # host-only check of decoder + executor
+guest-tools/build-wrappers.sh                      # ISO with D3DPT\ (D3D9.DLL, D3D8.DLL, tests)
+# XP test loop (Linux; -accel kvm -cpu host is fine, TCG identical): scratch FAT disk as E:
+# for files out of the guest (creation recipe in the gotchas), CD as D:
+target/release/player -- -L $PWD/qemu/pc-bios -machine pc -cpu pentium3 -m 512 -hda ~/vms/winxp.qcow2 \
+  -hdb ~/vms/scratch.img -cdrom guest-tools/out/guest-tools-3dfx-d00e858.iso -vga cirrus -net none \
+  -usb -device usb-tablet -qmp unix:/tmp/qmp.sock,server,nowait
+tools/qmpc.py /tmp/qmp.sock keys meta_l+r; tools/qmpc.py /tmp/qmp.sock type 'cmd /c xcopy D:\D3DPT E:\D3DPT\ /I /Y'; tools/qmpc.py /tmp/qmp.sock keys ret
+tools/qmpc.py /tmp/qmp.sock keys meta_l+r; tools/qmpc.py /tmp/qmp.sock type 'E:\D3DPT\D3DGAME9.EXE -frames 600 -dump 300 E:\OUT\G9.BMP'; tools/qmpc.py /tmp/qmp.sock keys ret
+tools/qmpc.py /tmp/qmp.sock json '{"execute":"system_powerdown"}'   # clean XP shutdown
+mcopy -i ~/vms/scratch.img@@1048576 ::/OUT/G9.BMP g9.bmp && tools/bmpdiff.py reference/d3d/rig-2026-09-03/d3dgame9-w300-ff.bmp g9.bmp --mask 0,368,270,112
+# host log: qemu-system-i386: info: d3dpt: … (device, executor, and every guest DLL log line)
 ```
 Player env knobs: `PLAYER_DUMP`, `PLAYER_DUMP_OUT`, `PLAYER_DUMP_SEQ`,
 `PLAYER_KEYS`, `PLAYER_AUDIO_NULL`, `PLAYER_LATENCY`, `PLAYER_REFRESH_MS`,
@@ -173,57 +187,39 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 ## Next steps, in order
 
-ADR-008 (2026-09-04): a real XP display driver is the long-term shape (M7, staged: framebuffer → DirectDraw DDI → Direct3D DDI) on the same transport and executor; the DLL device stays for Win98 and as the harness. Not started.
+ADR-008 (2026-09-04): a real XP display driver is the long-term shape (M7,
+staged: framebuffer → DirectDraw DDI → Direct3D DDI) on the same transport
+and executor; the DLL device stays for Win98 and as the harness. Not
+started here (another session may be prototyping M7; check `git log`).
 
-1. ~~M1~~ closed 2026-09-02 (latency at the vsync floor, XP benchmarked,
-   patch 05 x87 fast path, QMP over socketpair). Patch 06 merged
-   2026-09-03 (XP Super PI 1M 1:57 on the Air, doc 13); PC=24 inline
-   mode added the same day. Only the Windows host remains untested.
-   D3D9TEST runs on XP (2026-09-03) and reports PC=24, so Direct3D on
-   XP does run in inline mode 2. Next on x87: a Direct3D title in XP
-   with and without `-cpu pentium3,x87-fast=off` for the real-world
-   number. It has to be a D3D8/9 title: Wine 1.7.55's ddraw does not
-   implement DDSCL_FPUSETUP ("unhandled, harmless"), so DirectX 5–7
-   games through WineD3D stay at PC=53 unless the game sets the control
-   word itself (candidate DDRAW.DLL patch: setup_fpu() on FPUSETUP
-   without FPUPRESERVE, as native does). FIFA 2000 (DX7, SafeDisc,
-   D3D/Glide/software EXEs) tests the DDraw path and Glide, not mode 2.
-2. **M4 — paravirtual Direct3D device (doc 14, ADR-006, decided
-   2026-09-03).** P0 first: the reference workload `D3DGAME9.EXE` /
-   `D3DGAME8.EXE` (guest-tools/src) must run perfectly on the rig
-   (P4 + GeForce 6200) and produce golden screenshots (`-dump`) — ~~done
-   2026-09-03~~ (`reference/d3d/rig-2026-09-03/`; rendering frozen at
-   that build), then the
-   DXVK-native spike (P0b) — ~~decided 2026-09-03~~, ADR-007: DXVK over
-   KosmicKrisp on macOS 26. Next: upgrade the Air to macOS 26 + LunarG SDK
-   (KosmicKrisp ICD), build `third_party/dxvk` with `patches/dxvk/`, run
-   the native off-screen test (`tools/dxvk-d3d9-test.cpp`), then
-   `build/d3dgame9-native -frames 600 -dump 300 g9.bmp` and
-   `tools/bmpdiff.py reference/d3d/rig-2026-09-03/d3dgame9-w300-ff.bmp g9.bmp --mask 0,368,270,112`
-   (the first executor-vs-rig number) — ~~done on Linux 2026-09-03~~
-   (0.35 % of pixels beyond tolerance 8, see the state table) ~~and on
-   the Air over KosmicKrisp the same evening~~ (1095 pixels, patch 05).
-   ~~P1 (transport +
-   device)~~ done on Linux 2026-09-03 (XP D3D9TEST on the device, 2.6×
-   WineD3D-in-guest). ~~P2~~ closed 2026-09-04: D3DGAME9 from XP is
-   byte-identical to the native DXVK frame. ~~P3~~ feature set landed
-   2026-09-04 (D3DFEAT9 byte-identical guest vs native). ~~P4~~ d3d8.dll
-   the same day (D3DGAME8 identical to D3DGAME9). **Next:** a real
-   game on the device (doc 04 matrix: needs an XP title installed on the
-   image; Max Payne / GTA:VC are the acceptance titles), volume textures,
-   swap-chain methods (GetRasterStatus, gamma), DEFAULT-pool surface
-   LockRect readback, lost-device protocol; the zero-copy present (DXVK Vulkan interop → dma-buf / IOSurface ring)
-   instead of GetRenderTargetData; the macOS build of `libd3dpt_exec`
-   (KosmicKrisp); P4 d3d8.dll over the same device. Fresh D3DPT DLL + ISO after every guest
-   change: `guest-tools/build-wrappers.sh`; the whole chain without a
-   guest: `build/d3dpt-exec-test`.
-3. **M3 (doc 12), in progress:** ~~vtable patch → EGL backend with
-   readback → Win98 wglgears in the player on Linux → macOS CGL backend →
-   wglgears in the player on the Air → dma-buf zero-copy on Linux~~ (done)
-   → IOSurface zero-copy on macOS~~ (done) → Glide → fence-based sync
-   instead of glFinish.
-4. M2 mode table + pixel aspect; curated presets vs. rig CRT photos.
-5. M5 libdisc; M6 launcher.
+1. **M4 — a real game on the device.** P0–P4 are closed (doc 14): the
+   device, both DLLs and the three test programs are byte-exact against the
+   native DXVK build. What is missing is a title: install Max Payne (D3D8)
+   or GTA: Vice City (D3D8) / San Andreas (D3D9) on the XP image, copy
+   `D3DPT\D3D8.DLL` or `D3D9.DLL` next to the EXE (never together with
+   WineD3D's), run, and read the host log: every unimplemented method
+   prints `not implemented` once (`D3DPT_STUB`), every DLL log line reaches
+   the host as `d3dpt: guest: …`. Known stubs a game may hit: volume
+   textures, swap-chain objects, GetFrontBuffer, ProcessVertices, LockRect
+   on DEFAULT-pool surfaces, the lost-device protocol, palettes. Fix in
+   `guest-tools/src/d3dpt/`, bump `D3DPT_PROTO_VERSION` only if the wire
+   changes (then prepare + ninja QEMU too), rebuild the ISO.
+2. **M4 — performance shape when a game asks for it:** zero-copy present
+   (DXVK Vulkan interop → dma-buf / IOSurface ring instead of
+   GetRenderTargetData), Present pacing against the player's vsync (the
+   host presents immediately today; the guest's interval is ignored), a
+   decoder thread off the vCPU. Measure first with `PLAYER_LATENCY=1`.
+3. **M4 on the Air:** build `libd3dpt_exec` there (`scripts/build-d3dpt-exec.sh`,
+   KosmicKrisp) and run the same XP tests; expected byte-identical to Linux
+   for the fixed-function scene (the native harness already was within 6
+   pixels).
+4. **x87 real-world number:** a D3D8/9 title in XP with and without
+   `-cpu pentium3,x87-fast=off` (doc 13). The device sets PC=24 in
+   CreateDevice like native, so mode 2 is exercised.
+5. **M3 (doc 12):** Glide offscreen path, fence-based sync instead of
+   glFinish. Both untouched since 2026-09-03.
+6. M2 mode table + pixel aspect (or M7a, which subsumes it on XP); M5
+   libdisc; M6 launcher.
 
 ## Gotchas learned (don't relearn)
 
