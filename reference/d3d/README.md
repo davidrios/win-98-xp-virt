@@ -21,13 +21,12 @@ The EXEs on the ISO were built from commit 667ecac.
 | File | Command line | Notes |
 |---|---|---|
 | `d3dgame9-w300-ff.bmp` | `D3DGAME9 -frames 600 -dump 300 d3d9_dump.bmp` | windowed 640×480 X8R8G8B8, hardware vertex processing, fixed function |
-| `d3dgame9-w300-vs11.bmp` | `D3DGAME9 -shader -frames 600 -dump 300 d3d9_dump_shader.bmp` | same, cubes through the vs_1_1 vertex shader **with the fixed-function pixel stage**: the rig's d3dx9_36 HLSL compiler refuses ps_1_1 (X3539), so CreatePixelShader never ran. The log of that build says "fixed function" for this case; it lies, `draw_cubes` keys on the vertex shader alone. Fixed in the source the same day (ps_1_1 is assembled now, the log names all three cases) — not yet run on the rig. |
-| `d3dgame9.log`, `d3dgame8.log` | all runs of the session | adapter/caps lines, fps per second; the "N frames, M ms" summaries of this build are wrong (they measured since the last fps report), fixed the same day |
+| `d3dgame9-w300-vs11.bmp` | `D3DGAME9 -shader -frames 600 -dump 300 d3d9_dump_shader.bmp` | same, cubes through the vs_1_1 vertex shader **with the fixed-function pixel stage**: the rig's d3dx9_36 HLSL compiler refuses ps_1_1 (X3539), so CreatePixelShader never ran. The log of that build says "fixed function" for this case; it lies, `draw_cubes` keys on the vertex shader alone (the log names all three cases since the same day). **Rendering is frozen at this build**: emulated runs must draw exactly what the rig drew, so the ps_1_1 rejection stays as it is until a new golden set is taken. |
+| `d3dgame9.log`, `d3dgame8.log` | all runs of the session | adapter/caps lines, fps per second; the "N frames, M ms" summaries of this build are wrong (they measured since the last fps report), fixed the same day (log only, no pixel changes) |
 
-**HUD caveat:** in this build the frame-time bars (bottom left) drew wall
-time, so they differ between any two runs; mask them when diffing against
-these two files (`--mask 0,368,270,112`). Golden runs draw the fixed step
-since 2026-09-03, so later captures need no mask. Between the two files
+**HUD caveat:** the frame-time bars (bottom left) draw wall time, so they
+differ between any two runs, on the rig too; always mask them when diffing
+(`--mask 0,368,270,112`). Between the two files
 above only the cubes (the shader path) and the HUD differ; the diff tool
 reports 9.7 % of pixels with the HUD masked.
 

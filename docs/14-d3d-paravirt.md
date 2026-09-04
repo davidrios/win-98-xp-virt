@@ -79,8 +79,9 @@ guest (XP)                                  host (QEMU process, embed lib)
   **Done 2026-09-03:** both run flawlessly on the rig; the first golden set
   (d3dgame9 frame 300 windowed, fixed function and vs_1_1) with logs is in
   `reference/d3d/rig-2026-09-03/` (README there lists the caveats of that
-  build: HUD bars non-deterministic, ps_1_1 refused by d3dx9_36's HLSL
-  compiler — both fixed in the source afterwards). `tools/bmpdiff.py`
+  build: HUD bars are wall time, mask them; ps_1_1 refused by d3dx9_36's
+  HLSL compiler so `-shader` is vs_1_1 + fixed pixel stage). Rendering is
+  frozen at that build until a new golden set exists. `tools/bmpdiff.py`
   compares candidates against them.
 - **P0b — Spike (decides the executor):** DXVK d3d9 native on macOS over
   MoltenVK and on Linux: clear + textured triangle + a SM2 shader, off-screen,

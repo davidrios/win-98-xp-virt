@@ -15,8 +15,8 @@
  * -bpp16      16-bit back buffer (565) instead of X8R8G8B8
  * -novsync    D3DPRESENT_INTERVAL_IMMEDIATE
  * -shader     (d3d9) SM1.1 vs/ps for the cubes when D3DX is available
- *             (vs_1_1 compiled from HLSL, ps_1_1 assembled: d3dx9_33+ HLSL
- *             compilers refuse ps_1_x targets)
+ *             (HLSL; d3dx9_33+ refuse ps_1_1, leaving vs_1_1 + the fixed
+ *             pixel stage — kept that way on purpose, the golden set has it)
  * -log f      log file (default d3dgame9.log / d3dgame8.log next to the EXE,
  *             appended); everything printed to the console goes there too
  */
@@ -373,8 +373,7 @@ static float game_step(struct game *g)
         if (dt > 0.1f) dt = 0.1f;
         game_input(g, dt);
     }
-    /* golden runs draw the fixed step, not wall time, so the HUD is reproducible */
-    g->bars[g->bar_i] = g->o.frames ? dt * 1000.0f : (now - g->last_ms) * 1.0f;
+    g->bars[g->bar_i] = (now - g->last_ms) * 1.0f;
     g->bar_i = (g->bar_i + 1) % BARS;
     g->last_ms = now;
     if (!g->paused) g->t += dt;
