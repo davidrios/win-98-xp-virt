@@ -238,7 +238,40 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
 - **M7b DirectDraw DDI:** landed in its first cut (above). Left: a DX5–7
   title on it (2D titles run now; 3D ones need M7c), `DrvDeriveSurface`,
   the vblank signal.
-- **M7c Direct3D DDI:** `D3dContextCreate`, `D3dDrawPrimitives2` (DP2
-  token stream → our records), `D3dValidateTextureStageState`,
-  `DdCreateSurfaceEx`; caps from the executor. Microsoft's d3d8/d3d9 stay
-  in the guest. Exit: doc 04 matrix with no DLL in the game folder.
+- **M7c Direct3D DDI — design (2026-09-04, not started):**
+  - *Transport:* BAR 0 grows to 128 MiB; the top 64 MiB is the command
+    window in the SysBus device's exact layout (`d3dpt_proto.h`: header
+    page, records, return area at 48 MiB), so `d3dpt_enc.h` and
+    `d3dpt_exec_submit` work unchanged; the DirectDraw heap ends below it.
+    A DOORBELL register on BAR 1 submits the window; the executor is the
+    same `libd3dpt_exec` (the loader moves out of `d3dpt_mm.c` into a
+    shared helper). New executor call `d3dpt_exec_set_vram(ptr, size)`.
+  - *Surfaces stay in guest VRAM.* `DdCreateSurfaceEx` (through
+    `GUID_Miscellaneous2Callbacks`) registers every texture / render
+    target / Z surface with a `VRAM_SURFACE` record (handle, VRAM offset,
+    w, h, pitch, format, caps); the executor creates the DXVK object and
+    reads texels straight from the VRAM pointer (no guest copy); `DdLock`
+    / `DdUnlock` on a texture send `VRAM_DIRTY`. Rendering goes to a host
+    render target; a `READBACK` record (at `DdFlip`, and at `DdLock` of a
+    render target) copies it back into the guest's VRAM surface (host
+    memcpy), so flips, HEL blits and screenshots see the frame. Presenting
+    the host frame straight through the 3D frame path is the later
+    optimisation.
+  - *Commands:* `D3dDrawPrimitives2` copies the DP2 command buffer and the
+    vertex data into the window as one `DP2` record (context handle,
+    vertex type, lengths) and rings the doorbell; the executor interprets
+    the tokens on DXVK d3d9. First cut = the DX7 non-T&L HAL: the runtime
+    transforms and lights in software and sends `XYZRHW` vertices, so the
+    executor only needs RENDERSTATE, TEXTURESTAGESTATE, VIEWPORTINFO,
+    WINFO, ZRANGE, SETRENDERTARGET, CLEAR, the (indexed) list / strip /
+    fan tokens → `DrawPrimitiveUP` / `DrawIndexedPrimitiveUP`. Claiming
+    T&L (SETTRANSFORM / SETLIGHT / SETMATERIAL, 1:1 on d3d9) and the DX8/9
+    tokens (streams, shaders, `D3DCAPS8` through `GUID_D3DCaps`) come after.
+  - *Caps:* `lpD3DGlobalDriverData` (`D3DNTHALDEVICEDESC_V1` + the texture
+    format list), `lpD3DHALCallbacks` (`ContextCreate` → `CREATE_DEVICE`
+    sized like the render target, `ContextDestroy`), `GUID_D3DCallbacks3`
+    (`DrawPrimitives2`, `Clear2`, `ValidateTextureStageState`),
+    `GUID_D3DExtendedCaps`, `GUID_ZPixelFormats`.
+  - *Test:* a `D3D7TEST.EXE` (IDirect3D7 HAL device, clear + textured
+    TLVERTEX triangle, BMP dump) next to DDTEST; then FIFA 2000 (doc 00).
+  Exit: doc 04 matrix with no DLL in the game folder.
