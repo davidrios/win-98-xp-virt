@@ -3,6 +3,8 @@
 //!   discx selftest <outdir>            write synthetic images, check the model through them
 //!   discx info <image>                 sessions, tracks, indices, extents
 //!   discx dump <image> <what> [args]   hex of one answer: readraw <lba> | readcooked <lba> | sub <lba> | info <lba>
+//!                                      | toc <format> [msf] [start] | subq <lba> [format] [msf] [track] | discinfo
+//!                                      | readcd <lba> <type> <byte9> <byte10>
 //!   discx convert <in.iso> <out.cue> [--audio a.wav ...]   cooked ISO → MODE1/2352 cue/bin (+ audio tracks)
 //!
 //! Every check prints PASS/FAIL with a name; the exit code is 1 on any FAIL.
@@ -11,8 +13,89 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use std::ffi::CString;
+
+use libdisc::capi::{self, libdisc_sector_info, libdisc_track_info};
 use libdisc::msf::Msf;
-use libdisc::{sector, subq, Disc, Error, SectorKind, TrackMode};
+use libdisc::{sector, subq, Disc, TrackMode};
+
+/// A disc opened through the C API in `capi.rs` — the boundary QEMU's
+/// block driver and atapi.c use; every check goes through it.
+struct CDisc(*mut Disc);
+
+impl CDisc {
+    fn open(path: &Path) -> Result<CDisc, String> {
+        let c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        let mut err = [0i8; 256];
+        let p = unsafe { capi::libdisc_open(c.as_ptr(), err.as_mut_ptr() as *mut _, err.len()) };
+        if p.is_null() {
+            let msg: Vec<u8> = err.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
+            return Err(String::from_utf8_lossy(&msg).into_owned());
+        }
+        Ok(CDisc(p))
+    }
+    fn sector_count(&self) -> u32 {
+        unsafe { capi::libdisc_sector_count(self.0) }
+    }
+    fn track_count(&self) -> u8 {
+        unsafe { capi::libdisc_track_count(self.0) }
+    }
+    fn track_info(&self, n: u8) -> Result<libdisc_track_info, i32> {
+        let mut t = libdisc_track_info::default();
+        let rc = unsafe { capi::libdisc_track_info(self.0, n, &mut t) };
+        if rc == 0 { Ok(t) } else { Err(rc) }
+    }
+    fn sector_info(&self, lba: u32) -> Result<libdisc_sector_info, i32> {
+        let mut i = libdisc_sector_info::default();
+        let rc = unsafe { capi::libdisc_sector_info(self.0, lba, &mut i) };
+        if rc == 0 { Ok(i) } else { Err(rc) }
+    }
+    fn read_raw(&self, lba: u32) -> Result<[u8; 2352], i32> {
+        let mut b = [0u8; 2352];
+        let rc = unsafe { capi::libdisc_read_raw(self.0, lba, b.as_mut_ptr()) };
+        if rc == 0 { Ok(b) } else { Err(rc) }
+    }
+    fn read_cooked(&self, lba: u32) -> Result<[u8; 2048], i32> {
+        let mut b = [0u8; 2048];
+        let rc = unsafe { capi::libdisc_read_cooked(self.0, lba, b.as_mut_ptr()) };
+        if rc == 0 { Ok(b) } else { Err(rc) }
+    }
+    fn read_sub(&self, lba: u32) -> Result<[u8; 96], i32> {
+        let mut b = [0u8; 96];
+        let rc = unsafe { capi::libdisc_read_sub(self.0, lba, b.as_mut_ptr()) };
+        if rc == 0 { Ok(b) } else { Err(rc) }
+    }
+    fn toc(&self, format: u8, msf: bool, start: u8) -> Result<Vec<u8>, i32> {
+        let mut b = vec![0u8; 4096];
+        let rc = unsafe { capi::libdisc_mmc_read_toc(self.0, format, msf as i32, start, b.as_mut_ptr(), b.len()) };
+        if rc < 0 { Err(rc) } else { b.truncate(rc as usize); Ok(b) }
+    }
+    fn subchannel(&self, lba: u32, msf: bool, subq: bool, format: u8, track: u8, status: u8) -> Result<Vec<u8>, i32> {
+        let mut b = vec![0u8; 64];
+        let rc = unsafe { capi::libdisc_mmc_read_subchannel(self.0, lba, msf as i32, subq as i32, format, track, status, b.as_mut_ptr(), b.len()) };
+        if rc < 0 { Err(rc) } else { b.truncate(rc as usize); Ok(b) }
+    }
+    fn disc_information(&self) -> Result<Vec<u8>, i32> {
+        let mut b = vec![0u8; 64];
+        let rc = unsafe { capi::libdisc_mmc_read_disc_information(self.0, b.as_mut_ptr(), b.len()) };
+        if rc < 0 { Err(rc) } else { b.truncate(rc as usize); Ok(b) }
+    }
+    fn read_cd(&self, lba: u32, ty: u8, b9: u8, b10: u8) -> Result<Vec<u8>, i32> {
+        let mut b = vec![0u8; 2744];
+        let rc = unsafe { capi::libdisc_mmc_read_cd_sector(self.0, lba, ty, b9, b10, b.as_mut_ptr(), b.len()) };
+        if rc < 0 { Err(rc) } else { b.truncate(rc as usize); Ok(b) }
+    }
+}
+
+impl Drop for CDisc {
+    fn drop(&mut self) {
+        unsafe { capi::libdisc_close(self.0) }
+    }
+}
+
+fn read_cd_length(ty: u8, b9: u8, b10: u8) -> i32 {
+    capi::libdisc_mmc_read_cd_length(ty, b9, b10)
+}
 
 const DATA_SECTORS: i32 = 2000;
 const T2_PREGAP: i32 = 150; // in the file (INDEX 00)
@@ -203,40 +286,37 @@ fn check_msf() -> Result<(), String> {
 }
 
 fn check_raw_synth(dir: &Path, raw1: &[u8]) -> Result<(), String> {
-    let mixed = Disc::open(&dir.join("mixed.cue")).map_err(|e| e.to_string())?;
-    let cooked = Disc::open(&dir.join("cooked.cue")).map_err(|e| e.to_string())?;
-    let plain = Disc::open(&dir.join("plain.iso")).map_err(|e| e.to_string())?;
+    let mixed = CDisc::open(&dir.join("mixed.cue"))?;
+    let cooked = CDisc::open(&dir.join("cooked.cue"))?;
+    let plain = CDisc::open(&dir.join("plain.iso"))?;
     let data = user_data();
-    let mut r = [0u8; 2352];
-    let mut c = [0u8; 2048];
-    for lba in 0..DATA_SECTORS {
+    for lba in 0..DATA_SECTORS as u32 {
         let want = &raw1[lba as usize * 2352..(lba as usize + 1) * 2352];
-        cooked.read_raw(lba, &mut r).map_err(|e| format!("cooked read_raw {lba}: {e}"))?;
+        let r = cooked.read_raw(lba).map_err(|e| format!("cooked read_raw {lba}: {e}"))?;
         if r[..] != *want {
             return Err(format!("cooked.cue synthesized sector {lba} differs from the stored one"));
         }
-        plain.read_raw(lba, &mut r).map_err(|e| format!("iso read_raw {lba}: {e}"))?;
+        let r = plain.read_raw(lba).map_err(|e| format!("iso read_raw {lba}: {e}"))?;
         if r[..] != *want {
             return Err(format!("plain.iso synthesized sector {lba} differs from the stored one"));
         }
-        mixed.read_cooked(lba, &mut c).map_err(|e| format!("mixed read_cooked {lba}: {e}"))?;
+        let c = mixed.read_cooked(lba).map_err(|e| format!("mixed read_cooked {lba}: {e}"))?;
         if c[..] != data[lba as usize * 2048..(lba as usize + 1) * 2048] {
             return Err(format!("mixed.cue cooked sector {lba} differs from the user data"));
         }
     }
     // sync, header, non-zero EDC / P / Q on a synthesized sector
-    plain.read_raw(16, &mut r).map_err(|e| e.to_string())?;
+    let r = plain.read_raw(16).map_err(|e| e.to_string())?;
     expect("sync", r[..12].to_vec(), sector::SYNC.to_vec())?;
     expect("header", r[12..16].to_vec(), vec![0x00, 0x02, 0x16, 0x01])?;
     if r[2064..2068] == [0, 0, 0, 0] || r[2076..2248].iter().all(|&b| b == 0) || r[2248..].iter().all(|&b| b == 0) {
         return Err("EDC / P / Q of sector 16 are zero".into());
     }
     // audio sectors through both images are identical
-    let n = mixed.sector_count() as i32;
-    let mut r2 = [0u8; 2352];
-    for lba in (DATA_SECTORS..n).step_by(97) {
-        mixed.read_raw(lba, &mut r).map_err(|e| e.to_string())?;
-        cooked.read_raw(lba, &mut r2).map_err(|e| e.to_string())?;
+    let n = mixed.sector_count();
+    for lba in (DATA_SECTORS as u32..n).step_by(97) {
+        let r = mixed.read_raw(lba).map_err(|e| e.to_string())?;
+        let r2 = cooked.read_raw(lba).map_err(|e| e.to_string())?;
         if r != r2 {
             return Err(format!("audio sector {lba} differs between mixed.cue and cooked.cue"));
         }
@@ -251,107 +331,165 @@ fn check_lec(dir: &Path) -> Result<(), String> {
     fs::write(dir.join("lec.bin"), &bin).map_err(|e| e.to_string())?;
     let cue = fs::read_to_string(dir.join("mixed.cue")).map_err(|e| e.to_string())?.replace("mixed.bin", "lec.bin");
     fs::write(dir.join("lec.cue"), cue).map_err(|e| e.to_string())?;
-    let disc = Disc::open(&dir.join("lec.cue")).map_err(|e| e.to_string())?;
-    let mut c = [0u8; 2048];
-    let mut r = [0u8; 2352];
-    match disc.read_cooked(1000, &mut c) {
-        Err(Error::Medium) => {}
-        other => return Err(format!("read_cooked of the flipped sector: {other:?}, want Medium")),
-    }
-    disc.read_raw(1000, &mut r).map_err(|e| e.to_string())?;
+    let disc = CDisc::open(&dir.join("lec.cue"))?;
+    expect("read_cooked of the flipped sector", disc.read_cooked(1000).err(), Some(capi::LIBDISC_EMEDIUM))?;
+    let r = disc.read_raw(1000).map_err(|e| e.to_string())?;
     expect("flipped byte", r[500], bin[at])?;
     let info = disc.sector_info(1000).map_err(|e| e.to_string())?;
-    expect("sector_info kind", info.kind, SectorKind::Mode1)?;
-    expect("sector_info lec", info.lec_ok, Some(false))?;
-    let mut c2 = [0u8; 294];
-    let bits = libdisc::ecc::c2_bits(&r, SectorKind::Mode1, &mut c2);
-    if bits == 0 {
+    expect("sector_info", info, libdisc_sector_info { kind: 1, track: 1, index: 1, lec: 0 })?;
+    // READ CD with C2 pointers: ≥ 1 bit set, block error byte set; the raw bytes still delivered
+    let rc = disc.read_cd(1000, 2, 0xFA, 0).map_err(|e| format!("read_cd c2: {e}"))?;
+    expect("read_cd c2 length", rc.len(), 2352 + 294)?;
+    if rc[..2352] != r[..] {
+        return Err("read_cd with C2 did not deliver the raw sector".into());
+    }
+    if rc[2352..].iter().all(|&b| b == 0) {
         return Err("C2 bits of the flipped sector are all clear".into());
     }
+    let rc = disc.read_cd(1000, 2, 0xFC, 0).map_err(|e| format!("read_cd c2+block: {e}"))?;
+    expect("read_cd c2+block length", rc.len(), 2352 + 296)?;
+    expect("block error byte", rc[2352 + 294], 0x80)?;
+    let ok = disc.read_cd(999, 2, 0xFC, 0).map_err(|e| e.to_string())?;
+    if ok[2352..].iter().any(|&b| b != 0) {
+        return Err("C2 bits of a good sector are not clear".into());
+    }
     for lba in [999, 1001] {
-        disc.read_cooked(lba, &mut c).map_err(|e| format!("neighbour {lba}: {e}"))?;
-        expect(&format!("neighbour {lba} lec"), disc.sector_info(lba).map_err(|e| e.to_string())?.lec_ok, Some(true))?;
+        disc.read_cooked(lba).map_err(|e| format!("neighbour {lba}: {e}"))?;
+        expect(&format!("neighbour {lba} lec"), disc.sector_info(lba).map_err(|e| e.to_string())?.lec, 1)?;
     }
     // an EDC-only mismatch (byte 2064) and a parity-only mismatch (byte 2100) both fail
     for (off, name) in [(2064usize, "edc"), (2100usize, "parity")] {
         let mut bin2 = fs::read(dir.join("mixed.bin")).map_err(|e| e.to_string())?;
         bin2[1500 * 2352 + off] ^= 1;
         fs::write(dir.join("lec.bin"), &bin2).map_err(|e| e.to_string())?;
-        let d = Disc::open(&dir.join("lec.cue")).map_err(|e| e.to_string())?;
-        match d.read_cooked(1500, &mut c) {
-            Err(Error::Medium) => {}
-            other => return Err(format!("{name} mismatch: read_cooked {other:?}, want Medium")),
-        }
+        let d = CDisc::open(&dir.join("lec.cue"))?;
+        expect(&format!("{name} mismatch"), d.read_cooked(1500).err(), Some(capi::LIBDISC_EMEDIUM))?;
     }
     fs::write(dir.join("lec.bin"), &bin).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 fn check_edges(dir: &Path) -> Result<(), String> {
-    let disc = Disc::open(&dir.join("mixed.cue")).map_err(|e| e.to_string())?;
+    let disc = CDisc::open(&dir.join("mixed.cue"))?;
     let t2_i1 = DATA_SECTORS + T2_PREGAP;
     let t3_i0 = t2_i1 + T2_LEN;
     let t3_i1 = t3_i0 + T3_PREGAP;
     let leadout = t3_i1 + T3_LEN;
     expect("sector_count", disc.sector_count() as i32, leadout)?;
     expect("track_count", disc.track_count(), 3)?;
-    expect("mcn", disc.mcn.map(|m| String::from_utf8_lossy(&m).to_string()), Some(MCN.into()))?;
-    let (_, t2) = disc.track(2).ok_or("no track 2")?;
-    expect("t2 isrc", t2.isrc.map(|i| String::from_utf8_lossy(&i).to_string()), Some(ISRC.into()))?;
-    expect("t2 indices", t2.indices.clone(), vec![(0, DATA_SECTORS), (1, t2_i1)])?;
-    let (_, t3) = disc.track(3).ok_or("no track 3")?;
-    expect("t3 indices", t3.indices.clone(), vec![(0, t3_i0), (1, t3_i1)])?;
-    expect("t3 end", t3.end_lba, leadout)?;
-    let k = |lba: i32| disc.sector_info(lba).map(|i| (i.kind, i.track, i.index)).map_err(|e| format!("info {lba}: {e}"));
-    expect("lba 0", k(0)?, (SectorKind::Mode1, 1, 1))?;
-    expect("lba 1999", k(1999)?, (SectorKind::Mode1, 1, 1))?;
-    expect("t2 index 0 start", k(DATA_SECTORS)?, (SectorKind::Audio, 2, 0))?;
-    expect("t2 index 0 end", k(t2_i1 - 1)?, (SectorKind::Audio, 2, 0))?;
-    expect("t2 index 1", k(t2_i1)?, (SectorKind::Audio, 2, 1))?;
-    expect("t3 pregap start", k(t3_i0)?, (SectorKind::Audio, 3, 0))?;
-    expect("t3 pregap end", k(t3_i1 - 1)?, (SectorKind::Audio, 3, 0))?;
-    expect("t3 index 1", k(t3_i1)?, (SectorKind::Audio, 3, 1))?;
-    expect("last", k(leadout - 1)?, (SectorKind::Audio, 3, 1))?;
-    let mut r = [0u8; 2352];
-    let mut c = [0u8; 2048];
-    for (lba, name) in [(leadout, "lead-out"), (-1, "-1"), (u32::MAX as i32, "0xFFFFFFFF")] {
-        match disc.read_raw(lba, &mut r) {
-            Err(Error::Range) => {}
-            other => return Err(format!("read_raw {name}: {other:?}, want Range")),
-        }
-        match disc.sector_info(lba) {
-            Err(Error::Range) => {}
-            other => return Err(format!("sector_info {name}: {other:?}, want Range")),
-        }
+    expect("session_count", unsafe { capi::libdisc_session_count(disc.0) }, 1)?;
+    expect("track 1", disc.track_info(1), Ok(libdisc_track_info { number: 1, session: 1, control: 4, mode: 1, start_lba: 0, pregap_lba: 0, end_lba: DATA_SECTORS }))?;
+    expect("track 2", disc.track_info(2), Ok(libdisc_track_info { number: 2, session: 1, control: 0, mode: 0, start_lba: t2_i1, pregap_lba: DATA_SECTORS, end_lba: t3_i0 }))?;
+    expect("track 3", disc.track_info(3), Ok(libdisc_track_info { number: 3, session: 1, control: 0, mode: 0, start_lba: t3_i1, pregap_lba: t3_i0, end_lba: leadout }))?;
+    expect("track 4", disc.track_info(4), Err(capi::LIBDISC_ERANGE))?;
+    expect("track 0", disc.track_info(0), Err(capi::LIBDISC_ERANGE))?;
+    let k = |lba: i32| disc.sector_info(lba as u32).map(|i| (i.kind, i.track, i.index)).map_err(|e| format!("info {lba}: {e}"));
+    expect("lba 0", k(0)?, (1, 1, 1))?;
+    expect("lba 1999", k(1999)?, (1, 1, 1))?;
+    expect("t2 index 0 start", k(DATA_SECTORS)?, (0, 2, 0))?;
+    expect("t2 index 0 end", k(t2_i1 - 1)?, (0, 2, 0))?;
+    expect("t2 index 1", k(t2_i1)?, (0, 2, 1))?;
+    expect("t3 pregap start", k(t3_i0)?, (0, 3, 0))?;
+    expect("t3 pregap end", k(t3_i1 - 1)?, (0, 3, 0))?;
+    expect("t3 index 1", k(t3_i1)?, (0, 3, 1))?;
+    expect("last", k(leadout - 1)?, (0, 3, 1))?;
+    for (lba, name) in [(leadout as u32, "lead-out"), (u32::MAX, "0xFFFFFFFF"), (0x8000_0000u32, "0x80000000")] {
+        expect(&format!("read_raw {name}"), disc.read_raw(lba).err(), Some(capi::LIBDISC_ERANGE))?;
+        expect(&format!("read_cooked {name}"), disc.read_cooked(lba).err(), Some(capi::LIBDISC_ERANGE))?;
+        expect(&format!("read_sub {name}"), disc.read_sub(lba).err(), Some(capi::LIBDISC_ERANGE))?;
+        expect(&format!("sector_info {name}"), disc.sector_info(lba).err(), Some(capi::LIBDISC_ERANGE))?;
+        expect(&format!("read_cd {name}"), disc.read_cd(lba, 0, 0xF8, 0).err(), Some(capi::LIBDISC_ERANGE))?;
     }
-    match disc.read_cooked(DATA_SECTORS, &mut c) {
-        Err(Error::Mode) => {}
-        other => return Err(format!("read_cooked of an audio sector: {other:?}, want Mode")),
-    }
-    disc.read_raw(t3_i0 + 10, &mut r).map_err(|e| e.to_string())?;
+    expect("read_cooked of an audio sector", disc.read_cooked(DATA_SECTORS as u32).err(), Some(capi::LIBDISC_EMODE))?;
+    expect("read_cd type 2 on audio", disc.read_cd(t2_i1 as u32, 2, 0xF8, 0).err(), Some(capi::LIBDISC_EMODE))?;
+    expect("read_cd type 1 on data", disc.read_cd(10, 1, 0xF8, 0).err(), Some(capi::LIBDISC_EMODE))?;
+    expect("read_cd type 4 on mode 1", disc.read_cd(10, 4, 0xF8, 0).err(), Some(capi::LIBDISC_EMODE))?;
+    expect("read_cd type 0 user only on audio", disc.read_cd(t2_i1 as u32, 0, 0x10, 0).err(), Some(capi::LIBDISC_EMODE))?;
+    expect("read_cd type 0 raw on audio", disc.read_cd(t2_i1 as u32, 0, 0xF8, 0).map(|v| v.len()), Ok(2352))?;
+    let r = disc.read_raw((t3_i0 + 10) as u32).map_err(|e| e.to_string())?;
     if r.iter().any(|&b| b != 0) {
         return Err("synthesized pregap sector is not silent".into());
     }
-    disc.read_raw(t2_i1 + 10, &mut r).map_err(|e| e.to_string())?;
+    let r = disc.read_raw((t2_i1 + 10) as u32).map_err(|e| e.to_string())?;
     if r.iter().all(|&b| b == 0) {
         return Err("tone sector is silent".into());
-    }
-    // a corrupt cue must be an error, not a panic
-    fs::write(dir.join("bad.cue"), "FILE \"mixed.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:00:99\n").map_err(|e| e.to_string())?;
-    match Disc::open(&dir.join("bad.cue")) {
-        Err(Error::Invalid(_)) => {}
-        other => return Err(format!("bad.cue: {:?}, want Invalid", other.map(|_| ()))),
-    }
-    fs::write(dir.join("bad2.cue"), "FILE \"nonexistent.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n").map_err(|e| e.to_string())?;
-    match Disc::open(&dir.join("bad2.cue")) {
-        Err(Error::Invalid(_)) => {}
-        other => return Err(format!("bad2.cue: {:?}, want Invalid", other.map(|_| ()))),
     }
     Ok(())
 }
 
+fn check_panic_safety(dir: &Path) -> Result<(), String> {
+    // a corrupt cue must be an error string, never an abort
+    fs::write(dir.join("bad.cue"), "FILE \"mixed.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:00:99\n").map_err(|e| e.to_string())?;
+    match CDisc::open(&dir.join("bad.cue")) {
+        Err(e) if e.contains("bad time") => {}
+        Err(e) => return Err(format!("bad.cue: unexpected message {e:?}")),
+        Ok(_) => return Err("bad.cue opened".into()),
+    }
+    fs::write(dir.join("bad2.cue"), "FILE \"nonexistent.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n").map_err(|e| e.to_string())?;
+    match CDisc::open(&dir.join("bad2.cue")) {
+        Err(e) if e.contains("not found") => {}
+        Err(e) => return Err(format!("bad2.cue: unexpected message {e:?}")),
+        Ok(_) => return Err("bad2.cue opened".into()),
+    }
+    // a bin whose size is not a multiple of the stride
+    fs::write(dir.join("short.bin"), vec![0u8; 2352 * 3 + 7]).map_err(|e| e.to_string())?;
+    fs::write(dir.join("short.cue"), "FILE \"short.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n").map_err(|e| e.to_string())?;
+    match CDisc::open(&dir.join("short.cue")) {
+        Err(e) if e.contains("multiple") => {}
+        other => return Err(format!("short.cue: {:?}", other.map(|_| ()))),
+    }
+    // an ISO that is not one
+    fs::write(dir.join("junk.iso"), vec![1u8; 4095]).map_err(|e| e.to_string())?;
+    if CDisc::open(&dir.join("junk.iso")).is_ok() {
+        return Err("junk.iso opened".into());
+    }
+    // a missing file, a NULL path, an empty error buffer
+    if CDisc::open(&dir.join("missing.cue")).is_ok() {
+        return Err("missing.cue opened".into());
+    }
+    let p = unsafe { capi::libdisc_open(std::ptr::null(), std::ptr::null_mut(), 0) };
+    if !p.is_null() {
+        return Err("NULL path opened".into());
+    }
+    // NULL handles and NULL buffers on every entry point
+    let mut i = libdisc_sector_info::default();
+    let mut t = libdisc_track_info::default();
+    unsafe {
+        expect("sector_count(NULL)", capi::libdisc_sector_count(std::ptr::null()), 0)?;
+        expect("track_info(NULL)", capi::libdisc_track_info(std::ptr::null(), 1, &mut t), capi::LIBDISC_EINVAL)?;
+        expect("sector_info(NULL)", capi::libdisc_sector_info(std::ptr::null(), 0, &mut i), capi::LIBDISC_EINVAL)?;
+        expect("read_raw(NULL)", capi::libdisc_read_raw(std::ptr::null(), 0, std::ptr::null_mut()), capi::LIBDISC_EINVAL)?;
+        expect("read_toc(NULL)", capi::libdisc_mmc_read_toc(std::ptr::null(), 0, 0, 0, std::ptr::null_mut(), 0), capi::LIBDISC_EINVAL)?;
+        capi::libdisc_close(std::ptr::null_mut());
+    }
+    let disc = CDisc::open(&dir.join("mixed.cue"))?;
+    unsafe {
+        expect("read_raw(NULL out)", capi::libdisc_read_raw(disc.0, 0, std::ptr::null_mut()), capi::LIBDISC_EINVAL)?;
+        expect("toc into 4 bytes", capi::libdisc_mmc_read_toc(disc.0, 0, 0, 0, [0u8; 4].as_mut_ptr(), 4), capi::LIBDISC_EINVAL)?;
+        expect("read_cd into 100 bytes", capi::libdisc_mmc_read_cd_sector(disc.0, 0, 0, 0xF8, 0, [0u8; 100].as_mut_ptr(), 100), capi::LIBDISC_EINVAL)?;
+        expect("api version", capi::libdisc_api_version(), capi::LIBDISC_API_VERSION)?;
+    }
+    // probe: cue / ccd 100 with the right extension and content, iso 0, junk 0
+    let probe = |name: &str, head: &[u8]| -> i32 {
+        let c = CString::new(name).unwrap();
+        unsafe { capi::libdisc_probe(head.as_ptr(), head.len(), c.as_ptr()) }
+    };
+    let cue = fs::read(dir.join("mixed.cue")).map_err(|e| e.to_string())?;
+    let ccd = fs::read(dir.join("mixed.ccd")).map_err(|e| e.to_string())?;
+    let mut iso_head = vec![0u8; 40 * 2048];
+    iso_head[16 * 2048 + 1..16 * 2048 + 6].copy_from_slice(b"CD001");
+    expect("probe cue", probe("x.cue", &cue), 100)?;
+    expect("probe CUE upper", probe("X.CUE", &cue), 100)?;
+    expect("probe ccd", probe("x.ccd", &ccd), 100)?;
+    expect("probe iso", probe("x.iso", &iso_head), 0)?;
+    expect("probe cue named iso", probe("x.iso", &cue), 0)?;
+    expect("probe junk cue", probe("x.cue", b"hello"), 0)?;
+    expect("probe empty", probe("x.cue", &[]), 0)?;
+    Ok(())
+}
+
 fn check_subq(dir: &Path) -> Result<(), String> {
-    let disc = Disc::open(&dir.join("mixed.cue")).map_err(|e| e.to_string())?;
+    let disc = CDisc::open(&dir.join("mixed.cue"))?;
     let stored = fs::read(dir.join("mixed.sub")).map_err(|e| e.to_string())?;
     let n = disc.sector_count() as i32;
     let t2_i1 = DATA_SECTORS + T2_PREGAP;
@@ -359,9 +497,8 @@ fn check_subq(dir: &Path) -> Result<(), String> {
     let t3_i1 = t3_i0 + T3_PREGAP;
     let mut samples: Vec<i32> = (0..n).step_by(37).collect();
     samples.extend([0, 1, 98, 99, 100, DATA_SECTORS - 1, DATA_SECTORS, t2_i1 - 1, t2_i1, t3_i0 - 1, t3_i0, t3_i1 - 1, t3_i1, n - 1]);
-    let mut s = [0u8; 96];
     for &lba in &samples {
-        disc.read_sub(lba, &mut s).map_err(|e| e.to_string())?;
+        let s = disc.read_sub(lba as u32).map_err(|e| e.to_string())?;
         if s[..] != stored[lba as usize * 96..(lba as usize + 1) * 96] {
             return Err(format!("sub of {lba} differs from mixed.sub"));
         }
@@ -369,13 +506,13 @@ fn check_subq(dir: &Path) -> Result<(), String> {
         if !subq::q_crc_ok(q) {
             return Err(format!("Q CRC of {lba} does not verify"));
         }
-        let info = disc.sector_info(lba).map_err(|e| e.to_string())?;
-        let (_, t) = disc.track(info.track).unwrap();
+        let info = disc.sector_info(lba as u32).map_err(|e| e.to_string())?;
+        let t = disc.track_info(info.track).map_err(|e| e.to_string())?;
         let adr = q[0] & 0x0F;
         expect(&format!("{lba} control"), q[0] >> 4, t.control)?;
         match lba % 100 {
             98 => expect(&format!("{lba} adr"), adr, 2)?,
-            99 if t.isrc.is_some() => expect(&format!("{lba} adr"), adr, 3)?,
+            99 if info.track == 2 => expect(&format!("{lba} adr"), adr, 3)?,
             _ => {
                 expect(&format!("{lba} adr"), adr, 1)?;
                 expect(&format!("{lba} tno"), sector::from_bcd(q[1]), info.track)?;
@@ -387,20 +524,178 @@ fn check_subq(dir: &Path) -> Result<(), String> {
                 expect(&format!("{lba} rel"), rel, want)?;
             }
         }
-        let pause = info.index == 0 || disc.track(info.track + 1).map(|(_, nt)| nt.start_lba - lba <= 150).unwrap_or(false);
+        let pause = info.index == 0 || disc.track_info(info.track + 1).map(|nt| nt.start_lba - lba <= 150).unwrap_or(false);
         expect(&format!("{lba} P"), s[0], if pause { 0xFF } else { 0 })?;
-        // interleave round trip
+        // the same bytes through READ CD: subch 1 (raw, interleaved), 2 (Q formatted), 4 (R-W de-interleaved)
+        let ty = if info.kind == 1 { 2 } else { 1 };
+        let rc = disc.read_cd(lba as u32, ty, 0xF8, 1).map_err(|e| format!("read_cd sub1 {lba}: {e}"))?;
+        expect(&format!("{lba} readcd sub1 length"), rc.len(), 2448)?;
+        let mut de = [0u8; 96];
         let mut inter = [0u8; 96];
-        let mut back = [0u8; 96];
-        subq::interleave(&s, &mut inter);
-        subq::deinterleave(&inter, &mut back);
-        if back != s {
-            return Err(format!("interleave round trip differs at {lba}"));
+        inter.copy_from_slice(&rc[2352..]);
+        subq::deinterleave(&inter, &mut de);
+        if de != s {
+            return Err(format!("READ CD raw subchannel of {lba} does not de-interleave to read_sub"));
+        }
+        let rc = disc.read_cd(lba as u32, ty, 0x00, 2).map_err(|e| format!("read_cd sub2 {lba}: {e}"))?;
+        expect(&format!("{lba} readcd sub2"), rc, [&s[12..24], &[0u8; 4][..]].concat())?;
+        let rc = disc.read_cd(lba as u32, ty, 0x00, 4).map_err(|e| format!("read_cd sub4 {lba}: {e}"))?;
+        expect(&format!("{lba} readcd sub4"), rc, s.to_vec())?;
+    }
+    // MCN frame content, and the READ SUB-CHANNEL formats
+    let s = disc.read_sub(98).map_err(|e| e.to_string())?;
+    expect("mcn packed", s[13..20].to_vec(), vec![0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x30])?;
+    let r = disc.subchannel(0, false, false, 1, 0, 0x15).map_err(|e| e.to_string())?;
+    expect("subq=0 header", r, vec![0, 0x15, 0, 0])?;
+    let r = disc.subchannel(t2_i1 as u32 + 75, true, true, 1, 0, 0x11).map_err(|e| e.to_string())?;
+    expect("position msf", r, vec![0, 0x11, 0, 12, 1, 0x10, 2, 1, 0, 0, 31, 50, 0, 0, 1, 0])?;
+    let r = disc.subchannel(t2_i1 as u32 + 75, false, true, 1, 0, 0x11).map_err(|e| e.to_string())?;
+    expect("position lba", r, [vec![0, 0x11, 0, 12, 1, 0x10, 2, 1], (t2_i1 + 75).to_be_bytes().to_vec(), 75i32.to_be_bytes().to_vec()].concat())?;
+    let r = disc.subchannel(DATA_SECTORS as u32 + 10, false, true, 1, 0, 0x15).map_err(|e| e.to_string())?;
+    expect("position in index 0 (negative relative)", r, [vec![0, 0x15, 0, 12, 1, 0x10, 2, 0], (DATA_SECTORS + 10).to_be_bytes().to_vec(), (-140i32).to_be_bytes().to_vec()].concat())?;
+    let r = disc.subchannel(0, false, true, 2, 0, 0x15).map_err(|e| e.to_string())?;
+    expect("mcn", r, [vec![0, 0x15, 0, 20, 2, 0, 0, 0, 0x80], MCN.as_bytes().to_vec(), vec![0, 0]].concat())?;
+    let r = disc.subchannel(0, false, true, 3, 2, 0x15).map_err(|e| e.to_string())?;
+    expect("isrc", r, [vec![0, 0x15, 0, 20, 3, 0x10, 2, 0, 0x80], ISRC.as_bytes().to_vec(), vec![0, 0, 0]].concat())?;
+    let r = disc.subchannel(0, false, true, 3, 1, 0x15).map_err(|e| e.to_string())?;
+    expect("isrc of a track without one", r, [vec![0, 0x15, 0, 20, 3, 0x14, 1, 0, 0], vec![b'0'; 12], vec![0, 0, 0]].concat())?;
+    expect("format 4", disc.subchannel(0, false, true, 4, 0, 0).err(), Some(capi::LIBDISC_EINVAL))?;
+    expect("isrc track 9", disc.subchannel(0, false, true, 3, 9, 0).err(), Some(capi::LIBDISC_EINVAL))?;
+    Ok(())
+}
+
+fn check_toc(dir: &Path) -> Result<(), String> {
+    let mixed = CDisc::open(&dir.join("mixed.cue"))?;
+    let cooked = CDisc::open(&dir.join("cooked.cue"))?;
+    let plain = CDisc::open(&dir.join("plain.iso"))?;
+    let t2_i1 = DATA_SECTORS + T2_PREGAP;
+    let t3_i1 = t2_i1 + T2_LEN + T3_PREGAP;
+    let leadout = t3_i1 + T3_LEN;
+    // identical across the raw and the cooked image, every format
+    for (format, msf, start) in [(0, false, 0), (0, true, 0), (0, false, 1), (0, true, 2), (0, false, 0xAA), (1, false, 0), (1, true, 0), (2, false, 0), (2, true, 1)] {
+        let a = mixed.toc(format, msf, start).map_err(|e| format!("mixed toc {format} {msf} {start}: {e}"))?;
+        let b = cooked.toc(format, msf, start).map_err(|e| e.to_string())?;
+        if a != b {
+            return Err(format!("toc format {format} msf {msf} start {start} differs between mixed.cue and cooked.cue"));
         }
     }
-    // MCN frame content
-    disc.read_sub(98, &mut s).map_err(|e| e.to_string())?;
-    expect("mcn packed", s[13..20].to_vec(), vec![0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x30])?;
+    // format 0, hand-coded
+    let msf4 = |lba: i32| {
+        let m = Msf::from_lba(lba);
+        vec![0, m.m, m.s, m.f]
+    };
+    let want = [
+        vec![0, 34, 1, 3],
+        vec![0, 0x14, 1, 0], msf4(0),
+        vec![0, 0x10, 2, 0], msf4(t2_i1),
+        vec![0, 0x10, 3, 0], msf4(t3_i1),
+        vec![0, 0x10, 0xAA, 0], msf4(leadout),
+    ].concat();
+    expect("toc0 msf", mixed.toc(0, true, 0).map_err(|e| e.to_string())?, want)?;
+    let want = [
+        vec![0, 34, 1, 3],
+        vec![0, 0x14, 1, 0], 0i32.to_be_bytes().to_vec(),
+        vec![0, 0x10, 2, 0], t2_i1.to_be_bytes().to_vec(),
+        vec![0, 0x10, 3, 0], t3_i1.to_be_bytes().to_vec(),
+        vec![0, 0x10, 0xAA, 0], leadout.to_be_bytes().to_vec(),
+    ].concat();
+    expect("toc0 lba", mixed.toc(0, false, 0).map_err(|e| e.to_string())?, want)?;
+    let want = [vec![0, 18, 1, 3], vec![0, 0x10, 3, 0], t3_i1.to_be_bytes().to_vec(), vec![0, 0x10, 0xAA, 0], leadout.to_be_bytes().to_vec()].concat();
+    expect("toc0 from track 3", mixed.toc(0, false, 3).map_err(|e| e.to_string())?, want)?;
+    let want = [vec![0, 10, 1, 3], vec![0, 0x10, 0xAA, 0], leadout.to_be_bytes().to_vec()].concat();
+    expect("toc0 lead-out only", mixed.toc(0, false, 0xAA).map_err(|e| e.to_string())?, want)?;
+    expect("toc0 from track 4", mixed.toc(0, false, 4).err(), Some(capi::LIBDISC_EINVAL))?;
+    // single-track ISO: the layout QEMU's cdrom_read_toc produces, but with the lead-out control a
+    // real drive reports (0x14: QEMU says 0x16)
+    let want = [vec![0, 18, 1, 1], vec![0, 0x14, 1, 0], msf4(0), vec![0, 0x14, 0xAA, 0], msf4(DATA_SECTORS)].concat();
+    expect("toc0 iso msf", plain.toc(0, true, 0).map_err(|e| e.to_string())?, want)?;
+    let want = [vec![0, 18, 1, 1], vec![0, 0x14, 1, 0], vec![0, 0, 0, 0], vec![0, 0x14, 0xAA, 0], DATA_SECTORS.to_be_bytes().to_vec()].concat();
+    expect("toc0 iso lba", plain.toc(0, false, 0).map_err(|e| e.to_string())?, want)?;
+    // format 1
+    expect("toc1", mixed.toc(1, false, 0).map_err(|e| e.to_string())?, [vec![0, 10, 1, 1], vec![0, 0x14, 1, 0], vec![0, 0, 0, 0]].concat())?;
+    // format 2: MSF regardless of the msf bit
+    let e = |ctl: u8, point: u8, p: Vec<u8>| [vec![1, ctl, 0, point, 0, 0, 0, 0], p].concat();
+    let msf3 = |lba: i32| {
+        let m = Msf::from_lba(lba);
+        vec![m.m, m.s, m.f]
+    };
+    let want = [
+        vec![0, 68, 1, 1],
+        e(0x14, 0xA0, vec![1, 0, 0]),
+        e(0x14, 0xA1, vec![3, 0, 0]),
+        e(0x14, 0xA2, msf3(leadout)),
+        e(0x14, 1, msf3(0)),
+        e(0x10, 2, msf3(t2_i1)),
+        e(0x10, 3, msf3(t3_i1)),
+    ].concat();
+    expect("toc2", mixed.toc(2, false, 0).map_err(|e| e.to_string())?, want.clone())?;
+    expect("toc2 msf", mixed.toc(2, true, 0).map_err(|e| e.to_string())?, want)?;
+    expect("toc3", mixed.toc(3, false, 0).err(), Some(capi::LIBDISC_EINVAL))?;
+    expect("toc5", mixed.toc(5, false, 0).err(), Some(capi::LIBDISC_EINVAL))?;
+    // READ DISC INFORMATION
+    let mut want = vec![0u8; 34];
+    want[1] = 32; want[2] = 0x0E; want[3] = 1; want[4] = 1; want[5] = 1; want[6] = 3; want[7] = 0x20;
+    want[16..24].fill(0xFF);
+    expect("disc information", mixed.disc_information().map_err(|e| e.to_string())?, want)?;
+    Ok(())
+}
+
+fn check_read_cd_lengths() -> Result<(), String> {
+    // (expected type, byte 9, byte 10) → bytes per sector, MMC-3 tables 356..360
+    let table: &[((u8, u8, u8), i32)] = &[
+        ((0, 0x10, 0), 2048), ((0, 0xF8, 0), 2352), ((0, 0x00, 0), 0),
+        ((1, 0x10, 0), 2352), ((1, 0xF8, 0), 2352), ((1, 0x80, 0), 2352), ((1, 0x00, 0), 0),
+        ((2, 0x10, 0), 2048), ((2, 0x08, 0), 288), ((2, 0x18, 0), 2336), ((2, 0x20, 0), 4), ((2, 0x30, 0), 2052),
+        ((2, 0x38, 0), 2340), ((2, 0x80, 0), 12), ((2, 0xA0, 0), 16), ((2, 0xB0, 0), 2064), ((2, 0xB8, 0), 2352),
+        ((2, 0xF8, 0), 2352), ((2, 0xF0, 0), 2064), ((2, 0x50, 0), 2048), ((2, 0x58, 0), 2336), ((2, 0x40, 0), 0),
+        ((2, 0x28, 0), capi::LIBDISC_EINVAL), ((2, 0x90, 0), capi::LIBDISC_EINVAL), ((2, 0x88, 0), capi::LIBDISC_EINVAL), ((2, 0xA8, 0), capi::LIBDISC_EINVAL),
+        ((3, 0x10, 0), 2336), ((3, 0x30, 0), 2340), ((3, 0xB0, 0), 2352), ((3, 0xF8, 0), 2352), ((3, 0x18, 0), 2336),
+        ((4, 0x10, 0), 2048), ((4, 0x18, 0), 2328), ((4, 0x40, 0), 8), ((4, 0x50, 0), 2056), ((4, 0x58, 0), 2336),
+        ((4, 0x70, 0), 2060), ((4, 0x78, 0), 2340), ((4, 0xF8, 0), 2352), ((4, 0xF0, 0), 2072), ((4, 0xB0, 0), capi::LIBDISC_EINVAL),
+        ((4, 0x08, 0), 280), ((4, 0x30, 0), capi::LIBDISC_EINVAL),
+        ((5, 0x10, 0), 2324), ((5, 0x18, 0), 2328), ((5, 0x58, 0), 2336), ((5, 0xF8, 0), 2352), ((5, 0x08, 0), 4),
+        ((2, 0xFA, 0), 2352 + 294), ((2, 0xFC, 0), 2352 + 296), ((2, 0xFE, 0), capi::LIBDISC_EINVAL), ((2, 0x12, 0), 2048 + 294),
+        ((2, 0xF8, 1), 2448), ((2, 0xF8, 2), 2368), ((2, 0xF8, 4), 2448), ((2, 0x00, 2), 16), ((2, 0xF8, 3), capi::LIBDISC_EINVAL),
+        ((2, 0xF8, 5), capi::LIBDISC_EINVAL), ((2, 0xFA, 1), 2352 + 294 + 96),
+        ((6, 0xF8, 0), capi::LIBDISC_EINVAL), ((7, 0x10, 0), capi::LIBDISC_EINVAL),
+    ];
+    for &((ty, b9, b10), want) in table {
+        expect(&format!("type {ty} byte9 {b9:#04x} byte10 {b10}"), read_cd_length(ty, b9, b10), want)?;
+    }
+    // the fill delivers exactly those bytes, from the right offsets
+    let dir = std::env::var("DISCX_DIR").unwrap_or_default();
+    let _ = dir;
+    Ok(())
+}
+
+fn check_read_cd_fill(dir: &Path) -> Result<(), String> {
+    let disc = CDisc::open(&dir.join("mixed.cue"))?;
+    let raw = disc.read_raw(16).map_err(|e| e.to_string())?;
+    let t2 = (DATA_SECTORS + T2_PREGAP + 5) as u32;
+    let audio = disc.read_raw(t2).map_err(|e| e.to_string())?;
+    let cases: &[(u8, u8, &[std::ops::Range<usize>])] = &[
+        (2, 0x10, &[16..2064]), (2, 0xF8, &[0..2352]), (2, 0x08, &[2064..2352]), (2, 0x18, &[16..2352]),
+        (2, 0x20, &[12..16]), (2, 0x30, &[12..2064]), (2, 0x80, &[0..12]), (2, 0xA0, &[0..16]), (2, 0xB0, &[0..2064]),
+        (0, 0x10, &[16..2064]), (0, 0xF8, &[0..2352]), (0, 0x30, &[12..2064]),
+    ];
+    for &(ty, b9, ranges) in cases {
+        let got = disc.read_cd(16, ty, b9, 0).map_err(|e| format!("type {ty} {b9:#04x}: {e}"))?;
+        let want: Vec<u8> = ranges.iter().flat_map(|r| raw[r.clone()].iter().copied()).collect();
+        if got != want {
+            return Err(format!("type {ty} byte9 {b9:#04x}: {} bytes, wrong content", got.len()));
+        }
+    }
+    for b9 in [0x10u8, 0xF8, 0x80, 0x08] {
+        let got = disc.read_cd(t2, 1, b9, 0).map_err(|e| format!("audio {b9:#04x}: {e}"))?;
+        if got[..] != audio[..] {
+            return Err(format!("CD-DA byte9 {b9:#04x} did not deliver the whole sector"));
+        }
+    }
+    let got = disc.read_cd(t2, 0, 0xF8, 0).map_err(|e| e.to_string())?;
+    if got[..] != audio[..] {
+        return Err("type 0 raw on audio did not deliver the whole sector".into());
+    }
+    expect("audio nothing", disc.read_cd(t2, 1, 0x00, 0).map(|v| v.len()), Ok(0))?;
     Ok(())
 }
 
@@ -418,6 +713,10 @@ fn selftest(dir: &Path) -> i32 {
     ck.report("lec", check_lec(dir));
     ck.report("edges", check_edges(dir));
     ck.report("subq-synth", check_subq(dir));
+    ck.report("toc", check_toc(dir));
+    ck.report("read-cd-length", check_read_cd_lengths());
+    ck.report("read-cd-fill", check_read_cd_fill(dir));
+    ck.report("panic-safety", check_panic_safety(dir));
     println!("{} passed, {} failed", ck.passes, ck.fails);
     if ck.fails > 0 {
         1
@@ -493,6 +792,40 @@ fn dump(disc: &Disc, what: &str, args: &[String]) -> Result<(), String> {
         "info" => {
             let i = disc.sector_info(lba(0)?).map_err(|e| e.to_string())?;
             println!("{i:?}");
+        }
+        "toc" => {
+            // toc <format> [msf] [start]
+            let format = lba(0)? as u8;
+            let msf = args.get(1).map(|s| s != "0").unwrap_or(false);
+            let start = args.get(2).map(|s| s.parse::<u8>().unwrap_or(0)).unwrap_or(0);
+            let mut v = Vec::new();
+            libdisc::mmc::read_toc(disc, format, msf, start, &mut v).map_err(|e| e.to_string())?;
+            hex(&v);
+        }
+        "subq" => {
+            // subq <lba> [format] [msf] [track]
+            let l = lba(0)?;
+            let format = args.get(1).map(|s| s.parse::<u8>().unwrap_or(1)).unwrap_or(1);
+            let msf = args.get(2).map(|s| s != "0").unwrap_or(false);
+            let track = args.get(3).map(|s| s.parse::<u8>().unwrap_or(1)).unwrap_or(1);
+            let mut v = Vec::new();
+            libdisc::mmc::read_subchannel(disc, l, msf, true, format, track, 0x15, &mut v).map_err(|e| e.to_string())?;
+            hex(&v);
+        }
+        "discinfo" => {
+            let mut v = Vec::new();
+            libdisc::mmc::read_disc_information(disc, &mut v).map_err(|e| e.to_string())?;
+            hex(&v);
+        }
+        "readcd" => {
+            // readcd <lba> <type> <byte9> <byte10>
+            let l = lba(0)?;
+            let ty = lba(1)? as u8;
+            let b9 = lba(2)? as u8;
+            let b10 = lba(3)? as u8;
+            let mut buf = vec![0u8; 2744];
+            let n = libdisc::mmc::read_cd_sector(disc, l, ty, b9, b10, &mut buf).map_err(|e| e.to_string())?;
+            hex(&buf[..n]);
         }
         other => return Err(format!("unknown dump request {other}")),
     }

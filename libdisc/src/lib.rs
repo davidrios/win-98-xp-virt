@@ -8,9 +8,12 @@
 //! are synchronous `pread`s on immutable files; a `Disc` is immutable once
 //! opened and every method is safe to call from several threads.
 
+#[allow(non_camel_case_types)]
+pub mod capi;
 pub mod cue;
 pub mod ecc;
 pub mod iso;
+pub mod mmc;
 pub mod msf;
 pub mod sector;
 pub mod subq;

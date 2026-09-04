@@ -39,6 +39,24 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 
 ## State (2026-09-04, evening)
 
+- **Step 2 done** (commit "M5 step 2"): `mmc.rs` (READ TOC 0/1/2, READ
+  SUB-CHANNEL 1/2/3, READ DISC INFORMATION, READ CD length + fill),
+  `capi.rs` + `libdisc/libdisc.h` (v1; 17 functions, `nm` shows all 17 as
+  `T libdisc_*` in `target/release/liblibdisc.a`). `discx selftest` calls
+  the `extern "C"` functions only, via a small `CDisc` wrapper; new checks
+  `toc`, `read-cd-length`, `read-cd-fill`, `panic-safety`; `dump toc |
+  subq | discinfo | readcd`. Decisions taken while writing it (doc 17 §4
+  says the rest): the lead-out descriptor of READ TOC format 0 carries
+  control `0x14` for a data disc as real drives report (QEMU's
+  `cdrom_read_toc` says `0x16`; the no-disc path keeps QEMU's bytes, the
+  disc path the drive's); READ CD with expected type 0 uses the Mode 1
+  field lengths, delivers the whole sector when all main fields are
+  selected (`0xF8`), a sector's own 2048 user bytes for `0x10` (Mode 2
+  form 1 included), and refuses other combinations on non-Mode-1 sectors
+  with EMODE; the READ CD length table is the MMC-3 contiguity rule
+  (selected non-empty fields must be adjacent in the sector layout), which
+  reproduces every legal/illegal entry of tables 356–360; the MCN reply is
+  24 bytes (13 digits, NUL, pad), the ISRC reply 24 bytes.
 - **Step 1 done** (commit "M5 step 1"): `libdisc/src/{lib,cue,iso,sector,ecc,subq}.rs`
   and `src/bin/discx.rs`. `Disc::open` for `.cue` / `.iso` (content sniff
   for other extensions), `read_raw` / `read_cooked` / `read_sub` /
@@ -47,8 +65,7 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   P pause flag, interleave ⇄ deinterleave. `discx selftest` writes
   `mixed.cue/.bin` (+ `mixed.ccd/.img/.sub` from the model, read back from
   step 3 on), `cooked.cue/.bin`, `plain.iso`, `lec.cue/.bin` and checks
-  `msf`, `raw-synth`, `lec`, `edges`, `subq-synth` — through the Rust API
-  for now (step 2 switches it to the C API). Wired into `scripts/test.sh`
+  `msf`, `raw-synth`, `lec`, `edges`, `subq-synth`. Wired into `scripts/test.sh`
   as `libdisc` (host stage). The old `#[test]`s in `msf.rs` are gone.
 - **EDC/ECC oracle:** Neill Corlett's `ecm` (ecm-tools 1.03, public domain,
   `pacman -S ecm-tools` or three files from github.com/alucryd/ecm-tools:
@@ -62,8 +79,7 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 - `discx convert plain.iso out.cue --audio tone.wav` produces a MODE1/2352
   cue/bin with one AUDIO track per WAVE (padded to whole sectors, `PREGAP
   00:02:00`); `info` prints the layout, `dump readraw|readcooked|sub|info
-  <lba>` one sector. MMC `dump` requests (`toc`, `subq`, `readcd`) come
-  with step 2.
+  <lba>` one sector.
 - The pinned QEMU (v9.2.4) ATAPI layer, as surveyed for doc 17: 19
   commands in `atapi_cmd_table` (`hw/ide/atapi.c` ~line 1280), READ CD
   accepts only byte-9 values `0x10` and `0xF8`, raw sectors are faked by
@@ -132,7 +148,7 @@ State section) — they are the handoff.
    for those four; a hand check that `discx dump build/test/disc/mixed.cue
    readraw 16` shows the sync pattern, BCD header `00 02 16 01`, and
    non-zero EDC/P/Q.
-2. **MMC responders + C API** (`mmc.rs`, `capi.rs`, `libdisc/libdisc.h`;
+2. **MMC responders + C API** — *done 2026-09-04* (`mmc.rs`, `capi.rs`, `libdisc/libdisc.h`;
    doc 17 §3–4). READ TOC 0/1/2, READ SUB-CHANNEL 1/2/3, READ CD length
    table + sector fill (all byte-9/byte-10 combinations of the MMC-3
    table), READ DISC INFORMATION. Switch `discx selftest` to call the

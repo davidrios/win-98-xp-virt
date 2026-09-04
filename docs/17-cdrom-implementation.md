@@ -404,8 +404,10 @@ Header: `data length (2 bytes, excludes itself)`, then per format:
   present (CCD), emit its entries verbatim instead.
 - Formats 3 (ATIP), 4 (CD-TEXT), 5 → EINVAL.
 - `cdrom_read_toc` / `cdrom_read_toc_raw` in `hw/block/cdrom.c` stay for
-  the no-disc path; format 0 on a single-track ISO through libdisc must
-  produce the same bytes (exerciser check).
+  the no-disc path; format 0 on a single-track ISO through libdisc
+  produces the same layout (exerciser check) with one deliberate
+  difference: QEMU's lead-out descriptor says control `0x16`, ours `0x14`
+  (what a real drive reports for a data disc; decided 2026-09-04).
 
 ### 4.2 READ SUB-CHANNEL (0x42)
 
