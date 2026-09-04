@@ -146,15 +146,27 @@ dominated), so a real loop sees less than the ratio.
 the Win32 counterpart for the rig and the guests: D3DX-shaped kernels
 (packed transform, packed normalize with `rsqrtps`, a scalar chain with
 `comiss`, clamp + `cmpps`, `cvttss2si`/`cvtsi2ss`), the transform and
-normalize again in plain C (x87 on this compiler, i.e. doc 13's path),
-and a denormal-decay kernel that shows the slow-path cost; prints ns per
-op and a mean "SSE score". Run it on the P4 rig and in XP on the Air
-with and without `sse-fast=off` / `x87-fast=off` and record the numbers
-in `reference/benchmarks/README.md` (not done on 2026-09-04: the rig is
-off and the guest-tools ISO needs a rebuild with the new EXE).
+normalize again in plain C pinned to x87 at PC=53 (doc 13's path), and a
+denormal-decay kernel that shows the slow-path cost; prints ns per op and
+a mean "SSE score". `tools/xp-ssebench.sh` runs it in XP headlessly per
+`-cpu` configuration and prints the slow-path counters (`info
+registers`: guard, hand-over, helper, cvt/comis exits) around the run.
+
+XP on the Air, 2026-09-04, best of two passes (ns per op): packed
+transform 2.4 vs 17.7 with `sse-fast=off` (7.4×), packed normalize 2.1
+vs 13.5 (6.3×), scalar chain 3.6 vs 11.8 (3.3×), clamp+cmp 3.7 vs 16.2
+(4.4×), convert 2.3 vs 7.4 (3.2×); the x87 kernels 4.1 / 3.9 vs 45 / 47
+with `x87-fast=off` (10–12×, unaffected by the SSE switch); the denormal
+kernel 81 vs 49 (the slow path is 0.6× the helper). Counters over the
+scored kernels: guard 0, hand-over 1, helper exits only from the
+denormal kernel. Full table and the measurement pitfalls in
+`reference/benchmarks/README.md`. The rig has not run it yet.
 
 ## Follow-ups
 
+- `shufps`, `unpcklps`/`unpckhps`, `movlhps`/`movhlps` are helper calls
+  and sit between every inlined op of a D3DX transform (4 per vertex);
+  they are pure lane permutations and could be gvec/vector ops.
 - The packed checks re-materialize their vector constants per
   instruction (two instructions each on aarch64); a constant pool or
   hoisting in the backend would trim ~6 of the ~25.

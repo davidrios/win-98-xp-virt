@@ -20,8 +20,9 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   `tools/x87-unwind-test.asm`, `tools/sse-guest-test.py` (both guest
   batteries run in `scripts/test.sh`'s guest stage).
 - Benchmarks: `guest-tools/src/ssebench.c` (`SSEBENCH.EXE` on the ISO),
-  the DOS benches inside the two guest tests, the x87/SSE sections of
-  `reference/benchmarks/README.md`.
+  `tools/xp-ssebench.sh` (runs it in XP headlessly per `-cpu` config, works
+  on macOS: floppy image via mtools, no sfdisk), the DOS benches inside
+  the two guest tests, the x87/SSE sections of `reference/benchmarks/README.md`.
 - Docs: doc 13, doc 16, this file, the M8 row of the state table in
   `docs/00-status.md`.
 - Shared (rebase first, edit minimally, say so in the commit):
@@ -40,7 +41,9 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   x87 test still passes with it. Register-only bench: packed 12×, scalar
   3.6× over the helpers (doc 16). The x86-64 backend additions are
   written to patch 06's pattern but **have never executed**.
-- Not measured yet: `SSEBENCH.EXE` anywhere (rig off, ISO not rebuilt).
+- `SSEBENCH.EXE` in XP on the Air (2026-09-04, `tools/xp-ssebench.sh`):
+  SSE kernels 3.2–7.4× with patch 07, x87 kernels 10–12× with patch 06,
+  table in `reference/benchmarks/README.md`. Not yet on the rig.
 
 ## Build / test loop
 
@@ -50,15 +53,30 @@ ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.dylib  # .so on Linux
 python3 tools/sse-guest-test.py     # must end "... identical", bench ratio printed
 python3 tools/x87-guest-test.py     # the slow blocks are shared: run both
 scripts/test.sh all                 # before every commit (policy)
+tools/xp-ssebench.sh ~/vms/winxp.qcow2   # SSEBENCH.EXE in XP: default, sse-fast=off, both off
 ```
 
-Editing a patch: edit the files in `qemu/`, copy them aside, run
-`prepare-qemu.sh` (it stops at the broken patch, which leaves the tree at
-the previous patch = the "pre" state), regenerate the patch with `diff -u`
-against the copies with `--- a/` / `+++ b/` headers (new files
-`--- /dev/null`), then `prepare-qemu.sh` twice more and compare the tree
-with the copies. The 2026-09-04 session did exactly this; the recipe is
-also in the patch README.
+`guest-tools/build-wrappers.sh` on the Air stops at the M7 driver step
+(`build-driver.sh`: no mingw DDK headers here); everything before it,
+including `GAMEDIR/SSEBENCH.EXE`, is staged in `guest-tools/out/iso`, and
+`xorriso -as mkisofs -o guest-tools/out/guest-tools-3dfx-<rev>.iso -V GUESTTOOLS -J -r guest-tools/out/iso`
+makes the ISO (2026-09-04).
+
+Editing a patch: edit the files in `qemu/`, copy them aside, move the
+patch out of `patches/qemu/`, run `prepare-qemu.sh` (tree = the previous
+patches), then `git -C qemu checkout --` every file that *only* this patch
+touches (prepare restores only files some present patch lists; new files
+of the patch may also linger and must not be in the "pre" diff),
+regenerate the patch with `diff -u` against the copies with `--- a/` /
+`+++ b/` headers (new files `--- /dev/null`), put it back, then
+`prepare-qemu.sh` twice and compare the tree with the copies byte for
+byte. The 2026-09-04 session did exactly this twice.
+
+Slow-path counters: `info registers` (QMP `human-monitor-command`) prints
+`SSE-fast slow paths: guard= handover= helper= cvt/comis=`; a workload
+whose `helper`/`cvt` counters grow by millions is living on the slow
+path (an out-of-range `cvttss2si` loop cost 2× the helper before the
+benchmark's convert kernel was fixed to stay in range).
 
 ## Next steps, in order
 
@@ -67,11 +85,11 @@ also in the patch README.
    wrong will be in `tcg/i386/tcg-target.c.inc` (VEX `vaddss`.. `vcvtsi2ss`
    / `vcvttss2si` encodings, `vaddps`/`vaddpd` via `gen_simd`) or in
    constraints (`C_O1_I1(r, x)` added). Then merge to `main`.
-2. **SSEBENCH on the rig and the guests.** Rebuild the guest-tools ISO
-   (`guest-tools/build-wrappers.sh`), run `SSEBENCH.EXE` on the P4 rig
-   and in XP on the Air with defaults, `sse-fast=off`, and
-   `sse-fast=off,x87-fast=off`; fill the table in
-   `reference/benchmarks/README.md`.
+2. **SSEBENCH on the rig.** The ISO (`guest-tools/out/guest-tools-3dfx-*.iso`,
+   restaged 2026-09-04 with the PC=53 EXE) on a CD; run
+   `GAMEDIR\SSEBENCH.EXE -iter 20` twice on the P4, take the better,
+   fill the rig row of the table in `reference/benchmarks/README.md`.
+   The Air rows are done.
 3. **A real workload number.** A Direct3D title in XP (the M4 track's
    item) with and without both `*-fast=off`: the first end-to-end number
    for patches 06 + 07 together.
@@ -79,5 +97,7 @@ also in the patch README.
    each per packed op on aarch64); a vector-to-scalar move opcode would
    remove the `env->sses_scratch` round trip and let scalar ops use the
    vector shape too (doc 16 follow-ups).
-5. Still on helpers: `cvtps2dq`/`cvttps2dq`/`cvtdq2ps`, the MMX-register
-   conversions, `haddps`/`addsubps` (SSE3), VEX forms (no era relevance).
+5. Still on helpers: `shufps`/`unpck*ps`/`movlhps` (4 per vertex in a
+   D3DX transform, pure permutations: the next cheap win),
+   `cvtps2dq`/`cvttps2dq`/`cvtdq2ps`, the MMX-register conversions,
+   `haddps`/`addsubps` (SSE3), VEX forms (no era relevance).

@@ -101,13 +101,28 @@ That is ~1.2 ns per packed op and ~2.7 ns per scalar op inline against
 ~14 and ~10 for the helpers. Loops with memory operands see less (the
 TLB lookup per operand is the same on both paths).
 
-`SSEBENCH.EXE` numbers (rig P4 1.7 / XP on the Air with and without
-`sse-fast=off` and `x87-fast=off`): not yet run — the rig is off and the
-guest-tools ISO needs a rebuild with the new EXE. Fill in the table:
+`SSEBENCH.EXE` in XP (`tools/xp-ssebench.sh ~/vms/winxp.qcow2`, `-iter 20`,
+x87 control word PC=53, best of two passes per boot; ns per op, lower is
+better):
 
-| Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | SSE score (ns/op) | Date |
+| Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | denormal decay | Date |
 |---|---|---|---|---|---|---|---|---|---|
-| Rig (P4 1.7), XP | | | | | | | | | |
-| M1 Air, XP, defaults | | | | | | | | | |
-| M1 Air, XP, `sse-fast=off` | | | | | | | | | |
-| M1 Air, XP, `sse-fast=off,x87-fast=off` | | | | | | | | | |
+| Rig (P4 1.7), XP | | | | | | | | | not yet run |
+| M1 Air, XP, defaults (patches 06 + 07) | **2.4** | **2.1** | **3.6** | **3.7** | **2.3** | **4.1** | **3.9** | 81 | 2026-09-04 |
+| M1 Air, XP, `sse-fast=off` | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | 2026-09-04 |
+| M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | 2026-09-04 |
+
+Reading: patch 07 makes the SSE kernels 3.2–7.4× faster (packed code
+gains most: the transform is 4 `mulps` + 4 `addps` + 4 `shufps`, and the
+shuffles are still helper calls); patch 06 makes the x87 kernels 10–12×
+faster; each switch touches only its own kernels. The denormal kernel is
+the slow path by design: every multiply leaves the TB for the helper,
+0.6× the plain helper. Measurement notes that cost an afternoon:
+(1) the first `convert` kernel let its values overflow past 2^31, so
+nearly every `cvttss2si` took the slow path (the `info registers`
+counters showed 11.8M exits) — kernels must stay in range; (2) mingw's
+CRT starts at x87 PC=64 where no x87 fast path applies, so the benchmark
+sets PC=53 itself (`-pc24`/`-pc64` to change); (3) macOS parks the vCPU
+thread on an efficiency core for whole runs at times, a uniform ~2×, hence
+two passes per boot and best-of. gcc `-O2` also auto-vectorized the "C"
+kernels into SSE until a pragma pinned them to x87.

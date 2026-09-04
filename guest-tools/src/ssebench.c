@@ -7,7 +7,11 @@
  * ns per operation for each. Run it on the reference rig (doc 09) and in
  * the guests with and without `-cpu ...,sse-fast=off` / `x87-fast=off`.
  *
- *   SSEBENCH [-iter N] [-quick]     N: repeat multiplier (default 1)
+ *   SSEBENCH [-iter N] [-quick] [-only prefix] [-pc24|-pc53|-pc64]
+ *   N: repeat multiplier (default 1); -only runs the kernels whose name starts
+ *   with prefix (e.g. -only convert); -pcNN sets the x87 precision control for
+ *   the C kernels (default 53, what MSVC-built games run at; Direct3D sets 24;
+ *   mingw's CRT startup leaves 64, where no x87 fast path applies).
  *
  * Output goes to the console and ssebench.log. Build (guest-tools/
  * build-wrappers.sh): i686-w64-mingw32-gcc -O2 -o ssebench.exe ssebench.c
@@ -18,7 +22,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <float.h>
 #include <xmmintrin.h>
+
+/*
+ * The "C" kernels must stay scalar x87: gcc -O2 auto-vectorizes them into
+ * SSE otherwise, and the x87-vs-SSE comparison is the point of them.
+ */
+#pragma GCC optimize ("no-tree-vectorize", "no-tree-slp-vectorize")
 
 #define N 1024
 
@@ -170,7 +181,7 @@ static float k_convert(int reps)
 {
     int r, i, acc = 0;
     for (r = 0; r < reps; r++) {
-        float s = 1.0f + r * 1e-4f;
+        float s = 1.0f + (r & 7) * 1e-4f;   /* 0.999 * s < 1: values decay slowly, stay in int range */
         for (i = 0; i < N; i++) {
             __m128 v = _mm_mul_ss(_mm_load_ss(&fin[i]), _mm_set_ss(s));
             int q = _mm_cvttss_si32(v);
@@ -266,6 +277,8 @@ int main(int argc, char **argv)
 {
     LARGE_INTEGER f;
     int mult = 1, quick = 0, i;
+    const char *only = NULL;
+    unsigned pc = _PC_53;
     double score = 0.0;
     int nscore = 0;
 
@@ -274,14 +287,24 @@ int main(int argc, char **argv)
             mult = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "-quick")) {
             quick = 1;
+        } else if (!strcmp(argv[i], "-only") && i + 1 < argc) {
+            only = argv[++i];
+        } else if (!strcmp(argv[i], "-pc24")) {
+            pc = _PC_24;
+        } else if (!strcmp(argv[i], "-pc53")) {
+            pc = _PC_53;
+        } else if (!strcmp(argv[i], "-pc64")) {
+            pc = _PC_64;
         }
     }
     logfile = fopen("ssebench.log", "w");
     QueryPerformanceFrequency(&f);
     freq = (double)f.QuadPart;
-    out("ssebench: SSE %s, SSE2 %s, %d KB working set, mult %d\n",
+    _controlfp(pc, _MCW_PC);
+    out("ssebench: SSE %s, SSE2 %s, x87 CW %04x (PC=%s), %d KB working set, mult %d\n",
         IsProcessorFeaturePresent(PF_XMMI_INSTRUCTIONS_AVAILABLE) ? "yes" : "NO",
         IsProcessorFeaturePresent(PF_XMMI64_INSTRUCTIONS_AVAILABLE) ? "yes" : "no",
+        _control87(0, 0) & 0xffff, pc == _PC_24 ? "24" : pc == _PC_53 ? "53" : "64",
         (int)((sizeof(in) + sizeof(outv) + sizeof(fin)) / 1024), mult);
     if (!IsProcessorFeaturePresent(PF_XMMI_INSTRUCTIONS_AVAILABLE)) {
         out("no SSE, giving up\n");
@@ -293,6 +316,9 @@ int main(int argc, char **argv)
         int reps = k->reps * mult / (quick ? 4 : 1);
         double t0, t1, iters;
         float chk;
+        if (only && strncmp(k->name, only, strlen(only))) {
+            continue;
+        }
         if (reps < 1) {
             reps = 1;
         }
@@ -309,8 +335,11 @@ int main(int argc, char **argv)
             nscore++;
         }
     }
-    out("SSE score: %.2f ns per SSE op (mean of the %d SSE kernels; lower is better)\n",
-        score / nscore, nscore);
+    if (nscore) {
+        out("SSE score: %.2f ns per SSE op (mean of the %d SSE kernels; lower is better)\n",
+            score / nscore, nscore);
+    }
+    out("done\n");
     if (logfile) {
         fclose(logfile);
     }

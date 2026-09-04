@@ -609,7 +609,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
          return -1;
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -1794,6 +1794,14 @@
+@@ -1794,6 +1794,16 @@
       * 0 otherwise. Derived from fpuc by update_fp_status(), not migrated.
       */
      uint8_t x87_fast_mode;
@@ -621,10 +621,12 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +    uint8_t sse_fast_mode;
 +    /* tcg/sse-fast.c.inc: lane mask of the packed vector path */
 +    uint64_t sses_scratch[2] QEMU_ALIGNED(16);
++    /* slow-path counters (info registers): guard, hand-over, helper, cvt/comis */
++    uint64_t sses_stat[4];
      /* shadow doubles of the x87 stack, relative slots (tcg/x87-shadow.c.inc) */
      uint64_t x87_sd[8];
  
-@@ -2103,6 +2111,8 @@
+@@ -2103,6 +2113,8 @@
      bool enforce_cpuid;
      /* x87 host-FPU fast path (target/i386/tcg/x87-fast.h) */
      bool x87_fast;
@@ -633,7 +635,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      /*
       * Force features to be enabled even if the host doesn't support them.
       * This is dangerous and should be done only for testing CPUID
-@@ -2544,6 +2554,9 @@
+@@ -2544,6 +2556,9 @@
  /* TB flags (not hflags): x87 inline mode, env->x87_fast_mode (0, 1, 2) */
  #define TB_FLAG_X87_MODE_SHIFT  29
  #define TB_FLAG_X87_MODE_MASK   (3u << TB_FLAG_X87_MODE_SHIFT)
@@ -643,7 +645,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
  
  static inline void cpu_get_tb_cpu_state(CPUX86State *env, vaddr *pc,
                                          uint64_t *cs_base, uint32_t *flags)
-@@ -2551,6 +2564,10 @@
+@@ -2551,6 +2566,10 @@
      *flags = env->hflags |
          (env->eflags & (IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK)) |
          ((uint32_t)env->x87_fast_mode << TB_FLAG_X87_MODE_SHIFT);
@@ -664,6 +666,18 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
      DEFINE_PROP_BOOL("x-force-features", X86CPU, force_features, false),
      DEFINE_PROP_BOOL("kvm", X86CPU, expose_kvm, true),
      DEFINE_PROP_UINT32("phys-bits", X86CPU, phys_bits, 0),
+--- a/target/i386/cpu-dump.c
++++ b/target/i386/cpu-dump.c
+@@ -496,6 +496,9 @@
+                      env->fpstt,
+                      fptag,
+                      env->mxcsr);
++        qemu_fprintf(f, "SSE-fast slow paths: guard=%" PRIu64 " handover=%" PRIu64
++                     " helper=%" PRIu64 " cvt/comis=%" PRIu64 "\n",
++                     env->sses_stat[0], env->sses_stat[1], env->sses_stat[2], env->sses_stat[3]);
+         for(i=0;i<8;i++) {
+             CPU_LDoubleU u;
+             u.d = env->fpregs[i].d;
 --- a/target/i386/tcg/fpu_helper.c
 +++ b/target/i386/tcg/fpu_helper.c
 @@ -3482,6 +3482,11 @@
@@ -1000,7 +1014,7 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
          case X87S_SLOW_ARITH_MEM:
 --- /dev/null
 +++ b/target/i386/tcg/sse-fast.c.inc
-@@ -0,0 +1,646 @@
+@@ -0,0 +1,658 @@
 +/*
 + * SSE inline fast path: scalar and packed binary32/binary64 arithmetic,
 + * compares and int conversions on the host FPU, emitted inline by TCG
@@ -1156,10 +1170,22 @@ scalar 3.6x over the helpers. x86-64 backend code is untested (no host).
 +    return p;
 +}
 +
++static void sses_count(DisasContext *s, int idx)
++{
++    TCGv_i64 t = x87s_tmp_i64(s);
++    int off = offsetof(CPUX86State, sses_stat[idx]);
++
++    tcg_gen_ld_i64(t, tcg_env, off);
++    tcg_gen_addi_i64(t, t, 1);
++    tcg_gen_st_i64(t, tcg_env, off);
++}
++
 +/* Called by x87s_emit_slow_blocks with the translator state restored. */
 +static void sses_emit_slow_block(DisasContext *s, X87SlowBlock *b)
 +{
 +    x87s_flush_code(s);
++    sses_count(s, b->kind == SSES_SLOW_GUARD ? 0 : b->kind == SSES_SLOW_EXIT_NEXT ? 1
++               : b->kind == SSES_SLOW_HELPER ? 2 : 3);
 +    switch (b->kind) {
 +    case SSES_SLOW_GUARD:
 +        x87s_exit_to(s, b->pc_insn);
