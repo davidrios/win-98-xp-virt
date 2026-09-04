@@ -11,7 +11,7 @@ build/test loop and ordered next steps:
 | Track | Doc | Owns | Next |
 |---|---|---|---|
 | **M4 — paravirtual Direct3D device** (DLL path, executor, tests) | `docs/tracks/m4-d3d-device.md` | `d3dpt/exec`, `d3dpt/hw/d3dpt_mm.c`, `guest-tools/src/d3dpt/`, `scripts/test.sh`, doc 14 | a real game on the device |
-| **M7 — XP display driver** (`d3dpt-vga`, miniport + display DLL, DirectDraw/Direct3D DDI) | `docs/tracks/m7-display-driver.md` | `d3dpt/hw/d3dpt_vga.c`, `d3dpt/hw/d3dpt_exec_load.[ch]`, `d3dpt/d3dpt_fb.h`, `d3dpt/exec/d3dpt_exec_ddi.cpp`, `guest-tools/src/d3dptvid/`, `tools/xp-driver-test.sh`, `tools/xp-fifa2000.bat`, `tools/d3dpt-dp2-test.cpp`, doc 15 | FIFA 2000 played by hand on the M7c HAL (renders headless) |
+| **M7 — XP display driver** (`d3dpt-vga`, miniport + display DLL, DirectDraw/Direct3D DDI) | `docs/tracks/m7-display-driver.md` | `d3dpt/hw/d3dpt_vga.c`, `d3dpt/hw/d3dpt_exec_load.[ch]`, `d3dpt/d3dpt_fb.h`, `d3dpt/exec/d3dpt_exec_ddi.cpp`, `guest-tools/src/d3dptvid/`, `tools/xp-driver-test.sh`, `tools/xp-fifa2000.bat`, `tools/xp-fifa-match.sh`, `tools/d3dpt-dp2-test.cpp`, doc 15 | the user confirms `D3DPT\DINPUT.DLL` fixes the TCG match keyboard; then colour keying / T&L / DX8 tokens as the next title demands |
 | Everything else (M3 Glide/fences, M2, M5, M6, macOS bring-up, x87) | this doc's "Next steps" | — | as listed |
 
 Rules: branch `track/<name>-<topic>` off `main`, rebase on `main` before
@@ -241,9 +241,10 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 Per-track order lives in the track docs: **M4** → `docs/tracks/m4-d3d-device.md`
 (a real game on the device, present/pacing, the Air build, the x87
-real-world number); **M7** → `docs/tracks/m7-display-driver.md` (FIFA 2000
-played by hand on the M7c HAL — it renders headless already —, a driver
-stage in `scripts/test.sh`, cursor / vblank / mode table). ADR-008 (2026-09-04): the M7 driver is the long-term XP shape; the
+real-world number); **M7** → `docs/tracks/m7-display-driver.md` (FIFA 2000 plays on the
+M7c HAL; the user confirms the `DINPUT.DLL` keyboard fix under TCG, then
+colour keying / T&L / DX8 tokens, a driver stage in `scripts/test.sh`,
+cursor / vblank / mode table). ADR-008 (2026-09-04): the M7 driver is the long-term XP shape; the
 M4 DLL device stays for Win98 and as the executor's harness. Below, the
 items nobody owns yet:
 

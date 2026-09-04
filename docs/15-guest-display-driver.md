@@ -461,4 +461,7 @@ KVM) and working under KVM. What the investigation established
   `qmpc.py` is too short, hold the button by hand in `input-send-event`);
   the intro video can be skipped with Esc; the kickoff starts by itself
   after ≈1 minute; F1–F4 cameras, Esc pause, F12 exit are the readme's
-  in-match keys.
+  in-match keys. `tools/xp-fifa-match.sh kvm|tcg <image>` does the whole
+  thing headless (menus, side, kickoff, the tap test with screendumps,
+  `dinput_log.txt` pulled from the image): the regression check for
+  "keys in a real DX7 game" on the HAL.

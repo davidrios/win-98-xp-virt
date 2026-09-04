@@ -69,11 +69,24 @@ picture and the track rules, then this file, then doc 15.
   `xp-driver-test.sh`'s `bat` / `GAME_ISO` / `SHOTS` / `SHOT_KEYS`,
   `qmpc.py click`.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
-  2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04). New
-  work: branch `track/m7-<topic>` off main. A session resuming here:
-  pull main, then prepare → configure → ninja, `scripts/build-d3dpt-exec.sh`,
-  `guest-tools/build-driver.sh`, `install` on the scratch image (the
-  register set is v2 now), `d3d7` to see the baseline pass.
+  2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
+  `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
+  2026-09-04 evening). New work: branch `track/m7-<topic>` off main.
+- **Resuming here (2026-09-04 evening):** pull main, then prepare →
+  configure → ninja (the embed library carries the input statistics),
+  `scripts/build-d3dpt-exec.sh` (the frames/s line; main also has the M4
+  track's executor changes of the same day), `guest-tools/build-driver.sh`
+  (DITEST) and `guest-tools/build-wrappers.sh` (the DINPUT shim into
+  `guest-tools/out/iso/D3DPT/`), `cargo build --release`. Images on this
+  box: `winxp-m7f` and `winxp-m7g` (copies of the user's `winxp-m7`, M7c
+  driver, WineD3D DLLs renamed, `DINPUT.DLL` already in the FIFA folder,
+  `m7g` also has `LowLevelHooksTimeout` = 5000 which proved irrelevant);
+  `tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2` is the check that the
+  match takes keys (pause menu on Esc). The user's own `winxp-m7` still
+  needs the M7c driver (`install`), the renames and the shim. First thing
+  to hear from the user: whether `D3DPT\DINPUT.DLL` next to
+  `fifa2000.exe` fixes their TCG keyboard, and on which machine they saw
+  it (Linux TCG or the Mac).
 
 ## Build / run / test
 
@@ -94,6 +107,9 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL 
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
 # a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
 GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat
+# a real match, driven over QMP (menus, side, kickoff) and a keyboard test in it (F2 / Esc / F12 taps + screendumps),
+# dinput_log.txt pulled from the image at the end; ~6 min under kvm, ~9 under tcg
+tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2      # or tcg
 # the same game in the player, by hand (the image above: driver reinstalled, WineD3D DLLs renamed)
 target/release/player -- -L $PWD/qemu/pc-bios -accel kvm -cpu host -machine pc -m 512 \
   -hda ~/vms/winxp-m7f.qcow2 -cdrom /mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO -vga none -device d3dpt-vga \
