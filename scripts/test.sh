@@ -13,6 +13,9 @@
 #
 # Host stage
 #   x87-fast       tools/x87-fast-test.c: patch 05's fast path vs the real x87
+#   libdisc        discx selftest (doc 17 §6.1): synthetic cue/bin, CCD and ISO
+#                  images, the CD model's reads, EDC/ECC, Q synthesis and the
+#                  MMC responders checked through libdisc's C API
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
@@ -96,6 +99,11 @@ host_stage() {
   else
     skip x87-fast "x87 oracle needs an x86 host"
   fi
+
+  # the CD-ROM model (M5, doc 17): images written and read back by discx
+  cargo build --release -p libdisc -q 2>"$OUT/libdisc-build.log" \
+    && run_check libdisc libdisc.log target/release/discx selftest "$OUT/disc" \
+    || { [ -x target/release/discx ] || { FAIL+=(libdisc); echo "  FAIL libdisc (build)"; }; }
 
   # the embed library's Mesa backend, Linux (EGL) only, one VM per process
   if [ "$OS" = Linux ] && [ -f build/qemu/libqemu-embed-i386.so ]; then

@@ -37,12 +37,33 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   `-drive`/`-device ide-cd,audiodev=` lines in M5b), `CLAUDE.md` (the
   testing-tools table), `docs/00-status.md` outside the M5 row.
 
-## State (2026-09-04)
+## State (2026-09-04, evening)
 
-- **Nothing runs yet.** `libdisc/` is the M0 placeholder: `Msf` ⇄ LBA in
-  `src/msf.rs` (with three `#[test]`s that predate the no-unit-tests
-  policy; delete them when `discx` covers the same points) and vocabulary
-  types in `lib.rs` that nothing uses (replace them with doc 17 §2.1).
+- **Step 1 done** (commit "M5 step 1"): `libdisc/src/{lib,cue,iso,sector,ecc,subq}.rs`
+  and `src/bin/discx.rs`. `Disc::open` for `.cue` / `.iso` (content sniff
+  for other extensions), `read_raw` / `read_cooked` / `read_sub` /
+  `sector_info` / `classify`, EDC/ECC generation and verification,
+  `c2_bits`, Q synthesis (ADR 1, MCN at `lba % 100 == 98`, ISRC at 99),
+  P pause flag, interleave ⇄ deinterleave. `discx selftest` writes
+  `mixed.cue/.bin` (+ `mixed.ccd/.img/.sub` from the model, read back from
+  step 3 on), `cooked.cue/.bin`, `plain.iso`, `lec.cue/.bin` and checks
+  `msf`, `raw-synth`, `lec`, `edges`, `subq-synth` — through the Rust API
+  for now (step 2 switches it to the C API). Wired into `scripts/test.sh`
+  as `libdisc` (host stage). The old `#[test]`s in `msf.rs` are gone.
+- **EDC/ECC oracle:** Neill Corlett's `ecm` (ecm-tools 1.03, public domain,
+  `pacman -S ecm-tools` or three files from github.com/alucryd/ecm-tools:
+  `ecm.c`, `common.h`, `banner.h`, `gcc -O2 -o ecm ecm.c`) strips a sector's
+  EDC/ECC only when its own regeneration reproduces them, so `ecm mixed.bin
+  x.ecm` reporting `Mode 1 sectors.......... 2000` proves the generator
+  byte-exact against the reference implementation (and 1999 on `lec.bin`).
+  Its "Mode 2 form 1 sectors... 151" are the all-zero audio pregap sectors
+  (ecm's known false positive on zero blocks), not ours. Re-run after any
+  change to `ecc.rs`.
+- `discx convert plain.iso out.cue --audio tone.wav` produces a MODE1/2352
+  cue/bin with one AUDIO track per WAVE (padded to whole sectors, `PREGAP
+  00:02:00`); `info` prints the layout, `dump readraw|readcooked|sub|info
+  <lba>` one sector. MMC `dump` requests (`toc`, `subq`, `readcd`) come
+  with step 2.
 - The pinned QEMU (v9.2.4) ATAPI layer, as surveyed for doc 17: 19
   commands in `atapi_cmd_table` (`hw/ide/atapi.c` ~line 1280), READ CD
   accepts only byte-9 values `0x10` and `0xF8`, raw sectors are faked by
@@ -54,13 +75,14 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   that is the gap the plan below closes in order.
 - Images on hand: `~/vms/bench.iso`, `~/vms/FIFA2000.ISO` (cooked ISOs);
   **no raw dump (cue/bin or CCD) exists on either machine yet.** Until one
-  does, EDC/ECC and Q synthesis are verified only by self-consistency
-  (doc 17 §6.1). The first real dump of an owned disc is a milestone in
-  itself (step 7).
-- Related, not ours: the M8 branch `track/m8-tcg-fp` carries SSE patches
-  numbered 07/08 that collide with `main`'s 07–09 upstream backports; the
-  M8 session renumbers on rebase. This track's numbers (50–59) are free on
-  both.
+  does, EDC/ECC is verified by the `ecm` oracle above and Q synthesis only
+  by self-consistency (doc 17 §6.1). The first real dump of an owned disc
+  is a milestone in itself (step 7).
+- This track's worktree (`.claude/worktrees/m5-cdrom`) has no prepared
+  `qemu/` tree yet: `git submodule update --init --depth 1 qemu
+  third_party/qemu-3dfx` then the usual prepare → configure → ninja before
+  step 4; `scripts/test.sh`'s `x87-fast` reports a build failure there
+  until then (it compiles against `qemu/target/i386/tcg` headers).
 
 ## Build / test loop
 
@@ -98,7 +120,7 @@ Every step names its acceptance; do not move on with a failing check,
 and do not skip the docs part (status row, README rows, this file's
 State section) — they are the handoff.
 
-1. **Model + cue/bin + ISO parsing** (`lib.rs`, `cue.rs`, `iso.rs`,
+1. **Model + cue/bin + ISO parsing** — *done 2026-09-04* (`lib.rs`, `cue.rs`, `iso.rs`,
    `sector.rs`, `ecc.rs`, `subq.rs`; doc 17 §2.1–2.6). `Disc::open` for
    `.cue` and `.iso`; `read_raw` / `read_cooked` / `read_sub` /
    `sector_info`; EDC/ECC generation and `verify_mode1`; Q synthesis with
