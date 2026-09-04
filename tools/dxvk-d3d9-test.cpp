@@ -15,6 +15,7 @@
  *   DYLD_LIBRARY_PATH=/opt/homebrew/lib SDL_VULKAN_LIBRARY=/opt/homebrew/lib/libvulkan.dylib \
  *   VK_ICD_FILENAMES=<icd.json> DXVK_WSI_DRIVER=SDL2 DXVK_LOG_LEVEL=info \
  *   build/dxvk-d3d9-test [out.bmp] [frames]
+ * NOWINDOW=1 DXVK_WSI_DRIVER=Headless: no SDL window at all (patch 04's driver).
  * A refused device prints DXVK's reason (e.g. "Device does not support
  * required feature 'nullDescriptor'" on MoltenVK).
  */
@@ -68,10 +69,17 @@ int main(int argc, char **argv) {
   auto create = (IDirect3D9 *(*)(UINT))dlsym(h, "Direct3DCreate9");
   if (!create) { fprintf(stderr, "no Direct3DCreate9 in %s\n", lib); return 1; }
 
-  if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
-  SDL_Window *win = SDL_CreateWindow("dxvk-d3d9-test", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, W, H,
-                                     SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
-  if (!win) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
+  /* NOWINDOW=1: no SDL, NULL device window (DXVK_WSI_DRIVER=Headless, patch 04):
+   * DXVK creates no presenter and Present is a no-op, the path the paravirtual
+   * device's executor uses; the frame still comes out through GetRenderTargetData */
+  const bool nowindow = getenv("NOWINDOW") && atoi(getenv("NOWINDOW"));
+  SDL_Window *win = nullptr;
+  if (!nowindow) {
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
+    win = SDL_CreateWindow("dxvk-d3d9-test", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, W, H,
+                           SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
+    if (!win) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
+  }
 
   IDirect3D9 *d3d = nullptr;
   try { d3d = create(D3D_SDK_VERSION); } catch (...) { d3d = nullptr; }
@@ -157,6 +165,6 @@ int main(int argc, char **argv) {
   double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   printf("%d frames, %.1f ms, %.0f fps\n", frames, ms, frames * 1000.0 / ms);
   vb->Release(); tex->Release(); dev->Release(); d3d->Release();
-  SDL_DestroyWindow(win); SDL_Quit();
+  if (win) { SDL_DestroyWindow(win); SDL_Quit(); }
   return 0;
 }

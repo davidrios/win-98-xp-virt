@@ -1,0 +1,324 @@
+diff --git a/meson.build b/meson.build
+index a87fa492..19e62786 100644
+--- a/meson.build
++++ b/meson.build
+@@ -161,6 +161,8 @@ else
+   if lib_glfw.found()
+     compiler_args += ['-DDXVK_WSI_GLFW']
+   endif
++  # win98-xp-virt: window-less driver (src/wsi/headless), always built native
++  compiler_args += ['-DDXVK_WSI_HEADLESS']
+   if (not lib_sdl3.found() and not lib_sdl2.found() and not lib_glfw.found())
+     error('SDL3, SDL2, or GLFW are required to build dxvk-native')
+   endif
+diff --git a/src/wsi/headless/wsi_platform_headless.cpp b/src/wsi/headless/wsi_platform_headless.cpp
+new file mode 100644
+index 00000000..52f48c7b
+--- /dev/null
++++ b/src/wsi/headless/wsi_platform_headless.cpp
+@@ -0,0 +1,142 @@
++#if defined(DXVK_WSI_HEADLESS)
++
++#include "wsi_platform_headless.h"
++
++#include <cstring>
++
++namespace dxvk::wsi {
++
++  // the one monitor: a small D3D9-era mode list, 32 bpp, 60 Hz
++  static const HMONITOR kMonitor = reinterpret_cast<HMONITOR>(uintptr_t(1));
++
++  static const WsiMode kModes[] = {
++    {  640,  480, { 60, 1 }, 32, false },
++    {  800,  600, { 60, 1 }, 32, false },
++    { 1024,  768, { 60, 1 }, 32, false },
++    { 1280,  960, { 60, 1 }, 32, false },
++    { 1280, 1024, { 60, 1 }, 32, false },
++    { 1600, 1200, { 60, 1 }, 32, false },
++  };
++  static const uint32_t kDesktopMode = 2; // 1024x768
++
++  HeadlessWsiDriver::HeadlessWsiDriver() { }
++  HeadlessWsiDriver::~HeadlessWsiDriver() { }
++
++  std::vector<const char *> HeadlessWsiDriver::getInstanceExtensions() {
++    // the loader always offers VK_KHR_surface; nothing platform-specific
++    return { VK_KHR_SURFACE_EXTENSION_NAME };
++  }
++
++  HMONITOR HeadlessWsiDriver::getDefaultMonitor() {
++    return kMonitor;
++  }
++
++  HMONITOR HeadlessWsiDriver::enumMonitors(uint32_t index) {
++    return index == 0 ? kMonitor : nullptr;
++  }
++
++  HMONITOR HeadlessWsiDriver::enumMonitors(const LUID *adapterLUID[], uint32_t numLUIDs, uint32_t index) {
++    return enumMonitors(index);
++  }
++
++  bool HeadlessWsiDriver::getDisplayName(HMONITOR hMonitor, WCHAR (&Name)[32]) {
++    if (hMonitor != kMonitor)
++      return false;
++    static const WCHAR name[] = { L'\\', L'\\', L'.', L'\\', L'D', L'I', L'S', L'P', L'L', L'A', L'Y', L'1', 0 };
++    std::memset(Name, 0, sizeof(Name));
++    std::memcpy(Name, name, sizeof(name));
++    return true;
++  }
++
++  bool HeadlessWsiDriver::getDesktopCoordinates(HMONITOR hMonitor, RECT* pRect) {
++    if (hMonitor != kMonitor)
++      return false;
++    pRect->left = 0;
++    pRect->top = 0;
++    pRect->right = kModes[kDesktopMode].width;
++    pRect->bottom = kModes[kDesktopMode].height;
++    return true;
++  }
++
++  bool HeadlessWsiDriver::getDisplayMode(HMONITOR hMonitor, uint32_t modeNumber, WsiMode* pMode) {
++    if (hMonitor != kMonitor || modeNumber >= sizeof(kModes) / sizeof(kModes[0]))
++      return false;
++    *pMode = kModes[modeNumber];
++    return true;
++  }
++
++  bool HeadlessWsiDriver::getCurrentDisplayMode(HMONITOR hMonitor, WsiMode* pMode) {
++    return getDisplayMode(hMonitor, kDesktopMode, pMode);
++  }
++
++  bool HeadlessWsiDriver::getDesktopDisplayMode(HMONITOR hMonitor, WsiMode* pMode) {
++    return getDisplayMode(hMonitor, kDesktopMode, pMode);
++  }
++
++  WsiEdidData HeadlessWsiDriver::getMonitorEdid(HMONITOR hMonitor) {
++    return {};
++  }
++
++  void HeadlessWsiDriver::getWindowSize(HWND hWindow, uint32_t* pWidth, uint32_t* pHeight) {
++    // only reached when the app left the backbuffer size at 0
++    if (pWidth)  *pWidth  = kModes[0].width;
++    if (pHeight) *pHeight = kModes[0].height;
++  }
++
++  void HeadlessWsiDriver::resizeWindow(HWND hWindow, DxvkWindowState* pState, uint32_t width, uint32_t height) { }
++
++  void HeadlessWsiDriver::saveWindowState(HWND hWindow, DxvkWindowState* pState, bool saveStyle) { }
++
++  void HeadlessWsiDriver::restoreWindowState(HWND hWindow, DxvkWindowState* pState, bool restoreCoordinates) { }
++
++  bool HeadlessWsiDriver::setWindowMode(HMONITOR hMonitor, HWND hWindow, DxvkWindowState* pState, const WsiMode& mode) {
++    return true;
++  }
++
++  bool HeadlessWsiDriver::enterFullscreenMode(HMONITOR hMonitor, HWND hWindow, DxvkWindowState* pState, bool modeSwitch) {
++    return true;
++  }
++
++  bool HeadlessWsiDriver::leaveFullscreenMode(HWND hWindow, DxvkWindowState* pState) {
++    return true;
++  }
++
++  bool HeadlessWsiDriver::restoreDisplayMode() {
++    return true;
++  }
++
++  HMONITOR HeadlessWsiDriver::getWindowMonitor(HWND hWindow) {
++    return kMonitor;
++  }
++
++  bool HeadlessWsiDriver::isWindow(HWND hWindow) {
++    return false;
++  }
++
++  bool HeadlessWsiDriver::isMinimized(HWND hWindow) {
++    return false;
++  }
++
++  bool HeadlessWsiDriver::isOccluded(HWND hWindow) {
++    return false;
++  }
++
++  void HeadlessWsiDriver::updateFullscreenWindow(HMONITOR hMonitor, HWND hWindow, bool forceTopmost) { }
++
++  VkResult HeadlessWsiDriver::createSurface(HWND hWindow, PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr, VkInstance instance, VkSurfaceKHR* pSurface) {
++    return VK_ERROR_INITIALIZATION_FAILED;
++  }
++
++  static bool createHeadlessWsiDriver(WsiDriver **driver) {
++    *driver = new HeadlessWsiDriver();
++    return true;
++  }
++
++  WsiBootstrap HeadlessWSI = {
++    "Headless",
++    createHeadlessWsiDriver
++  };
++
++}
++
++#endif
+diff --git a/src/wsi/headless/wsi_platform_headless.h b/src/wsi/headless/wsi_platform_headless.h
+new file mode 100644
+index 00000000..3cfd4f30
+--- /dev/null
++++ b/src/wsi/headless/wsi_platform_headless.h
+@@ -0,0 +1,117 @@
++#pragma once
++
++#include "../wsi_platform.h"
++
++namespace dxvk::wsi {
++
++  /**
++   * \brief Window-less WSI driver
++   *
++   * For hosts that consume the D3D9 backbuffer themselves (win98-xp-virt's
++   * paravirtual Direct3D device reads it back / exports it) and never
++   * present through Vulkan WSI. One fake monitor with a fixed mode list;
++   * no window is ever valid, so D3D9SwapChainEx never creates a presenter
++   * (Present with a NULL device window is a no-op in DXVK) and createSurface
++   * is unreachable. Selected with DXVK_WSI_DRIVER=Headless.
++   */
++  class HeadlessWsiDriver : public WsiDriver {
++  public:
++    HeadlessWsiDriver();
++    ~HeadlessWsiDriver();
++
++    // Platform
++    virtual std::vector<const char *> getInstanceExtensions();
++
++    // Monitor
++    virtual HMONITOR getDefaultMonitor();
++
++    virtual HMONITOR enumMonitors(uint32_t index);
++
++    virtual HMONITOR enumMonitors(const LUID *adapterLUID[], uint32_t numLUIDs, uint32_t index);
++
++    virtual bool getDisplayName(
++            HMONITOR         hMonitor,
++            WCHAR            (&Name)[32]);
++
++    virtual bool getDesktopCoordinates(
++            HMONITOR         hMonitor,
++            RECT*            pRect);
++
++    virtual bool getDisplayMode(
++            HMONITOR         hMonitor,
++            uint32_t         modeNumber,
++            WsiMode*         pMode);
++
++    virtual bool getCurrentDisplayMode(
++            HMONITOR         hMonitor,
++            WsiMode*         pMode);
++
++    virtual bool getDesktopDisplayMode(
++            HMONITOR         hMonitor,
++            WsiMode*         pMode);
++
++    virtual WsiEdidData getMonitorEdid(HMONITOR hMonitor);
++
++    // Window
++
++    virtual void getWindowSize(
++            HWND      hWindow,
++            uint32_t* pWidth,
++            uint32_t* pWeight);
++
++    virtual void resizeWindow(
++            HWND             hWindow,
++            DxvkWindowState* pState,
++            uint32_t         width,
++            uint32_t         weight);
++
++    virtual void saveWindowState(
++            HWND             hWindow,
++            DxvkWindowState* pState,
++            bool             saveStyle);
++
++    virtual void restoreWindowState(
++            HWND             hWindow,
++            DxvkWindowState* pState,
++            bool             restoreCoordinates);
++
++    virtual bool setWindowMode(
++            HMONITOR         hMonitor,
++            HWND             hWindow,
++            DxvkWindowState* pState,
++      const WsiMode&         mode);
++
++    virtual bool enterFullscreenMode(
++            HMONITOR         hMonitor,
++            HWND             hWindow,
++            DxvkWindowState* pState,
++            [[maybe_unused]]
++            bool             modeSwitch);
++
++    virtual bool leaveFullscreenMode(
++            HWND             hWindow,
++            DxvkWindowState* pState);
++
++    virtual bool restoreDisplayMode();
++
++    virtual HMONITOR getWindowMonitor(HWND hWindow);
++
++    virtual bool isWindow(HWND hWindow);
++
++    virtual bool isMinimized(HWND hWindow);
++
++    virtual bool isOccluded(HWND hWindow);
++
++    virtual void updateFullscreenWindow(
++            HMONITOR hMonitor,
++            HWND     hWindow,
++            bool     forceTopmost);
++
++    virtual VkResult createSurface(
++            HWND                hWindow,
++            PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr,
++            VkInstance          instance,
++            VkSurfaceKHR*       pSurface);
++  };
++
++}
+diff --git a/src/wsi/meson.build b/src/wsi/meson.build
+index 1d88e2cb..d309a257 100644
+--- a/src/wsi/meson.build
++++ b/src/wsi/meson.build
+@@ -13,6 +13,7 @@ wsi_src = [
+   'glfw/wsi_monitor_glfw.cpp',
+   'glfw/wsi_platform_glfw.cpp',
+   'glfw/wsi_window_glfw.cpp',
++  'headless/wsi_platform_headless.cpp',
+ ]
+ 
+ wsi_deps = [ dep_displayinfo ]
+diff --git a/src/wsi/wsi_platform.cpp b/src/wsi/wsi_platform.cpp
+index 08f456e7..d439d847 100644
+--- a/src/wsi/wsi_platform.cpp
++++ b/src/wsi/wsi_platform.cpp
+@@ -20,6 +20,9 @@ namespace dxvk::wsi {
+ #endif
+ #if defined(DXVK_WSI_GLFW)
+     &GlfwWSI,
++#endif
++#if defined(DXVK_WSI_HEADLESS)
++    &HeadlessWSI,
+ #endif
+   };
+ 
+diff --git a/src/wsi/wsi_platform.h b/src/wsi/wsi_platform.h
+index f1fae3f1..27bab2d2 100644
+--- a/src/wsi/wsi_platform.h
++++ b/src/wsi/wsi_platform.h
+@@ -123,6 +123,9 @@ namespace dxvk::wsi {
+ #if defined(DXVK_WSI_GLFW)
+   extern WsiBootstrap GlfwWSI;
+ #endif
++#if defined(DXVK_WSI_HEADLESS)
++  extern WsiBootstrap HeadlessWSI;
++#endif
+ 
+   void init();
+   void quit();
