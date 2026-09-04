@@ -93,7 +93,10 @@ guest (XP)                                  host (QEMU process, embed lib)
   unimplementable on Metal); Mesa's KosmicKrisp on macOS 26 can, with a
   one-line DXVK patch (geometry shaders optional). DXVK is the executor
   everywhere; `third_party/dxvk` + `patches/dxvk/`. The off-screen test
-  itself runs once the Air is on macOS 26.
+  (`tools/dxvk-d3d9-test.cpp`) and the native build of the reference scene
+  (`tools/d3dgame9-native.cpp`, unmodified `d3dgame9.c` over a Win32-on-SDL2
+  shim) both run to DXVK's refusal on MoltenVK today and produce BMPs once
+  the Air is on macOS 26.
 - **P1 — Transport + device:** `hw/d3dpt` in the QEMU queue (patch 40),
   guest `d3d9.dll` with `Direct3DCreate9`, adapter identifier/caps from the
   host, `CreateDevice`, `Clear`, `Present` → the D3D9TEST triangle

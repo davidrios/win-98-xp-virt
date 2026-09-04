@@ -70,7 +70,11 @@ info:    Skipping: Device does not support required feature 'shaderCullDistance'
 
 (the first missing feature in DXVK's list order; the robustness pair
 follows). The same binary is the acceptance test for KosmicKrisp after
-the macOS 26 upgrade.
+the macOS 26 upgrade — and so is `tools/d3dgame9-native.cpp`, which
+compiles the unmodified reference scene against DXVK through a small
+Win32-on-SDL2 shim (`tools/d3dgame-native/win32_sdl.h`): it runs to the
+same refusal today and will write the first executor BMP to diff against
+`reference/d3d/rig-2026-09-03/d3dgame9-w300-ff.bmp` afterwards.
 
 ## Options for the macOS executor
 
