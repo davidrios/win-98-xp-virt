@@ -36,7 +36,8 @@ lost the 3dfx meson hunk (symptom: `unknown type 'glidept'`).
 | `90-debug-sdl-keydebug` | `QEMU_SDL_KEYDEBUG=1` logs SDL keydown/modifier state (diagnostic) | any time |
 
 Planned: dma-buf / IOSurface export instead of readback, Glide offscreen
-path (doc 12).
+path (doc 12); `50-cdimage-block-driver` and `51-atapi-disc-model` for the
+CD-ROM backend (M5 track, doc 17; numbers 50–59 reserved).
 
 Regenerating a patch: apply the queue, edit the file(s) in `qemu/`, produce
 `diff -u` against a copy of the pre-edit state with `a/`/`b/` paths, then

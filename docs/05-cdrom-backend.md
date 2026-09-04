@@ -22,6 +22,18 @@ period drive with that disc inserted. This is preservation-grade drive
 emulation — the DRM runs and succeeds; nothing is patched, stripped, or
 bypassed, and no-CD/crack functionality is out of scope.
 
+## Implementation
+
+Doc 17 is the implementation spec (model, formats, the C API header, MMC
+byte layouts, the `cdimage` block driver, the ATAPI patch, CD-DA, tests);
+the ordered plan is `docs/tracks/m5-cdrom-backend.md`. Two refinements of
+the design below, decided 2026-09-04: the QEMU side is a *format block
+driver* (`-cdrom game.cue` probes to it, medium swap stays QMP
+`blockdev-change-medium`) and the MMC response bytes are built in Rust, the
+C in `hw/ide/atapi.c` only moves buffers. Copy-protection fidelity for
+SafeDisc comes from verifying EDC/ECC on every cooked read exactly as a
+drive would, not from annotating bad sectors.
+
 ## Prior art
 
 - **CDEmu/libmirage (Linux):** proves the approach end-to-end against real
