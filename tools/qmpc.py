@@ -2,7 +2,7 @@
 """Tiny QMP client: qmpc.py <socket> <cmd> [args...]
   screendump <out.png>         -> PPM via QMP, converted to PNG (pure python)
   keys <k1> <k2> ...           -> send-key one at a time (QKeyCode names; 'a+b' = chord)
-  type <text>                  -> types ASCII text (letters, digits, \\ : . / space _ - & ( ) , ; = ' \" * % + !; US layout)
+  type <text>                  -> types ASCII text (letters, digits, \\ : . / space _ - & ( ) , ; = ' \" * % + ! > < |; US layout)
   json <json>                  -> raw request
 """
 import json, socket, struct, sys, time, zlib
@@ -46,7 +46,8 @@ KEYMAP = {" ": "spc", "\\": "backslash", ":": ("shift", "semicolon"), ".": "dot"
           "_": ("shift", "minus"), "-": "minus", "/": "slash", "\n": "ret",
           "&": ("shift", "7"), "(": ("shift", "9"), ")": ("shift", "0"), ",": "comma",
           ";": "semicolon", "=": "equal", "'": "apostrophe", '"': ("shift", "apostrophe"),
-          "*": ("shift", "8"), "%": ("shift", "5"), "+": ("shift", "equal"), "!": ("shift", "1")}
+          "*": ("shift", "8"), "%": ("shift", "5"), "+": ("shift", "equal"), "!": ("shift", "1"),
+          ">": ("shift", "dot"), "<": ("shift", "comma"), "|": ("shift", "backslash")}
 
 def send(f, names, hold=60):
     keys = [{"type": "qcode", "data": n} for n in names]

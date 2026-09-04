@@ -186,7 +186,9 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
 - **Test:** `DRIVER\DDTEST.EXE [w h bpp] [frames] [-windowed]` (guest-tools
   ISO): caps, exclusive flip chain (Lock/Unlock pattern + `Blt` colour fill
   + `Flip`) or a windowed offscreen surface blitted to the primary, fps,
-  `ddtest.log` + `ddtest.bmp`. Results 2026-09-04 (KVM, RADV host):
+  `ddtest.log` + `ddtest.bmp`. `tools/xp-driver-test.sh <image> ddtest`
+  runs the set headless and pulls the logs out. Results 2026-09-04 (KVM,
+  RADV host):
 
   | case | before (write-combined) | cached mappings |
   |---|---|---|

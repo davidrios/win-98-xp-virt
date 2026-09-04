@@ -96,6 +96,7 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
 | `DRIVER\SETMODE.EXE` (guest-tools ISO) | lists / switches XP display modes from a script; the QEMU log shows the device side (`d3dpt-vga: linear mode on …`, `guest: …` = the driver's debug register) |
 | `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; `scanout offset` lines in the QEMU log are the page flips |
+| `tools/xp-driver-test.sh <image> install\|ddtest\|modes\|cmd` | the whole M7 guest loop headless: boot with the driver ISO + FAT scratch disk, type the guest commands over QMP, pull the logs out, print the device log |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`; wglgears lives at
 `C:\WINDOWS\Desktop\GAMEDIR`). **End scripted Win98 runs with a
