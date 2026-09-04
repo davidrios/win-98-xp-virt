@@ -127,7 +127,18 @@ struct device {
     DWORD fvf;
     RECT scissor;
     BOOL swvp;
+    /* resources (d3d9_res.h) */
+    struct surface *bb, *auto_ds;       /* the implicit backbuffer / depth, created on first use */
+    struct surface *rt[4], *ds;         /* bound render targets / depth stencil (referenced) */
+    struct texture *tex_bound[16];
+    struct vbuf *stream[16];
+    UINT stream_off[16], stream_stride[16];
+    struct ibuf *indices;
+    struct shader *vs, *ps;
+    int host_alive;                     /* the host device exists; resource releases still talk to it */
 };
+struct surface; struct texture; struct vbuf; struct ibuf; struct shader;
+static void device_unbind_all(struct device *dev);
 
 static HRESULT get_adapter_info(struct d3d9 *d)
 {
@@ -450,6 +461,7 @@ HRESULT WINAPI d3d_CreateDevice(IDirect3D9 *This, UINT Adapter, D3DDEVTYPE Devic
     if (FAILED(hr)) { IDirect3D9_Release(This); HeapFree(GetProcessHeap(), 0, dev); return hr; }
     apply_display_mode(dev, &dev->pp);
     shadow_defaults(dev);
+    dev->host_alive = 1;
     if (!(BehaviorFlags & D3DCREATE_FPU_PRESERVE)) set_fpu_pc24();
     *out = (IDirect3DDevice9 *)dev;
     return D3D_OK;
@@ -471,9 +483,12 @@ ULONG WINAPI dev_Release(IDirect3DDevice9 *This)
     struct device *dev = DEV(This);
     LONG r = InterlockedDecrement(&dev->ref);
     if (r == 0) {
-        d3dpt_handle *h = d3dpt_enc_cmd(&enc, D3DPT_OP_RELEASE, sizeof *h, 0);
+        d3dpt_handle *h;
+        device_unbind_all(dev);
+        h = d3dpt_enc_cmd(&enc, D3DPT_OP_RELEASE, sizeof *h, 0);
         if (h) { h->handle = dev->handle; h->pad = 0; }
         d3dpt_enc_flush(&enc);
+        dev->host_alive = 0;
         if (dev->mode_changed) ChangeDisplaySettingsA(NULL, 0);
         d3dpt_log("d3dpt: device released");
         IDirect3D9_Release((IDirect3D9 *)dev->d3d);
@@ -517,6 +532,7 @@ HRESULT WINAPI dev_Reset(IDirect3DDevice9 *This, D3DPRESENT_PARAMETERS *pp)
     dev->pp = *pp;
     normalize_pp(dev, &dev->pp);
     *pp = dev->pp;
+    device_unbind_all(dev);
     hr = send_create(dev, D3DPT_OP_RESET_DEVICE);
     if (FAILED(hr)) return hr;
     apply_display_mode(dev, &dev->pp);
@@ -641,12 +657,6 @@ HRESULT WINAPI dev_GetRenderState(IDirect3DDevice9 *This, D3DRENDERSTATETYPE Sta
     *pValue = DEV(This)->rs[State];
     return D3D_OK;
 }
-HRESULT WINAPI dev_SetTexture(IDirect3DDevice9 *This, DWORD Stage, IDirect3DBaseTexture9 *pTexture)
-{
-    if (pTexture) { D3DPT_STUB("IDirect3DDevice9::SetTexture(non-NULL) [P2]"); return D3DERR_INVALIDCALL; }
-    d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_TEXTURE, Stage, 0);
-    return D3D_OK;
-}
 HRESULT WINAPI dev_SetTextureStageState(IDirect3DDevice9 *This, DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value)
 {
     if (Stage < MAX_TSS_STAGES && (DWORD)Type < 33) DEV(This)->tss[Stage][Type] = Value;
@@ -676,7 +686,7 @@ HRESULT WINAPI dev_SetScissorRect(IDirect3DDevice9 *This, const RECT *pRect)
 {
     if (!pRect) return D3DERR_INVALIDCALL;
     DEV(This)->scissor = *pRect;
-    D3DPT_STUB("IDirect3DDevice9::SetScissorRect [P2: not forwarded yet]");
+    d3dpt_enc_u32x4(&enc, D3DPT_OP_SET_SCISSOR_RECT, pRect->left, pRect->top, pRect->right, pRect->bottom);
     return D3D_OK;
 }
 HRESULT WINAPI dev_GetScissorRect(IDirect3DDevice9 *This, RECT *pRect) { if (!pRect) return D3DERR_INVALIDCALL; *pRect = DEV(This)->scissor; return D3D_OK; }
@@ -707,30 +717,6 @@ HRESULT WINAPI dev_DrawPrimitiveUP(IDirect3DDevice9 *This, D3DPRIMITIVETYPE Prim
 }
 HRESULT WINAPI dev_SetFVF(IDirect3DDevice9 *This, DWORD FVF) { DEV(This)->fvf = FVF; d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_FVF, FVF, 0); return D3D_OK; }
 HRESULT WINAPI dev_GetFVF(IDirect3DDevice9 *This, DWORD *pFVF) { if (!pFVF) return D3DERR_INVALIDCALL; *pFVF = DEV(This)->fvf; return D3D_OK; }
-HRESULT WINAPI dev_SetVertexShader(IDirect3DDevice9 *This, IDirect3DVertexShader9 *pShader)
-{
-    if (pShader) { D3DPT_STUB("IDirect3DDevice9::SetVertexShader(non-NULL) [P2]"); return D3DERR_INVALIDCALL; }
-    d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_VERTEX_SHADER, 0, 0);
-    return D3D_OK;
-}
-HRESULT WINAPI dev_SetPixelShader(IDirect3DDevice9 *This, IDirect3DPixelShader9 *pShader)
-{
-    if (pShader) { D3DPT_STUB("IDirect3DDevice9::SetPixelShader(non-NULL) [P2]"); return D3DERR_INVALIDCALL; }
-    d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_PIXEL_SHADER, 0, 0);
-    return D3D_OK;
-}
-HRESULT WINAPI dev_SetStreamSource(IDirect3DDevice9 *This, UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData, UINT OffsetInBytes, UINT Stride)
-{
-    if (pStreamData) { D3DPT_STUB("IDirect3DDevice9::SetStreamSource(non-NULL) [P2]"); return D3DERR_INVALIDCALL; }
-    d3dpt_enc_u32x4(&enc, D3DPT_OP_SET_STREAM_SOURCE, StreamNumber, 0, OffsetInBytes, Stride);
-    return D3D_OK;
-}
-HRESULT WINAPI dev_SetIndices(IDirect3DDevice9 *This, IDirect3DIndexBuffer9 *pIndexData)
-{
-    if (pIndexData) { D3DPT_STUB("IDirect3DDevice9::SetIndices(non-NULL) [P2]"); return D3DERR_INVALIDCALL; }
-    d3dpt_enc_u32x2(&enc, D3DPT_OP_SET_INDICES, 0, 0);
-    return D3D_OK;
-}
 static HRESULT set_const_f(uint32_t op, UINT start, const float *data, UINT count)
 {
     d3dpt_u32x2 *p;
@@ -744,6 +730,8 @@ static HRESULT set_const_f(uint32_t op, UINT start, const float *data, UINT coun
 }
 HRESULT WINAPI dev_SetVertexShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { return set_const_f(D3DPT_OP_SET_VS_CONST_F, StartRegister, pConstantData, Vector4fCount); }
 HRESULT WINAPI dev_SetPixelShaderConstantF(IDirect3DDevice9 *This, UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { return set_const_f(D3DPT_OP_SET_PS_CONST_F, StartRegister, pConstantData, Vector4fCount); }
+
+#include "d3d9_res.h"
 
 /* ============================================================== exports */
 __declspec(dllexport) IDirect3D9 *WINAPI Direct3DCreate9(UINT SDKVersion)

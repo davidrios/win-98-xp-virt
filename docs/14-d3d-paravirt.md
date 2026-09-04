@@ -128,7 +128,12 @@ guest (XP)                                  host (QEMU process, embed lib)
   (all D3D9-era formats incl. DXT and palettized via conversion), Lock/Unlock,
   render/texture/sampler states, transforms, lights, DrawPrimitive*/UP
   variants, render targets, depth/stencil, device reset and lost-device
-  protocol.
+  protocol. **Done 2026-09-04** (`guest-tools/src/d3dpt/d3d9_res.h`):
+  D3DGAME9 on XP through the device is byte-identical to the native DXVK
+  build's frame (1089 pixels from the rig golden, HUD masked), windowed and
+  fullscreen, 8888 and 565. Palettized formats and the lost-device protocol
+  are still open; cube/volume textures, vertex declarations, queries and
+  state blocks are P3.
 - **P3 — Shaders + queries:** SM1–3 vertex/pixel shaders, constants,
   occlusion/event queries, StretchRect, swap-chain variants, multi-head
   ignored. Acceptance: Max Payne (D3D8 via P4 stub), GTA:VC (D3D9), the

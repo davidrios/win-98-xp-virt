@@ -393,6 +393,12 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         break;
     }
 
+    case D3DPT_OP_SET_SCISSOR_RECT: {
+        auto *a = body<d3dpt_u32x4>(c, 0, b); if (!a || !need_device(b)) return;
+        RECT rc = { (LONG)a->a, (LONG)a->b, (LONG)a->c, (LONG)a->d };
+        x.dev->SetScissorRect(&rc);
+        break;
+    }
     case D3DPT_OP_DRAW_PRIMITIVE: {
         auto *a = body<d3dpt_u32x3>(c, 0, b); if (!a || !need_device(b)) return;
         bool ok; prim_vertices(a->a, a->c, ok);
@@ -443,9 +449,8 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return;
         if (!need_device(b)) return;
         if (a->length == 0 || a->length > (64u << 20)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; return; }
-        DWORD usage = a->usage & ~(DWORD)D3DUSAGE_WRITEONLY;   /* we read it back for updates? no: Lock only; keep plain */
+        DWORD usage = a->usage;
         D3DPOOL pool = (D3DPOOL)a->pool;
-        if (pool == D3DPOOL_DEFAULT && !(usage & D3DUSAGE_DYNAMIC)) pool = D3DPOOL_MANAGED;   /* host-side Lock for every update */
         if (c->op == D3DPT_OP_CREATE_VERTEX_BUFFER) {
             IDirect3DVertexBuffer9 *vb = nullptr;
             r->hr = (uint32_t)x.dev->CreateVertexBuffer(a->length, usage, a->fvf_or_format, pool, &vb, nullptr);
@@ -508,13 +513,13 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
             auto *vb = static_cast<IDirect3DVertexBuffer9 *>(it->second.p);
             D3DVERTEXBUFFER_DESC d; vb->GetDesc(&d);
             if ((uint64_t)a->offset + a->bytes > d.Size) { b.err = D3DPT_ERR_BAD_ARG; return; }
-            hr = vb->Lock(a->offset, a->bytes, &p, 0);
+            hr = vb->Lock(a->offset, a->bytes, &p, a->flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE));
             if (SUCCEEDED(hr) && p) { memcpy(p, tail(a), a->bytes); vb->Unlock(); }
         } else {
             auto *ib = static_cast<IDirect3DIndexBuffer9 *>(it->second.p);
             D3DINDEXBUFFER_DESC d; ib->GetDesc(&d);
             if ((uint64_t)a->offset + a->bytes > d.Size) { b.err = D3DPT_ERR_BAD_ARG; return; }
-            hr = ib->Lock(a->offset, a->bytes, &p, 0);
+            hr = ib->Lock(a->offset, a->bytes, &p, a->flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE));
             if (SUCCEEDED(hr) && p) { memcpy(p, tail(a), a->bytes); ib->Unlock(); }
         }
         if (FAILED(hr)) x.log("buffer update: Lock 0x%08x", (unsigned)hr);

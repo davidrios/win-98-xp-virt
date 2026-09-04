@@ -23,7 +23,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   1u
+#define D3DPT_PROTO_VERSION   2u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -112,6 +112,7 @@ enum d3dpt_op {
     D3DPT_OP_SET_PS_CONST_F = 34,   /* body: d3dpt_u32x2 (start, count4) + count4*16 bytes */
     D3DPT_OP_SET_RENDER_TARGET = 35,/* body: d3dpt_u32x2 (index, surface handle or 0 = backbuffer) */
     D3DPT_OP_SET_DEPTH_STENCIL = 36,/* body: d3dpt_u32x2 (surface handle or 0 = auto depth, 0) */
+    D3DPT_OP_SET_SCISSOR_RECT = 37, /* body: d3dpt_u32x4 (left, top, right, bottom) */
     /* --- draws (forward) --- */
     D3DPT_OP_DRAW_PRIMITIVE = 48,   /* body: d3dpt_u32x3 (type, start, primcount) */
     D3DPT_OP_DRAW_INDEXED_PRIMITIVE = 49, /* body: d3dpt_draw_indexed */
@@ -221,7 +222,7 @@ typedef struct d3dpt_get_surface {
     uint32_t texture, level;    /* texture 0 = the device backbuffer / auto depth (level 1) */
 } d3dpt_get_surface;
 typedef struct d3dpt_update {
-    uint32_t handle, offset, bytes, pad;   /* data follows */
+    uint32_t handle, offset, bytes, flags; /* flags: D3DLOCK_DISCARD / NOOVERWRITE hints; data follows */
 } d3dpt_update;
 typedef struct d3dpt_tex_update {
     uint32_t handle, level;
