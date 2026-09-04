@@ -16,6 +16,8 @@ run. DXVK's d3d9 is the host executor of the paravirtual Direct3D device
 
 Building and testing (`tools/dxvk-d3d9-test.cpp`, build line in its header):
 `scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja -C build/dxvk`.
+On Linux (Arch, RADV) the queue builds unchanged and both harnesses run with
+only `DXVK_WSI_DRIVER=SDL2` set (2026-09-03; patch 01 is inert there).
 The native library dlopens SDL2 and the Vulkan loader by bare name, so on
 macOS run with `DYLD_LIBRARY_PATH=/opt/homebrew/lib
 SDL_VULKAN_LIBRARY=/opt/homebrew/lib/libvulkan.dylib VK_ICD_FILENAMES=<icd>

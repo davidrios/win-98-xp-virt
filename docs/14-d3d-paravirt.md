@@ -96,7 +96,11 @@ guest (XP)                                  host (QEMU process, embed lib)
   (`tools/dxvk-d3d9-test.cpp`) and the native build of the reference scene
   (`tools/d3dgame9-native.cpp`, unmodified `d3dgame9.c` over a Win32-on-SDL2
   shim) both run to DXVK's refusal on MoltenVK today and produce BMPs once
-  the Air is on macOS 26.
+  the Air is on macOS 26. **On Linux (RADV) both pass, 2026-09-03:** the
+  fixed-function frame 300 vs the rig golden differs in 0.35 % of pixels
+  beyond a channel tolerance of 8 (HUD masked), visually identical — DXVK
+  draws what the GeForce 6200 drew. The vs_1_1 golden has no native
+  counterpart (no d3dx9 compiler off Windows) and is not diffed.
 - **P1 — Transport + device:** `hw/d3dpt` in the QEMU queue (patch 40),
   guest `d3d9.dll` with `Direct3DCreate9`, adapter identifier/caps from the
   host, `CreateDevice`, `Clear`, `Present` → the D3D9TEST triangle

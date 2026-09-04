@@ -6,12 +6,12 @@
  * and write it as a 24-bit BMP (the d3dgame -dump format, diffable with
  * tools/bmpdiff.py). Prints DXVK's adapter line and per-frame timing.
  *
- * Build (macOS; Linux: drop the -rpath, use .so):
+ * Build (macOS and Linux alike; add -ldl on Linux):
  *   c++ -std=c++17 -O2 -o build/dxvk-d3d9-test tools/dxvk-d3d9-test.cpp \
  *     -Ithird_party/dxvk/include/native -Ithird_party/dxvk/include/native/windows \
  *     -Ithird_party/dxvk/include/native/directx $(pkg-config --cflags --libs sdl2) \
  *     -Wl,-rpath,$PWD/build/dxvk/src/d3d9
- * Run (macOS; DXVK dlopens SDL2 and the Vulkan loader by bare name):
+ * Run (Linux: just DXVK_WSI_DRIVER=SDL2. macOS; DXVK dlopens SDL2 and the Vulkan loader by bare name):
  *   DYLD_LIBRARY_PATH=/opt/homebrew/lib SDL_VULKAN_LIBRARY=/opt/homebrew/lib/libvulkan.dylib \
  *   VK_ICD_FILENAMES=<icd.json> DXVK_WSI_DRIVER=SDL2 DXVK_LOG_LEVEL=info \
  *   build/dxvk-d3d9-test [out.bmp] [frames]
