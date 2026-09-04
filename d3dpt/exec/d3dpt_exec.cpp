@@ -86,6 +86,21 @@ static void present_frame(Exec &x) {
     x.sys->UnlockRect();
 }
 
+/* Depth formats real 2001 cards offered but DXVK's D3D9 refuses outright
+ * (d3d9_format.cpp: D32 / D15S1 / D24X4S4 "Unsupported (everywhere)").
+ * The guest DLL advertises them in CheckDeviceFormat / CheckDepthStencilMatch
+ * — Max Payne picks D32 for 32-bit modes and got D3DERR_NOTAVAILABLE from
+ * CreateDevice — so keep the promise with the closest layout DXVK has. The
+ * guest keeps answering GetDesc with the format the game asked for. */
+static D3DFORMAT depth_norm(uint32_t f) {
+    switch (f) {
+    case D3DFMT_D32:     return D3DFMT_D24X8;
+    case D3DFMT_D15S1:   return D3DFMT_D24S8;
+    case D3DFMT_D24X4S4: return D3DFMT_D24S8;
+    default:             return (D3DFORMAT)f;
+    }
+}
+
 static void fill_pp(D3DPRESENT_PARAMETERS &pp, const d3dpt_present_params &g) {
     memset(&pp, 0, sizeof pp);
     pp.BackBufferWidth = g.width; pp.BackBufferHeight = g.height;
@@ -95,7 +110,7 @@ static void fill_pp(D3DPRESENT_PARAMETERS &pp, const d3dpt_present_params &g) {
     pp.hDeviceWindow = nullptr;
     pp.Windowed = TRUE;                      /* fullscreen is the guest's business; no host window */
     pp.EnableAutoDepthStencil = g.auto_depth ? TRUE : FALSE;
-    pp.AutoDepthStencilFormat = (D3DFORMAT)g.depth_format;
+    pp.AutoDepthStencilFormat = depth_norm(g.depth_format);
     pp.Flags = g.flags & ~(DWORD)D3DPRESENTFLAG_DEVICECLIP;
     pp.FullScreen_RefreshRateInHz = 0;
     pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;   /* pacing is the guest's / the player's */
@@ -515,7 +530,7 @@ static void exec_one(Batch &b, const d3dpt_cmd *c) {
         if (!a->width || !a->height || a->width > 8192 || a->height > 8192) { r->hr = (uint32_t)D3DERR_INVALIDCALL; return; }
         IDirect3DSurface9 *s = nullptr;
         if (c->op == D3DPT_OP_CREATE_DEPTH_STENCIL)
-            r->hr = (uint32_t)x.dev->CreateDepthStencilSurface(a->width, a->height, (D3DFORMAT)a->format, (D3DMULTISAMPLE_TYPE)a->multisample, a->ms_quality, a->lockable ? TRUE : FALSE, &s, nullptr);
+            r->hr = (uint32_t)x.dev->CreateDepthStencilSurface(a->width, a->height, depth_norm(a->format), (D3DMULTISAMPLE_TYPE)a->multisample, a->ms_quality, a->lockable ? TRUE : FALSE, &s, nullptr);
         else
             r->hr = (uint32_t)x.dev->CreateRenderTarget(a->width, a->height, (D3DFORMAT)a->format, (D3DMULTISAMPLE_TYPE)a->multisample, a->ms_quality, a->lockable ? TRUE : FALSE, &s, nullptr);
         if (SUCCEEDED(r->hr) && !x.put(a->handle, K_SURF, s)) { r->hr = (uint32_t)D3DERR_INVALIDCALL; b.err = D3DPT_ERR_BAD_HANDLE; }

@@ -110,6 +110,9 @@ int main(int argc, char **argv) {
     c->handle = dev; c->ret_off = off; c->adapter = 0; c->devtype = D3DDEVTYPE_HAL; c->behavior = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
     c->pp.width = 640; c->pp.height = 480; c->pp.format = D3DFMT_X8R8G8B8; c->pp.backbuffer_count = 1;
     c->pp.swap_effect = D3DSWAPEFFECT_DISCARD; c->pp.windowed = 1; c->pp.interval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    /* Max Payne's 32-bit ask: D3DFMT_D32 auto depth. DXVK has no D32; the
+     * executor's depth_norm must make this succeed anyway. */
+    c->pp.auto_depth = 1; c->pp.depth_format = D3DFMT_D32;
     d3dpt_enc_flush(&enc);
     uint32_t hr = d3dpt_enc_result(&enc, off)->hr;
     printf("CreateDevice -> 0x%08x (batch status %u)\n", hr, enc.last_status);

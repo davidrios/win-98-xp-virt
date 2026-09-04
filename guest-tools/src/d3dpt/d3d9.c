@@ -89,7 +89,12 @@ static int transport_init(void)
     regs[D3DPT_REG_ATTACH / 4] = 1;
     attached = 1;
     d3dpt_enc_init(&enc, shm, doorbell);
-    d3dpt_log("d3dpt: device v%u at %08x, window at %08x, attached (%u)", ver, D3DPT_MM_BASE, D3DPT_SHM_BASE, regs[D3DPT_REG_ATTACH / 4]);
+    {
+        char exe[MAX_PATH]; const char *base = exe, *p;
+        exe[0] = 0; GetModuleFileNameA(NULL, exe, sizeof exe);
+        for (p = exe; *p; p++) if (*p == '\\') base = p + 1;
+        d3dpt_log("d3dpt: device v%u at %08x, window at %08x, attached (%u) by %s", ver, D3DPT_MM_BASE, D3DPT_SHM_BASE, regs[D3DPT_REG_ATTACH / 4], base);
+    }
     return 1;
 }
 

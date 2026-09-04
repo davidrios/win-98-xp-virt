@@ -37,8 +37,15 @@ is green (13 checks, ~2 min under KVM). First games tried by the user on
 2026-09-04 (status doc, M4 row, has the detail): Vice City's DirectDraw
 video-memory check is answered by the new `D3DPT\DDRAW.DLL` shim, the
 16-bit-only mode list came from the Cirrus driver's 24-bit modes and is
-fixed, GetRasterStatus and the gamma ramp are implemented; Max Payne
-still freezes on level load and needs its host log.
+fixed, GetRasterStatus and the gamma ramp are implemented. From the first
+player log (same day, evening): Max Payne's 32-bit "requires a DirectX 8
+compatible display adapter" was its D3DFMT_D32 auto depth buffer meeting
+DXVK's refusal of D32 — fixed by `depth_norm()` in the executor
+(D32→D24X8, D15S1/D24X4S4→D24S8; `d3dpt-exec-test` now requests D32 so
+it stays covered). Still open, both waiting on the next guest run: the
+16-bit loading-screen freeze (fresh host log), and Vice City's silent
+exit before Direct3DCreate8 — the ddraw shim now writes every call to
+`d3dpt_ddraw.log` next to the EXE so that run will say where it died.
 
 ## Build / run / test
 
