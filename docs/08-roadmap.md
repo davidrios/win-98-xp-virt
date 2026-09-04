@@ -98,6 +98,18 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 - **Exit:** XP acceptance titles (Max Payne, GTA:VC) accelerated through the
   device on all three platforms; Apple Silicon results documented honestly.
 
+## M7 — A real guest display driver (ADR-008; after M4, interleaves with M5/M6)
+
+- M7a framebuffer driver: video miniport + display DLL over the `d3dpt`
+  shared window, our own mode list, zero-copy desktop; replaces Cirrus for
+  XP. Delivers M2's mode table on XP.
+- M7b DirectDraw DDI on the same driver (DX5–7 titles without WineD3D).
+- M7c Direct3D DDI: DP2 tokens → device records; Microsoft's d3d8/d3d9
+  stay in the guest, no DLL in the game folder. The DLL device (M4)
+  remains the Win98 path.
+- **Exit:** the doc 04 matrix through the driver on XP; M4's per-game DLL
+  install no longer needed on XP.
+
 ## M5 — CD-ROM backend
 
 - libdisc (Rust): cue/bin + CCD first; ATAPI command coverage incl.

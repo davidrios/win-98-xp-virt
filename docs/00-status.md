@@ -160,6 +160,8 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 ## Next steps, in order
 
+ADR-008 (2026-09-04): a real XP display driver is the long-term shape (M7, staged: framebuffer → DirectDraw DDI → Direct3D DDI) on the same transport and executor; the DLL device stays for Win98 and as the harness. Not started.
+
 1. ~~M1~~ closed 2026-09-02 (latency at the vsync floor, XP benchmarked,
    patch 05 x87 fast path, QMP over socketpair). Patch 06 merged
    2026-09-03 (XP Super PI 1M 1:57 on the Air, doc 13); PC=24 inline

@@ -160,3 +160,92 @@ are the acceptance test for both drivers. **Verified 2026-09-03** on the
 Air (macOS 26.6.2, SDK 1.4.357.1): one more required feature had to be made
 optional (`fillModeNonSolid`, patch 05), then the reference frame matches
 the rig as closely as on RADV (spike C, "Verified on KosmicKrisp").
+
+## ADR-008: A real guest display driver is the long-term shape; staged after the DLL device (2026-09-04)
+
+**Decision.** The paravirtual Direct3D device keeps ADR-006's shape today
+(guest `d3d9.dll` / `d3d8.dll` serializers → `d3dpt` device → DXVK
+executor), and we commit to growing a **real Windows display driver** on
+top of the same transport and executor, in stages, as milestone M7 (doc
+08). The driver replaces the DLL copies per game folder, replaces the
+emulated Cirrus as the guest's display adapter, and is the only road to
+Vista/7/10 acceleration should we ever want it. Nothing below the guest
+side changes: the shared window, the doorbell, the record protocol
+(`d3dpt/d3dpt_proto.h`) and `libd3dpt_exec` are the driver's back end as
+they are the DLL's.
+
+**Why.** After P1/P2 (2026-09-03/04) the DLL device works and matches the
+rig, so the question is no longer "can the host run D3D9 for the guest"
+but "how do games reach it". The DLL answer has structural limits:
+- **Per-game installs.** A D3D9.DLL must sit next to every EXE (system-wide
+  replacement fights Windows File Protection on XP), games that resolve
+  `system32\d3d9.dll` by path, load through DirectDraw 7 in the same
+  process, or check DirectX versions do not see it. On the rig the same
+  folder-level fiddling already bit the reference workloads.
+- **We re-implement the runtime.** State shadowing, managed pool, lost
+  device, state blocks, software vertex processing: every semantic of
+  Microsoft's d3d9.dll has to be re-done in our DLL. With a display driver
+  Microsoft's runtime stays in the guest and talks to us through the
+  **Direct3D DDI**, which on 2000/XP is *already a serialized command
+  stream*: `D3dDrawPrimitives2` hands the driver DP2 token buffers (render
+  states, texture stage states, draws, shader creation and constants —
+  `d3dhal.h`, 32 opcodes), surfaces come through the DirectDraw DDI
+  (`DdCreateSurface`, `DdLock`, `DdBlt`), GDI through `winddi.h`. That is
+  our record stream with Microsoft doing the validation.
+- **The desktop becomes ours.** A display driver owns the framebuffer and
+  the mode list: any resolution and refresh the CRT shader wants (M2's
+  mode table and pixel aspect), no Cirrus limits (XP has no driver for
+  QEMU's standard VGA), DirectDraw and Direct3D 7 for free, a zero-copy
+  2D path through the shared window. This is what VMware (SVGA II +
+  SVGA3D) and VirtualBox (their XPDM/WDDM additions) do; both prove the
+  shape and both show the cost.
+
+**Alternatives kept in their place.** *The DLL device* stays: it is the
+Win98 path regardless (9x has no comparable driver model worth targeting),
+it is the debugging harness for the executor, and it ships now. *WineD3D
+in the guest* stays the DX7 fallback until the driver's DirectDraw DDI
+exists. *Vista/7/10 (WDDM: kernel miniport under dxgkrnl plus user-mode
+D3D9/D3D10/D3D11 UMDs)* is explicitly **not** in scope for v1; the
+decision only keeps the door open by choosing the transport that leads
+there. A D3D11 UMD over our device is the size of VBoxDX, a multi-year
+team effort.
+
+**Staged plan (M7).**
+1. **M7a — framebuffer driver (2D).** A video miniport (`video.h`, loaded by
+   videoprt.sys) that exposes our shared window as the frame buffer and a
+   mode list we control, plus a display driver DLL (`winddi.h`) that does
+   GDI in software on that buffer (the `framebuf`/`vga` shape; ReactOS
+   builds the same kind with GCC, ~3 k lines). QEMU side: a paravirtual
+   framebuffer register set on the `d3dpt` device (mode, pitch, dirty
+   rectangles, vsync) and the player showing it through the existing frame
+   path. Exit: XP desktop at 1024×768@85 on the driver, zero-copy, no
+   Cirrus, ScanDisk-clean shutdowns, a mode table the CRT presets pick
+   from. This step pays for itself (M2) and teaches the kernel-side
+   workflow: BSOD debugging over serial with WinDbg or the ReactOS tools,
+   a `.inf` install, driver signing not required on XP.
+2. **M7b — DirectDraw DDI.** `DdCreateSurface`/`DdLock`/`DdBlt`/`DdFlip` on
+   the same driver → surfaces in the device's handle table, blits by the
+   executor (DXVK `StretchRect`/`UpdateSurface`), overlays refused. Exit:
+   DirectX 5–7 titles (FIFA 2000, doc 00) without WineD3D.
+3. **M7c — Direct3D DDI.** `D3dContextCreate`, `D3dDrawPrimitives2`: the DP2
+   token consumer that translates into our records (mostly 1:1), texture
+   and shader DDIs, caps from the executor. Exit: the doc 04 matrix
+   through Microsoft's own d3d8/d3d9 with no DLL in the game folder; the
+   DLL device becomes the 9x path only.
+4. **M7d — later, if ever:** WDDM for Vista+ (out of scope for v1).
+
+**Toolchain and licensing.** mingw-w64 ships the DDI headers (`ddk/winddi.h`,
+`ddk/video.h`, `d3dhal.h`) under its permissive terms; kernel-mode display
+DLLs and miniports are plain PE files with no CRT, buildable with the
+same cross toolchain as the wrappers (the build script's msvcrt/ISA
+checks extend to them). ReactOS (GPL-2.0) is the reference for building
+such drivers with GCC and for DDI behaviour; Wine has no display-driver
+side. Nothing from Microsoft's DDK ships.
+
+**Consequences.** Doc 08 gains M7 after M4; doc 14 P5's "proper PnP driver
+instead of MAPMEM" becomes M7a. ADR-006 stands. The record protocol must
+stay driver-neutral: no guest-DLL-only assumptions (handles are guest
+chosen, resources are host objects, nothing in it knows about COM). The
+executor grows the DDI-shaped operations M7b/c need (blits between
+surfaces, DP2 semantics such as per-primitive vertex buffers) when those
+stages start, not before.

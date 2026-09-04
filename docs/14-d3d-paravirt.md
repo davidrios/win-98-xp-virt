@@ -141,7 +141,9 @@ guest (XP)                                  host (QEMU process, embed lib)
 - **P4 — D3D8:** `d3d8.dll` over d3d9.
 - **P5 — later:** DirectDraw/D3D7 layer over the device (or keep WineD3D
   for DX7 titles), Win98 guest (the same DLLs are 9x-compatible if built
-  msvcrt / no-CRT like wine9x), proper PnP driver instead of MAPMEM.
+  msvcrt / no-CRT like wine9x). The "proper driver" is now **ADR-008 / M7**:
+  a real display driver (framebuffer → DirectDraw DDI → Direct3D DDI) on
+  the same transport and executor; this DLL stays the 9x path.
 
 ## Reference workloads and conformance (what we test the device with)
 
