@@ -1,0 +1,1103 @@
+MMX and SSE integer / permutation instructions inline (doc 16, patch 08).
+
+shufps, shufpd, unpcklps/unpckhps/unpcklpd/unpckhpd, punpck{l,h}{bw,wd,dq,qdq},
+packsswb/packuswb/packssdw, pmulhw/pmulhuw, pmaddwd, pavgb/pavgw, psadbw,
+the shifts by a register count (psllw/d/q, psrlw/d/q, psraw/d) and pshufw
+were helper calls; they are the instructions between the inlined float ops
+of D3DX code and the body of every MMX blitter / mixer / codec loop. They
+are now TCG code on 64-bit halves (bit-spreading interleaves, per-lane
+saturation, vector byte differences + SWAR sum for psadbw, gvec scalar
+shifts with the over-width case masked), and the MMX entry that every MMX
+instruction pays (fpstt/fptags reset) is three stores instead of a helper.
+The permutes (shufps, shufpd, unpck*, pshufw) use a new TCG vector
+opcode tbl_vec (byte table lookup with zeroing: TBL on aarch64, VPSHUFB
+on x86-64) with per-immediate index vectors in env->simd_tbl, so their
+result is a single vector store: four scalar lane stores followed by the
+next instruction's vector load stalled on the M1 (store-to-load
+forwarding across several smaller stores) and lost to the helper.
+Legacy encodings only; property simd-fast (default on) keeps the helpers
+for the on/off test. tools/sse-guest-test.py: 546,425 result lines
+identical on/off (MMX and XMM forms, memory operands, chains, a mixed
+x87/MMX sequence); register-only MMX chain 4.0x over the helpers.
+--- a/include/tcg/tcg-opc.h
++++ b/include/tcg/tcg-opc.h
+@@ -342,6 +342,12 @@
+ DEF(fmul_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
+ DEF(fdiv_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
+ DEF(fsqrt_vec, 1, 1, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_fp_vec))
++/*
++ * Byte table lookup: r[i] = idx[i] & 0x80 ? 0 : a[idx[i] & 15] (pshufb /
++ * tbl semantics; any index >= 16 also gives 0 on aarch64, keep tables to
++ * 0..15 and 0x80). vece unused.
++ */
++DEF(tbl_vec, 1, 2, 0, IMPLVEC | IMPL(TCG_TARGET_HAS_tbl_vec))
+ 
+ DEF(last_generic, 0, 0, 0, TCG_OPF_NOT_PRESENT)
+ 
+--- a/include/tcg/tcg.h
++++ b/include/tcg/tcg.h
+@@ -157,6 +157,7 @@
+ #define TCG_TARGET_HAS_cmpsel_vec       0
+ #define TCG_TARGET_HAS_tst_vec          0
+ #define TCG_TARGET_HAS_fp_vec           0
++#define TCG_TARGET_HAS_tbl_vec          0
+ #else
+ #define TCG_TARGET_MAYBE_vec            1
+ #endif
+--- a/include/tcg/tcg-op-common.h
++++ b/include/tcg/tcg-op-common.h
+@@ -498,6 +498,9 @@
+ void tcg_gen_fmul_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
+ void tcg_gen_fdiv_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b);
+ void tcg_gen_fsqrt_vec(unsigned vece, TCGv_vec r, TCGv_vec a);
++/* byte table lookup with zeroing (pshufb / tbl); only when tcg_tbl_vec_supported() */
++bool tcg_tbl_vec_supported(void);
++void tcg_gen_tbl_vec(TCGv_vec r, TCGv_vec a, TCGv_vec idx);
+ void tcg_gen_ld_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset);
+ void tcg_gen_st_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset);
+ void tcg_gen_stl_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset, TCGType t);
+--- a/tcg/tcg-op-vec.c
++++ b/tcg/tcg-op-vec.c
+@@ -610,6 +610,24 @@
+ void tcg_gen_fdiv_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
+ {
+     do_op3_nofail(vece, r, a, b, INDEX_op_fdiv_vec);
++}
++
++bool tcg_tbl_vec_supported(void)
++{
++    return TCG_TARGET_HAS_tbl_vec
++        && tcg_can_emit_vec_op(INDEX_op_tbl_vec, TCG_TYPE_V128, MO_8) > 0;
++}
++
++void tcg_gen_tbl_vec(TCGv_vec r, TCGv_vec a, TCGv_vec idx)
++{
++    TCGTemp *rt = tcgv_vec_temp(r);
++    TCGTemp *at = tcgv_vec_temp(a);
++    TCGTemp *it = tcgv_vec_temp(idx);
++    TCGType type = rt->base_type;
++
++    tcg_debug_assert(at->base_type >= type && it->base_type >= type);
++    tcg_debug_assert(tcg_can_emit_vec_op(INDEX_op_tbl_vec, type, MO_8) > 0);
++    vec_gen_3(INDEX_op_tbl_vec, type, MO_8, temp_arg(rt), temp_arg(at), temp_arg(it));
+ }
+ 
+ void tcg_gen_fsqrt_vec(unsigned vece, TCGv_vec r, TCGv_vec a)
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -2196,6 +2196,8 @@
+     case INDEX_op_fdiv_vec:
+     case INDEX_op_fsqrt_vec:
+         return have_vec && TCG_TARGET_HAS_fp_vec;
++    case INDEX_op_tbl_vec:
++        return have_vec && TCG_TARGET_HAS_tbl_vec;
+     case INDEX_op_add_vec:
+     case INDEX_op_sub_vec:
+     case INDEX_op_and_vec:
+--- a/tcg/aarch64/tcg-target.h
++++ b/tcg/aarch64/tcg-target.h
+@@ -170,6 +170,7 @@
+ #define TCG_TARGET_HAS_cmpsel_vec       0
+ #define TCG_TARGET_HAS_tst_vec          1
+ #define TCG_TARGET_HAS_fp_vec           1
++#define TCG_TARGET_HAS_tbl_vec          1
+ 
+ #define TCG_TARGET_DEFAULT_MO (0)
+ #define TCG_TARGET_NEED_LDST_LABELS
+--- a/tcg/aarch64/tcg-target.c.inc
++++ b/tcg/aarch64/tcg-target.c.inc
+@@ -2707,6 +2707,11 @@
+     case INDEX_op_fsqrt_vec:
+         tcg_out_fpv(s, I3FV_FSQRT, is_q, vece, a0, a1, 0);
+         break;
++    case INDEX_op_tbl_vec:
++        /* TBL Vd.<16|8>B, { Vn.16B }, Vm.<16|8>B */
++        tcg_out32(s, 0x0e000000 | is_q << 30 | (a2 & 0x1f) << 16
++                  | (a1 & 0x1f) << 5 | (a0 & 0x1f));
++        break;
+     case INDEX_op_add_vec:
+         if (is_scalar) {
+             tcg_out_insn(s, 3611, ADD, vece, a0, a1, a2);
+@@ -3023,6 +3028,8 @@
+     case INDEX_op_fsqrt_vec:
+         /* S lanes in either width, D lanes only as .2D */
+         return vece == MO_32 || (vece == MO_64 && type == TCG_TYPE_V128);
++    case INDEX_op_tbl_vec:
++        return 1;
+ 
+     default:
+         return 0;
+@@ -3138,6 +3145,8 @@
+         return C_O1_I2(w, w, w);
+     case INDEX_op_fsqrt_vec:
+         return C_O1_I1(w, w);
++    case INDEX_op_tbl_vec:
++        return C_O1_I2(w, w, w);
+ 
+     case INDEX_op_ld8u_i32:
+     case INDEX_op_ld8s_i32:
+--- a/tcg/i386/tcg-target.h
++++ b/tcg/i386/tcg-target.h
+@@ -229,6 +229,7 @@
+ #define TCG_TARGET_HAS_cmpsel_vec       1
+ #define TCG_TARGET_HAS_tst_vec          have_avx512bw
+ #define TCG_TARGET_HAS_fp_vec           have_avx1
++#define TCG_TARGET_HAS_tbl_vec          have_avx1
+ 
+ #define TCG_TARGET_deposit_i32_valid(ofs, len) \
+     (((ofs) == 0 && ((len) == 8 || (len) == 16)) || \
+--- a/tcg/i386/tcg-target.c.inc
++++ b/tcg/i386/tcg-target.c.inc
+@@ -3580,6 +3580,9 @@
+         a2 = a1;
+         a1 = 0;
+         goto gen_simd;
++    case INDEX_op_tbl_vec:
++        insn = OPC_PSHUFB;
++        goto gen_simd;
+     gen_simd:
+         tcg_debug_assert(insn != OPC_UD2);
+         tcg_out_vex_modrm_type(s, insn, a0, a1, a2, type);
+@@ -3755,6 +3758,8 @@
+         return C_O1_I2(x, x, x);
+     case INDEX_op_fsqrt_vec:
+         return C_O1_I1(x, x);
++    case INDEX_op_tbl_vec:
++        return C_O1_I2(x, x, x);
+ 
+     case INDEX_op_ld8u_i32:
+     case INDEX_op_ld8u_i64:
+@@ -4034,6 +4039,8 @@
+     case INDEX_op_fdiv_vec:
+     case INDEX_op_fsqrt_vec:
+         return vece >= MO_32;
++    case INDEX_op_tbl_vec:
++        return type <= TCG_TYPE_V128;       /* vpshufb shuffles within 128-bit lanes */
+     case INDEX_op_cmp_vec:
+     case INDEX_op_cmpsel_vec:
+         return -1;
+--- a/target/i386/cpu.h
++++ b/target/i386/cpu.h
+@@ -1732,6 +1732,13 @@
+     target_ulong result;
+     target_ulong auxbits;
+ } HVFX86LazyFlags;
++
++/* tcg/simd-fast.c.inc permute tables (see there) */
++#define SIMD_TBL_SHUFPS   0                     /* [256 imm][3: v, s, v==s][16] */
++#define SIMD_TBL_SHUFPD   (256 * 3 * 16)        /* [4 imm][3][16] */
++#define SIMD_TBL_UNPCK    (SIMD_TBL_SHUFPD + 4 * 3 * 16)   /* [3 esz][2 hi][2 w][3][16] */
++#define SIMD_TBL_PSHUFW   (SIMD_TBL_UNPCK + 3 * 2 * 2 * 3 * 16)  /* [256 imm][16] */
++#define SIMD_TBL_BYTES    (SIMD_TBL_PSHUFW + 256 * 16)
+ 
+ typedef struct CPUArchState {
+     /* standard registers */
+@@ -1800,8 +1807,8 @@
+      * on. Derived from mxcsr by update_mxcsr_status(), not migrated.
+      */
+     uint8_t sse_fast_mode;
+-    /* tcg/sse-fast.c.inc: lane mask of the packed vector path */
+-    uint64_t sses_scratch[2] QEMU_ALIGNED(16);
++    /* tcg/sse-fast.c.inc: lane mask of the packed vector path; psadbw staging */
++    uint64_t sses_scratch[4] QEMU_ALIGNED(16);
+     /* slow-path counters (info registers): guard, hand-over, helper, cvt/comis */
+     uint64_t sses_stat[4];
+     /* shadow doubles of the x87 stack, relative slots (tcg/x87-shadow.c.inc) */
+@@ -1969,6 +1976,13 @@
+     /* Fields up to this point are cleared by a CPU reset */
+     struct {} end_reset_fields;
+ 
++    /*
++     * tcg/simd-fast.c.inc: byte-permute index vectors for tbl_vec, one
++     * 16-byte entry per (instruction, immediate, source), filled at
++     * realize by x86_simd_tables_init(). Layout in simd-fast.c.inc.
++     */
++    uint8_t simd_tbl[SIMD_TBL_BYTES] QEMU_ALIGNED(16);
++
+     /* Fields after this point are preserved across CPU reset. */
+ 
+     /* processor features (e.g. for CPUID insn) */
+@@ -2115,6 +2129,8 @@
+     bool x87_fast;
+     /* SSE host-FPU inline path (target/i386/tcg/sse-fast.c.inc) */
+     bool sse_fast;
++    /* MMX/SSE integer and permutation ops inline (target/i386/tcg/simd-fast.c.inc) */
++    bool simd_fast;
+     /*
+      * Force features to be enabled even if the host doesn't support them.
+      * This is dangerous and should be done only for testing CPUID
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8497,6 +8497,7 @@
+     DEFINE_PROP_BOOL("enforce", X86CPU, enforce_cpuid, false),
+     DEFINE_PROP_BOOL("x87-fast", X86CPU, x87_fast, true),
+     DEFINE_PROP_BOOL("sse-fast", X86CPU, sse_fast, true),
++    DEFINE_PROP_BOOL("simd-fast", X86CPU, simd_fast, true),
+     DEFINE_PROP_BOOL("x-force-features", X86CPU, force_features, false),
+     DEFINE_PROP_BOOL("kvm", X86CPU, expose_kvm, true),
+     DEFINE_PROP_UINT32("phys-bits", X86CPU, phys_bits, 0),
+--- a/target/i386/tcg/translate.c
++++ b/target/i386/tcg/translate.c
+@@ -174,6 +174,7 @@
+     bool sses_on;               /* TB translated with TB_FLAG_SSE_FAST */
+     bool sses_guarded;          /* runtime guard emitted */
+     bool sses_pending;          /* hand-over check due at the end of the insn */
++    bool simd_on;               /* simd-fast.c.inc: integer/permute ops inline */
+ 
+     /* TCG local temps */
+     TCGv cc_srcT;
+@@ -2408,6 +2409,23 @@
+ static void sses_helper_done(DisasContext *s);
+ static void sses_emit_pending(DisasContext *s);
+ static void sses_end_tb(DisasContext *s);
++/* simd-fast.c.inc, used by emit.c.inc and decode-new.c.inc */
++static void gen_enter_mmx(DisasContext *s);
++static bool simd_int_binary(DisasContext *s, X86DecodedInsn *decode, int op);
++static bool simd_fp_unpck(DisasContext *s, X86DecodedInsn *decode, bool hi);
++static bool simd_shufp(DisasContext *s, X86DecodedInsn *decode);
++static bool simd_pshufw_insn(DisasContext *s, X86DecodedInsn *decode);
++enum {
++    SIMD_NONE,
++    SIMD_PUNPCKLBW, SIMD_PUNPCKLWD, SIMD_PUNPCKLDQ,
++    SIMD_PUNPCKHBW, SIMD_PUNPCKHWD, SIMD_PUNPCKHDQ,
++    SIMD_PUNPCKLQDQ, SIMD_PUNPCKHQDQ,
++    SIMD_PACKSSWB, SIMD_PACKUSWB, SIMD_PACKSSDW,
++    SIMD_PMULHW, SIMD_PMULHUW, SIMD_PMADDWD, SIMD_PAVGB, SIMD_PAVGW,
++    SIMD_PSADBW,
++    SIMD_PSLLW, SIMD_PSLLD, SIMD_PSLLQ, SIMD_PSRLW, SIMD_PSRLD, SIMD_PSRLQ,
++    SIMD_PSRAW, SIMD_PSRAD,
++};
+ enum {
+     SSES_ADD, SSES_SUB, SSES_MUL, SSES_DIV, SSES_MIN, SSES_MAX,
+     SSES_SQRT, SSES_RCP, SSES_RSQRT, SSES_CMP,
+@@ -2416,6 +2434,7 @@
+ #include "emit.c.inc"
+ #include "x87-shadow.c.inc"
+ #include "sse-fast.c.inc"
++#include "simd-fast.c.inc"
+ 
+ static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
+ {
+@@ -3796,6 +3815,7 @@
+         && !(flags & (HF_TF_MASK | HF_INHIBIT_IRQ_MASK));
+     dc->sses_guarded = false;
+     dc->sses_pending = false;
++    dc->simd_on = env_archcpu(env)->simd_fast;
+     /* select memory access functions */
+     dc->mem_index = cpu_mmu_index(cpu, false);
+     dc->cpuid_features = env->features[FEAT_1_EDX];
+--- a/target/i386/tcg/emit.c.inc
++++ b/target/i386/tcg/emit.c.inc
+@@ -533,7 +533,7 @@
+     }
+ 
+     x87s_boundary(s);
+-    gen_helper_enter_mmx(tcg_env);
++    gen_enter_mmx(s);
+     if (fn == FN_3DNOW_MOVE) {
+        tcg_gen_ld_i64(s->tmp1_i64, tcg_env, decode->op[1].offset);
+        tcg_gen_st_i64(s->tmp1_i64, tcg_env, decode->op[0].offset);
+@@ -694,6 +694,9 @@
+ #define FP_UNPACK_SSE(uname, lname)                                                \
+ static void gen_##uname(DisasContext *s, X86DecodedInsn *decode)                   \
+ {                                                                                  \
++    if (simd_fp_unpck(s, decode, lname##_hi)) {                                    \
++        return;                                                                    \
++    }                                                                              \
+     /* PS maps to the DQ integer instruction, PD maps to QDQ.  */                  \
+     gen_fp_sse(s, decode,                                                          \
+                gen_helper_##lname##qdq_xmm,                                        \
+@@ -702,6 +705,8 @@
+                gen_helper_##lname##dq_ymm,                                         \
+                NULL, NULL);                                                        \
+ }
++#define punpckl_hi false
++#define punpckh_hi true
+ FP_UNPACK_SSE(VUNPCKLPx, punpckl)
+ FP_UNPACK_SSE(VUNPCKHPx, punpckh)
+ 
+@@ -925,40 +930,44 @@
+ }
+ 
+ 
+-#define BINARY_INT_MMX(uname, lname)                                               \
++#define BINARY_INT_MMX(uname, lname)  BINARY_INT_MMX_FAST(uname, lname, SIMD_NONE)
++#define BINARY_INT_MMX_FAST(uname, lname, sop)                                     \
+ static void gen_##uname(DisasContext *s, X86DecodedInsn *decode)                   \
+ {                                                                                  \
++    if (simd_int_binary(s, decode, sop)) {                                         \
++        return;                                                                    \
++    }                                                                              \
+     gen_binary_int_sse(s, decode,                                                  \
+                           gen_helper_##lname##_mmx,                                \
+                           gen_helper_##lname##_xmm,                                \
+                           gen_helper_##lname##_ymm);                               \
+ }
+-BINARY_INT_MMX(PUNPCKLBW,  punpcklbw)
+-BINARY_INT_MMX(PUNPCKLWD,  punpcklwd)
+-BINARY_INT_MMX(PUNPCKLDQ,  punpckldq)
+-BINARY_INT_MMX(PACKSSWB,   packsswb)
+-BINARY_INT_MMX(PACKUSWB,   packuswb)
+-BINARY_INT_MMX(PUNPCKHBW,  punpckhbw)
+-BINARY_INT_MMX(PUNPCKHWD,  punpckhwd)
+-BINARY_INT_MMX(PUNPCKHDQ,  punpckhdq)
+-BINARY_INT_MMX(PACKSSDW,   packssdw)
++BINARY_INT_MMX_FAST(PUNPCKLBW,  punpcklbw, SIMD_PUNPCKLBW)
++BINARY_INT_MMX_FAST(PUNPCKLWD,  punpcklwd, SIMD_PUNPCKLWD)
++BINARY_INT_MMX_FAST(PUNPCKLDQ,  punpckldq, SIMD_PUNPCKLDQ)
++BINARY_INT_MMX_FAST(PACKSSWB,   packsswb, SIMD_PACKSSWB)
++BINARY_INT_MMX_FAST(PACKUSWB,   packuswb, SIMD_PACKUSWB)
++BINARY_INT_MMX_FAST(PUNPCKHBW,  punpckhbw, SIMD_PUNPCKHBW)
++BINARY_INT_MMX_FAST(PUNPCKHWD,  punpckhwd, SIMD_PUNPCKHWD)
++BINARY_INT_MMX_FAST(PUNPCKHDQ,  punpckhdq, SIMD_PUNPCKHDQ)
++BINARY_INT_MMX_FAST(PACKSSDW,   packssdw, SIMD_PACKSSDW)
+ 
+-BINARY_INT_MMX(PAVGB,   pavgb)
+-BINARY_INT_MMX(PAVGW,   pavgw)
+-BINARY_INT_MMX(PMADDWD, pmaddwd)
+-BINARY_INT_MMX(PMULHUW, pmulhuw)
+-BINARY_INT_MMX(PMULHW,  pmulhw)
++BINARY_INT_MMX_FAST(PAVGB,   pavgb, SIMD_PAVGB)
++BINARY_INT_MMX_FAST(PAVGW,   pavgw, SIMD_PAVGW)
++BINARY_INT_MMX_FAST(PMADDWD, pmaddwd, SIMD_PMADDWD)
++BINARY_INT_MMX_FAST(PMULHUW, pmulhuw, SIMD_PMULHUW)
++BINARY_INT_MMX_FAST(PMULHW,  pmulhw, SIMD_PMULHW)
+ BINARY_INT_MMX(PMULUDQ, pmuludq)
+-BINARY_INT_MMX(PSADBW,  psadbw)
++BINARY_INT_MMX_FAST(PSADBW,  psadbw, SIMD_PSADBW)
+ 
+-BINARY_INT_MMX(PSLLW_r, psllw)
+-BINARY_INT_MMX(PSLLD_r, pslld)
+-BINARY_INT_MMX(PSLLQ_r, psllq)
+-BINARY_INT_MMX(PSRLW_r, psrlw)
+-BINARY_INT_MMX(PSRLD_r, psrld)
+-BINARY_INT_MMX(PSRLQ_r, psrlq)
+-BINARY_INT_MMX(PSRAW_r, psraw)
+-BINARY_INT_MMX(PSRAD_r, psrad)
++BINARY_INT_MMX_FAST(PSLLW_r, psllw, SIMD_PSLLW)
++BINARY_INT_MMX_FAST(PSLLD_r, pslld, SIMD_PSLLD)
++BINARY_INT_MMX_FAST(PSLLQ_r, psllq, SIMD_PSLLQ)
++BINARY_INT_MMX_FAST(PSRLW_r, psrlw, SIMD_PSRLW)
++BINARY_INT_MMX_FAST(PSRLD_r, psrld, SIMD_PSRLD)
++BINARY_INT_MMX_FAST(PSRLQ_r, psrlq, SIMD_PSRLQ)
++BINARY_INT_MMX_FAST(PSRAW_r, psraw, SIMD_PSRAW)
++BINARY_INT_MMX_FAST(PSRAD_r, psrad, SIMD_PSRAD)
+ 
+ BINARY_INT_MMX(PHADDW,    phaddw)
+ BINARY_INT_MMX(PHADDSW,   phaddsw)
+@@ -984,8 +993,20 @@
+ }
+ 
+ /* Instructions with no MMX equivalent.  */
+-BINARY_INT_SSE(PUNPCKLQDQ, punpcklqdq)
+-BINARY_INT_SSE(PUNPCKHQDQ, punpckhqdq)
++static void gen_PUNPCKLQDQ(DisasContext *s, X86DecodedInsn *decode)
++{
++    if (simd_int_binary(s, decode, SIMD_PUNPCKLQDQ)) {
++        return;
++    }
++    gen_binary_int_sse(s, decode, NULL, gen_helper_punpcklqdq_xmm, gen_helper_punpcklqdq_ymm);
++}
++static void gen_PUNPCKHQDQ(DisasContext *s, X86DecodedInsn *decode)
++{
++    if (simd_int_binary(s, decode, SIMD_PUNPCKHQDQ)) {
++        return;
++    }
++    gen_binary_int_sse(s, decode, NULL, gen_helper_punpckhqdq_xmm, gen_helper_punpckhqdq_ymm);
++}
+ BINARY_INT_SSE(VPACKUSDW,  packusdw)
+ BINARY_INT_SSE(VPERMILPS,  vpermilps)
+ BINARY_INT_SSE(VPERMILPD,  vpermilpd)
+@@ -1915,7 +1936,7 @@
+ static void gen_CVTPI2Px(DisasContext *s, X86DecodedInsn *decode)
+ {
+     x87s_boundary(s);
+-    gen_helper_enter_mmx(tcg_env);
++    gen_enter_mmx(s);
+     if (s->prefix & PREFIX_DATA) {
+         gen_helper_cvtpi2pd(tcg_env, OP_PTR0, OP_PTR2);
+     } else {
+@@ -1926,7 +1947,7 @@
+ static void gen_CVTPx2PI(DisasContext *s, X86DecodedInsn *decode)
+ {
+     x87s_boundary(s);
+-    gen_helper_enter_mmx(tcg_env);
++    gen_enter_mmx(s);
+     if (s->prefix & PREFIX_DATA) {
+         gen_helper_cvtpd2pi(tcg_env, OP_PTR0, OP_PTR2);
+     } else {
+@@ -1937,7 +1958,7 @@
+ static void gen_CVTTPx2PI(DisasContext *s, X86DecodedInsn *decode)
+ {
+     x87s_boundary(s);
+-    gen_helper_enter_mmx(tcg_env);
++    gen_enter_mmx(s);
+     if (s->prefix & PREFIX_DATA) {
+         gen_helper_cvttpd2pi(tcg_env, OP_PTR0, OP_PTR2);
+     } else {
+@@ -2629,7 +2650,7 @@
+ static void gen_MOVq_dq(DisasContext *s, X86DecodedInsn *decode)
+ {
+     x87s_boundary(s);
+-    gen_helper_enter_mmx(tcg_env);
++    gen_enter_mmx(s);
+     /* Otherwise the same as any other movq.  */
+     return gen_MOVQ(s, decode);
+ }
+@@ -3110,6 +3131,9 @@
+ static void gen_PSHUFW(DisasContext *s, X86DecodedInsn *decode)
+ {
+     TCGv_i32 imm = tcg_constant8u_i32(decode->immediate);
++    if (simd_pshufw_insn(s, decode)) {
++        return;
++    }
+     gen_helper_pshufw_mmx(OP_PTR0, OP_PTR1, imm);
+ }
+ 
+@@ -4656,6 +4680,9 @@
+ {
+     TCGv_i32 imm = tcg_constant_i32(decode->immediate);
+     SSEFunc_0_pppi ps, pd, fn;
++    if (simd_shufp(s, decode)) {
++        return;
++    }
+     ps = s->vex_l ? gen_helper_shufps_ymm : gen_helper_shufps_xmm;
+     pd = s->vex_l ? gen_helper_shufpd_ymm : gen_helper_shufpd_xmm;
+     fn = s->prefix & PREFIX_DATA ? pd : ps;
+--- a/target/i386/tcg/decode-new.c.inc
++++ b/target/i386/tcg/decode-new.c.inc
+@@ -2823,7 +2823,7 @@
+     if (decode.e.special == X86_SPECIAL_MMX &&
+         !(s->prefix & (PREFIX_REPZ | PREFIX_REPNZ | PREFIX_DATA))) {
+         x87s_boundary(s);
+-        gen_helper_enter_mmx(tcg_env);
++        gen_enter_mmx(s);
+     }
+ 
+     if (decode.e.special != X86_SPECIAL_NoLoadEA &&
+--- a/target/i386/tcg/tcg-cpu.c
++++ b/target/i386/tcg/tcg-cpu.c
+@@ -198,6 +198,7 @@
+     }
+ 
+     x86_tcg_cpu_xsave_init();
++    x86_simd_tables_init(&cpu->env);
+ }
+ 
+ static void x86_tcg_cpu_accel_class_init(ObjectClass *oc, void *data)
+--- a/target/i386/tcg/tcg-cpu.h
++++ b/target/i386/tcg/tcg-cpu.h
+@@ -77,5 +77,6 @@
+ QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, pkru_state) != XSAVE_PKRU_OFFSET);
+ 
+ bool tcg_cpu_realizefn(CPUState *cs, Error **errp);
++void x86_simd_tables_init(CPUX86State *env);   /* tcg/simd-fast.c.inc */
+ 
+ #endif /* TCG_CPU_H */
+--- /dev/null
++++ b/target/i386/tcg/simd-fast.c.inc
+@@ -0,0 +1,604 @@
++/*
++ * MMX / SSE integer and permutation instructions inline (doc 16, patch
++ * 08): the helper-call instructions that sit between the inlined float
++ * ops of D3DX code (shufps, unpck*ps) and the MMX kernels of era
++ * software renderers, blitters and codecs (punpck*, pack*, pmulhw,
++ * pmaddwd, pavg*, psadbw, shifts by a register count, pshufw), plus the
++ * per-instruction MMX entry (fpstt/fptags reset) as three stores.
++ *
++ * Everything works on 64-bit halves in i64 temps: an MMX register is one
++ * half, an XMM register two; the interleaves use bit spreading instead
++ * of per-lane loops, saturation uses smax/smin/umin per lane, psadbw
++ * uses the vector unit for the byte differences and a SWAR sum. Legacy
++ * encodings only (no VEX, no ymm), everything else stays on the helper.
++ * Integer ops have no flags and no modes, so the results are exact by
++ * construction; `-cpu ...,simd-fast=off` keeps the helpers for the
++ * on/off guest test (tools/sse-guest-test.py).
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static bool simd_admissible(DisasContext *s, X86DecodedInsn *decode)
++{
++    return s->simd_on && !(s->prefix & PREFIX_VEX) && !s->vex_l;
++}
++
++/* env offset of 64-bit half i of a vector operand (MMX: i == 0 only) */
++static int simd_q(X86DecodedOp *op, int i)
++{
++    if (op->unit == X86_OP_MMX) {
++        tcg_debug_assert(i == 0);
++        return vector_reg_offset(op) + offsetof(MMXReg, MMX_Q(0));
++    }
++    return vector_reg_offset(op) + offsetof(ZMMReg, ZMM_Q(i));
++}
++
++static int simd_l(X86DecodedOp *op, int i)
++{
++    if (op->unit == X86_OP_MMX) {
++        return vector_reg_offset(op) + offsetof(MMXReg, MMX_L(i));
++    }
++    return vector_reg_offset(op) + offsetof(ZMMReg, ZMM_L(i));
++}
++
++/* MMX entry: top of stack 0, all tags valid (helper_enter_mmx inline) */
++static void gen_enter_mmx(DisasContext *s)
++{
++    TCGv_i32 zero = tcg_constant_i32(0);
++
++    tcg_gen_st_i32(zero, tcg_env, offsetof(CPUX86State, fpstt));
++    tcg_gen_st_i32(zero, tcg_env, offsetof(CPUX86State, fptags[0]));
++    tcg_gen_st_i32(zero, tcg_env, offsetof(CPUX86State, fptags[4]));
++}
++
++/* spread the low 32 bits of x into every other byte / word of a 64-bit word */
++static void simd_spread16(TCGv_i64 r, TCGv_i64 x)
++{
++    TCGv_i64 t = tcg_temp_new_i64();
++
++    tcg_gen_ext32u_i64(r, x);
++    tcg_gen_shli_i64(t, r, 16);
++    tcg_gen_or_i64(r, r, t);
++    tcg_gen_andi_i64(r, r, 0x0000ffff0000ffffull);
++}
++
++static void simd_spread8(TCGv_i64 r, TCGv_i64 x)
++{
++    TCGv_i64 t = tcg_temp_new_i64();
++
++    simd_spread16(r, x);
++    tcg_gen_shli_i64(t, r, 8);
++    tcg_gen_or_i64(r, r, t);
++    tcg_gen_andi_i64(r, r, 0x00ff00ff00ff00ffull);
++}
++
++/*
++ * r = interleave of the low (hi == false) or high 32 bits of a and b,
++ * elements of 8 << esz bits (esz 0..2).
++ */
++static void simd_unpck_half(TCGv_i64 r, TCGv_i64 a, TCGv_i64 b, int esz, bool hi)
++{
++    TCGv_i64 ta = tcg_temp_new_i64();
++    TCGv_i64 tb = tcg_temp_new_i64();
++
++    if (hi) {
++        tcg_gen_shri_i64(ta, a, 32);
++        tcg_gen_shri_i64(tb, b, 32);
++        a = ta;
++        b = tb;
++    }
++    switch (esz) {
++    case 0:
++        simd_spread8(ta, a);
++        simd_spread8(tb, b);
++        tcg_gen_shli_i64(tb, tb, 8);
++        break;
++    case 1:
++        simd_spread16(ta, a);
++        simd_spread16(tb, b);
++        tcg_gen_shli_i64(tb, tb, 16);
++        break;
++    case 2:
++        tcg_gen_ext32u_i64(ta, a);
++        tcg_gen_shli_i64(tb, b, 32);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    tcg_gen_or_i64(r, ta, tb);
++}
++
++
++/* ------------------------------------------------------------------ */
++/* byte-permute tables for tbl_vec (env->simd_tbl, see cpu.h layout)     */
++
++/*
++ * Entry layout: 16 index bytes, 0x80 = zero lane. For two-source
++ * permutes three entries: [0] the lanes taken from v (others 0x80),
++ * [1] the lanes taken from s, [2] both from one register (v == s).
++ */
++static void simd_tbl_entry(uint8_t *e, const int8_t *lane_src, const uint8_t *lane_idx,
++                           int nlanes, int lane_bytes)
++{
++    int which, l, k;
++
++    for (which = 0; which < 3; which++) {
++        for (l = 0; l < nlanes; l++) {
++            for (k = 0; k < lane_bytes; k++) {
++                bool take = which == 2 || lane_src[l] == which;
++                e[which * 16 + l * lane_bytes + k] = take ? lane_idx[l] * lane_bytes + k : 0x80;
++            }
++        }
++        for (l = nlanes * lane_bytes; l < 16; l++) {
++            e[which * 16 + l] = 0x80;
++        }
++    }
++}
++
++void x86_simd_tables_init(CPUX86State *env)
++{
++    uint8_t *t = env->simd_tbl;
++    int imm, esz, hi, w, l;
++    int8_t src[16];
++    uint8_t idx[16];
++
++    for (imm = 0; imm < 256; imm++) {           /* shufps: v[i0] v[i1] s[i2] s[i3] */
++        for (l = 0; l < 4; l++) {
++            src[l] = l < 2 ? 0 : 1;
++            idx[l] = (imm >> (2 * l)) & 3;
++        }
++        simd_tbl_entry(t + SIMD_TBL_SHUFPS + imm * 48, src, idx, 4, 4);
++    }
++    for (imm = 0; imm < 4; imm++) {             /* shufpd: v[i0] s[i1] */
++        src[0] = 0; src[1] = 1;
++        idx[0] = imm & 1; idx[1] = (imm >> 1) & 1;
++        simd_tbl_entry(t + SIMD_TBL_SHUFPD + imm * 48, src, idx, 2, 8);
++    }
++    for (esz = 0; esz < 3; esz++) {             /* punpck{l,h}{bw,wd,dq}, 8- and 16-byte */
++        for (hi = 0; hi < 2; hi++) {
++            for (w = 0; w < 2; w++) {
++                int bytes = w ? 16 : 8, eb = 1 << esz, n = bytes / eb;
++                for (l = 0; l < n; l++) {
++                    src[l] = l & 1;
++                    idx[l] = (hi ? n / 2 : 0) + l / 2;
++                }
++                simd_tbl_entry(t + SIMD_TBL_UNPCK + ((esz * 2 + hi) * 2 + w) * 48, src, idx, n, eb);
++            }
++        }
++    }
++    for (imm = 0; imm < 256; imm++) {           /* pshufw: 4 words from one source */
++        uint8_t *e = t + SIMD_TBL_PSHUFW + imm * 16;
++        for (l = 0; l < 4; l++) {
++            e[2 * l] = ((imm >> (2 * l)) & 3) * 2;
++            e[2 * l + 1] = e[2 * l] + 1;
++        }
++        for (l = 8; l < 16; l++) {
++            e[l] = 0x80;
++        }
++    }
++}
++
++/*
++ * d = permute(v, s) by the three-entry table at `tbl` (env offset), on
++ * the vector unit: one lookup when both sources are the same register,
++ * two lookups and an OR otherwise. MMX operands are 8-byte vectors.
++ */
++static void simd_tbl_permute(DisasContext *s, X86DecodedInsn *decode, int tbl)
++{
++    bool mmx = decode->op[0].unit == X86_OP_MMX;
++    TCGType type = mmx ? TCG_TYPE_V64 : TCG_TYPE_V128;
++    int d = vector_reg_offset(&decode->op[0]);
++    int v = vector_reg_offset(&decode->op[1]);
++    int src = vector_reg_offset(&decode->op[2]);
++    TCGv_vec a = tcg_temp_new_vec(type);
++    TCGv_vec idx = tcg_temp_new_vec(type);
++    TCGv_vec r = tcg_temp_new_vec(type);
++
++    tcg_gen_ld_vec(a, tcg_env, v);
++    if (v == src) {
++        tcg_gen_ld_vec(idx, tcg_env, tbl + 32);
++        tcg_gen_tbl_vec(r, a, idx);
++    } else {
++        TCGv_vec b = tcg_temp_new_vec(type);
++        TCGv_vec t = tcg_temp_new_vec(type);
++
++        tcg_gen_ld_vec(b, tcg_env, src);
++        tcg_gen_ld_vec(idx, tcg_env, tbl);
++        tcg_gen_tbl_vec(r, a, idx);
++        tcg_gen_ld_vec(idx, tcg_env, tbl + 16);
++        tcg_gen_tbl_vec(t, b, idx);
++        tcg_gen_or_vec(MO_8, r, r, t);
++    }
++    tcg_gen_st_vec(r, tcg_env, d);
++    tcg_temp_free_vec(a);
++    tcg_temp_free_vec(idx);
++    tcg_temp_free_vec(r);
++}
++
++/* punpck{l,h}{bw,wd,dq}: MMX one half; XMM: low/high 64 bits of each source */
++static void simd_unpck(DisasContext *s, X86DecodedInsn *decode, int esz, bool hi)
++{
++    TCGv_i64 a = tcg_temp_new_i64();
++    TCGv_i64 b = tcg_temp_new_i64();
++    TCGv_i64 r0 = tcg_temp_new_i64();
++    TCGv_i64 r1 = tcg_temp_new_i64();
++    bool mmx = decode->op[0].unit == X86_OP_MMX;
++
++    if (tcg_tbl_vec_supported()) {
++        simd_tbl_permute(s, decode, offsetof(CPUX86State, simd_tbl)
++                         + SIMD_TBL_UNPCK + ((esz * 2 + hi) * 2 + !mmx) * 48);
++        return;
++    }
++    if (mmx) {
++        tcg_gen_ld_i64(a, tcg_env, simd_q(&decode->op[1], 0));
++        tcg_gen_ld_i64(b, tcg_env, simd_q(&decode->op[2], 0));
++        simd_unpck_half(r0, a, b, esz, hi);
++        tcg_gen_st_i64(r0, tcg_env, simd_q(&decode->op[0], 0));
++        return;
++    }
++    tcg_gen_ld_i64(a, tcg_env, simd_q(&decode->op[1], hi));
++    tcg_gen_ld_i64(b, tcg_env, simd_q(&decode->op[2], hi));
++    simd_unpck_half(r0, a, b, esz, false);
++    simd_unpck_half(r1, a, b, esz, true);
++    tcg_gen_st_i64(r0, tcg_env, simd_q(&decode->op[0], 0));
++    tcg_gen_st_i64(r1, tcg_env, simd_q(&decode->op[0], 1));
++}
++
++/* punpck{l,h}qdq: d = { v.Q(hi), s.Q(hi) } */
++static void simd_unpck_qdq(DisasContext *s, X86DecodedInsn *decode, bool hi)
++{
++    TCGv_i64 a = tcg_temp_new_i64();
++    TCGv_i64 b = tcg_temp_new_i64();
++
++    tcg_gen_ld_i64(a, tcg_env, simd_q(&decode->op[1], hi));
++    tcg_gen_ld_i64(b, tcg_env, simd_q(&decode->op[2], hi));
++    tcg_gen_st_i64(a, tcg_env, simd_q(&decode->op[0], 0));
++    tcg_gen_st_i64(b, tcg_env, simd_q(&decode->op[0], 1));
++}
++
++/*
++ * Saturating pack of one 64-bit source half: 4 words -> 4 bytes at bit
++ * offset `dst_ofs` of r (kind 0 packsswb, 1 packuswb), or 2 dwords -> 2
++ * words (kind 2 packssdw). r accumulates (must start at 0).
++ */
++static void simd_pack_half(TCGv_i64 r, TCGv_i64 x, int kind, int dst_ofs)
++{
++    TCGv_i64 t = tcg_temp_new_i64();
++    int n = kind == 2 ? 2 : 4;
++    int in_bits = kind == 2 ? 32 : 16;
++    int out_bits = kind == 2 ? 16 : 8;
++    int i;
++
++    for (i = 0; i < n; i++) {
++        tcg_gen_sextract_i64(t, x, i * in_bits, in_bits);
++        switch (kind) {
++        case 0:
++            tcg_gen_smax_i64(t, t, tcg_constant_i64(-128));
++            tcg_gen_smin_i64(t, t, tcg_constant_i64(127));
++            break;
++        case 1:
++            tcg_gen_smax_i64(t, t, tcg_constant_i64(0));
++            tcg_gen_umin_i64(t, t, tcg_constant_i64(255));
++            break;
++        case 2:
++            tcg_gen_smax_i64(t, t, tcg_constant_i64(-32768));
++            tcg_gen_smin_i64(t, t, tcg_constant_i64(32767));
++            break;
++        }
++        tcg_gen_deposit_i64(r, r, t, dst_ofs + i * out_bits, out_bits);
++    }
++}
++
++/* packsswb / packuswb / packssdw: MMX d = { pack(v), pack(s) }; XMM per source */
++static void simd_pack(DisasContext *s, X86DecodedInsn *decode, int kind)
++{
++    TCGv_i64 x = tcg_temp_new_i64();
++    TCGv_i64 r = tcg_temp_new_i64();
++    bool mmx = decode->op[0].unit == X86_OP_MMX;
++
++    if (mmx) {
++        tcg_gen_movi_i64(r, 0);
++        tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[1], 0));
++        simd_pack_half(r, x, kind, 0);
++        tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[2], 0));
++        simd_pack_half(r, x, kind, 32);
++        tcg_gen_st_i64(r, tcg_env, simd_q(&decode->op[0], 0));
++        return;
++    }
++    /* d.Q0 = pack(v.Q0, v.Q1), d.Q1 = pack(s.Q0, s.Q1): read s before writing d */
++    {
++        TCGv_i64 r1 = tcg_temp_new_i64();
++
++        tcg_gen_movi_i64(r1, 0);
++        tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[2], 0));
++        simd_pack_half(r1, x, kind, 0);
++        tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[2], 1));
++        simd_pack_half(r1, x, kind, 32);
++        tcg_gen_movi_i64(r, 0);
++        tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[1], 0));
++        simd_pack_half(r, x, kind, 0);
++        tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[1], 1));
++        simd_pack_half(r, x, kind, 32);
++        tcg_gen_st_i64(r, tcg_env, simd_q(&decode->op[0], 0));
++        tcg_gen_st_i64(r1, tcg_env, simd_q(&decode->op[0], 1));
++    }
++}
++
++/* one 64-bit half of pmulhw / pmulhuw / pmaddwd / pavgb / pavgw */
++static void simd_arith_half(TCGv_i64 r, TCGv_i64 a, TCGv_i64 b, int op)
++{
++    TCGv_i64 ta = tcg_temp_new_i64();
++    TCGv_i64 tb = tcg_temp_new_i64();
++    TCGv_i64 t = tcg_temp_new_i64();
++    int i;
++
++    switch (op) {
++    case SIMD_PMULHW:
++    case SIMD_PMULHUW:
++        tcg_gen_movi_i64(r, 0);
++        for (i = 0; i < 4; i++) {
++            if (op == SIMD_PMULHW) {
++                tcg_gen_sextract_i64(ta, a, 16 * i, 16);
++                tcg_gen_sextract_i64(tb, b, 16 * i, 16);
++            } else {
++                tcg_gen_extract_i64(ta, a, 16 * i, 16);
++                tcg_gen_extract_i64(tb, b, 16 * i, 16);
++            }
++            tcg_gen_mul_i64(t, ta, tb);
++            tcg_gen_shri_i64(t, t, 16);
++            tcg_gen_deposit_i64(r, r, t, 16 * i, 16);
++        }
++        break;
++    case SIMD_PMADDWD:
++        tcg_gen_movi_i64(r, 0);
++        for (i = 0; i < 2; i++) {
++            TCGv_i64 t2 = tcg_temp_new_i64();
++
++            tcg_gen_sextract_i64(ta, a, 32 * i, 16);
++            tcg_gen_sextract_i64(tb, b, 32 * i, 16);
++            tcg_gen_mul_i64(t, ta, tb);
++            tcg_gen_sextract_i64(ta, a, 32 * i + 16, 16);
++            tcg_gen_sextract_i64(tb, b, 32 * i + 16, 16);
++            tcg_gen_mul_i64(t2, ta, tb);
++            tcg_gen_add_i64(t, t, t2);
++            tcg_gen_deposit_i64(r, r, t, 32 * i, 32);
++        }
++        break;
++    case SIMD_PAVGB:
++    case SIMD_PAVGW:
++        /* (a + b + 1) >> 1 == (a | b) - ((a ^ b) >> 1), lane-wise */
++        tcg_gen_xor_i64(t, a, b);
++        tcg_gen_shri_i64(t, t, 1);
++        tcg_gen_andi_i64(t, t, op == SIMD_PAVGB ? 0x7f7f7f7f7f7f7f7full
++                                                : 0x7fff7fff7fff7fffull);
++        tcg_gen_or_i64(r, a, b);
++        tcg_gen_sub_i64(r, r, t);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
++static void simd_arith(DisasContext *s, X86DecodedInsn *decode, int op)
++{
++    TCGv_i64 a = tcg_temp_new_i64();
++    TCGv_i64 b = tcg_temp_new_i64();
++    TCGv_i64 r = tcg_temp_new_i64();
++    int halves = decode->op[0].unit == X86_OP_MMX ? 1 : 2;
++    int i;
++
++    for (i = 0; i < halves; i++) {
++        tcg_gen_ld_i64(a, tcg_env, simd_q(&decode->op[1], i));
++        tcg_gen_ld_i64(b, tcg_env, simd_q(&decode->op[2], i));
++        simd_arith_half(r, a, b, op);
++        tcg_gen_st_i64(r, tcg_env, simd_q(&decode->op[0], i));
++    }
++}
++
++/*
++ * psadbw: per 64-bit half, the sum of the 8 absolute byte differences
++ * into the low 16 bits. The differences on the vector unit (umax - umin
++ * per byte), the horizontal sum in SWAR on the 64-bit word.
++ */
++static void simd_psadbw(DisasContext *s, X86DecodedInsn *decode)
++{
++    bool mmx = decode->op[0].unit == X86_OP_MMX;
++    int len = mmx ? 8 : 16;
++    int scratch = offsetof(CPUX86State, sses_scratch[0]);
++    TCGv_i64 x = tcg_temp_new_i64();
++    TCGv_i64 t = tcg_temp_new_i64();
++    int i;
++
++    /* scratch = umax(v, s) - umin(v, s), bytes */
++    tcg_gen_gvec_umax(MO_8, scratch, vector_reg_offset(&decode->op[1]),
++                      vector_reg_offset(&decode->op[2]), len, len);
++    tcg_gen_gvec_umin(MO_8, scratch + 16, vector_reg_offset(&decode->op[1]),
++                      vector_reg_offset(&decode->op[2]), len, len);
++    tcg_gen_gvec_sub(MO_8, scratch, scratch, scratch + 16, len, len);
++    for (i = 0; i < (mmx ? 1 : 2); i++) {
++        tcg_gen_ld_i64(x, tcg_env, scratch + 8 * i);
++        /* pairwise byte sums: no carry can cross a lane (max 255 + 255) */
++        tcg_gen_shri_i64(t, x, 8);
++        tcg_gen_andi_i64(t, t, 0x00ff00ff00ff00ffull);
++        tcg_gen_andi_i64(x, x, 0x00ff00ff00ff00ffull);
++        tcg_gen_add_i64(x, x, t);
++        tcg_gen_shri_i64(t, x, 16);
++        tcg_gen_add_i64(x, x, t);
++        tcg_gen_shri_i64(t, x, 32);
++        tcg_gen_add_i64(x, x, t);
++        tcg_gen_andi_i64(x, x, 0xffff);
++        tcg_gen_st_i64(x, tcg_env, simd_q(&decode->op[0], i));
++    }
++}
++
++/*
++ * Shifts by the count in the low quadword of op[2]: counts beyond the
++ * element width give zero (logical) or a full sign fill (arithmetic).
++ */
++static void simd_shift(DisasContext *s, X86DecodedInsn *decode, int op)
++{
++    static const struct { unsigned vece; bool left, arith; } tab[] = {
++        [SIMD_PSLLW] = { MO_16, true, false }, [SIMD_PSLLD] = { MO_32, true, false },
++        [SIMD_PSLLQ] = { MO_64, true, false }, [SIMD_PSRLW] = { MO_16, false, false },
++        [SIMD_PSRLD] = { MO_32, false, false }, [SIMD_PSRLQ] = { MO_64, false, false },
++        [SIMD_PSRAW] = { MO_16, false, true }, [SIMD_PSRAD] = { MO_32, false, true },
++    };
++    unsigned vece = tab[op].vece;
++    int bits = 8 << vece;
++    int len = decode->op[0].unit == X86_OP_MMX ? 8 : 16;
++    int dofs = vector_reg_offset(&decode->op[0]);
++    int aofs = vector_reg_offset(&decode->op[1]);
++    TCGv_i64 count = tcg_temp_new_i64();
++    TCGv_i64 sh = tcg_temp_new_i64();
++    TCGv_i64 mask = tcg_temp_new_i64();
++    TCGv_i32 sh32 = tcg_temp_new_i32();
++
++    tcg_gen_ld_i64(count, tcg_env, simd_q(&decode->op[2], 0));
++    tcg_gen_umin_i64(sh, count, tcg_constant_i64(bits - 1));
++    tcg_gen_extrl_i64_i32(sh32, sh);
++    if (tab[op].left) {
++        tcg_gen_gvec_shls(vece, dofs, aofs, sh32, len, len);
++    } else if (tab[op].arith) {
++        tcg_gen_gvec_sars(vece, dofs, aofs, sh32, len, len);
++    } else {
++        tcg_gen_gvec_shrs(vece, dofs, aofs, sh32, len, len);
++    }
++    if (!tab[op].arith) {
++        /* count > bits - 1: zero (the shift above was by bits - 1) */
++        tcg_gen_setcondi_i64(TCG_COND_LEU, mask, count, bits - 1);
++        tcg_gen_neg_i64(mask, mask);
++        tcg_gen_gvec_ands(MO_64, dofs, dofs, mask, len, len);
++    }
++}
++
++/* shufps: d = { v[i0], v[i1], s[i2], s[i3] }; shufpd: d = { v[i0], s[i1] } */
++static void simd_shuf(DisasContext *s, X86DecodedInsn *decode, bool pd)
++{
++    int imm = decode->immediate & 0xff;     /* the decoder sign-extends Ib */
++
++    if (tcg_tbl_vec_supported()) {
++        simd_tbl_permute(s, decode, offsetof(CPUX86State, simd_tbl)
++                         + (pd ? SIMD_TBL_SHUFPD + (imm & 3) * 48 : SIMD_TBL_SHUFPS + imm * 48));
++        return;
++    }
++    if (pd) {
++        TCGv_i64 a = tcg_temp_new_i64();
++        TCGv_i64 b = tcg_temp_new_i64();
++
++        tcg_gen_ld_i64(a, tcg_env, simd_q(&decode->op[1], imm & 1));
++        tcg_gen_ld_i64(b, tcg_env, simd_q(&decode->op[2], (imm >> 1) & 1));
++        tcg_gen_st_i64(a, tcg_env, simd_q(&decode->op[0], 0));
++        tcg_gen_st_i64(b, tcg_env, simd_q(&decode->op[0], 1));
++    } else {
++        TCGv_i32 r[4];
++        int i;
++
++        for (i = 0; i < 4; i++) {
++            r[i] = tcg_temp_new_i32();
++            tcg_gen_ld_i32(r[i], tcg_env,
++                           simd_l(&decode->op[i < 2 ? 1 : 2], (imm >> (2 * i)) & 3));
++        }
++        for (i = 0; i < 4; i++) {
++            tcg_gen_st_i32(r[i], tcg_env, simd_l(&decode->op[0], i));
++        }
++    }
++}
++
++/* pshufw mm, mm/m64, imm: four word selects */
++static void simd_pshufw(DisasContext *s, X86DecodedInsn *decode)
++{
++    int imm = decode->immediate & 0xff;
++    TCGv_i64 x = tcg_temp_new_i64();
++    TCGv_i64 t = tcg_temp_new_i64();
++    TCGv_i64 r = tcg_temp_new_i64();
++    int i;
++
++    if (tcg_tbl_vec_supported()) {
++        TCGv_vec a = tcg_temp_new_vec(TCG_TYPE_V64);
++        TCGv_vec idx = tcg_temp_new_vec(TCG_TYPE_V64);
++
++        tcg_gen_ld_vec(a, tcg_env, vector_reg_offset(&decode->op[1]));
++        tcg_gen_ld_vec(idx, tcg_env, offsetof(CPUX86State, simd_tbl) + SIMD_TBL_PSHUFW + imm * 16);
++        tcg_gen_tbl_vec(a, a, idx);
++        tcg_gen_st_vec(a, tcg_env, vector_reg_offset(&decode->op[0]));
++        return;
++    }
++    tcg_gen_ld_i64(x, tcg_env, simd_q(&decode->op[1], 0));
++    tcg_gen_movi_i64(r, 0);
++    for (i = 0; i < 4; i++) {
++        tcg_gen_extract_i64(t, x, 16 * ((imm >> (2 * i)) & 3), 16);
++        tcg_gen_deposit_i64(r, r, t, 16 * i, 16);
++    }
++    tcg_gen_st_i64(r, tcg_env, simd_q(&decode->op[0], 0));
++}
++
++/* ------------------------------------------------------------------ */
++/* entry points for emit.c.inc (return false: emit the helper)          */
++
++static bool simd_int_binary(DisasContext *s, X86DecodedInsn *decode, int op)
++{
++    if (op == SIMD_NONE || !simd_admissible(s, decode)) {
++        return false;
++    }
++    switch (op) {
++    case SIMD_PUNPCKLBW: simd_unpck(s, decode, 0, false); break;
++    case SIMD_PUNPCKLWD: simd_unpck(s, decode, 1, false); break;
++    case SIMD_PUNPCKLDQ: simd_unpck(s, decode, 2, false); break;
++    case SIMD_PUNPCKHBW: simd_unpck(s, decode, 0, true); break;
++    case SIMD_PUNPCKHWD: simd_unpck(s, decode, 1, true); break;
++    case SIMD_PUNPCKHDQ: simd_unpck(s, decode, 2, true); break;
++    case SIMD_PUNPCKLQDQ: simd_unpck_qdq(s, decode, false); break;
++    case SIMD_PUNPCKHQDQ: simd_unpck_qdq(s, decode, true); break;
++    case SIMD_PACKSSWB: simd_pack(s, decode, 0); break;
++    case SIMD_PACKUSWB: simd_pack(s, decode, 1); break;
++    case SIMD_PACKSSDW: simd_pack(s, decode, 2); break;
++    case SIMD_PMULHW:
++    case SIMD_PMULHUW:
++    case SIMD_PMADDWD:
++    case SIMD_PAVGB:
++    case SIMD_PAVGW:
++        simd_arith(s, decode, op);
++        break;
++    case SIMD_PSADBW: simd_psadbw(s, decode); break;
++    case SIMD_PSLLW: case SIMD_PSLLD: case SIMD_PSLLQ:
++    case SIMD_PSRLW: case SIMD_PSRLD: case SIMD_PSRLQ:
++    case SIMD_PSRAW: case SIMD_PSRAD:
++        simd_shift(s, decode, op);
++        break;
++    default:
++        return false;
++    }
++    return true;
++}
++
++/* unpcklps / unpckhps / unpcklpd / unpckhpd (the FP_UNPACK_SSE forms) */
++static bool simd_fp_unpck(DisasContext *s, X86DecodedInsn *decode, bool hi)
++{
++    if (!simd_admissible(s, decode)) {
++        return false;
++    }
++    if (s->prefix & PREFIX_DATA) {
++        simd_unpck_qdq(s, decode, hi);
++    } else {
++        simd_unpck(s, decode, 2, hi);
++    }
++    return true;
++}
++
++static bool simd_shufp(DisasContext *s, X86DecodedInsn *decode)
++{
++    if (!simd_admissible(s, decode)) {
++        return false;
++    }
++    simd_shuf(s, decode, (s->prefix & PREFIX_DATA) != 0);
++    return true;
++}
++
++static bool simd_pshufw_insn(DisasContext *s, X86DecodedInsn *decode)
++{
++    if (!simd_admissible(s, decode)) {
++        return false;
++    }
++    simd_pshufw(s, decode);
++    return true;
++}

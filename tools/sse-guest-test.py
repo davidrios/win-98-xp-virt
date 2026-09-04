@@ -133,6 +133,60 @@ SINGLE_OPS = [
     ("long", "\n".join(["    addps xmm0, xmm1"] * 60 + ["    subps xmm0, xmm1"] * 60).lstrip()),
 ]
 
+def mmx(body):
+    return ("movq mm0, [bx]\n    movq mm1, [si]\n    " + body +
+            "\n    movq [res], mm0\n    movups xmm0, [res]\n    emms")
+
+
+# integer / permutation ops (patch 08, simd-fast): MMX forms on the low 8
+# bytes of the entries, XMM forms on all 16; pure bit patterns, no modes
+INT_OPS = [
+    ("shufps_1b", "shufps xmm0, xmm1, 1bh"),
+    ("shufps_4e", "shufps xmm0, xmm1, 4eh"),
+    ("shufps_b1_m", "shufps xmm0, [si], 0b1h"),
+    ("shufps_00", "shufps xmm0, xmm1, 0"),
+    ("unpcklps", "unpcklps xmm0, xmm1"),
+    ("unpckhps_m", "unpckhps xmm0, [si]"),
+] + [("mmx_" + n, mmx(b)) for n, b in [
+    ("punpcklbw", "punpcklbw mm0, mm1"), ("punpcklwd", "punpcklwd mm0, mm1"),
+    ("punpckldq_m", "punpckldq mm0, [si]"), ("punpckhbw", "punpckhbw mm0, mm1"),
+    ("punpckhwd", "punpckhwd mm0, mm1"), ("punpckhdq", "punpckhdq mm0, mm1"),
+    ("packsswb", "packsswb mm0, mm1"), ("packuswb", "packuswb mm0, mm1"),
+    ("packssdw_m", "packssdw mm0, [si]"), ("pmulhw", "pmulhw mm0, mm1"),
+    ("pmulhuw", "pmulhuw mm0, mm1"), ("pmaddwd", "pmaddwd mm0, mm1"),
+    ("pavgb", "pavgb mm0, mm1"), ("pavgw_m", "pavgw mm0, [si]"),
+    ("psadbw", "psadbw mm0, mm1"), ("psllw", "psllw mm0, mm1"),
+    ("pslld", "pslld mm0, mm1"), ("psllq", "psllq mm0, mm1"),
+    ("psrlw", "psrlw mm0, mm1"), ("psrld_m", "psrld mm0, [si]"),
+    ("psrlq", "psrlq mm0, mm1"), ("psraw", "psraw mm0, mm1"),
+    ("psrad", "psrad mm0, mm1"), ("pshufw_1b", "pshufw mm0, mm1, 1bh"),
+    ("pshufw_b1_m", "pshufw mm0, [si], 0b1h"),
+    ("self_unpck", "punpcklbw mm0, mm0\n    punpckhwd mm0, mm0"),
+    ("shift_self", "psllw mm0, mm0"),
+    ("chain", "punpcklbw mm0, mm1\n    pmulhw mm0, mm1\n    paddw mm0, mm1\n    psraw mm0, mm1\n    packuswb mm0, mm1\n    pavgb mm0, mm1"),
+]] + [
+    ("x87_mmx", "fld dword [bx]\n    fmul dword [si]\n    " + mmx("paddw mm0, mm1\n    pmulhw mm0, mm1") + "\n    fstp dword [tmp]"),
+]
+
+INT_OPS_SSE2 = [
+    ("shufpd_1", "shufpd xmm0, xmm1, 1"), ("shufpd_2_m", "shufpd xmm0, [si], 2"),
+    ("unpcklpd", "unpcklpd xmm0, xmm1"), ("unpckhpd", "unpckhpd xmm0, xmm1"),
+    ("punpcklqdq", "punpcklqdq xmm0, xmm1"), ("punpckhqdq_m", "punpckhqdq xmm0, [si]"),
+    ("xpunpcklbw", "punpcklbw xmm0, xmm1"), ("xpunpcklwd", "punpcklwd xmm0, xmm1"),
+    ("xpunpckldq", "punpckldq xmm0, xmm1"), ("xpunpckhbw_m", "punpckhbw xmm0, [si]"),
+    ("xpunpckhwd", "punpckhwd xmm0, xmm1"), ("xpunpckhdq", "punpckhdq xmm0, xmm1"),
+    ("xpacksswb", "packsswb xmm0, xmm1"), ("xpackuswb_m", "packuswb xmm0, [si]"),
+    ("xpackssdw", "packssdw xmm0, xmm1"), ("xpmulhw", "pmulhw xmm0, xmm1"),
+    ("xpmulhuw", "pmulhuw xmm0, xmm1"), ("xpmaddwd", "pmaddwd xmm0, xmm1"),
+    ("xpavgb", "pavgb xmm0, xmm1"), ("xpavgw", "pavgw xmm0, xmm1"),
+    ("xpsadbw", "psadbw xmm0, xmm1"), ("xpsllw", "psllw xmm0, xmm1"),
+    ("xpslld", "pslld xmm0, xmm1"), ("xpsllq_m", "psllq xmm0, [si]"),
+    ("xpsrlw", "psrlw xmm0, xmm1"), ("xpsrld", "psrld xmm0, xmm1"),
+    ("xpsrlq", "psrlq xmm0, xmm1"), ("xpsraw", "psraw xmm0, xmm1"),
+    ("xpsrad", "psrad xmm0, xmm1"),
+    ("xchain", "punpcklbw xmm0, xmm1\n    pmulhw xmm0, xmm1\n    psraw xmm0, xmm1\n    packuswb xmm0, xmm1\n    shufps xmm0, xmm1, 4eh"),
+]
+
 DOUBLE_OPS = [
     ("addpd", "addpd xmm0, xmm1"),
     ("addsd", "addsd xmm0, xmm1"),
@@ -443,6 +497,36 @@ start:
     push ax
     mov si, str_benchs
     call report
+
+    movq mm1, [va]
+    movq mm2, [vb]
+    movq mm3, [vc]
+    movq mm4, [shcnt]
+    mov si, [es:046Ch]
+.sync3:
+    mov ax, [es:046Ch]
+    cmp ax, si
+    je .sync3
+    mov [t0], ax
+    mov ecx, ITER
+.loop3:                         ; MMX blit-style chain, registers only (8 ops)
+    movq mm0, mm1
+    punpcklbw mm0, mm2
+    pmulhw mm0, mm3
+    psraw mm0, mm4
+    paddw mm0, mm2
+    packuswb mm0, mm3
+    pavgb mm0, mm2
+    psadbw mm0, mm1
+    pshufw mm0, mm0, 1bh
+    dec ecx
+    jnz .loop3
+    emms
+    mov ax, [es:046Ch]
+    sub ax, [t0]
+    push ax
+    mov si, str_benchm
+    call report
     int 20h
 
 report:                     ; si = tag, [sp+2] = ticks
@@ -504,6 +588,8 @@ put_nib:
 
 str_bench:  db "SSEBENCH ", 0
 str_benchs: db "SSEBENCHS ", 0
+str_benchm: db "SSEBENCHM ", 0
+shcnt: dd 3, 0
 mx: dd 1FA0h
 t0: dw 0
 align 16
@@ -518,7 +604,7 @@ vr: dd 0, 0, 0, 0
 
 
 def build_ops():
-    ops = SINGLE_OPS + DOUBLE_OPS
+    ops = SINGLE_OPS + INT_OPS + DOUBLE_OPS + INT_OPS_SSE2
     text = []
     table = []
     for k, (name, body) in enumerate(ops):
@@ -539,7 +625,7 @@ def run_qemu(fast, img, log):
     if os.path.exists(log):
         os.unlink(log)
     p = subprocess.Popen([
-        QEMU, "-machine", "pc", "-cpu", "pentium3,+sse2,sse-fast=" + fast, "-m", "64",
+        QEMU, "-machine", "pc", "-cpu", "pentium3,+sse2,sse-fast=%s,simd-fast=%s" % (fast, fast), "-m", "64",
         "-L", os.path.join(ROOT, "qemu/pc-bios"), "-display", "none", "-net", "none",
         "-fda", img, "-boot", "a", "-serial", "file:" + log, "-monitor", "none",
     ])
@@ -607,7 +693,8 @@ def main():
             if line.startswith(b"SSEBENCH"):
                 tag, it, tk = line.split()
                 ticks[(tag.decode(), fast)] = (int(it, 16), int(tk, 16))
-    for tag, what in (("SSEBENCH", "packed, 8 ops, registers"), ("SSEBENCHS", "scalar, 7 ops, registers")):
+    for tag, what in (("SSEBENCH", "packed, 8 ops, registers"), ("SSEBENCHS", "scalar, 7 ops, registers"),
+                      ("SSEBENCHM", "MMX, 8 ops, registers (simd-fast)")):
         if (tag, "off") in ticks and (tag, "on") in ticks:
             off, on = ticks[(tag, "off")], ticks[(tag, "on")]
             ratio = off[1] / max(1, on[1])

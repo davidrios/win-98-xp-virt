@@ -82,7 +82,8 @@ ensure_msvcrt_cc() {
 ensure_msvcrt_cc
 
 check_isa() {  # fail loudly on SSE2+ / POPCNT (guest CPU floor is pentium3)
-  local n; n=$(objdump -d "$1" | grep -cE '\b(movdq[au]|movapd|movupd|pshufd|punpck[hl](bw|wd|dq|qdq)|paddq|cvtsd2|cvtsi2sd|cvttsd2si|movsd[[:space:]]+%xmm|xorpd|andpd|popcnt|ptest|pcmpistr|pshufb|pmaddubsw)\b' || true)
+  # (MMX-register forms of punpck* are Pentium MMX; only the %xmm forms are SSE2)
+  local n; n=$(objdump -d "$1" | grep -v '%mm[0-7]' | grep -cE '\b(movdq[au]|movapd|movupd|pshufd|punpck[hl](bw|wd|dq|qdq)|paddq|cvtsd2|cvtsi2sd|cvttsd2si|movsd[[:space:]]+%xmm|xorpd|andpd|popcnt|ptest|pcmpistr|pshufb|pmaddubsw)\b' || true)
   if [ "$n" -gt 0 ]; then echo "ERROR: $1 contains $n SSE2+/POPCNT instructions (pentium3 floor)"; exit 1; fi
 }
 check_crt() {  # fail loudly if anything still imports the UCRT api-sets

@@ -162,11 +162,48 @@ scored kernels: guard 0, hand-over 1, helper exits only from the
 denormal kernel. Full table and the measurement pitfalls in
 `reference/benchmarks/README.md`. The rig has not run it yet.
 
+## Patch 08: the integer and permutation instructions (2026-09-04)
+
+The transform kernel showed it: between the inlined `mulps`/`addps` of a
+D3DX vertex transform sit four `shufps`, each a helper call; the MMX
+loops of era blitters, mixers and codecs are all helper calls
+(`punpck*`, `pack*`, `pmulhw`, `pmaddwd`, `pavg*`, `psadbw`, shifts by a
+register count, `pshufw`), plus a helper call for the MMX entry
+(`fpstt`/`fptags` reset) before every one of them. Patch 08
+(`target/i386/tcg/simd-fast.c.inc`, property `simd-fast`) translates
+those inline: the permutes (`shufps`, `shufpd`, all `unpck*`, `pshufw`)
+through a new TCG vector opcode `tbl_vec`, a byte table lookup with
+zeroing (`tbl` on aarch64, `vpshufb` on x86-64) whose index vectors are
+precomputed per instruction and immediate in `env->simd_tbl` at CPU
+init (a two-source permute is two lookups and an OR, one lookup when
+both sources are the same register); on 64-bit halves in integer
+registers the saturating packs (`smax`/`smin`/`umin` per lane),
+`pmulhw`/`pmulhuw`/`pmaddwd`, the average identity
+`(a | b) - ((a ^ b) >> 1)` lane-masked, `psadbw` as the vector unit's
+byte `umax - umin` plus a SWAR sum, gvec scalar shifts with the
+over-width count masked to zero (sign-filled for `psra*`); and three
+stores for the MMX entry. Integer ops have no flags or modes, so
+exactness is by construction; the on/off test covers MMX and XMM forms,
+memory operands, self-operands, chains and a mixed x87/MMX sequence:
+546,425 result lines identical. Register-only MMX chain (DOS bench):
+1.98 s → 0.49 s (4.0×). Legacy encodings only (VEX forms, ymm,
+`pmuludq`, SSSE3 stay on helpers; hosts without `tbl_vec` use a
+bit-spreading / lane-store fallback that is kept in the file).
+
+Two lessons from this patch. A first version wrote the shuffles as four
+32-bit lane stores; the next instruction's 128-bit vector load of that
+register then stalled on the M1 (no store-to-load forwarding across
+several smaller stores), and the transform kernel got *slower* than with
+the helper, whose stores were far enough away. Anything that feeds the
+vector path must produce its result as one vector store: that is why
+`tbl_vec` exists. And `decode->immediate` is sign-extended (0xB1 arrives
+as −79): table indices must mask it, which the on/off test caught on the
+first memory-operand form with a high immediate.
+
 ## Follow-ups
 
-- `shufps`, `unpcklps`/`unpckhps`, `movlhps`/`movhlps` are helper calls
-  and sit between every inlined op of a D3DX transform (4 per vertex);
-  they are pure lane permutations and could be gvec/vector ops.
+- `movlhps`/`movhlps`/`pshufd`/`pshuflw`/`pshufhw` were already inline;
+  `pmuludq` and the SSSE3 set are not (no era relevance).
 - The packed checks re-materialize their vector constants per
   instruction (two instructions each on aarch64); a constant pool or
   hoisting in the backend would trim ~6 of the ~25.

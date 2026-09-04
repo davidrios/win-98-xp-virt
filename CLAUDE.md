@@ -159,4 +159,5 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   53/24-bit common case on the host FPU and patch 06 (doc 13) keeps the
   stack as host doubles inside TCG at PC=53 and PC=24. Test any change
   with both x87 tools above. SSE is patch 07 (doc 16): inline only when
-  PE is already sticky in MXCSR; test with `tools/sse-guest-test.py`.
+  PE is already sticky in MXCSR; MMX/integer/permutes are patch 08
+  (`simd-fast`); test both with `tools/sse-guest-test.py`.

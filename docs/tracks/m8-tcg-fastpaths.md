@@ -10,9 +10,10 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
 ## Scope and files (this track owns them)
 
 - QEMU patches: `patches/qemu/05-x87-fast.patch`, `06-x87-inline-tcg.patch`,
-  `07-sse-inline-tcg.patch` (their rows in `patches/qemu/README.md`).
-  Inside the tree: `target/i386/tcg/x87-fast.h`, `x87-shadow.c.inc`,
-  `sse-fast.c.inc`, `sse-fast-lane.c.inc`, the f32/f64 and vector float
+  `07-sse-inline-tcg.patch`, `08-simd-inline-tcg.patch` (their rows in
+  `patches/qemu/README.md`). Inside the tree: `target/i386/tcg/x87-fast.h`,
+  `x87-shadow.c.inc`, `sse-fast.c.inc`, `sse-fast-lane.c.inc`,
+  `simd-fast.c.inc`, the f32/f64 and vector float
   opcodes in `include/tcg/tcg-opc.h`, `tcg/tcg-op.c`, `tcg/tcg-op-vec.c`,
   `tcg/aarch64/`, `tcg/i386/`, and the hooks in `translate.c`,
   `emit.c.inc`, `decode-new.c.inc`, `fpu_helper.c`, `cpu.h`, `cpu.c`.
@@ -44,6 +45,11 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
 - `SSEBENCH.EXE` in XP on the Air (2026-09-04, `tools/xp-ssebench.sh`):
   SSE kernels 3.2–7.4× with patch 07, x87 kernels 10–12× with patch 06,
   table in `reference/benchmarks/README.md`. Not yet on the rig.
+- Patch 08 (MMX / SSE integer + permutes inline, `simd-fast`, new TCG
+  `tbl_vec` opcode): on this branch, guest test 546,425 lines identical
+  on/off, MMX chain 4.0×; `MMX blend` kernel added to SSEBENCH (XP
+  numbers in the table). The x86-64 `vpshufb` path is unexecuted like
+  the rest of the x86-64 backend additions.
 
 ## Build / test loop
 
@@ -97,7 +103,7 @@ benchmark's convert kernel was fixed to stay in range).
    each per packed op on aarch64); a vector-to-scalar move opcode would
    remove the `env->sses_scratch` round trip and let scalar ops use the
    vector shape too (doc 16 follow-ups).
-5. Still on helpers: `shufps`/`unpck*ps`/`movlhps` (4 per vertex in a
-   D3DX transform, pure permutations: the next cheap win),
-   `cvtps2dq`/`cvttps2dq`/`cvtdq2ps`, the MMX-register conversions,
-   `haddps`/`addsubps` (SSE3), VEX forms (no era relevance).
+5. Still on helpers: `cvtps2dq`/`cvttps2dq`/`cvtdq2ps`, the MMX-register
+   conversions (`cvtpi2ps`/`cvtps2pi`), `pmuludq`, `haddps`/`addsubps`
+   (SSE3), SSSE3, VEX forms (no era relevance). `shufps`/`unpck*` and the
+   MMX set landed in patch 08.

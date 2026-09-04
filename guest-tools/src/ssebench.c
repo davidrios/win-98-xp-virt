@@ -23,6 +23,7 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <mmintrin.h>
 #include <xmmintrin.h>
 
 /*
@@ -65,6 +66,8 @@ static vec4 outv[N] __attribute__((aligned(16)));
 static float fin[N] __attribute__((aligned(16)));
 static int iout[N];
 static float mat[16] __attribute__((aligned(16)));
+static unsigned char pixa[N * 4] __attribute__((aligned(8)));
+static unsigned char pixb[N * 4] __attribute__((aligned(8)));
 
 static float lcg(unsigned *s)
 {
@@ -85,6 +88,10 @@ static void init_data(void)
     }
     for (i = 0; i < 16; i++) {
         mat[i] = lcg(&seed) * 2.0f - 1.0f;
+    }
+    for (i = 0; i < N * 4; i++) {
+        pixa[i] = (unsigned char)(lcg(&seed) * 256.0f);
+        pixb[i] = (unsigned char)(lcg(&seed) * 256.0f);
     }
     mat[15] = 1.0f;
 }
@@ -232,6 +239,30 @@ static float k_c_normalize(int reps)
     return sum;
 }
 
+/* 9. MMX alpha blend of 32-bit pixels, two per iteration: the shape of a software blitter */
+static float k_mmx_blend(int reps)
+{
+    __m64 zero = _mm_setzero_si64();
+    unsigned sum = 0;
+    int r, i;
+    for (r = 0; r < reps; r++) {
+        __m64 alpha = _mm_set1_pi16((short)(64 + (r & 127)));
+        for (i = 0; i < N * 4; i += 8) {
+            __m64 a = *(__m64 *)&pixa[i], b = *(__m64 *)&pixb[i];
+            __m64 al = _mm_unpacklo_pi8(a, zero), ah = _mm_unpackhi_pi8(a, zero);
+            __m64 bl = _mm_unpacklo_pi8(b, zero), bh = _mm_unpackhi_pi8(b, zero);
+            __m64 dl = _mm_srai_pi16(_mm_mullo_pi16(_mm_sub_pi16(al, bl), alpha), 8);
+            __m64 dh = _mm_srai_pi16(_mm_mullo_pi16(_mm_sub_pi16(ah, bh), alpha), 8);
+            __m64 o = _mm_packs_pu16(_mm_add_pi16(bl, dl), _mm_add_pi16(bh, dh));
+            o = _mm_avg_pu8(o, a);
+            *(__m64 *)&pixb[i] = o;
+        }
+        sum += _mm_cvtsi64_si32(_mm_sad_pu8(*(__m64 *)&pixb[r & 255], *(__m64 *)&pixa[r & 255]));
+    }
+    _mm_empty();
+    return (float)sum;
+}
+
 /* 8. decay into denormals: the slow-path cost when results go tiny (not in the score) */
 static float k_denormal(int reps)
 {
@@ -271,6 +302,7 @@ static struct kernel kernels[] = {
     { "C xform (x87)",               k_c_xform,     300, 28, 0 },
     { "C normalize (x87 fsqrt/fdiv)", k_c_normalize, 300, 12, 0 },
     { "denormal decay (slow path)",  k_denormal,    3,   80, 0 },
+    { "MMX blend (unpck/mul/pack/avg)", k_mmx_blend, 300, 14, 0 },
 };
 
 int main(int argc, char **argv)

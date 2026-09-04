@@ -105,12 +105,22 @@ TLB lookup per operand is the same on both paths).
 x87 control word PC=53, best of two passes per boot; ns per op, lower is
 better):
 
-| Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | denormal decay | Date |
-|---|---|---|---|---|---|---|---|---|---|
-| Rig (P4 1.7), XP | | | | | | | | | not yet run |
-| M1 Air, XP, defaults (patches 06 + 07) | **2.4** | **2.1** | **3.6** | **3.7** | **2.3** | **4.1** | **3.9** | 81 | 2026-09-04 |
-| M1 Air, XP, `sse-fast=off` | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | 2026-09-04 |
-| M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | 2026-09-04 |
+| Machine / config | xform | normalize | scalar chain | clamp+cmp | convert | C xform (x87) | C normalize (x87) | denormal decay | MMX blend | Date |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Rig (P4 1.7), XP | | | | | | | | | | not yet run |
+| M1 Air, XP, defaults (patches 06 + 07 + 08) | **2.1** | **2.0** | **3.9** | **4.7** | **2.3** | **4.2** | **4.6** | 80 | **0.41** | 2026-09-04 |
+| M1 Air, XP, `simd-fast=off` (07 on) | 2.4 | 2.4 | 3.8 | 4.6 | 2.3 | 4.2 | 4.3 | 83 | 0.80 | 2026-09-04 |
+| M1 Air, XP, `sse-fast=off` (06 + 08's predecessor) | 17.7 | 13.5 | 11.8 | 16.2 | 7.4 | 4.5 | 3.9 | 49 | | 2026-09-04 |
+| M1 Air, XP, `sse-fast=off,x87-fast=off` | 17.7 | 13.8 | 12.1 | 16.1 | 6.6 | 45.5 | 47.0 | 47 | | 2026-09-04 |
+
+Patch 08 (MMX / SSE integer and permutes inline, `tbl_vec`): the MMX
+blend kernel 0.80 → 0.41 (2.0×), the packed transform's four `shufps`
+2.38 → 2.10 per float op, normalize 2.41 → 2.03. A first version with
+scalar lane stores for the shuffles was *slower* than the helper (2.76
+and 2.86): the next instruction's vector load stalled behind four
+smaller stores; hence the table-lookup opcode. Runs with the `simd`
+rows were separate boots from the `sse-fast=off` rows, so compare
+within a pair, not across (the E-core effect, up to 2× between boots).
 
 Reading: patch 07 makes the SSE kernels 3.2–7.4× faster (packed code
 gains most: the transform is 4 `mulps` + 4 `addps` + 4 `shufps`, and the
