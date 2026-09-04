@@ -16,7 +16,8 @@
 # game disc takes the CD-ROM drive the game was installed from, D:; the
 # driver ISO moves to the next drive, F: after the E: scratch), and for `cmd` / `bat`:
 # CMD_WAIT=s (one wait, default 30) or SHOTS=n SHOT_EVERY=s (n screendumps
-# cmd-01.png … every s seconds — for watching a game start). Needs
+# cmd-01.png … every s seconds — for watching a game start; SHOT_KEYS="26:esc"
+# presses a key right before screendump n). Needs
 # guest-tools/build-driver.sh run first (guest-tools/out/d3dpt-driver.iso),
 # mkfs.fat + sfdisk + mtools + python3. Ends every run with a clean
 # power-down. Keys typed while a full-screen DirectDraw window is up are
@@ -101,7 +102,12 @@ case "$MODE" in
   cmd|bat)
     if [ "$MODE" = bat ]; then run 'E:\RUN.BAT'; else run "${1:?guest command line}"; fi
     if [ -n "${SHOTS:-}" ]; then
-      for i in $(seq -f '%02g' 1 "$SHOTS"); do sleep "${SHOT_EVERY:-5}"; Q screendump "$OUT/cmd-$i.png" || true; done
+      for i in $(seq -f '%02g' 1 "$SHOTS"); do
+        sleep "${SHOT_EVERY:-5}"
+        # SHOT_KEYS="12:esc,14:ret": press the key (qmpc.py names) just before that screendump
+        SK="${SHOT_KEYS:-}"; for k in ${SK//,/ }; do [ "${k%%:*}" = "${i#0}" ] && { Q keys "${k#*:}" || true; sleep 1; }; done
+        Q screendump "$OUT/cmd-$i.png" || true
+      done
     else
       sleep "${CMD_WAIT:-30}"
     fi

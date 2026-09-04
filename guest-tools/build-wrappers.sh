@@ -186,6 +186,12 @@ cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/ddraw.dll" "$ROOT/guest-tools/src/d3dpt/ddraw.c" \
   "$ROOT/guest-tools/src/d3dpt/ddraw.def" -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c" -lddraw -ldxguid
+# DirectInput logging shim (d3dpt/dinput.c): forwards to the system dinput.dll
+# and writes dinput_log.txt next to the EXE — what the game asks of its
+# keyboard / mouse devices and what it gets back (FIFA 2000's match, doc 15).
+i686-w64-mingw32-gcc -O2 -Wall -shared -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
+  -o "$OUT/iso/D3DPT/dinput.dll" "$ROOT/guest-tools/src/d3dpt/dinput.c" "$ROOT/guest-tools/src/d3dpt/dinput.def" \
+  -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup -ldxguid
 # Feature test (doc 14 P3): shaders, declarations, state blocks, queries, cube maps, surfaces.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src/d3dfeat9.c" -ld3d9 -lgdi32 -luser32
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
@@ -232,7 +238,10 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             when a launcher checks video memory through DirectDraw (GTA
             Vice City: "cannot find enough available video memory"); it
             reports 256 MB and forwards everything else to the system.
-            DDVMTEST.EXE shows what such a check sees.
+            DDVMTEST.EXE shows what such a check sees. DINPUT.DLL next to
+            the EXE logs the game's DirectInput use (devices, cooperative
+            level, buffer size, poll rate, every key/button it gets) to
+            dinput_log.txt: for "the keyboard does nothing in the game".
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
 DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with

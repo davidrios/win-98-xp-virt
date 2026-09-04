@@ -25,6 +25,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include "d3dpt_exec_int.h"
+#include <chrono>
 
 namespace d3dpt {
 
@@ -76,6 +77,10 @@ struct Ddi {
     std::vector<uint16_t> idx;
     std::vector<uint32_t> warned;           /* one log line per unsupported state / token */
     uint32_t dp2_calls = 0, draws = 0, readbacks = 0;
+    /* a rate line every 5 s of host time while frames are read back (the
+     * frame rate of the guest's Direct3D, one readback per presented frame) */
+    std::chrono::steady_clock::time_point stat_t0{};
+    uint32_t stat_dp2 = 0, stat_draws = 0, stat_rb = 0;
 
     bool warn_once(uint32_t key) {
         for (uint32_t k : warned) if (k == key) return false;
@@ -236,6 +241,15 @@ static HRESULT readback(Exec &x, Ddi &d, VramSurf &s) {
     s.rendered = false;
     s.dirty = false;
     d.readbacks++;
+    auto now = std::chrono::steady_clock::now();
+    if (d.stat_t0 == std::chrono::steady_clock::time_point{}) d.stat_t0 = now;
+    double dt = std::chrono::duration<double>(now - d.stat_t0).count();
+    if (dt >= 5.0) {
+        x.log("ddi: %.1f frames/s (%u readbacks, %u dp2 calls, %u draws in %.1f s)",
+              (d.readbacks - d.stat_rb) / dt, d.readbacks - d.stat_rb, d.dp2_calls - d.stat_dp2, d.draws - d.stat_draws, dt);
+        d.stat_t0 = now;
+        d.stat_rb = d.readbacks; d.stat_dp2 = d.dp2_calls; d.stat_draws = d.draws;
+    }
     if (x.ops.vram_dirty) x.ops.vram_dirty(x.ops.ud, s.d.offset, s.d.pitch * s.d.height);
     return S_OK;
 }

@@ -62,7 +62,9 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 # --shader <preset.slangp> (or PLAYER_SHADER=) runs a libretro slang preset, e.g.
 #   target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- ...
 # PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
-# PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test)
+# PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test);
+#   each press is held PLAYER_KEYS_HOLD frames (default 6 ≈ 100 ms) — a down+up in one flush is a
+#   zero-length press that a game polling the keyboard state never sees
 # PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
 # PLAYER_LATENCY=1 prints publish→present latency percentiles every 240 guest frames
 # PLAYER_REFRESH_MS=16 (default) is the guest frame pull interval (QEMU's own default is 30)

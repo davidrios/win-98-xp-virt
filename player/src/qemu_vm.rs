@@ -37,7 +37,7 @@ pub struct Frame {
 /// numbers (headless input verification; names: a-z, 0-9, enter, esc, space,
 /// tab, up, down, left, right, f1-f12).
 struct KeyScript {
-    steps: Vec<(u64, Vec<u32>)>, // (frame seq, AT set-1 scancodes pressed together)
+    steps: Vec<(u64, Vec<u32>, bool)>, // (frame seq, AT set-1 scancodes pressed together, down)
     next: usize,
 }
 
@@ -115,7 +115,17 @@ fn key_script_from_env() -> Option<KeyScript> {
             .split('+')
             .map(|n| key_name_to_atset1(n.trim()))
             .collect();
-        steps.push((at.trim().parse().ok()?, chord?));
+        // a real press: down at the frame, up PLAYER_KEYS_HOLD frames later
+        // (default 6 ≈ 100 ms at the 16 ms refresh); a down+up in one flush is
+        // a zero-length press that a game polling the keyboard never sees
+        let hold: u64 = std::env::var("PLAYER_KEYS_HOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6);
+        let at: u64 = at.trim().parse().ok()?;
+        let chord = chord?;
+        steps.push((at, chord.clone(), true));
+        steps.push((at + hold, chord, false));
     }
     steps.sort();
     Some(KeyScript { steps, next: 0 })
@@ -384,20 +394,26 @@ unsafe extern "C" fn on_refresh_done(ud: *mut c_void) {
     }
     if let (Some(vm), Some(sc)) = (vm.as_ref(), script.as_mut()) {
         while sc.next < sc.steps.len() && sc.steps[sc.next].0 <= front.seq {
-            let chord = &sc.steps[sc.next].1;
+            let (_, chord, down) = &sc.steps[sc.next];
             let qcodes: Vec<u32> = chord
                 .iter()
                 .map(|&c| qemu_embed::atset1_to_qcode(c))
                 .collect();
             eprintln!(
-                "[script] frame {} chord {:x?} -> qcodes {:?}",
-                front.seq, chord, qcodes
+                "[script] frame {} chord {:x?} -> qcodes {:?} {}",
+                front.seq,
+                chord,
+                qcodes,
+                if *down { "down" } else { "up" }
             );
-            for &q in &qcodes {
-                vm.key(q, true);
-            }
-            for &q in qcodes.iter().rev() {
-                vm.key(q, false);
+            if *down {
+                for &q in &qcodes {
+                    vm.key(q, true);
+                }
+            } else {
+                for &q in qcodes.iter().rev() {
+                    vm.key(q, false);
+                }
             }
             vm.input_flush();
             sc.next += 1;

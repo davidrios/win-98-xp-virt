@@ -422,3 +422,43 @@ the run ends with a clean power-down while the match is still playing.
 Not yet measured: the frame rate (the player shows it), input (the
 headless loop never touches the game), a full user-driven match with the
 menus, the 640×480 in-game resolution.
+
+Played by hand the same day: graphics clean, smooth under KVM. The user
+found **the keyboard dead in the match under TCG** (`-cpu pentium3`, no
+KVM) and working under KVM. What the investigation established
+(2026-09-04, all on this Linux box, headless runs driven over QMP with
+`tools/xp-driver-test.sh`, plus the real player with `PLAYER_KEYS`):
+
+- Not the emulator's input path. `DRIVER\DITEST.EXE` (a game-style
+  DirectInput keyboard, exclusive + foreground, with a busy loop between
+  polls) sees every key under TCG, in bare QEMU and through the player's
+  own queue; the embed library's new `qemu-embed: input:` statistics show
+  no drain latency over 20 ms and no key down/up pair delivered in one
+  drain. Not XP's `LowLevelHooksTimeout` (5000 ms changes nothing). Not
+  the frame rate: the match renders at the game's own 30 fps cap under
+  TCG here (`d3dpt-vga: ddi: 30.0 frames/s` in the log).
+- The game itself. `D3DPT\DINPUT.DLL` next to the EXE (a forwarding shim
+  that logs the game's DirectInput use, `dinput_log.txt`) shows FIFA's
+  keyboard device is `DISCL_NONEXCLUSIVE | DISCL_FOREGROUND`, polled with
+  `GetDeviceState` 30 times a second, no errors — and in the match it
+  reports **no key at all**, KVM or TCG, while a sampler thread in the
+  same process sees every key through `GetAsyncKeyState`. The front end
+  (title screen, side selection) works through the same device. On XP a
+  non-exclusive DirectInput keyboard is fed by a low-level hook that runs
+  on the thread which created the device, only while that thread services
+  its message queue; FIFA's match loop does not pump. Why the user's KVM
+  session got through is not settled (likely the loop's idle time on a
+  fast CPU); the headless KVM runs did not.
+- The fix is in the shim: every key `GetAsyncKeyState` reports pressed is
+  set in the keyboard state handed back (DIK from the scan code, the
+  extended keys mapped by hand), logged once per key when DirectInput's
+  own state lacked it. With `DINPUT.DLL` in the game folder the match
+  takes 100 ms taps (F2 camera, Esc pause, F12 exit) under KVM and TCG
+  alike. The user-facing recipe: copy `D3DPT\DINPUT.DLL` next to
+  `fifa2000.exe`; `tools/xp-fifa2000.bat` does it from `E:\DINPUT.DLL`.
+- FIFA's own quirks met on the way: its front-end menus need a mouse
+  button held ≈1 s (a 100 ms click is ignored; the QMP `click` in
+  `qmpc.py` is too short, hold the button by hand in `input-send-event`);
+  the intro video can be skipped with Esc; the kickoff starts by itself
+  after ≈1 minute; F1–F4 cameras, Esc pause, F12 exit are the readme's
+  in-match keys.

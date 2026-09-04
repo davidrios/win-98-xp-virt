@@ -37,7 +37,17 @@ typedef struct {
     uint8_t kind;
     bool down;
     int32_t a, b, c, d;
+    int64_t t;              /* enqueue time (g_get_monotonic_time) */
 } in_event;
+
+/* input path statistics (stderr, "qemu-embed: input: …"): how late the main
+ * loop drains the queue, key presses whose down and up landed in the same
+ * drain (a zero-length press: a game polling the keyboard state never sees
+ * it), events dropped on a full queue. Found with FIFA 2000 under TCG. */
+typedef struct {
+    unsigned drains, events, dropped, coalesced, coalesced_logged;
+    int64_t max_lat, last_report;
+} in_stats;
 
 #define IN_QUEUE_LEN 512
 
@@ -51,6 +61,7 @@ struct qemu_embed {
     in_event in_q[IN_QUEUE_LEN];
     unsigned in_n;
     bool in_bh_pending;
+    in_stats in_st;
 
     int argc;
     char **argv;
@@ -330,11 +341,16 @@ static const InputButton button_map[] = {
 
 static void enqueue(qemu_embed_t *e, in_event ev)
 {
+    ev.t = g_get_monotonic_time();
     qemu_mutex_lock(&e->in_lock);
     if (e->in_n < IN_QUEUE_LEN) {
         e->in_q[e->in_n++] = ev;
+    } else {
+        /* drop — a stalled main loop should not grow memory unbounded */
+        if (e->in_st.dropped++ == 0) {
+            fprintf(stderr, "qemu-embed: input: queue full (%u events), dropping\n", IN_QUEUE_LEN);
+        }
     }
-    /* else: drop — a stalled main loop should not grow memory unbounded */
     qemu_mutex_unlock(&e->in_lock);
 }
 
@@ -386,6 +402,40 @@ static void bh_input_drain(void *opaque)
     e->in_n = 0;
     e->in_bh_pending = false;
     qemu_mutex_unlock(&e->in_lock);
+
+    /* statistics: latency of the oldest event, down+up pairs in one batch */
+    in_stats *st = &e->in_st;
+    int64_t now = g_get_monotonic_time();
+    st->drains++;
+    st->events += n;
+    if (n && now - batch[0].t > st->max_lat) {
+        st->max_lat = now - batch[0].t;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (batch[i].kind != EV_KEY || !batch[i].down) {
+            continue;
+        }
+        for (unsigned j = i + 1; j < n; j++) {
+            if (batch[j].kind == EV_KEY && batch[j].a == batch[i].a && !batch[j].down) {
+                st->coalesced++;
+                if (st->coalesced_logged < 8) {
+                    st->coalesced_logged++;
+                    fprintf(stderr, "qemu-embed: input: key qcode %d down and up in one drain "
+                            "(down queued %lld ms ago, up %lld ms after it, batch of %u)\n",
+                            batch[i].a, (long long)((now - batch[i].t) / 1000),
+                            (long long)((batch[j].t - batch[i].t) / 1000), n);
+                }
+                break;
+            }
+        }
+    }
+    if (now - st->last_report > 5 * 1000000 && (st->max_lat > 20000 || st->coalesced || st->dropped)) {
+        fprintf(stderr, "qemu-embed: input: %u drains, %u events, max latency %lld ms, "
+                "%u zero-length key presses, %u dropped\n",
+                st->drains, st->events, (long long)(st->max_lat / 1000), st->coalesced, st->dropped);
+        st->last_report = now;
+        st->max_lat = 0;
+    }
 
     bool pointer = false;
     for (unsigned i = 0; i < n; i++) {

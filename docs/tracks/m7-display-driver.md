@@ -58,6 +58,16 @@ picture and the track rules, then this file, then doc 15.
   image is `~/vms/winxp-m7f.qcow2` (a copy of the user's `winxp-m7` with
   the M7c driver reinstalled and the DLLs renamed); the user's own image
   still has the M7b driver (register set v1) and the DLLs in place.
+- **Played by hand (user, 2026-09-04): graphics clean, smooth; the
+  keyboard dead in the match under TCG.** Root cause and fix in doc 15
+  ("FIFA 2000 on the HAL"): the game's non-exclusive DirectInput keyboard
+  never updates in the match because its thread stops pumping messages;
+  `D3DPT\DINPUT.DLL` next to the EXE merges `GetAsyncKeyState` into the
+  state and logs the game's DirectInput use. Tools that came out of it:
+  `DRIVER\DITEST.EXE`, the `qemu-embed: input:` statistics in the embed
+  library, `PLAYER_KEYS_HOLD`, the executor's `frames/s` line,
+  `xp-driver-test.sh`'s `bat` / `GAME_ISO` / `SHOTS` / `SHOT_KEYS`,
+  `qmpc.py click`.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04). New
   work: branch `track/m7-<topic>` off main. A session resuming here:
@@ -112,10 +122,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 
 ## Next steps, in order
 
-1. **M7c, the rest:** FIFA 2000 played by hand in the player on
-   `winxp-m7f` (it renders headless; open: frame rate, input after the
-   mode switches, the menus, a full match, the 640×480 in-game mode), then
-   what it or the next title asks for first among: colour
+1. **M7c, the rest:** FIFA 2000 plays (user-verified under KVM; the TCG
+   keyboard needs `D3DPT\DINPUT.DLL` in the game folder — confirm on the
+   user's setup, then decide whether the merge belongs in a system-wide
+   place). Then what it or the next title asks for first among: colour
    keying (key → alpha at upload + alpha test), claiming T&L
    (`D3DDEVCAPS_HWTRANSFORMANDLIGHT`, the tokens are already mapped),
    render-to-texture, state sets, the DX8 tokens + `GUID_D3DCaps`

@@ -3,6 +3,7 @@
   screendump <out.png>         -> PPM via QMP, converted to PNG (pure python)
   keys <k1> <k2> ...           -> send-key one at a time (QKeyCode names; 'a+b' = chord)
   type <text>                  -> types ASCII text (letters, digits, \\ : . / space _ - & ( ) , ; = ' \" * % + ! > < |; US layout)
+  click <x> <y> [w h]          -> absolute pointer (usb-tablet) to x,y of a w×h screen (default 640×480), left click
   json <json>                  -> raw request
 """
 import json, socket, struct, sys, time, zlib
@@ -76,6 +77,18 @@ def main():
             if k is None:
                 k = ch.lower()
             send(f, list(k) if isinstance(k, tuple) else [k])
+    elif what == "click":
+        x, y = int(sys.argv[3]), int(sys.argv[4])
+        w, h = (int(sys.argv[5]), int(sys.argv[6])) if len(sys.argv) > 6 else (640, 480)
+        move = [{"type": "abs", "data": {"axis": "x", "value": x * 32767 // w}},
+                {"type": "abs", "data": {"axis": "y", "value": y * 32767 // h}}]
+        cmd(f, "input-send-event", {"events": move})
+        time.sleep(0.15)
+        for down in (True, False):
+            r = cmd(f, "input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": "left"}}]})
+            if "error" in r:
+                print("click", r["error"])
+            time.sleep(0.1)
     elif what == "json":
         r = cmd(f, **json.loads(sys.argv[3]))
         print(json.dumps(r))

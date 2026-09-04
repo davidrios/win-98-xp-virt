@@ -16,6 +16,10 @@ ren DDRAW.DLL DDRAW.WINE
 ren WINED3D.DLL WINED3D.WINE
 ren WINEDD.DLL WINEDD.WINE
 cd ..
+rem a DINPUT.DLL on E:\ (the D3DPT logging shim) goes next to the EXE: dinput_log.txt
+rem then records what the game asks DirectInput for and what it gets back
+if exist E:\DINPUT.DLL copy /y E:\DINPUT.DLL . > nul
+if exist E:\DINPUT.DLL copy /y E:\DINPUT.DLL THRASH > nul
 dir /b > E:\fifadir.txt
 dir /b THRASH >> E:\fifadir.txt
 start /wait fifa2000.exe
