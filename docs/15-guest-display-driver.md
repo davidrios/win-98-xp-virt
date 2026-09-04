@@ -3,9 +3,10 @@
 The long-term guest side of doc 14: instead of DLL copies per game
 folder, a Windows display driver pair that owns the adapter, and later
 speaks the DirectDraw and Direct3D DDIs into the same transport and
-executor. Staged: **M7a framebuffer (this doc, landed 2026-09-04) →
-M7b DirectDraw DDI → M7c Direct3D DDI**. ADR-008 (doc 10) has the why;
-this doc is the how and the state.
+executor. Staged: **M7a framebuffer (landed 2026-09-04) → M7b DirectDraw
+DDI (first cut landed the same day: VRAM surfaces, page flips, cached
+mappings) → M7c Direct3D DDI**. ADR-008 (doc 10) has the why; this doc
+is the how and the state.
 
 ## Shape (M7a)
 
@@ -133,6 +134,71 @@ DDK is used. What it took:
   `VIDEO_MODE_NO_ZERO_MEMORY` (it maps all of VRAM in kernel space for
   that). Player log of a switch is now one `[display] switch` line.
 
+## M7b — the DirectDraw DDI (2026-09-04)
+
+What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
+(`d3dptdisp.c`, bottom half; the DDI header is ReactOS' public-domain
+`ddrawint.h`, vendored in `guest-tools/src/d3dptvid/ddk/`):
+
+- **The primary is a device surface GDI still draws on.** `EngCreateDeviceSurface`
+  + `EngModifySurface(hsurf, hdev, HOOK_SYNCHRONIZE, MS_NOTSYSTEMMEMORY,
+  dhsurf, pvScan0 = VRAM, pitch)` with a no-op `DrvSynchronizeSurface`.
+  `HOOK_SYNCHRONIZE` is not optional: without it win32k refuses the
+  `EngModifySurface` (the driver tries the variants in order and logs the
+  one that took; the M7a engine bitmap is the fallback, desktop only).
+- **VRAM behind the primary is one linear heap** (`DrvGetDirectDrawInfo`:
+  `VIDMEM_ISLINEAR`, `fpStart` = primary size rounded to 4 KiB, `fpEnd` =
+  end of BAR 0, offsets relative to the frame buffer). dxg's heap manager
+  places every DirectDraw surface in it; the driver never allocates.
+- **The caps dxg accepts:** `dwCaps = 0` (no blit caps: DirectDraw's HEL
+  blits on the mapped VRAM, which is RAM here), `dwCaps2 = WIDESURFACES`,
+  `ddsCaps = PRIMARYSURFACE | OFFSCREENPLAIN | FLIP | FRONTBUFFER | BACKBUFFER`,
+  `DDHALINFO_GETDRIVERINFOSET` + a `GetDriverInfo` that answers
+  `GUID_NTCallbacks` (SetExclusiveMode, FlipToGDISurface) and refuses the
+  rest. **`DDCAPS_GDI` in `dwCaps` makes dxg drop the HAL** (enable →
+  immediate disable, `DDCAPS_NOHARDWARE`, system-memory surfaces); found
+  by bisection with the `ddflags` knob below, kept as `DDF_GDI_CAP` for
+  the record.
+- **Callbacks:** `DdMapMemory` (VRAM into the game's process through the
+  miniport's `IOCTL_VIDEO_SHARE_VIDEO_MEMORY`), `DdCanCreateSurface`
+  (display format only), `DdFlip` = one write of the target surface's
+  VRAM offset into the device's OFFSET register (a real page flip: the
+  console surface moves to the other buffer, nothing is copied),
+  `DdWaitForVerticalBlank` = wait for the device's FRAMES counter to
+  move (bounded at 50 ms), `DdGetBltStatus` / `DdGetFlipStatus` = always
+  done. Not hooked: Lock, Unlock, Blt, CreateSurface, DestroySurface.
+- **Mappings are cached, not write-combined.** videoprt's
+  `VideoPortMapMemory` maps frame buffers uncached or write-combined
+  (right for a PCI aperture, wrong for RAM): reads from such a mapping run
+  at tens of MB/s, and GDI scrolls, DirectDraw's HEL copies and every
+  `Lock` read do exactly that. The miniport therefore maps VRAM itself:
+  `MmMapIoSpace(MmCached)` for the kernel view GDI draws through, and a
+  cached view of `\Device\PhysicalMemory` (`ZwMapViewOfSection`, what
+  videoprt does inside minus `PAGE_NOCACHE`) for DirectDraw's user-mode
+  `Lock`. Those are the miniport's only ntoskrnl imports; the register BAR
+  stays a videoprt (uncached) mapping. QEMU reads guest RAM coherently, so
+  a cached guest mapping is correct under KVM and TCG alike.
+- **`-device d3dpt-vga,ddflags=N`** (register `DDFLAGS`, read by the
+  display driver) switches behaviours without a driver reinstall:
+  1 = no GetDriverInfo, 4 = no surface callbacks, 8 = engine-bitmap
+  primary, 0x10 = add `DDCAPS_GDI`. That is how the caps were bisected
+  in one afternoon: one boot per variant, `DDTEST` and the QEMU log tell.
+- **Test:** `DRIVER\DDTEST.EXE [w h bpp] [frames] [-windowed]` (guest-tools
+  ISO): caps, exclusive flip chain (Lock/Unlock pattern + `Blt` colour fill
+  + `Flip`) or a windowed offscreen surface blitted to the primary, fps,
+  `ddtest.log` + `ddtest.bmp`. Results 2026-09-04 (KVM, RADV host):
+
+  | case | before (write-combined) | cached mappings |
+  |---|---|---|
+  | 640×480×16 exclusive, 300 flips | 3846 fps | 4762 fps |
+  | 640×480×32 exclusive, 300 flips | 6383 fps | 6383 fps |
+  | 640×480×32 windowed, offscreen VRAM → primary Blt (HEL) | 29.9 fps | 305 fps |
+
+  Every surface reports `VIDEOMEMORY | LOCALVIDMEM`, the QEMU log shows
+  `scanout offset 0 -> 614400 -> 0 …` per flip, the picture (checkerboard
+  + moving bar) is right in the screendump. The uncached numbers before
+  write-combining were 31 fps for the 16 bpp chain.
+
 ## Open items
 
 - The Logo dialog: none of the registry policy values silence it on XP
@@ -150,8 +216,17 @@ DDK is used. What it took:
   composite a sprite (it ignores QEMU's `on_cursor` today) plus define /
   move registers here; deferred, the software pointer is correct and the
   dirty rectangles it causes are small.
-- `FRAMES` is a refresh counter, not a vblank; DirectDraw's `WaitForVerticalBlank`
-  (M7b) needs a real per-frame signal (the player's present timing) here.
+- `FRAMES` is a refresh counter, not a vblank: `DdWaitForVerticalBlank`
+  waits for the next player refresh pull (16 ms), not for a display's
+  vertical blank. A real per-frame signal from the player's present is
+  the follow-up; `DDFLIP_WAIT` today never throttles (flips are instant).
+- DirectDraw: `DdBlt` is not hooked, so blits are the HEL's user-mode
+  copies on cached VRAM (fast enough for 2D); a host-side blit through
+  the executor only makes sense once surfaces can live on the host GPU
+  (M7c). Palettized (8 bpp) modes and surfaces, overlays, FourCC and
+  different-format surfaces are refused. Not yet exercised: `GetDC` on a
+  DirectDraw surface (`DrvDeriveSurface` absent, DirectDraw falls back),
+  a real DX5–7 game.
 - Mode table from the player (M2): a `modes=` device property or an embed
   API call that replaces the static table, pixel-aspect flags per entry.
 - Multi-monitor, 8 bpp palettized modes, DPMS/power states, hot-unplug:
@@ -160,14 +235,9 @@ DDK is used. What it took:
 
 ## M7b / M7c pointers
 
-- **M7b DirectDraw DDI:** `DrvEnableDirectDraw` / `DrvGetDirectDrawInfo`
-  (`DD_HALINFO`, VIDEOMEMORY heaps in VRAM), `DdCreateSurface`,
-  `DdLock/Unlock`, `DdBlt`, `DdFlip`, `DdWaitForVerticalBlank`, palettes
-  refused. Surfaces live in VRAM (the guest's own memory: system-memory
-  surfaces need no transport at all); blits go to the executor as records
-  through a doorbell on BAR 1 — the `d3dpt` SysBus device's protocol
-  (`d3dpt_proto.h`) reused, with the window being VRAM itself. Exit:
-  DirectX 5–7 titles without WineD3D.
+- **M7b DirectDraw DDI:** landed in its first cut (above). Left: a DX5–7
+  title on it (2D titles run now; 3D ones need M7c), `DrvDeriveSurface`,
+  the vblank signal.
 - **M7c Direct3D DDI:** `D3dContextCreate`, `D3dDrawPrimitives2` (DP2
   token stream → our records), `D3dValidateTextureStageState`,
   `DdCreateSurfaceEx`; caps from the executor. Microsoft's d3d8/d3d9 stay

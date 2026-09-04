@@ -35,9 +35,9 @@ KFLAGS=(-O2 -Wall -Wno-unused-function -nostdlib -shared -ffreestanding
 rm -rf "$OUT" && mkdir -p "$OUT"
 echo "==> d3dptvid.sys (video miniport)"
 "$CC" "${KFLAGS[@]}" -I"$DDK_INC" -Wl,--entry,_DriverEntry@8 -Wl,--exclude-all-symbols \
-  -o "$OUT/d3dptvid.sys" "$SRC/d3dptvid.c" "$SRC/kcrt.c" -lvideoprt -lgcc
+  -o "$OUT/d3dptvid.sys" "$SRC/d3dptvid.c" "$SRC/kcrt.c" -lvideoprt -lntoskrnl -lgcc
 echo "==> d3dptdisp.dll (display driver)"
-"$CC" "${KFLAGS[@]}" -I"$SRC/ddk-stubs" -Wl,--entry,_DrvEnableDriver@12 -Wl,--kill-at \
+"$CC" "${KFLAGS[@]}" -I"$SRC/ddk" -Wl,--entry,_DrvEnableDriver@12 -Wl,--kill-at \
   -o "$OUT/d3dptdisp.dll" "$SRC/d3dptdisp.c" "$SRC/kcrt.c" "$SRC/d3dptdisp.def" -lwin32k -lgcc
 echo "==> drvinst.exe (installer, user mode, msvcrt)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
@@ -45,16 +45,19 @@ echo "==> drvinst.exe (installer, user mode, msvcrt)"
 echo "==> setmode.exe (mode switch from a script)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/setmode.exe" "$SRC/setmode.c" -luser32
+echo "==> ddtest.exe (DirectDraw 7 flip-chain test)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/ddtest.exe" "$SRC/ddtest.c" -lddraw -ldxguid -lgdi32 -luser32
 cp "$SRC/d3dptvid.inf" "$OUT/d3dptvid.inf"
 
 # sanity: the kernel modules import only from their port driver, and nothing
 # links the CRT (no import at all is the expected answer for the .sys/.dll)
-check_imports() {  # file, allowed DLL (case-insensitive)
+check_imports() {  # file, allowed DLLs (regex, case-insensitive)
   local bad
-  bad="$(i686-w64-mingw32-objdump -p "$1" | awk '/DLL Name:/ {print $3}' | grep -iv "^$2\$" || true)"
+  bad="$(i686-w64-mingw32-objdump -p "$1" | awk '/DLL Name:/ {print $3}' | grep -ivE "^($2)\$" || true)"
   [ -z "$bad" ] || { echo "ERROR: $1 imports from $bad (expected only $2)"; exit 1; }
 }
-check_imports "$OUT/d3dptvid.sys" videoprt.sys
+check_imports "$OUT/d3dptvid.sys" "videoprt.sys|ntoskrnl.exe"
 check_imports "$OUT/d3dptdisp.dll" win32k.sys
 for f in "$OUT"/*.sys "$OUT"/*.dll "$OUT"/*.exe; do
   if i686-w64-mingw32-objdump -p "$f" | grep -q 'api-ms-win-crt'; then
@@ -79,7 +82,9 @@ player shows it without copies.
 Files: D3DPTVID.SYS (video miniport), D3DPTDISP.DLL (display driver),
 D3DPTVID.INF, DRVINST.EXE (scripted installer: sets the driver-signing
 policy to ignore, UpdateDriverForPlugAndPlayDevices, optional reboot),
-SETMODE.EXE (lists the modes; SETMODE 1024 768 32 85 switches and saves).
+SETMODE.EXE (lists the modes; SETMODE 1024 768 32 85 switches and saves),
+DDTEST.EXE (DirectDraw 7: HAL caps, exclusive flip chain, Lock/Blt/Flip,
+fps; DDTEST [w h bpp] [frames]; log in ddtest.log).
 TXT
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 

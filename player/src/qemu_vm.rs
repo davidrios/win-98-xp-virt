@@ -190,11 +190,15 @@ unsafe extern "C" fn on_switch(
 ) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
+    // a DirectDraw page flip is a switch to another VRAM offset at the same
+    // size, once per frame: log only real mode changes
+    if s.width != w as usize || s.height != h as usize || s.stride != stride as usize {
+        eprintln!("[display] switch {w}x{h} stride {stride}");
+    }
     s.surface = px;
     s.stride = stride as usize;
     s.width = w as usize;
     s.height = h as usize;
-    eprintln!("[display] switch {w}x{h} stride {stride}");
     let n = s.width * s.height;
     s.back.clear();
     s.back.resize(n, 0);

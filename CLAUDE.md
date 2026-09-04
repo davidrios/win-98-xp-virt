@@ -95,6 +95,7 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
 | `DRIVER\SETMODE.EXE` (guest-tools ISO) | lists / switches XP display modes from a script; the QEMU log shows the device side (`d3dpt-vga: linear mode on …`, `guest: …` = the driver's debug register) |
+| `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; `scanout offset` lines in the QEMU log are the page flips |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`; wglgears lives at
 `C:\WINDOWS\Desktop\GAMEDIR`). **End scripted Win98 runs with a

@@ -9,9 +9,17 @@
  * (EngCreateBitmap over the mapped VRAM, no hooks). GDI then draws every
  * pixel itself, straight into guest VRAM, which QEMU shows without a copy
  * and the player uploads by dirty rectangle. The software cursor is
- * GDI's too (no DrvSetPointerShape). Nothing here is accelerated on
- * purpose: this step buys the mode table and the kernel workflow; M7b
- * adds the DirectDraw DDI, M7c Direct3D.
+ * GDI's too (no DrvSetPointerShape). Nothing GDI does here is accelerated
+ * on purpose: this step buys the mode table and the kernel workflow.
+ *
+ * M7b, the DirectDraw DDI (bottom of the file): the surface is a device
+ * surface GDI still draws on (EngModifySurface with pvScan0), VRAM after
+ * the primary is one linear heap dxg.sys allocates DirectDraw surfaces
+ * from, DdMapMemory maps VRAM into the game's process, DdFlip is a write
+ * of the back buffer's offset into the device's OFFSET register (a real
+ * page flip, no copy) and DdWaitForVerticalBlank waits for the device's
+ * frame counter. Blits are not hooked: DirectDraw's HEL does them on the
+ * mapped VRAM. No Direct3D callbacks yet (M7c).
  *
  * Build: guest-tools/build-driver.sh.
  *
@@ -27,6 +35,12 @@
 
 #define ALLOC_TAG 0x64336d64   /* 'dm3d' */
 
+/* -device d3dpt-vga,ddflags=N: bisection knob while the DDI is brought up */
+#define DDF_NO_GETDRIVERINFO   0x1    /* no GetDriverInfo / GETDRIVERINFOSET */
+#define DDF_NO_SURFACE_CB      0x4    /* only MapMemory + CanCreateSurface */
+#define DDF_ENGINE_BITMAP      0x8    /* EngCreateBitmap primary instead of a device surface */
+#define DDF_GDI_CAP            0x10   /* add DDCAPS_GDI to dwCaps: dxg then drops the HAL (kept as the repro) */
+
 typedef struct _PDEV {
     HANDLE hDriver;             /* the miniport, for EngDeviceIoControl */
     HDEV hdev;                  /* GDI's handle for this PDEV */
@@ -38,6 +52,7 @@ typedef struct _PDEV {
     PVOID fb;                   /* mapped frame buffer */
     ULONG fb_len;
     volatile ULONG *regs;       /* public access range (register page) */
+    BOOL device_surface;        /* EngCreateDeviceSurface took: DirectDraw possible */
 } PDEV, *PPDEV;
 
 /* ------------------------------------------------------------ debug log */
@@ -373,17 +388,51 @@ HSURF APIENTRY DrvEnableSurface(DHPDEV dhpdev)
 
     sizl.cx = p->w;
     sizl.cy = p->h;
-    hsurf = (HSURF)EngCreateBitmap(sizl, p->pitch, p->bpp == 32 ? BMF_32BPP : BMF_16BPP,
-                                   BMF_TOPDOWN | BMF_NOZEROINIT, p->fb);
-    if (!hsurf) {
-        dbg_puts(p, "d3dptdisp: EngCreateBitmap failed\n");
-        goto unmap;
+    /* A device surface (DirectDraw needs one) that GDI still draws on
+     * itself: EngModifySurface hands it the frame buffer bytes. The hook /
+     * flag combinations win32k accepts are not documented consistently, so
+     * try them in order and say which one took; the engine bitmap of M7a
+     * is the last resort (desktop works, no DirectDraw). */
+    hsurf = (p->regs && (p->regs[D3DPT_FB_REG_DDFLAGS / 4] & DDF_ENGINE_BITMAP)) ? NULL :
+            EngCreateDeviceSurface((DHSURF)p, sizl, p->bpp == 32 ? BMF_32BPP : BMF_16BPP);
+    if (hsurf) {
+        static const struct { FLONG hooks, surf; } variants[] = {
+            { HOOK_SYNCHRONIZE, MS_NOTSYSTEMMEMORY },
+            { 0, MS_NOTSYSTEMMEMORY },
+            { HOOK_SYNCHRONIZE, 0 },
+            { 0, 0 },
+        };
+        ULONG v;
+        for (v = 0; v < sizeof(variants) / sizeof(variants[0]); v++) {
+            if (EngModifySurface(hsurf, p->hdev, variants[v].hooks, variants[v].surf,
+                                 (DHSURF)p, p->fb, (LONG)p->pitch, NULL)) {
+                dbg_hex(p, "d3dptdisp: device surface, variant ", v);
+                dbg_puts(p, "\n");
+                p->device_surface = TRUE;
+                break;
+            }
+        }
+        if (!p->device_surface) {
+            dbg_puts(p, "d3dptdisp: EngModifySurface refused every variant\n");
+            EngDeleteSurface(hsurf);
+            hsurf = NULL;
+        }
+    } else {
+        dbg_puts(p, "d3dptdisp: EngCreateDeviceSurface failed\n");
     }
-    /* no hooks: GDI draws into the frame buffer itself */
-    if (!EngAssociateSurface(hsurf, p->hdev, 0)) {
-        dbg_puts(p, "d3dptdisp: EngAssociateSurface failed\n");
-        EngDeleteSurface(hsurf);
-        goto unmap;
+    if (!hsurf) {
+        hsurf = (HSURF)EngCreateBitmap(sizl, p->pitch, p->bpp == 32 ? BMF_32BPP : BMF_16BPP,
+                                       BMF_TOPDOWN | BMF_NOZEROINIT, p->fb);
+        if (!hsurf) {
+            dbg_puts(p, "d3dptdisp: EngCreateBitmap failed\n");
+            goto unmap;
+        }
+        if (!EngAssociateSurface(hsurf, p->hdev, 0)) {
+            dbg_puts(p, "d3dptdisp: EngAssociateSurface failed\n");
+            EngDeleteSurface(hsurf);
+            goto unmap;
+        }
+        dbg_puts(p, "d3dptdisp: engine bitmap surface (no DirectDraw)\n");
     }
     p->hsurf = hsurf;
     dbg_hex(p, "d3dptdisp: surface ", (ULONG)(ULONG_PTR)p->fb);
@@ -418,6 +467,12 @@ VOID APIENTRY DrvDisableSurface(DHPDEV dhpdev)
     unmap_regs(p);
 }
 
+/* GDI calls this before touching the surface when HOOK_SYNCHRONIZE is set:
+ * nothing to wait for, every access is a plain memory write */
+VOID APIENTRY DrvSynchronizeSurface(SURFOBJ *pso, RECTL *prcl, FLONG fl)
+{
+}
+
 BOOL APIENTRY DrvAssertMode(DHPDEV dhpdev, BOOL bEnable)
 {
     PPDEV p = (PPDEV)dhpdev;
@@ -434,6 +489,291 @@ BOOL APIENTRY DrvAssertMode(DHPDEV dhpdev, BOOL bEnable)
                               NULL, 0, &ret) == 0;
 }
 
+/* ------------------------------------------------------------ DirectDraw
+ * dxg.sys drives these (ddrawint.h, the NT DirectDraw DDI). Surfaces come
+ * out of one linear heap in VRAM behind the primary; the runtime does the
+ * allocation and the HEL blits, we do memory mapping, flips and vblank. */
+
+static ULONG heap_start(PPDEV p)
+{
+    return (p->pitch * p->h + 4095) & ~4095u;
+}
+
+
+static ULONG ddflags(PPDEV p)
+{
+    return p->regs ? p->regs[D3DPT_FB_REG_DDFLAGS / 4] : 0;
+}
+
+static void wait_frame(PPDEV p)
+{
+    ULONG f;
+    LONGLONG t0, t, freq;
+
+    if (!p->regs) {
+        return;
+    }
+    f = p->regs[D3DPT_FB_REG_FRAMES / 4];
+    EngQueryPerformanceFrequency(&freq);
+    EngQueryPerformanceCounter(&t0);
+    /* the counter moves at the player's refresh pull; give up after 50 ms */
+    for (;;) {
+        if (p->regs[D3DPT_FB_REG_FRAMES / 4] != f) {
+            return;
+        }
+        EngQueryPerformanceCounter(&t);
+        if ((t - t0) * 20 > freq) {
+            return;
+        }
+    }
+}
+
+static DWORD APIENTRY DdMapMemory(PDD_MAPMEMORYDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+    VIDEO_SHARE_MEMORY sh;
+    VIDEO_SHARE_MEMORY_INFORMATION info;
+    DWORD ret;
+
+    sh.ProcessHandle = d->hProcess;
+    sh.ViewOffset = 0;
+    sh.ViewSize = p->fb_len;
+    if (d->bMap) {
+        sh.RequestedVirtualAddress = NULL;
+        if (EngDeviceIoControl(p->hDriver, IOCTL_VIDEO_SHARE_VIDEO_MEMORY, &sh, sizeof(sh),
+                               &info, sizeof(info), &ret) != 0) {
+            dbg_puts(p, "d3dptdisp: share video memory failed\n");
+            d->ddRVal = DDERR_GENERIC;
+            return DDHAL_DRIVER_HANDLED;
+        }
+        d->fpProcess = (FLATPTR)info.VirtualAddress;
+        dbg_hex(p, "d3dptdisp: dd map ", (ULONG)d->fpProcess);
+        dbg_puts(p, "\n");
+    } else {
+        sh.RequestedVirtualAddress = (PVOID)d->fpProcess;
+        EngDeviceIoControl(p->hDriver, IOCTL_VIDEO_UNSHARE_VIDEO_MEMORY, &sh, sizeof(sh),
+                           NULL, 0, &ret);
+    }
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdWaitForVerticalBlank(PDD_WAITFORVERTICALBLANKDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    switch (d->dwFlags) {
+    case DDWAITVB_I_TESTVB:
+        d->bIsInVB = FALSE;
+        d->ddRVal = DD_OK;
+        break;
+    case DDWAITVB_BLOCKBEGIN:
+    case DDWAITVB_BLOCKEND:
+        wait_frame(p);
+        d->ddRVal = DD_OK;
+        break;
+    default:
+        d->ddRVal = DDERR_UNSUPPORTED;
+        break;
+    }
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdCanCreateSurface(PDD_CANCREATESURFACEDATA d)
+{
+    /* the display format only: no Z buffers, FourCC or alpha formats here */
+    d->ddRVal = d->bIsDifferentPixelFormat ? DDERR_INVALIDPIXELFORMAT : DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdFlip(PDD_FLIPDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    if (!p->regs) {
+        d->ddRVal = DDERR_UNSUPPORTED;
+        return DDHAL_DRIVER_HANDLED;
+    }
+    /* the page flip: scan out from the target's VRAM offset */
+    p->regs[D3DPT_FB_REG_OFFSET / 4] = (ULONG)d->lpSurfTarg->lpGbl->fpVidMem;
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdGetBltStatus(PDD_GETBLTSTATUSDATA d)
+{
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdGetFlipStatus(PDD_GETFLIPSTATUSDATA d)
+{
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdSetExclusiveMode(PDD_SETEXCLUSIVEMODEDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    dbg_puts(p, d->dwEnterExcl ? "d3dptdisp: dd exclusive on\n" : "d3dptdisp: dd exclusive off\n");
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static DWORD APIENTRY DdFlipToGDISurface(PDD_FLIPTOGDISURFACEDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    if (d->dwToGDI && p->regs) {
+        p->regs[D3DPT_FB_REG_OFFSET / 4] = 0;
+    }
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+static BOOL guid_eq(const GUID *a, const GUID *b)
+{
+    const ULONG *x = (const ULONG *)a, *y = (const ULONG *)b;
+    return x[0] == y[0] && x[1] == y[1] && x[2] == y[2] && x[3] == y[3];
+}
+
+/* GUID_NTCallbacks of ddrawint.h; spelled out because INITGUID would define
+ * every GUID of ddrawint.h and d3dnthal.h twice */
+static const GUID guid_ntcallbacks = {
+    0x6fe9ecde, 0xdf89, 0x11d1, { 0x9d, 0xb0, 0x00, 0x60, 0x08, 0x27, 0x71, 0xba }
+};
+
+static DWORD APIENTRY DdGetDriverInfo(PDD_GETDRIVERINFODATA d)
+{
+    PPDEV p = (PPDEV)d->dhpdev;
+
+    dbg_hex(p, "d3dptdisp: dd getinfo ", d->guidInfo.Data1);
+    dbg_hex(p, " expected ", d->dwExpectedSize);
+    dbg_puts(p, "\n");
+    if (guid_eq(&d->guidInfo, &guid_ntcallbacks)) {
+        DD_NTCALLBACKS nt;
+        ULONG n = sizeof(nt), i;
+        for (i = 0; i < sizeof(nt) / 4; i++) ((ULONG *)&nt)[i] = 0;
+        nt.dwSize = sizeof(nt);
+        nt.dwFlags = DDHAL_NTCB32_SETEXCLUSIVEMODE | DDHAL_NTCB32_FLIPTOGDISURFACE;
+        nt.SetExclusiveMode = DdSetExclusiveMode;
+        nt.FlipToGDISurface = DdFlipToGDISurface;
+        if (n > d->dwExpectedSize) n = d->dwExpectedSize;
+        for (i = 0; i < n; i++) ((UCHAR *)d->lpvData)[i] = ((UCHAR *)&nt)[i];
+        d->dwActualSize = sizeof(nt);
+        d->ddRVal = DD_OK;
+    } else {
+        d->ddRVal = DDERR_CURRENTLYNOTAVAIL;
+    }
+    return DDHAL_DRIVER_HANDLED;
+}
+
+BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *pdwNumHeaps,
+                                   VIDEOMEMORY *pvmList, DWORD *pdwNumFourCCCodes, DWORD *pdwFourCC)
+{
+    PPDEV p = (PPDEV)dhpdev;
+    ULONG i, start = heap_start(p);
+
+    dbg_hex(p, "d3dptdisp: dd info call, lists ", pvmList ? 1 : 0);
+    dbg_hex(p, " halinfo ", sizeof(*pHalInfo));
+    dbg_hex(p, " corecaps ", sizeof(DDNTCORECAPS));
+    dbg_hex(p, " cb ", sizeof(DD_CALLBACKS));
+    dbg_hex(p, " scb ", sizeof(DD_SURFACECALLBACKS));
+    dbg_puts(p, "\n");
+    if (!p->fb || start >= p->fb_len) {
+        return FALSE;
+    }
+    if (!p->device_surface && !(ddflags(p) & DDF_ENGINE_BITMAP)) {
+        return FALSE;
+    }
+    *pdwNumHeaps = 1;
+    *pdwNumFourCCCodes = 0;
+
+    for (i = 0; i < sizeof(*pHalInfo) / 4; i++) ((ULONG *)pHalInfo)[i] = 0;
+    pHalInfo->dwSize = sizeof(*pHalInfo);
+    pHalInfo->vmiData.fpPrimary = 0;
+    pHalInfo->vmiData.dwDisplayWidth = p->w;
+    pHalInfo->vmiData.dwDisplayHeight = p->h;
+    pHalInfo->vmiData.lDisplayPitch = (LONG)p->pitch;
+    pHalInfo->vmiData.ddpfDisplay.dwSize = sizeof(DDPIXELFORMAT);
+    pHalInfo->vmiData.ddpfDisplay.dwFlags = DDPF_RGB;
+    pHalInfo->vmiData.ddpfDisplay.dwRGBBitCount = p->bpp;
+    pHalInfo->vmiData.ddpfDisplay.dwRBitMask = p->rmask;
+    pHalInfo->vmiData.ddpfDisplay.dwGBitMask = p->gmask;
+    pHalInfo->vmiData.ddpfDisplay.dwBBitMask = p->bmask;
+    pHalInfo->vmiData.dwOffscreenAlign = 32;
+    pHalInfo->vmiData.dwOverlayAlign = 32;
+    pHalInfo->vmiData.dwTextureAlign = 32;
+    pHalInfo->vmiData.dwZBufferAlign = 32;
+    pHalInfo->vmiData.dwAlphaAlign = 32;
+    pHalInfo->vmiData.pvPrimary = p->fb;
+
+    pHalInfo->ddCaps.dwSize = sizeof(DDNTCORECAPS);
+    /* The caps dxg accepts (2026-09-04 bisection, doc 15): no blit caps
+     * (DirectDraw's HEL blits on the mapped VRAM), wide surfaces, primary,
+     * offscreen and flip chains. DDCAPS_GDI in dwCaps makes dxg drop the
+     * HAL altogether (NOHARDWARE, system-memory surfaces). */
+    pHalInfo->ddCaps.dwCaps = 0;
+    pHalInfo->ddCaps.dwCaps2 = DDCAPS2_WIDESURFACES;
+    pHalInfo->ddCaps.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE | DDSCAPS_OFFSCREENPLAIN |
+                                       DDSCAPS_FLIP | DDSCAPS_FRONTBUFFER | DDSCAPS_BACKBUFFER;
+    if (ddflags(p) & DDF_GDI_CAP) {
+        pHalInfo->ddCaps.dwCaps |= DDCAPS_GDI;
+    }
+    pHalInfo->ddCaps.dwVidMemTotal = p->fb_len - start;
+    pHalInfo->ddCaps.dwVidMemFree = p->fb_len - start;
+    if (!(ddflags(p) & DDF_NO_GETDRIVERINFO)) {
+        pHalInfo->GetDriverInfo = DdGetDriverInfo;
+        pHalInfo->dwFlags = DDHALINFO_GETDRIVERINFOSET;
+    }
+
+    if (pvmList) {
+        for (i = 0; i < sizeof(*pvmList) / 4; i++) ((ULONG *)pvmList)[i] = 0;
+        pvmList->dwFlags = VIDMEM_ISLINEAR;
+        pvmList->fpStart = start;
+        pvmList->fpEnd = p->fb_len - 1;
+        pvmList->ddsCaps.dwCaps = 0;             /* any surface type */
+        pvmList->ddsCapsAlt.dwCaps = 0;
+        dbg_hex(p, "d3dptdisp: dd heap ", start);
+        dbg_hex(p, "..", p->fb_len - 1);
+        dbg_puts(p, "\n");
+    }
+    return TRUE;
+}
+
+BOOL APIENTRY DrvEnableDirectDraw(DHPDEV dhpdev, DD_CALLBACKS *cb, DD_SURFACECALLBACKS *scb,
+                                  DD_PALETTECALLBACKS *pcb)
+{
+    ULONG i;
+
+    for (i = 0; i < sizeof(*cb) / 4; i++) ((ULONG *)cb)[i] = 0;
+    for (i = 0; i < sizeof(*scb) / 4; i++) ((ULONG *)scb)[i] = 0;
+    for (i = 0; i < sizeof(*pcb) / 4; i++) ((ULONG *)pcb)[i] = 0;
+    cb->dwSize = sizeof(*cb);
+    cb->dwFlags = DDHAL_CB32_WAITFORVERTICALBLANK | DDHAL_CB32_MAPMEMORY | DDHAL_CB32_CANCREATESURFACE;
+    cb->WaitForVerticalBlank = DdWaitForVerticalBlank;
+    cb->MapMemory = DdMapMemory;
+    cb->CanCreateSurface = DdCanCreateSurface;
+    scb->dwSize = sizeof(*scb);
+    if (ddflags((PPDEV)dhpdev) & DDF_NO_SURFACE_CB) {
+        cb->dwFlags = DDHAL_CB32_MAPMEMORY | DDHAL_CB32_CANCREATESURFACE;
+    } else {
+        scb->dwFlags = DDHAL_SURFCB32_FLIP | DDHAL_SURFCB32_GETBLTSTATUS | DDHAL_SURFCB32_GETFLIPSTATUS;
+        scb->Flip = DdFlip;
+        scb->GetBltStatus = DdGetBltStatus;
+        scb->GetFlipStatus = DdGetFlipStatus;
+    }
+    pcb->dwSize = sizeof(*pcb);
+    dbg_puts((PPDEV)dhpdev, "d3dptdisp: dd enabled\n");
+    return TRUE;
+}
+
+VOID APIENTRY DrvDisableDirectDraw(DHPDEV dhpdev)
+{
+    dbg_puts((PPDEV)dhpdev, "d3dptdisp: dd disabled\n");
+}
+
 /* -------------------------------------------------------------- entry */
 
 static DRVFN drv_fn[] = {
@@ -444,6 +784,10 @@ static DRVFN drv_fn[] = {
     { INDEX_DrvDisableSurface, (PFN)DrvDisableSurface },
     { INDEX_DrvAssertMode,     (PFN)DrvAssertMode },
     { INDEX_DrvGetModes,       (PFN)DrvGetModes },
+    { INDEX_DrvSynchronizeSurface, (PFN)DrvSynchronizeSurface },
+    { INDEX_DrvGetDirectDrawInfo, (PFN)DrvGetDirectDrawInfo },
+    { INDEX_DrvEnableDirectDraw,  (PFN)DrvEnableDirectDraw },
+    { INDEX_DrvDisableDirectDraw, (PFN)DrvDisableDirectDraw },
 };
 
 BOOL APIENTRY DrvEnableDriver(ULONG iEngineVersion, ULONG cj, DRVENABLEDATA *pded)

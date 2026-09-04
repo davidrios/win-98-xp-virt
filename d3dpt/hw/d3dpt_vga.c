@@ -48,6 +48,8 @@ struct D3dptVgaState {
     /* guest-programmed registers */
     uint32_t r_enable, r_w, r_h, r_bpp, r_pitch, r_offset, r_hz, r_sel;
     uint32_t frames;
+    uint32_t flips;
+    uint32_t ddflags;           /* property: test knob read by the guest driver */
 
     /* the linear mode currently shown (lin_on) */
     bool lin_on;
@@ -298,6 +300,8 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
         return s->r_hz;
     case D3DPT_FB_REG_FRAMES:
         return s->frames;
+    case D3DPT_FB_REG_DDFLAGS:
+        return s->ddflags;
     default:
         return 0;
     }
@@ -338,6 +342,13 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
         s->r_pitch = val;
         break;
     case D3DPT_FB_REG_OFFSET:
+        if (val != s->r_offset && s->flips < 4) {
+            /* DirectDraw page flips: the first few, so the log shows them */
+            info_report("d3dpt-vga: scanout offset %u -> %" PRIu64, s->r_offset, val);
+        }
+        if (val != s->r_offset) {
+            s->flips++;
+        }
         s->r_offset = val;
         break;
     case D3DPT_FB_REG_HZ:
@@ -408,6 +419,7 @@ static void d3dpt_vga_reset(DeviceState *dev)
 static Property d3dpt_vga_properties[] = {
     DEFINE_PROP_UINT32("vgamem_mb", D3dptVgaState, vga.vram_size_mb, D3DPT_FB_VRAM_MB),
     DEFINE_PROP_BOOL("global-vmstate", D3dptVgaState, vga.global_vmstate, false),
+    DEFINE_PROP_UINT32("ddflags", D3dptVgaState, ddflags, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

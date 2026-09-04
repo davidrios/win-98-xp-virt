@@ -16,7 +16,8 @@
  * HwResetHw returns FALSE).
  *
  * Build: guest-tools/build-driver.sh (mingw-w64 i686, -nostdlib, native
- * subsystem, entry DriverEntry, libvideoprt + libntoskrnl).
+ * subsystem, entry DriverEntry, libvideoprt + the few ntoskrnl imports of
+ * the cached VRAM mappings).
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -31,6 +32,60 @@
 #include "../../../d3dpt/d3dpt_fb.h"
 
 #define DEBUG_LOG 1
+
+/*
+ * VRAM mappings. videoprt's VideoPortMapMemory maps frame buffers uncached
+ * or write-combined (VIDEO_MEMORY_SPACE_P6CACHE), which is right for a
+ * PCI aperture and wrong for us: BAR 0 is plain guest RAM that QEMU reads
+ * coherently, and uncached reads (GDI scrolling, DirectDraw's HEL copying
+ * from a VRAM surface) crawl at tens of MB/s. So the miniport maps VRAM
+ * itself, cached: MmMapIoSpace(MmCached) for the kernel view the display
+ * driver draws through, and a view of \Device\PhysicalMemory into the
+ * process for DirectDraw's user-mode Lock (what videoprt does inside
+ * VideoPortMapMemory, minus PAGE_NOCACHE). These are the only ntoskrnl
+ * imports; the register BAR stays a videoprt (uncached) mapping.
+ */
+typedef enum _MEMORY_CACHING_TYPE { MmNonCached = 0, MmCached = 1, MmWriteCombined = 2 } MEMORY_CACHING_TYPE;
+typedef enum _SECTION_INHERIT { ViewShare = 1, ViewUnmap = 2 } SECTION_INHERIT;
+#define SECTION_MAP_WRITE_ 0x0002
+#define SECTION_MAP_READ_  0x0004
+#define PAGE_READWRITE_    0x04
+NTSYSAPI PVOID NTAPI MmMapIoSpace(PHYSICAL_ADDRESS PhysicalAddress, SIZE_T NumberOfBytes, MEMORY_CACHING_TYPE CacheType);
+NTSYSAPI VOID NTAPI MmUnmapIoSpace(PVOID BaseAddress, SIZE_T NumberOfBytes);
+NTSYSAPI NTSTATUS NTAPI ZwOpenSection(PHANDLE SectionHandle, ULONG DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
+NTSYSAPI NTSTATUS NTAPI ZwMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID *BaseAddress,
+                                           ULONG_PTR ZeroBits, SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
+                                           PSIZE_T ViewSize, SECTION_INHERIT InheritDisposition,
+                                           ULONG AllocationType, ULONG Win32Protect);
+NTSYSAPI NTSTATUS NTAPI ZwUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSYSAPI NTSTATUS NTAPI ZwClose(HANDLE Handle);
+
+static WCHAR physmem_name[] = L"\\Device\\PhysicalMemory";
+
+/* a cached view of [vram_phys + offset, +len) in ProcessHandle */
+static VP_STATUS map_vram_user(PHYSICAL_ADDRESS base, ULONG offset, ULONG len, HANDLE process, PVOID *va)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES oa;
+    HANDLE section;
+    LARGE_INTEGER off;
+    SIZE_T view = len;
+    NTSTATUS st;
+
+    name.Buffer = physmem_name;
+    name.Length = sizeof(physmem_name) - sizeof(WCHAR);
+    name.MaximumLength = sizeof(physmem_name);
+    InitializeObjectAttributes(&oa, &name, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    st = ZwOpenSection(&section, SECTION_MAP_READ_ | SECTION_MAP_WRITE_, &oa);
+    if (st < 0) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    off.QuadPart = base.QuadPart + offset;
+    *va = NULL;
+    st = ZwMapViewOfSection(section, process, va, 0, 0, &off, &view, ViewUnmap, 0, PAGE_READWRITE_);
+    ZwClose(section);
+    return st < 0 ? ERROR_NOT_ENOUGH_MEMORY : NO_ERROR;
+}
 
 typedef struct _DEVICE_EXTENSION {
     volatile ULONG *regs;                 /* BAR 1 mapped (kernel VA) */
@@ -233,7 +288,7 @@ static VP_STATUS NTAPI HwFindAdapter(PVOID ext, PVOID ctx, PWSTR args,
     /* the whole of VRAM in kernel space: mode-set clearing now, the
      * DirectDraw heap later. 32 MiB of system PTEs is what any real
      * adapter's miniport takes. */
-    d->vram = VideoPortGetDeviceBase(d, d->vram_phys, d->vram_len, VIDEO_MEMORY_SPACE_MEMORY);
+    d->vram = MmMapIoSpace(d->vram_phys, d->vram_len, MmCached);
     dbg_puts(d, "d3dptvid: adapter found\n");
     dbg_hex(d, "  vram ", d->vram_phys.LowPart);
     dbg_hex(d, " len ", d->vram_len);
@@ -361,37 +416,33 @@ static BOOLEAN NTAPI HwStartIO(PVOID ext, PVIDEO_REQUEST_PACKET rp)
     case IOCTL_VIDEO_MAP_VIDEO_MEMORY: {
         PVIDEO_MEMORY in = rp->InputBuffer;
         PVIDEO_MEMORY_INFORMATION out = rp->OutputBuffer;
-        ULONG len, space = VIDEO_MEMORY_SPACE_MEMORY;
         if (rp->InputBufferLength < sizeof(*in) || rp->OutputBufferLength < sizeof(*out)) {
             st = ERROR_INSUFFICIENT_BUFFER;
             break;
         }
-        len = d->vram_len;
-        out->VideoRamBase = in->RequestedVirtualAddress;
-        st = VideoPortMapMemory(d, d->vram_phys, &len, &space, &out->VideoRamBase);
-        if (st != NO_ERROR) {
+        if (!d->vram) {
+            st = ERROR_NOT_ENOUGH_MEMORY;
             break;
         }
-        out->VideoRamLength = len;
-        out->FrameBufferBase = out->VideoRamBase;
-        out->FrameBufferLength = len;
+        /* the display driver draws through the miniport's cached kernel view */
+        out->VideoRamBase = d->vram;
+        out->VideoRamLength = d->vram_len;
+        out->FrameBufferBase = d->vram;
+        out->FrameBufferLength = d->vram_len;
         rp->StatusBlock->Information = sizeof(*out);
         break;
     }
-    case IOCTL_VIDEO_UNMAP_VIDEO_MEMORY: {
-        PVIDEO_MEMORY in = rp->InputBuffer;
-        if (rp->InputBufferLength < sizeof(*in)) {
-            st = ERROR_INSUFFICIENT_BUFFER;
-            break;
-        }
-        st = VideoPortUnmapMemory(d, in->RequestedVirtualAddress, NULL);
+    case IOCTL_VIDEO_UNMAP_VIDEO_MEMORY:
+        /* the kernel view lives as long as the adapter */
         break;
-    }
     case IOCTL_VIDEO_QUERY_PUBLIC_ACCESS_RANGES: {
         /* the register page for the display driver (debug log now, the
          * DirectDraw/Direct3D DDI records later) */
         PVIDEO_PUBLIC_ACCESS_RANGES out = rp->OutputBuffer;
-        ULONG len = d->regs_len, space = VIDEO_MEMORY_SPACE_MEMORY | VIDEO_MEMORY_SPACE_USER_MODE;
+        /* a kernel mapping: the display driver runs in kernel mode in any
+         * process context (a user-mode mapping would only be valid in the
+         * process that created the PDEV) */
+        ULONG len = d->regs_len, space = VIDEO_MEMORY_SPACE_MEMORY;
         if (rp->OutputBufferLength < sizeof(*out)) {
             st = ERROR_INSUFFICIENT_BUFFER;
             break;
@@ -414,11 +465,41 @@ static BOOLEAN NTAPI HwStartIO(PVOID ext, PVIDEO_REQUEST_PACKET rp)
         st = VideoPortUnmapMemory(d, in->RequestedVirtualAddress, NULL);
         break;
     }
-    case IOCTL_VIDEO_SHARE_VIDEO_MEMORY:
-    case IOCTL_VIDEO_UNSHARE_VIDEO_MEMORY:
-        /* DirectDraw's HAL path: M7b */
-        st = ERROR_INVALID_FUNCTION;
+    case IOCTL_VIDEO_SHARE_VIDEO_MEMORY: {
+        /* DirectDraw (DdMapMemory): VRAM into a user process. The port
+         * driver's convention: the process handle goes in as the virtual
+         * address, the user-mode pointer comes back in its place. */
+        PVIDEO_SHARE_MEMORY in = rp->InputBuffer;
+        PVIDEO_SHARE_MEMORY_INFORMATION out = rp->OutputBuffer;
+        PVOID va;
+        if (rp->InputBufferLength < sizeof(*in) || rp->OutputBufferLength < sizeof(*out)) {
+            st = ERROR_INSUFFICIENT_BUFFER;
+            break;
+        }
+        if (in->ViewOffset > d->vram_len || in->ViewSize > d->vram_len - in->ViewOffset) {
+            st = ERROR_INVALID_PARAMETER;
+            break;
+        }
+        st = map_vram_user(d->vram_phys, in->ViewOffset, in->ViewSize, in->ProcessHandle, &va);
+        if (st != NO_ERROR) {
+            dbg_puts(d, "d3dptvid: user VRAM view failed\n");
+            break;
+        }
+        out->SharedViewOffset = in->ViewOffset;
+        out->SharedViewSize = in->ViewSize;
+        out->VirtualAddress = va;
+        rp->StatusBlock->Information = sizeof(*out);
         break;
+    }
+    case IOCTL_VIDEO_UNSHARE_VIDEO_MEMORY: {
+        PVIDEO_SHARE_MEMORY in = rp->InputBuffer;
+        if (rp->InputBufferLength < sizeof(*in)) {
+            st = ERROR_INSUFFICIENT_BUFFER;
+            break;
+        }
+        ZwUnmapViewOfSection(in->ProcessHandle, in->RequestedVirtualAddress);
+        break;
+    }
     case IOCTL_VIDEO_SET_COLOR_REGISTERS:
         /* no palettized modes */
         st = ERROR_INVALID_FUNCTION;

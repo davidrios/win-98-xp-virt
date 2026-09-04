@@ -62,6 +62,8 @@
 
 #define D3DPT_FB_REG_FRAMES      0x60u   /* R: console refreshes since ENABLE (vblank stand-in) */
 #define D3DPT_FB_REG_DEBUG       0x70u   /* W: one character; lines go to the QEMU log */
+#define D3DPT_FB_REG_DDFLAGS     0x74u   /* R: host test knob for the display driver's DirectDraw
+                                            behaviour (-device d3dpt-vga,ddflags=N); 0 = normal */
 
 #define D3DPT_FB_CAP_BPP16       0x1u
 #define D3DPT_FB_CAP_BPP32       0x2u
