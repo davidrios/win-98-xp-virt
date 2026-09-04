@@ -127,9 +127,12 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   on top), regenerated with the recipe below (both applied over the
   backports with offsets only, no rejects, no source edits), forward-
   applied twice from pristine and byte-compared, `scripts/test.sh all`
-  green on x86-64. Numbers, docs and tools say 11/12 from here on; the
-  Air still needs one build + `scripts/test.sh all` on the merged `main`
-  to confirm the aarch64 side over the re-sequenced queue.
+  green on x86-64. Numbers, docs and tools say 11/12 from here on. **Air
+  confirmed the same day:** full rebuild from the merged `main` (queue
+  applies, QEMU + player build), `scripts/test.sh all` green — both
+  batteries identical on/off (546,425 / 382,251 lines), register-only
+  packed 13.8×, scalar 4.1×, MMX 3.7×, clamp+cmp 8.5×, x87 10.6×/5.7×;
+  the native DXVK checks pass too. Nothing owed on aarch64.
 - **XP-guest `SSEBENCH.EXE` on the x86-64 box, 2026-09-04** (Ryzen 7
   5700X, `-iter 20`, best of two passes; rows in
   `reference/benchmarks/README.md`): clamp+cmp **3.68 ns/op = 43 % of

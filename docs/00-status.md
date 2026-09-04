@@ -12,7 +12,7 @@ build/test loop and ordered next steps:
 |---|---|---|---|
 | **M4 — paravirtual Direct3D device** (DLL path, executor, tests) | `docs/tracks/m4-d3d-device.md` | `d3dpt/exec`, `d3dpt/hw/d3dpt_mm.c`, `guest-tools/src/d3dpt/`, `scripts/test.sh`, doc 14 | a real game on the device |
 | **M7 — XP display driver** (`d3dpt-vga`, miniport + display DLL, DirectDraw/Direct3D DDI) | `docs/tracks/m7-display-driver.md` | `d3dpt/hw/d3dpt_vga.c`, `d3dpt/hw/d3dpt_exec_load.[ch]`, `d3dpt/d3dpt_fb.h`, `d3dpt/exec/d3dpt_exec_ddi.cpp`, `guest-tools/src/d3dptvid/`, `tools/xp-driver-test.sh`, `tools/xp-fifa2000.bat`, `tools/xp-fifa-match.sh`, `tools/d3dpt-dp2-test.cpp`, doc 15 | the user confirms `D3DPT\DINPUT.DLL` fixes the TCG match keyboard; then colour keying / T&L / DX8 tokens as the next title demands |
-| **M8 — CPU fast paths in TCG** (x87 shadows, SSE inline, TCG float opcodes) | `docs/tracks/m8-tcg-fastpaths.md` | `patches/qemu/05`, `06`, `11`, `12`, `tools/x87-*`, `tools/sse-guest-test.py`, `guest-tools/src/ssebench.c`, docs 13 and 16 | **merged to `main` 2026-09-04** (the SSE/SIMD patches re-sequenced after the upstream backports as `11-sse-inline-tcg` / `12-simd-inline-tcg`, `scripts/test.sh all` green on x86-64; XP `SSEBENCH.EXE` on the x86-64 box clamp+cmp 43 % of the rig vs the Air's 34 %). Next: one Air build + suite on the merged `main` (aarch64 over the re-sequenced queue), then item 2 of the track doc — a real Direct3D workload with and without `*-fast=off` |
+| **M8 — CPU fast paths in TCG** (x87 shadows, SSE inline, TCG float opcodes) | `docs/tracks/m8-tcg-fastpaths.md` | `patches/qemu/05`, `06`, `11`, `12`, `tools/x87-*`, `tools/sse-guest-test.py`, `guest-tools/src/ssebench.c`, docs 13 and 16 | **merged to `main` 2026-09-04** (the SSE/SIMD patches re-sequenced after the upstream backports as `11-sse-inline-tcg` / `12-simd-inline-tcg`, `scripts/test.sh all` green on x86-64; XP `SSEBENCH.EXE` on the x86-64 box clamp+cmp 43 % of the rig vs the Air's 34 %). Air build + `scripts/test.sh all` on the merged `main` green the same day (aarch64 over the re-sequenced queue, both batteries identical). Next: item 2 of the track doc — a real Direct3D workload with and without `*-fast=off` |
 | **M5 — CD-ROM backend** (libdisc, `cdimage` block driver, ATAPI/MMC, CD-DA) | `docs/tracks/m5-cdrom-backend.md` | `libdisc/`, `patches/qemu/50..59`, `tools/atapi-guest-test.py`, `guest-tools/src/cdtest.c`, docs 05 and 17 | steps 1–6 landed 2026-09-04 (model, cue/bin + CCD + MDS + ISO, EDC/ECC, Q, MMC responders, C API, `discx`, the `cdimage` block driver + patch 50, patch 51 = ATAPI + CD-DA from the model, DOS + XP guest tests incl. the tone through MCI into a wav, real dumps copied and scanned clean); next: Win98 CD Player by ear, a SafeDisc / SecuROM dump (steps 7–8), M5f with M6 |
 | Everything else (M3 Glide/fences, M2, M6, macOS bring-up) | this doc's "Next steps" | — | as listed |
 
@@ -293,6 +293,12 @@ items nobody owns yet:
   (3.14 breaks mkvenv), `MACOSX_DEPLOYMENT_TARGET` = running OS.
 - macOS link: `qemu_default_main` must exist (cocoa.m); plugin export list
   hides symbols → our ld64 list; XQuartz + SDL2 required to build.
+- `build-wrappers.sh` is `set -e` and writes the ISO last: a failing stage
+  leaves the previous ISO in place, so an ISO older than the sources means a
+  stage died, not that the change is missing. Homebrew's mingw is a symlink
+  in `/opt/homebrew/bin`, so `build-driver.sh` finds the DDK headers through
+  `-print-sysroot` (2026-09-04: the Air's ISO had been missing `DRIVER\` and
+  the `D3DPT\DDRAW.DLL` / `DINPUT.DLL` shims for that reason).
 - Guest wrappers: modern mingw-w64 links the UCRT (Win9x has none) and
   qemu-3dfx compiles `-march=x86-64-v2`; the script forces msvcrt +
   pentium3 and refuses anything else.

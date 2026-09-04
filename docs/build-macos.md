@@ -127,6 +127,11 @@ Win98 SE install ISO; everything else comes from the repo.
 # guest wrappers, built from the exact qemu-3dfx commit the host is signed with
 brew install mingw-w64 xorriso && guest-tools/build-wrappers.sh
 #   → guest-tools/out/guest-tools-3dfx-<rev>.iso   (or one built on Linux — same commit)
+#   The script aborts (set -e) and leaves the OLD ISO in place if any stage
+#   fails; check the "==> .iso" line at the end. Homebrew's mingw is symlinked
+#   into /opt/homebrew/bin, so build-driver.sh asks the compiler for its
+#   sysroot to find the DDK headers (fixed 2026-09-04; before that the ISO
+#   built on the Air silently lacked DRIVER\ and everything added after it).
 
 # 1. install Win98 (cirrus = in-box high-color driver, no extra guest driver needed)
 #    IMPORTANT: at the CD boot menu pick "Boot from CD-ROM" → "Start computer with

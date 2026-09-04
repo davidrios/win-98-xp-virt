@@ -18,7 +18,12 @@ SRC="$ROOT/guest-tools/src/d3dptvid"
 OUT="$ROOT/guest-tools/out/driver"
 CC=i686-w64-mingw32-gcc
 command -v "$CC" >/dev/null || { echo "need $CC (mingw-w64)"; exit 1; }
-DDK_INC="$(dirname "$(dirname "$(command -v "$CC")")")/i686-w64-mingw32/include/ddk"
+# The headers sit under the toolchain's sysroot: /usr/i686-w64-mingw32 on
+# Arch, Cellar/mingw-w64/<ver>/toolchain-i686/i686-w64-mingw32 on Homebrew
+# (where the compiler in /opt/homebrew/bin is only a symlink, so deriving the
+# prefix from the binary's location finds nothing).
+DDK_INC="$("$CC" -print-sysroot 2>/dev/null)/i686-w64-mingw32/include/ddk"
+[ -f "$DDK_INC/video.h" ] || DDK_INC="$(dirname "$(dirname "$(command -v "$CC")")")/i686-w64-mingw32/include/ddk"
 [ -f "$DDK_INC/video.h" ] || DDK_INC="/usr/i686-w64-mingw32/include/ddk"
 [ -f "$DDK_INC/video.h" ] || { echo "mingw-w64 DDK headers (ddk/video.h) not found"; exit 1; }
 
