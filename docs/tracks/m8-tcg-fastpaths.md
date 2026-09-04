@@ -55,6 +55,35 @@ docs 13 and 16. Branch: `track/m8-tcg-fp`.
   on/off, MMX chain 4.0×; `MMX blend` kernel added to SSEBENCH (XP
   numbers in the table). The x86-64 `vpshufb` path is unexecuted like
   the rest of the x86-64 backend additions.
+- **x86-64 host run, 2026-09-04** (Arch box, worktree
+  `.claude/worktrees/m8-tcg-fp`): first execution of patches 07/08's
+  x86-64 codegen. `x87-guest-test.py` (382,251 lines) and
+  `sse-guest-test.py` (546,425 lines) both bit-identical fast-path
+  on/off; x87 8.1×/6.7×, packed SSE 7.5×, scalar SSE 3.9×. The MMX
+  register bench only hit 1.4× (below the script's 1.5× "fast path not
+  active" warning), vs 4.0× on aarch64. Isolated the 8 ops with a
+  throwaway microbench (each op alone, 300M iterations, BIOS-tick
+  timed): found `simd_psadbw` was a genuine regression — **slower with
+  `simd-fast=on` than the helper it replaces** on x86-64 (net ~17 ticks
+  on vs ~11 off) — because it used the memory-based
+  `tcg_gen_gvec_umax/umin/sub` (designed for large arbitrary-length
+  vectors) instead of the register-only `tcg_gen_umax_vec`/`umin_vec`/
+  `sub_vec` that `simd_tbl_permute` in the same file already uses.
+  Fixed by switching `simd_psadbw` to the register-only vector ops
+  (patch 08 regenerated per the recipe below, verified byte-identical
+  after two `prepare-qemu.sh` runs); psadbw is now roughly at parity
+  with the helper instead of behind it. Guest tests still bit-identical
+  after the fix. The aggregate MMX chain ratio barely moved (still
+  ~1.4×) because psadbw was never the dominant cost: `pmulhw` and
+  `packuswb` are scalar SWAR (per-lane `sextract`/`deposit` loops) and
+  only get 3–3.9× from removing the helper call — x86-64 lacks a cheap
+  bitfield-insert equivalent to aarch64's `BFI`/`SBFX`, so the same
+  portable code costs more host instructions here. Closing that gap for
+  real needs native vector ops for multiply-high and saturating pack
+  (mirroring how `tbl_vec` was added: a new generic opcode gated per
+  backend), not attempted this session — x86-64 has native
+  `PMULHW`/`PMULHUW`/`PACKSSWB`/`PACKUSWB` hardware for exactly this,
+  aarch64 support would need separate design/validation.
 
 ## Build / test loop
 
@@ -91,11 +120,14 @@ benchmark's convert kernel was fixed to stay in range).
 
 ## Next steps, in order
 
-1. **x86-64 host run.** On the Arch box: prepare, build, then
-   `tools/sse-guest-test.py` and `tools/x87-guest-test.py`. Anything
-   wrong will be in `tcg/i386/tcg-target.c.inc` (VEX `vaddss`.. `vcvtsi2ss`
-   / `vcvttss2si` encodings, `vaddps`/`vaddpd` via `gen_simd`) or in
-   constraints (`C_O1_I1(r, x)` added). Then merge to `main`.
+1. ~~**x86-64 host run.**~~ Done 2026-09-04 (see State above): both
+   guest batteries bit-identical, `simd_psadbw`'s gvec-vs-register-vec
+   regression found and fixed. Still open before merging to `main`:
+   `pmulhw`/`packuswb` real vectorization (native `PMULHW`/`PACKSSWB`/
+   `PACKUSWB`, a new generic opcode gated per backend like `tbl_vec`) to
+   close the x86-64 MMX chain gap for real (currently 1.4× vs aarch64's
+   4.0×) — bigger, cross-backend, needs aarch64 validation too; not
+   started this session.
 2. **clamp+cmp at 34 % of the rig.** `minps`/`maxps`/`cmpps` cost 4.7 ns
    per op on the Air against 2.1 for `mulps`/`addps` in the same TB shape;
    find out why (the compare's mask materialisation? a per-lane check
