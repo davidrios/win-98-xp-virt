@@ -284,6 +284,12 @@ items nobody owns yet:
   (3.14 breaks mkvenv), `MACOSX_DEPLOYMENT_TARGET` = running OS.
 - macOS link: `qemu_default_main` must exist (cocoa.m); plugin export list
   hides symbols → our ld64 list; XQuartz + SDL2 required to build.
+- `build-wrappers.sh` is `set -e` and writes the ISO last: a failing stage
+  leaves the previous ISO in place, so an ISO older than the sources means a
+  stage died, not that the change is missing. Homebrew's mingw is a symlink
+  in `/opt/homebrew/bin`, so `build-driver.sh` finds the DDK headers through
+  `-print-sysroot` (2026-09-04: the Air's ISO had been missing `DRIVER\` and
+  the `D3DPT\DDRAW.DLL` / `DINPUT.DLL` shims for that reason).
 - Guest wrappers: modern mingw-w64 links the UCRT (Win9x has none) and
   qemu-3dfx compiles `-march=x86-64-v2`; the script forces msvcrt +
   pentium3 and refuses anything else.
