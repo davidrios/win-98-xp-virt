@@ -1,0 +1,48 @@
+---- 2026-09-04 21:05:53
+log D:\Games\GAMEDIR\d3dgame8.log
+arg[0] D:\Games\GAMEDIR\D3DGAME8.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame8: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 1.1 ps 1.4 maxtex 4096
+d3dgame8: device 640x480 windowed 8888, hardware vertex processing
+d3dgame8: 36.4 fps, frame 37
+d3dgame8: 44.0 fps, frame 81
+d3dgame8: 44.0 fps, frame 125
+d3dgame8: 43.0 fps, frame 168
+d3dgame8: 43.0 fps, frame 211
+d3dgame8: 43.0 fps, frame 254
+d3dgame8: 43.0 fps, frame 297
+d3dgame8: 42.4 fps, frame 340
+d3dgame8: 43.0 fps, frame 383
+d3dgame8: 43.0 fps, frame 426
+d3dgame8: 44.0 fps, frame 470
+d3dgame8: 44.0 fps, frame 514
+d3dgame8: 44.0 fps, frame 558
+d3dgame8: 43.0 fps, frame 601
+d3dgame8: 603 frames, 141 ms
+d3dgame8: exit
+---- 2026-09-04 21:08:15
+log D:\Games\GAMEDIR\d3dgame8.log
+arg[0] D:\Games\GAMEDIR\D3DGAME8.EXE
+arg[1] -fs
+windows 5.1 build 2600 Service Pack 3
+d3dgame8: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 1.1 ps 1.4 maxtex 4096
+d3dgame8: device 640x480 fullscreen 8888, hardware vertex processing
+d3dgame8: 42.0 fps, frame 42
+d3dgame8: 83.0 fps, frame 125
+d3dgame8: 85.0 fps, frame 210
+d3dgame8: 85.0 fps, frame 295
+d3dgame8: 85.0 fps, frame 380
+d3dgame8: 85.0 fps, frame 465
+d3dgame8: 521 frames, 672 ms
+d3dgame8: exit
+---- 2026-09-04 21:08:25
+log D:\Games\GAMEDIR\d3dgame8.log
+arg[0] D:\Games\GAMEDIR\D3DGAME8.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame8: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 1.1 ps 1.4 maxtex 4096
+d3dgame8: device 640x480 windowed 8888, hardware vertex processing
+d3dgame8: 34.4 fps, frame 35
+d3dgame8: 44.0 fps, frame 79
+d3dgame8: 37.5 fps, frame 120
+d3dgame8: 120 frames, 16 ms
+d3dgame8: exit

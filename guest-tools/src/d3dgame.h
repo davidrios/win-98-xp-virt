@@ -15,6 +15,8 @@
  * -bpp16      16-bit back buffer (565) instead of X8R8G8B8
  * -novsync    D3DPRESENT_INTERVAL_IMMEDIATE
  * -shader     (d3d9) SM1.1 vs/ps for the cubes when D3DX is available
+ *             (vs_1_1 compiled from HLSL, ps_1_1 assembled: d3dx9_33+ HLSL
+ *             compilers refuse ps_1_x targets)
  * -log f      log file (default d3dgame9.log / d3dgame8.log next to the EXE,
  *             appended); everything printed to the console goes there too
  */
@@ -329,7 +331,7 @@ struct game {
     int wireframe, paused;
     float bars[BARS];       /* last frame times, ms */
     int bar_i;
-    DWORD t0_ms, last_ms, fps_frames;
+    DWORD start_ms, t0_ms, last_ms, fps_frames;
     float fps;
     int quit;
 };
@@ -341,7 +343,7 @@ static void game_init(struct game *g, int argc, char **argv)
     g->cam_yaw = 0.6f;
     g->cam_dist = 9.0f;
     g->cam_h = 3.5f;
-    g->t0_ms = g->last_ms = GetTickCount();
+    g->start_ms = g->t0_ms = g->last_ms = GetTickCount();
 }
 
 /* keyboard (GetAsyncKeyState: works in menus and exclusive fullscreen alike) */
@@ -371,7 +373,8 @@ static float game_step(struct game *g)
         if (dt > 0.1f) dt = 0.1f;
         game_input(g, dt);
     }
-    g->bars[g->bar_i] = (now - g->last_ms) * 1.0f;
+    /* golden runs draw the fixed step, not wall time, so the HUD is reproducible */
+    g->bars[g->bar_i] = g->o.frames ? dt * 1000.0f : (now - g->last_ms) * 1.0f;
     g->bar_i = (g->bar_i + 1) % BARS;
     g->last_ms = now;
     if (!g->paused) g->t += dt;

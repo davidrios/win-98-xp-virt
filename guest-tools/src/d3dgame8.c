@@ -332,7 +332,7 @@ int main(int argc, char **argv)
         }
         if (G.o.frames && (int)G.frame >= G.o.frames) break;
     }
-    game_log("d3dgame8: %u frames, %lu ms", G.frame, (unsigned long)(GetTickCount() - G.t0_ms));
+    game_log("d3dgame8: %u frames, %lu ms", G.frame, (unsigned long)(GetTickCount() - G.start_ms));
     if (X.dev) IDirect3DDevice8_Release(X.dev);
     if (X.d3d) IDirect3D8_Release(X.d3d);
     game_log("d3dgame8: exit");

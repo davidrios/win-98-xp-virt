@@ -77,7 +77,9 @@ vertex buffer (waving grid, 565 texture), additive DXT1 particles via
 DrawPrimitiveUP, a render-to-texture monitor, a frame-time bar graph;
 windowed or `-fs` exclusive fullscreen (`-w -h -bpp16 -novsync`), keyboard
 camera (WASD/arrows/Q/E), F1 wireframe, Space pause, Esc quits; `-shader`
-adds a vs_1_1/ps_1_1 path on d3d9 when a d3dx9 DLL is present. `-frames N`
+adds a vs_1_1/ps_1_1 path on d3d9 when a d3dx9 DLL is present (the vertex
+shader is HLSL, the pixel shader is assembled: d3dx9_33+ HLSL compilers
+refuse ps_1_x, X3539). `-frames N`
 runs a fixed-step sequence with an auto-orbiting camera and exits;
 `-dump N file.bmp` writes frame N. Everything printed also goes to
 `d3dgame9.log` / `d3dgame8.log` next to the EXE (appended, flushed per
@@ -86,8 +88,9 @@ version, adapter and caps, the device configuration, shader compiler output,
 fps once a second, dumps and errors. Copy the log along with the BMPs.
 Procedure: run on the reference rig
 (P4 + GeForce 6200) first — it must be flawless there — keep its BMPs as
-golden images, then run the same command lines under each emulated path
-and diff. No commercial game, no disc, no crack involved.
+golden images (`reference/d3d/`, first set 2026-09-03), then run the same
+command lines under each emulated path and diff with `tools/bmpdiff.py`.
+No commercial game, no disc, no crack involved.
 
 `D3D9TEST.EXE` (`guest-tools/src/d3d9test.c`) is the D3D9 counterpart of
 wglgears: prints the adapter identifier (WineD3D reports a GL-derived

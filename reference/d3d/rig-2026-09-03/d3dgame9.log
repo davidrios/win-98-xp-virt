@@ -1,0 +1,255 @@
+---- 2026-09-04 21:06:09
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 68.0 fps, frame 68
+d3dgame9: 81.0 fps, frame 149
+d3dgame9: 85.0 fps, frame 234
+d3dgame9: 85.0 fps, frame 319
+d3dgame9: 85.0 fps, frame 404
+d3dgame9: 85.0 fps, frame 489
+d3dgame9: 84.0 fps, frame 573
+d3dgame9: 85.0 fps, frame 658
+d3dgame9: 84.0 fps, frame 742
+d3dgame9: 85.0 fps, frame 827
+d3dgame9: 85.0 fps, frame 912
+d3dgame9: 85.0 fps, frame 997
+d3dgame9: 85.0 fps, frame 1082
+d3dgame9: 85.0 fps, frame 1167
+d3dgame9: 42.2 fps, frame 1225
+d3dgame9: 85.0 fps, frame 1310
+d3dgame9: 73.9 fps, frame 1392
+d3dgame9: 1392 frames, 0 ms
+d3dgame9: exit
+---- 2026-09-04 21:08:33
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 67.0 fps, frame 67
+d3dgame9: 85.0 fps, frame 152
+d3dgame9: 83.0 fps, frame 235
+d3dgame9: 85.0 fps, frame 320
+d3dgame9: 377 frames, 782 ms
+d3dgame9: exit
+---- 2026-09-04 21:08:56
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -fs
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 fullscreen 8888, hardware vertex processing
+d3dgame9: 32.0 fps, frame 32
+d3dgame9: 82.0 fps, frame 114
+d3dgame9: 85.0 fps, frame 199
+d3dgame9: 85.0 fps, frame 284
+d3dgame9: 85.0 fps, frame 369
+d3dgame9: 85.0 fps, frame 454
+d3dgame9: 473 frames, 235 ms
+d3dgame9: exit
+---- 2026-09-04 21:09:46
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 62.0 fps, frame 62
+d3dgame9: 85.0 fps, frame 147
+d3dgame9: 85.0 fps, frame 232
+d3dgame9: 85.0 fps, frame 317
+d3dgame9: 83.0 fps, frame 400
+d3dgame9: 84.0 fps, frame 484
+d3dgame9: 9.2 fps, frame 527
+d3dgame9: 586 frames, 812 ms
+d3dgame9: exit
+---- 2026-09-04 21:10:02
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -fs
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 fullscreen 8888, hardware vertex processing
+d3dgame9: 31.0 fps, frame 31
+d3dgame9: 78.0 fps, frame 109
+d3dgame9: 85.0 fps, frame 194
+d3dgame9: 211 frames, 203 ms
+d3dgame9: exit
+---- 2026-09-04 21:10:07
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -fs
+arg[2] -shader
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 fullscreen 8888, hardware vertex processing
+d3dgame9: shader compiler from d3dx9_36.dll
+d3dgame9: CreateVertexShader 0x00000000
+d3dgame9: ps_1_1: error X3539: ps_1_x is no longer supported; use /Gec in fxc to automatically upgrade to ps_2_0
+error X3539: Alternately, fxc's /LD option allows use of the old compiler DLL
+
+
+d3dgame9: D3DXCompileShader(ps_1_1) 0x80004001
+d3dgame9: cubes use fixed function (shader path unavailable)
+d3dgame9: 42.0 fps, frame 42
+d3dgame9: 86.0 fps, frame 128
+d3dgame9: 85.0 fps, frame 213
+d3dgame9: 86.0 fps, frame 299
+d3dgame9: 85.0 fps, frame 384
+d3dgame9: 431 frames, 563 ms
+d3dgame9: exit
+---- 2026-09-04 21:10:15
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -fs
+arg[2] -shader
+arg[3] -bpp16
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 fullscreen 565, hardware vertex processing
+d3dgame9: shader compiler from d3dx9_36.dll
+d3dgame9: CreateVertexShader 0x00000000
+d3dgame9: ps_1_1: error X3539: ps_1_x is no longer supported; use /Gec in fxc to automatically upgrade to ps_2_0
+error X3539: Alternately, fxc's /LD option allows use of the old compiler DLL
+
+
+d3dgame9: D3DXCompileShader(ps_1_1) 0x80004001
+d3dgame9: cubes use fixed function (shader path unavailable)
+d3dgame9: 35.0 fps, frame 35
+d3dgame9: 75.0 fps, frame 110
+d3dgame9: 85.0 fps, frame 195
+d3dgame9: 85.0 fps, frame 280
+d3dgame9: 86.0 fps, frame 366
+d3dgame9: 373 frames, 94 ms
+d3dgame9: exit
+---- 2026-09-04 21:11:49
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -frames
+arg[2] 600
+arg[3] -dump
+arg[4] 300
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 63.0 fps, frame 63
+d3dgame9: 85.0 fps, frame 148
+d3dgame9: 83.0 fps, frame 231
+d3dgame9: 74.0 fps, frame 305
+d3dgame9: 83.0 fps, frame 388
+d3dgame9: 85.0 fps, frame 473
+d3dgame9: 85.0 fps, frame 558
+d3dgame9: 600 frames, 500 ms
+d3dgame9: exit
+---- 2026-09-04 21:12:05
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 56.0 fps, frame 56
+d3dgame9: 85.0 fps, frame 141
+d3dgame9: 85.0 fps, frame 226
+d3dgame9: 84.0 fps, frame 310
+d3dgame9: 84.0 fps, frame 394
+d3dgame9: 85.0 fps, frame 479
+d3dgame9: 86.0 fps, frame 565
+d3dgame9: 576 frames, 265 ms
+d3dgame9: exit
+---- 2026-09-04 21:12:15
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 69.0 fps, frame 69
+d3dgame9: 86.0 fps, frame 155
+d3dgame9: 84.0 fps, frame 239
+d3dgame9: 85.0 fps, frame 324
+d3dgame9: 358 frames, 500 ms
+d3dgame9: exit
+---- 2026-09-04 21:12:54
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -frames
+arg[2] 600
+arg[3] -dump
+arg[4] 300
+arg[5] d3d9_dump.bmp
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: 69.0 fps, frame 69
+d3dgame9: 85.0 fps, frame 154
+d3dgame9: 83.0 fps, frame 237
+d3dgame9: frame 300 -> D:\Games\GAMEDIR\d3d9_dump.bmp (written)
+d3dgame9: 84.0 fps, frame 321
+d3dgame9: 84.0 fps, frame 405
+d3dgame9: 85.0 fps, frame 490
+d3dgame9: 84.0 fps, frame 574
+d3dgame9: 600 frames, 328 ms
+d3dgame9: exit
+---- 2026-09-04 21:13:54
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -shader
+arg[2] -frames
+arg[3] 600
+arg[4] -dump
+arg[5] 300
+arg[6] d3d9_dump_shader.bmp
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 windowed 8888, hardware vertex processing
+d3dgame9: shader compiler from d3dx9_36.dll
+d3dgame9: CreateVertexShader 0x00000000
+d3dgame9: ps_1_1: error X3539: ps_1_x is no longer supported; use /Gec in fxc to automatically upgrade to ps_2_0
+error X3539: Alternately, fxc's /LD option allows use of the old compiler DLL
+
+
+d3dgame9: D3DXCompileShader(ps_1_1) 0x80004001
+d3dgame9: cubes use fixed function (shader path unavailable)
+d3dgame9: 64.0 fps, frame 64
+d3dgame9: 84.0 fps, frame 148
+d3dgame9: 85.0 fps, frame 233
+d3dgame9: frame 300 -> D:\Games\GAMEDIR\d3d9_dump_shader.bmp (written)
+d3dgame9: 84.0 fps, frame 317
+d3dgame9: 85.0 fps, frame 402
+d3dgame9: 85.0 fps, frame 487
+d3dgame9: 85.0 fps, frame 572
+d3dgame9: 600 frames, 344 ms
+d3dgame9: exit
+---- 2026-09-04 21:14:17
+log D:\Games\GAMEDIR\d3dgame9.log
+arg[0] D:\Games\GAMEDIR\D3DGAME9.EXE
+arg[1] -fs
+arg[2] -shader
+windows 5.1 build 2600 Service Pack 3
+d3dgame9: adapter "NVIDIA GeForce 6200  " driver "nv4_disp.dll" vs 3.0 ps 3.0 maxtex 4096
+d3dgame9: device 640x480 fullscreen 8888, hardware vertex processing
+d3dgame9: shader compiler from d3dx9_36.dll
+d3dgame9: CreateVertexShader 0x00000000
+d3dgame9: ps_1_1: error X3539: ps_1_x is no longer supported; use /Gec in fxc to automatically upgrade to ps_2_0
+error X3539: Alternately, fxc's /LD option allows use of the old compiler DLL
+
+
+d3dgame9: D3DXCompileShader(ps_1_1) 0x80004001
+d3dgame9: cubes use fixed function (shader path unavailable)
+d3dgame9: 31.0 fps, frame 31
+d3dgame9: 81.0 fps, frame 112
+d3dgame9: 85.0 fps, frame 197
+d3dgame9: 85.0 fps, frame 282
+d3dgame9: 85.0 fps, frame 367
+d3dgame9: 85.0 fps, frame 452
+d3dgame9: 85.0 fps, frame 537
+d3dgame9: 85.0 fps, frame 622
+d3dgame9: 85.0 fps, frame 707
+d3dgame9: 85.0 fps, frame 792
+d3dgame9: 85.0 fps, frame 877
+d3dgame9: 85.0 fps, frame 962
+d3dgame9: 85.0 fps, frame 1047
+d3dgame9: 85.0 fps, frame 1132
+d3dgame9: 1190 frames, 688 ms
+d3dgame9: exit

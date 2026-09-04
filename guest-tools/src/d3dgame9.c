@@ -13,9 +13,14 @@
 #define FVF_PCT (D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 #define FVF_RHW (D3DFVF_XYZRHW | D3DFVF_DIFFUSE)
 
-/* optional SM1.1 path: D3DXCompileShader from whatever d3dx9_NN.dll exists */
+/* optional SM1.1 path from whatever d3dx9_NN.dll exists: the vertex shader is
+ * HLSL (vs_1_1 compiles everywhere), the pixel shader is assembled, because
+ * the HLSL compiler in d3dx9_33 and later rejects ps_1_x targets (X3539) and
+ * era titles shipped assembled ps_1_1 anyway. */
 typedef HRESULT (WINAPI *pfn_compile)(LPCSTR src, UINT len, const void *defines, void *include,
                                       LPCSTR fn, LPCSTR profile, DWORD flags, void **code, void **err, void **ct);
+typedef HRESULT (WINAPI *pfn_assemble)(LPCSTR src, UINT len, const void *defines, void *include,
+                                       DWORD flags, void **code, void **err);
 static const char vs_src[] =
     "float4x4 wvp : register(c0);\n"
     "float3 ldir : register(c4);\n"
@@ -26,8 +31,9 @@ static const char vs_src[] =
     "  float d = saturate(dot(normalize(n), -ldir)) * 0.8 + 0.2;\n"
     "  o.col = float4(matcol.rgb * d, 1); o.uv = uv; return o; }\n";
 static const char ps_src[] =
-    "sampler s0 : register(s0);\n"
-    "float4 main(float4 col : COLOR0, float2 uv : TEXCOORD0) : COLOR { return tex2D(s0, uv) * col; }\n";
+    "ps_1_1\n"
+    "tex t0\n"             /* stage 0 sample at TEXCOORD0 */
+    "mul r0, t0, v0\n";    /* * COLOR0 from the vertex shader */
 
 struct gfx {
     IDirect3D9 *d3d;
@@ -105,6 +111,7 @@ static void make_shaders(void)
     static const char *names[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_36.dll", "d3dx9_30.dll", "d3dx9_24.dll", NULL };
     HMODULE h = NULL;
     pfn_compile compile;
+    pfn_assemble assemble;
     int i;
     struct blob { IUnknownVtbl *vt; } *code = NULL;
     /* ID3DXBuffer: vtable slot 3 = GetBufferPointer */
@@ -112,7 +119,8 @@ static void make_shaders(void)
     for (i = 0; names[i] && !h; i++) h = LoadLibraryA(names[i]);
     if (!h) { game_log("d3dgame9: no d3dx9 DLL, fixed-function only"); return; }
     compile = (pfn_compile)GetProcAddress(h, "D3DXCompileShader");
-    if (!compile) return;
+    assemble = (pfn_assemble)GetProcAddress(h, "D3DXAssembleShader");
+    if (!compile || !assemble) { game_log("d3dgame9: %s lacks D3DXCompileShader/D3DXAssembleShader", names[i - 1]); return; }
     game_log("d3dgame9: shader compiler from %s", names[i - 1]);
     {
         struct blob *err = NULL;
@@ -128,7 +136,7 @@ static void make_shaders(void)
             game_log("d3dgame9: D3DXCompileShader(vs_1_1) %s", hr_str(hr));
         }
         err = NULL;
-        hr = compile(ps_src, sizeof(ps_src) - 1, NULL, NULL, "main", "ps_1_1", 0, (void **)&code, (void **)&err, NULL);
+        hr = assemble(ps_src, sizeof(ps_src) - 1, NULL, NULL, 0, (void **)&code, (void **)&err);
         if (err) { game_log("d3dgame9: ps_1_1: %s", (const char *)((pfn_ptr)((void **)err->vt)[3])(err)); ((void (WINAPI *)(void *))((void **)err->vt)[2])(err); }
         if (SUCCEEDED(hr) && code) {
             pfn_ptr gp = (pfn_ptr)((void **)code->vt)[3];
@@ -136,10 +144,14 @@ static void make_shaders(void)
             game_log("d3dgame9: CreatePixelShader %s", hr_str(hr));
             ((void (WINAPI *)(void *))((void **)code->vt)[2])(code);
         } else {
-            game_log("d3dgame9: D3DXCompileShader(ps_1_1) %s", hr_str(hr));
+            game_log("d3dgame9: D3DXAssembleShader(ps_1_1) %s", hr_str(hr));
         }
     }
-    game_log("d3dgame9: cubes use %s", X.vs && X.ps ? "vs_1_1 + ps_1_1" : "fixed function (shader path unavailable)");
+    /* draw_cubes keys on X.vs alone: a vertex shader with the fixed-function
+     * pixel stage is a legal D3D9 combination and what the rig ran on
+     * 2026-09-03 before the assembler path existed */
+    game_log("d3dgame9: cubes use %s", X.vs ? (X.ps ? "vs_1_1 + ps_1_1" : "vs_1_1 + fixed-function pixel stage")
+                                          : "fixed function (shader path unavailable)");
 }
 
 static void set_states(void)
@@ -424,7 +436,7 @@ int main(int argc, char **argv)
         }
         if (G.o.frames && (int)G.frame >= G.o.frames) break;
     }
-    game_log("d3dgame9: %u frames, %lu ms", G.frame, (unsigned long)(GetTickCount() - G.t0_ms));
+    game_log("d3dgame9: %u frames, %lu ms", G.frame, (unsigned long)(GetTickCount() - G.start_ms));
     if (X.dev) IDirect3DDevice9_Release(X.dev);
     if (X.d3d) IDirect3D9_Release(X.d3d);
     game_log("d3dgame9: exit");
