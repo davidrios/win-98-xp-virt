@@ -42,10 +42,17 @@ player log (same day, evening): Max Payne's 32-bit "requires a DirectX 8
 compatible display adapter" was its D3DFMT_D32 auto depth buffer meeting
 DXVK's refusal of D32 — fixed by `depth_norm()` in the executor
 (D32→D24X8, D15S1/D24X4S4→D24S8; `d3dpt-exec-test` now requests D32 so
-it stays covered). Still open, both waiting on the next guest run: the
-16-bit loading-screen freeze (fresh host log), and Vice City's silent
-exit before Direct3DCreate8 — the ddraw shim now writes every call to
-`d3dpt_ddraw.log` next to the EXE so that run will say where it died.
+it stays covered). Vice City's silent exit was then explained by the
+user: they had deleted `D3D8.DLL` from the game folder believing VC is a
+D3D9 title — it is D3D8 (all RenderWare GTAs through VC; San Andreas is
+the D3D9 one), so the game ran on XP's stock d3d8 over Cirrus, exactly
+the environment it cannot start in. Still open, both waiting on the
+user's next guest run (fresh ISO DLLs next to both EXEs, player
+restarted so the rebuilt executor is live): does Max Payne 32-bit now
+start (the depth fix is host-side), does it still freeze on level load
+(host log — any stub prints `not implemented` once), and does Vice City
+run with `D3D8.DLL` restored (if not: `d3dpt_ddraw.log` next to the EXE
+now records every DirectDraw call — the last line says where it died).
 
 ## Build / run / test
 
