@@ -90,8 +90,9 @@ cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
 All integration / e2e (see policy above). `scripts/test.sh` runs them:
 `host` (default, ~30 s: everything without a guest) or `all` (adds the
 guest stage, ~2 min: XP headless on the D3D device from a snapshot of
-`~/vms/winxp.qcow2`, plus the DOS x87 battery). Not in CI yet (needs the
-images and a GPU).
+`~/vms/winxp.qcow2`, plus the DOS x87 battery). **Local only, by
+decision:** CI will never run the suite (it needs the guest images and a
+GPU); don't propose wiring it in.
 
 | Tool | What it proves |
 |---|---|
