@@ -431,6 +431,27 @@ FIFA 2002's SafeDisc 2 authentication completes without once looking at the
 584-sector band. The band is not what this title's check reads, and the
 `repair` control was reporting the truth.
 
+**Settlers 3, traced the same way — and it is the cleaner result of the two.**
+`CD01.ccd` in the player: the game launches, plays its intro and reaches its
+main menu, so ProtectCD's check is satisfied. In 1196 reads (1181 of them
+multi-sector, 8964 sectors) it **never goes near the band**: 0 reads in the
+547-sector region, 0 reads anywhere above LBA 195000, and exactly one READ
+SUB-CHANNEL in the whole session, so the Q anomaly is not read either. The
+game's content reads stop at **LBA 191776**, below the band's 195539 — the
+protection region sits past everything the game uses, so nothing but a check
+would ever read it, and nothing did.
+
+Where FIFA at least probed single sectors *inside* the band's LBA span (just
+never a corrupt one), Settlers does not touch the region at all. **So for both
+schemes we have tested, the L-EC band is not what the check reads**, and doc
+05's ProtectCD row premise — "a dump carrying both the data and the Q anomaly"
+— is wrong twice over: neither anomaly is read.
+
+This does not make §2.5 wrong; verifying L-EC and never correcting it is still
+the right drive behaviour, and `atapi-guest-test.py` proves we deliver the
+errors. It means no protection we have yet met depends on it. The scheme that
+does is still to be found.
+
 **A harness finding worth its own line:** the check *rejects* when the CD
 shares the boot disk's IDE channel (`-drive media=cdrom` lands at index 1 =
 ide0 slave) and passes when the CD is on `ide.1`, which is where the player

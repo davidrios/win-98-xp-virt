@@ -79,6 +79,16 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   out of 781 reads.** So the finding holds from the inside: SafeDisc 2's
   authentication completes here without ever looking at the band, and the
   `repair` control was telling the truth.
+  **Settlers 3 traced the same way, and it is the cleaner result.** `CD01.ccd`
+  in the player: launch, intro, main menu — the check is satisfied — and in
+  1196 reads (1181 multi-sector, 8964 sectors) it never goes near the band: 0
+  reads above LBA 195000, one READ SUB-CHANNEL all session, so neither the data
+  anomaly nor the Q anomaly is read. Content reads stop at LBA 191776, below
+  the band's 195539: the protection region sits past everything the game uses.
+  **Both schemes tested now agree — the L-EC band is not what the check reads.**
+  §2.5 is not wrong (verify and never correct is still right, and
+  `atapi-guest-test.py` proves we deliver the errors); it is that no protection
+  we have met yet depends on it. Finding one that does is the open question.
   **Harness gotcha found with it:** the check rejects when the CD shares the
   boot disk's IDE channel (a bare `-drive media=cdrom` lands at index 1 = ide0
   slave) and passes on `ide.1`, where the player puts it. Same disc, same
