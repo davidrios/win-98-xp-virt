@@ -11,12 +11,17 @@ use crate::shader_profile::ShaderProfile;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
-/// The `player` binary. In dev it sits alongside the launcher's own
-/// executable (both are workspace binaries in the same `target/<profile>`
-/// directory); `LAUNCHER_PLAYER_BIN` overrides it.
+/// The `player` binary: `bin/win98-xp-virt-player` in an installed tree
+/// (`paths.rs`), otherwise alongside the launcher's own executable, where
+/// both sit in dev (workspace binaries in the same `target/<profile>`
+/// directory). `LAUNCHER_PLAYER_BIN` overrides both.
 pub fn player_binary() -> PathBuf {
     if let Ok(p) = std::env::var("LAUNCHER_PLAYER_BIN") {
         return p.into();
+    }
+    if let Some(prefix) = crate::paths::install_prefix() {
+        let name = if cfg!(windows) { "win98-xp-virt-player.exe" } else { "win98-xp-virt-player" };
+        return prefix.join("bin").join(name);
     }
     let exe = std::env::current_exe().expect("current_exe");
     let dir = exe.parent().expect("executable has a parent directory");
@@ -35,18 +40,14 @@ pub fn kvm_available() -> bool {
         && std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
 }
 
-/// `qemu/pc-bios` (README's `-L`). Bundling this is a packaging (M6 step
-/// 6) concern; for now it's found relative to the workspace checkout
-/// this binary was *built* from (`CARGO_MANIFEST_DIR` is baked in at
-/// compile time, like `qemu-embed/build.rs`'s own default) — not the
-/// process's current working directory, which a bare relative path
-/// would be and isn't guaranteed to be the workspace root (a real "No
-/// such file or directory" the user hit running from elsewhere).
-/// `LAUNCHER_PC_BIOS_DIR` overrides it.
+/// QEMU's firmware directory (README's `-L`): shipped as
+/// `share/win98-xp-virt/pc-bios` in an installed tree, `qemu/pc-bios` in
+/// a checkout (`paths.rs`). `LAUNCHER_PC_BIOS_DIR` overrides both.
 pub fn pc_bios_dir() -> PathBuf {
-    std::env::var("LAUNCHER_PC_BIOS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../qemu/pc-bios")))
+    if let Ok(dir) = std::env::var("LAUNCHER_PC_BIOS_DIR") {
+        return dir.into();
+    }
+    crate::paths::resource("share/win98-xp-virt/pc-bios", "qemu/pc-bios")
 }
 
 /// Resolve `machine`'s shader setting into the preset+overrides the
@@ -108,16 +109,17 @@ pub fn spawn(
 }
 
 /// `qemu-img`, a QEMU build product rather than a workspace binary, so it
-/// doesn't sit next to the launcher/player like `player_binary` does;
-/// found the same way test scripts already do (`build/qemu/qemu-img`)
-/// but anchored at the build-time `CARGO_MANIFEST_DIR`, not the
-/// process's current working directory (see `pc_bios_dir`).
-/// `LAUNCHER_QEMU_IMG_BIN` overrides it. Bundling a copy is a packaging
-/// (M6 step 6) concern.
+/// doesn't sit next to the launcher/player like `player_binary` does. In
+/// an installed tree it is `libexec/win98-xp-virt/qemu-img` — deliberately
+/// not `bin/`, since it is *our* patched build and must not shadow (or be
+/// shadowed by) the system's own on `PATH`; in a checkout it is
+/// `build/qemu/qemu-img`, the same path the test scripts use.
+/// `LAUNCHER_QEMU_IMG_BIN` overrides both.
 pub fn qemu_img_binary() -> PathBuf {
-    std::env::var("LAUNCHER_QEMU_IMG_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../build/qemu/qemu-img")))
+    if let Ok(bin) = std::env::var("LAUNCHER_QEMU_IMG_BIN") {
+        return bin.into();
+    }
+    crate::paths::resource("libexec/win98-xp-virt/qemu-img", "build/qemu/qemu-img")
 }
 
 /// Create a new qcow2 disk image for the wizard's "new disk" path.

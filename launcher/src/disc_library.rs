@@ -142,15 +142,16 @@ pub const MAX_SHELF_ENTRIES: usize = 256;
 
 /// The newest guest-tools ISO (`guest-tools/build-wrappers.sh` writes
 /// `guest-tools/out/guest-tools-3dfx-<date>.iso`), for doc 07's
-/// "one-click guest-tools ISO attach". Found relative to the checkout
-/// this binary was *built* from, like `player::pc_bios_dir` — shipping a
-/// copy is a packaging (M6 step 6) concern. `LAUNCHER_GUEST_TOOLS_ISO`
-/// overrides it with an explicit path.
+/// "one-click guest-tools ISO attach". Shipped as
+/// `share/win98-xp-virt/guest-tools/` in an installed tree, built into
+/// `guest-tools/out` in a checkout (`paths.rs`, like
+/// `player::pc_bios_dir`). `LAUNCHER_GUEST_TOOLS_ISO` overrides both with
+/// an explicit path.
 pub fn guest_tools_iso() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("LAUNCHER_GUEST_TOOLS_ISO") {
         return Some(path.into());
     }
-    let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../guest-tools/out"));
+    let dir = crate::paths::resource("share/win98-xp-virt/guest-tools", "guest-tools/out");
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())

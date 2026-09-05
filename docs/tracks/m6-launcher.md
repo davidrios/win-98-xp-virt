@@ -35,6 +35,11 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   `bundle.rs` (the `machine.toml` format, shared conceptually with the
   player but not necessarily a shared crate yet — decide when the
   player needs to read the same format), `snapshots.rs`, `discshelf.rs`.
+- `packaging/` and `scripts/package-linux.sh` (M6 step 6, 2026-09-05):
+  the Linux desktop entry, icon and `install.sh`, and the script that
+  stages doc 07's install layout. `player/build.rs`'s rpath and the
+  `package` check in `scripts/test.sh` are the two places this track
+  reaches outside `launcher/` — both minimal, both named in the commit.
 - Docs: doc 07 (this track's design doc — update as decisions land, e.g.
   the toolkit choice above), the M6 section of doc 08, this file, the M6
   row of the state table and "Next steps" in `docs/00-status.md`.
@@ -1216,6 +1221,71 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   eject in between empties it; `tools/atapi-guest-test.py` still passes
   (206 replies, and its `CDSHELF.COM` stage now drives the `LIST` verb).
 
+- **Step 6a — the install layout and the Linux package landed**
+  (2026-09-05). Packaging turned out to be blocked on something duller
+  than a package format: every companion the launcher reaches for was
+  found in the checkout it was *built* from (`CARGO_MANIFEST_DIR`) — the
+  player, `qemu-img`, `pc-bios`, the guest-tools ISO, the presets — and an
+  installed copy has no checkout. `launcher/src/paths.rs` is now the one
+  place that decides: `<exe dir>/..` containing `share/win98-xp-virt`
+  means installed, and then `paths::resource(installed_rel, checkout_rel)`
+  answers **only** from the prefix. Not a fallback chain on purpose: a
+  package that falls back to a checkout works on the machine that built it
+  and fails everywhere else, which is the exact bug packaging exists to
+  catch. The `LAUNCHER_*` overrides still win over both. Doc 07 now
+  carries the layout.
+
+  The player's half is an rpath: `$ORIGIN/../lib/win98-xp-virt`
+  (`@loader_path` on macOS) added by `player/build.rs`, **before** the
+  absolute build-directory one, so a player copied out of a developer's
+  `target/` loads the packaged library rather than quietly loading theirs.
+  Ordering it first is what makes the package's self-check meaningful on a
+  developer machine at all.
+
+  `scripts/package-linux.sh` stages the layout from an existing build
+  (it does not build QEMU), checks it, and rolls a `.tar.zst` (208 MB
+  staged, 78 MB tarball; `--with-shaders` adds the 80 MB preset
+  collection, off by default because the manager can fetch it). The check
+  is the interesting part and runs on every packaging: it asks the
+  **staged binary** with `env -i` from `/` — so no `LAUNCHER_*`/`PLAYER_*`
+  knob and no relative path can be what makes it work — that every
+  companion resolves inside the package (a new `--paths` verb prints
+  them), that `ldd` on the staged player resolves `libqemu-embed` into the
+  package's own `lib/`, that the packaged `qemu-img` really creates a disk
+  for a machine the packaged launcher makes, that `--print-args` points
+  `-L` at the packaged firmware, and that the desktop entry validates.
+  `packaging/linux/` holds the desktop entry, an icon (a beige CRT, drawn
+  here; the same PNG is compiled into the launcher as its window icon,
+  with `app_id` = `win98-xp-virt` so a compositor pairs window and entry)
+  and `install.sh`, which copies a tree into a prefix (`~/.local` by
+  default, `--uninstall` to remove) and rewrites `Exec=`/`Icon=` absolute.
+
+  **Verified as a stranger would**, not just built: extracted the tarball
+  into `/tmp`, ran `--paths` from it with a scrubbed environment (every
+  path in the extracted tree), installed it into a prefix, **deleted the
+  extracted tree**, and drove the rest from the prefix alone — the desktop
+  entry validates with absolute `Exec`/`Icon`, `--wizard-new xp` created a
+  real 2 GB qcow2 through the packaged `qemu-img`, and `--play` booted the
+  machine: SeaBIOS from the packaged firmware, the empty disk, the
+  rtl8139 taking a DHCP lease under iPXE, screendumped over the
+  launcher's own QMP socket, then shut down with a QMP `quit` (an empty
+  test disk, no guest, no dirty FAT). With `--with-shaders`, a preset
+  *from the package* listed its parameters and rendered through
+  `--preview-shader` with the CRT mask visible — the shipped collection
+  compiles, it isn't just files. The dev path is unchanged throughout
+  (`--paths` in a checkout still names `target/release/player`,
+  `build/qemu/qemu-img`, `qemu/pc-bios`, `third_party/slang-shaders`, and
+  the dev player still `ldd`s to `build/qemu`).
+
+  **Not done here:** the Flatpak (needs `flatpak-builder`, not installed
+  on this box, and a reverse-DNS app ID the project can't pick until it
+  has a home — `Cargo.toml`'s `repository` is still `example.invalid`),
+  the macOS .app and notarization, the Windows installer/zip. The tarball
+  is also only as portable as its system libraries: the embed library
+  links ~190 of them (GTK, SDL, gnutls, …) and the package ships none, so
+  it installs on a machine like the one that built it — which is exactly
+  the gap the Flatpak closes, and why doc 07 calls Flatpak primary.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -1239,15 +1309,41 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
    the entry above. `tools/cdshelf-guest-test.sh ~/vms/win98.qcow2
    win98` is the command; it needs no changes, only a 98 install whose
    Explorer starts.
-6. **Packaging** (last, per doc 08 M6): signed macOS .app + notarization,
-   Windows installer + portable zip, Linux Flatpak — the M6 exit
-   criterion ("stranger installs → plays a disc dump with a CRT shader
-   in under an hour") needs both binaries and this step.
+6. **Packaging** (last, per doc 08 M6) — the M6 exit criterion ("stranger
+   installs → plays a disc dump with a CRT shader in under an hour") needs
+   both binaries and this step.
+   - ~~6a the install layout + the Linux tarball~~ — done above
+     (`launcher/src/paths.rs`, `scripts/package-linux.sh`,
+     `packaging/linux/`).
+   - 6b **Flatpak** (doc 07's primary Linux target): a manifest building
+     QEMU + both binaries against `org.freedesktop.Sdk`, so the ~190
+     system libraries the tarball assumes come from the runtime. Needs
+     `flatpak-builder` (absent on this box) and an application ID — which
+     is a reverse-DNS name, and the project has no domain yet
+     (`Cargo.toml`'s `repository` is `example.invalid`). **Ask before
+     inventing one**; the same name goes in the AppStream metainfo the
+     Flatpak also wants.
+   - 6c **macOS**: the same layout as a `.app`
+     (`Contents/MacOS` + `Contents/Resources`, a third candidate in
+     `paths.rs`), signed with the JIT entitlement and notarized. The Mac
+     is the user's M1 Air, so this one is driven from there.
+   - 6d **Windows**: installer + portable zip, and with it the Windows
+     half of live control — the launcher's monitor socket is a Unix
+     socket, so a named pipe or a loopback port is needed (doc 07's
+     "settled with packaging").
+   - 6e the shader-pack release and the docs site from these documents
+     (doc 08's M6 line), which have no prerequisites in the code.
 
-No wired-in test tool exists yet for this track; CLAUDE.md's
-integration/e2e policy still applies once there's a real boundary worth
-guarding against regressions — don't add `#[cfg(test)]` modules.
-`launcher`'s debug verbs (`--new`, `--print-args`, `--play`,
+**The track's wired-in check is `package`** (added 2026-09-05):
+`scripts/test.sh`'s host stage runs `scripts/package-linux.sh --no-tar`,
+which stages the install layout and interrogates the staged launcher and
+player with a scrubbed environment — a real boundary (the binaries'
+compiled-in path resolution, which otherwise only breaks on someone
+else's machine), and it costs about a second in a ~3 s host stage. The
+rest of the launcher still has no wired-in check; CLAUDE.md's
+integration/e2e policy applies as more of it becomes worth guarding —
+don't add `#[cfg(test)]` modules.
+`launcher`'s debug verbs (`--new`, `--print-args`, `--play`, `--paths`,
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
@@ -1256,19 +1352,14 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`,
 `--shaders`, `--download-shaders`, `--browse-start`; and
 `--wizard-edit` now takes optional `[ram-mb] [auto|kvm|tcg] [net|nonet]`,
-`-` keeping a field, while a diag script step may now be `~<ms>`) were
-exercised by hand
-this session (see the state notes above) rather than wired into
-`scripts/test.sh`, because doing that from `scripts/test.sh`
-needs a `build/qemu` in whichever worktree runs it — this one doesn't
-have one (the shared-checkout `QEMU_EMBED_LIB_DIR` trick used above is a
-manual convenience, not something a checked-in script should depend on
-across worktrees). Once this track's worktree does a real
-`prepare-qemu.sh && configure-qemu.sh && ninja`, add a `launcher` check
-to `scripts/test.sh`: `--new` a bundle against a fresh empty qcow2,
-`--play` it, confirm a frame via `PLAYER_DUMP_OUT` (needs `--shader` per
-the player's source — plain `PLAYER_DUMP` or a screendump-equivalent may
-be simpler for a bundle-only check) — no OS install required, just a
-BIOS/iPXE splash — then kill the spawned process (synthetic disk, no
-guest, no dirty-FAT concern) and add the row to `CLAUDE.md`'s testing
-table too.
+`-` keeping a field, while a diag script step may now be `~<ms>`) are
+otherwise exercised by hand (see the state notes above).
+
+This worktree now *does* have a real `build/qemu` (built here for patch
+52), which is what made the `package` check possible at all — the note
+that used to stand here, that a launcher check would need one, is
+obsolete. A further check worth adding when there's reason to: `--play` a
+bundle on a fresh empty qcow2 and confirm a frame — no OS install
+required, just a BIOS/iPXE splash — then kill the spawned process
+(synthetic disk, no guest, no dirty-FAT concern). The `package` check
+already boots nothing but proves the whole command line and every path.

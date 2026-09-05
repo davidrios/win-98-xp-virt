@@ -20,6 +20,10 @@
 #                  qemu-img probes the cue and the ccd to "cdimage" with the
 #                  lead-out × 2048 as the size, the data track dd'd out equals the
 #                  ISO, a plain .iso still probes to raw
+#   package        scripts/package-linux.sh: the Linux install layout staged from
+#                  this build, and the staged launcher asked with a scrubbed
+#                  environment whether player/qemu-img/firmware/guest-tools all
+#                  resolve inside the package (doc 07's install layout)
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
@@ -139,6 +143,17 @@ host_stage() {
   if [ -x build/qemu/qemu-img ] && [ -f "$OUT/disc/mixed.cue" ]; then
     run_check cdimage cdimage.log cdimage_check || true
   else skip cdimage "needs build/qemu/qemu-img and the libdisc check's images"; fi
+
+  # the Linux package (M6 step 6): staged from this build and asked, with a
+  # scrubbed environment, whether it resolves its own player, qemu-img,
+  # firmware and guest-tools — the launcher's paths are otherwise baked in
+  # at compile time and a regression there only shows on someone else's
+  # machine. Rolls no tarball (the check is the point, not the archive).
+  if [ "$OS" = Linux ] && [ -f build/qemu/libqemu-embed-i386.so ] && [ -x build/qemu/qemu-img ] && [ -d qemu/pc-bios ]; then
+    run_check package package.log scripts/package-linux.sh --no-tar --out "$OUT/package" || true
+  else
+    skip package "Linux with build/qemu (libqemu-embed, qemu-img) and qemu/pc-bios only"
+  fi
 
   # the embed library's Mesa backend, Linux (EGL) only, one VM per process
   if [ "$OS" = Linux ] && [ -f build/qemu/libqemu-embed-i386.so ]; then

@@ -10,6 +10,7 @@ mod disc_library;
 mod discshelf;
 mod filepicker;
 mod library;
+mod paths;
 mod player;
 mod shader_library;
 mod shader_manager;
@@ -542,6 +543,34 @@ fn main() -> eframe::Result {
             }
             return Ok(());
         }
+        Some("--paths") => {
+            // Every companion this launcher would reach for, and where it
+            // found it (`paths.rs`). This is what `scripts/package-linux.sh`
+            // checks a staged package with — a package whose launcher
+            // still answers with the checkout it was built from is not a
+            // package — and the first thing to ask of an installed build
+            // that says a file is missing.
+            match paths::install_prefix() {
+                Some(prefix) => println!("prefix       {}", prefix.display()),
+                None => println!("prefix       (not installed; a checkout build)"),
+            }
+            println!("checkout     {}", paths::checkout(".").display());
+            println!("player       {}", player::player_binary().display());
+            println!("qemu-img     {}", player::qemu_img_binary().display());
+            println!("pc-bios      {}", player::pc_bios_dir().display());
+            match disc_library::guest_tools_iso() {
+                Some(iso) => println!("guest-tools  {}", iso.display()),
+                None => println!("guest-tools  (none built or shipped)"),
+            }
+            match shader_source::presets_dir() {
+                Some(dir) => println!("shaders      {}", dir.display()),
+                None => println!("shaders      (none; downloadable into {})", shader_source::install_dir().display()),
+            }
+            println!("machines     {}", library::default_dir().display());
+            println!("discs        {}", disc_library::default_path().display());
+            println!("profiles     {}", shader_library::default_dir().display());
+            return Ok(());
+        }
         Some("--kvm") => {
             // What the wizard's acceleration hint reads, on its own: this
             // host's answer, not the bundle's setting.
@@ -1030,9 +1059,30 @@ fn main() -> eframe::Result {
     // GUI click this session has no automation for) pre-filled from
     // `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset.slangp>;<image>[;fullscreen]`.
     let debug_shader_preview = std::env::var("LAUNCHER_DEBUG_SHADER_PREVIEW").ok();
+    // The window's own identity, which only matters once this is
+    // installed (M6 step 6): `app_id` is what a Wayland compositor matches
+    // against `win98-xp-virt.desktop` to give the window its icon and its
+    // name in a task switcher, and `icon` is the same picture handed over
+    // directly, for X11 and Windows where there is no such matching. The
+    // PNG is `packaging/linux/win98-xp-virt-128.png`, rendered from the
+    // icon the desktop entry uses, so the two can't drift apart.
+    let icon = {
+        let png = include_bytes!("../../packaging/linux/win98-xp-virt-128.png");
+        image::load_from_memory(png).map(|img| {
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            egui::IconData { rgba: rgba.into_raw(), width, height }
+        })
+    };
+    let mut viewport = egui::ViewportBuilder::default().with_app_id(paths::APP_ID);
+    match icon {
+        Ok(icon) => viewport = viewport.with_icon(icon),
+        // A broken icon is not a reason to refuse to start.
+        Err(e) => eprintln!("[launcher] window icon: {e}"),
+    }
     eframe::run_native(
         "win98-xp-virt launcher",
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
             let mut shader_manager = shader_manager::ShaderManager::default();
             if let Some(spec) = debug_shader_preview {

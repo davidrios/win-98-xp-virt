@@ -27,12 +27,15 @@ const TARBALL_URL: &str = "https://codeload.github.com/libretro/slang-shaders/ta
 /// someone commits to it on a phone tether. Approximate on purpose.
 pub const DOWNLOAD_SIZE: &str = "~50 MB";
 
-/// The `third_party/slang-shaders` submodule of the checkout this binary
-/// was *built* from (`CARGO_MANIFEST_DIR`, baked in at compile time —
-/// the same technique as `player::pc_bios_dir`, and for the same reason:
-/// the process's working directory is not the workspace root).
+/// The collection that came with this build: the checkout's
+/// `third_party/slang-shaders` submodule, or — for an installed launcher
+/// — whatever the package shipped in `share/win98-xp-virt/shaders`.
+/// `scripts/package-linux.sh` ships none by default (80 MB, and the
+/// manager can fetch them), but `--with-shaders`, a Flatpak or a distro
+/// package would, and then nobody should be asked to download what they
+/// already have.
 pub fn repo_dir() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../third_party/slang-shaders"))
+    crate::paths::resource("share/win98-xp-virt/shaders", "third_party/slang-shaders")
 }
 
 /// Where a download lands, and the first place looked at when
@@ -52,9 +55,11 @@ pub fn install_dir() -> PathBuf {
 ///
 /// `LAUNCHER_SHADERS_DIR` is an explicit statement about where the
 /// presets are, so when it is set nothing else is consulted. Otherwise
-/// the checkout's own submodule wins over a downloaded copy: it is the
-/// one a developer's `--shader third_party/slang-shaders/…` paths and
-/// this repo's docs already refer to.
+/// the collection this build came with (`repo_dir`) wins over a
+/// downloaded copy: in a checkout it is the submodule a developer's
+/// `--shader third_party/slang-shaders/…` paths and this repo's docs
+/// already refer to, and in a package it is the one the package can
+/// promise is there.
 pub fn presets_dir() -> Option<PathBuf> {
     if std::env::var_os("LAUNCHER_SHADERS_DIR").is_some() {
         let dir = install_dir();

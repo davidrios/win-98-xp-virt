@@ -132,6 +132,61 @@ QEMU has open corrupts it.
   "acceleration: …" indicator and TCG fallback.
 - Linux: Flatpak primary (bundles our patched QEMU cleanly) + distro builds.
 
+### The install layout (decided at M6 step 6, 2026-09-05)
+
+Everything the launcher reaches for used to be found in the checkout it
+was *built* from — the player next to it in `target/`, `qemu-img` in
+`build/qemu`, the firmware in `qemu/pc-bios`, the guest-tools ISO in
+`guest-tools/out`, the presets in `third_party/`. An installed copy has
+none of those, so there is now a second layout, and the launcher decides
+which one it is in by looking at its own executable
+(`launcher/src/paths.rs`): `<exe dir>/..` containing
+`share/win98-xp-virt` means installed.
+
+```
+<prefix>/bin/win98-xp-virt                     the launcher
+<prefix>/bin/win98-xp-virt-player              the player
+<prefix>/lib/win98-xp-virt/libqemu-embed-i386.so
+<prefix>/libexec/win98-xp-virt/qemu-img        ours, patched — kept off PATH
+<prefix>/share/win98-xp-virt/pc-bios/          QEMU firmware (the player's -L)
+<prefix>/share/win98-xp-virt/guest-tools/      the guest-tools ISO
+<prefix>/share/win98-xp-virt/shaders/          presets, when a package ships them
+<prefix>/share/win98-xp-virt/desktop/          .desktop + icon, for install.sh
+<prefix>/share/doc/win98-xp-virt/              COPYING, notices, README
+```
+
+Three rules hold it together:
+
+- **Everything is relative to the executable**, so an extracted tarball
+  works where it was extracted and needs no install step at all. The
+  player's own `libqemu-embed` is found the same way, through an
+  `$ORIGIN/../lib/win98-xp-virt` rpath (`@loader_path` on macOS) that is
+  deliberately ordered *before* the absolute build-directory one, so a
+  binary copied out of a developer's `target/` is genuinely self-contained
+  once packaged instead of quietly loading the library from their build.
+- **It is one layout or the other, never a mixture.** An installed
+  launcher answers only with its own prefix, even for a file the package
+  left out; falling back to a checkout would let a broken package pass on
+  the machine that built it and fail everywhere else. `LAUNCHER_*`
+  environment overrides still win over both.
+- `qemu-img` is ours (patch 50's `cdimage` driver is compiled into it),
+  so it goes in `libexec/` where it can neither shadow nor be shadowed by
+  the system's own.
+
+`scripts/package-linux.sh` stages exactly this, checks it by asking the
+staged launcher itself with a scrubbed environment (`--paths`, and a real
+machine created and translated to a command line), and rolls a tarball;
+`packaging/linux/install.sh`, shipped inside it, copies the tree into a
+prefix and writes the desktop entry with absolute paths. The launcher's
+window carries the same identity — `app_id` = `win98-xp-virt`, matching
+the desktop file, plus the icon itself for X11 and Windows.
+
+Still open: the Flatpak (and the reverse-DNS application ID it needs,
+which waits on the project having a real home — `Cargo.toml`'s
+`repository` is still a placeholder), the macOS .app and the Windows
+installer, and with the latter Windows live control (a named pipe or a
+loopback port in place of the Unix monitor socket above).
+
 ## Out of scope for v1
 
 Shared folders/drag-drop, clipboard sync, USB passthrough, multi-monitor

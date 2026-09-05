@@ -97,6 +97,31 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 
 macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
 
+## Packaging (Linux)
+
+```sh
+scripts/package-linux.sh              # build/package/win98-xp-virt-<version>-linux-<arch>.tar.zst
+scripts/package-linux.sh --with-shaders   # + the ~80 MB preset collection
+```
+
+It stages the launcher, the player, the embed library, our `qemu-img`,
+QEMU's firmware and the guest-tools ISO into one relocatable prefix
+(doc 07's install layout), checks that the staged launcher resolves all of
+them *inside* the package with a scrubbed environment, and rolls a
+tarball. The extracted tree runs where it lands — `bin/win98-xp-virt` —
+and the `install.sh` inside it copies the tree into a prefix
+(`~/.local` by default) and adds a desktop entry:
+
+```sh
+tar xf win98-xp-virt-*.tar.zst && cd win98-xp-virt-*
+./install.sh                 # or --prefix /usr/local, or --uninstall
+```
+
+The tarball ships no system libraries, so it wants a host much like the
+one that built it; the Flatpak (doc 07, still to come) is the portable
+answer. `launcher --paths` prints where a given build looks for each
+companion — the first thing to ask when something says a file is missing.
+
 CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
 Actions tab (`workflow_dispatch`).
 
