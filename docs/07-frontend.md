@@ -32,7 +32,11 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   TOML. Never a QEMU command line.
 - Snapshots UI, disc shelf editing, one-click guest-tools ISO attach, bundle
   import/export.
-- UI toolkit: egui or Slint — decide at M6.
+- UI toolkit: **egui/eframe** (decided at M6, 2026-09-04 — see
+  `docs/tracks/m6-launcher.md`). MIT/Apache-2.0 fits the project's
+  GPL-2.0-only + open-source stance better than Slint's non-GPLv3 tiers;
+  its default features are wgpu-backed already, unifying with the
+  player's `wgpu`/`winit` pins in `Cargo.lock`.
 
 The launcher is optional by design: hand-written bundles + the player binary
 is a fully supported path.
