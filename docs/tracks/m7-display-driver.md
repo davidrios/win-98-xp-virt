@@ -64,7 +64,11 @@ picture and the track rules, then this file, then doc 15.
   ("FIFA 2000 on the HAL"): the game's non-exclusive DirectInput keyboard
   never updates in the match because its thread stops pumping messages;
   `D3DPT\DINPUT.DLL` next to the EXE merges `GetAsyncKeyState` into the
-  state and logs the game's DirectInput use. Tools that came out of it:
+  state and logs the game's DirectInput use. **The user confirmed the fix
+  2026-09-05.** Decided with it (doc 15): the merge stays a per-game,
+  side-by-side DLL — not `system32`, not `AppInit_DLLs` — and the launcher
+  (M6) gets the job of staging it; the shim is now silent by default, with
+  the log and the sampler thread behind `D3DPT_DINPUT_LOG=1`. Tools that came out of it:
   `DRIVER\DITEST.EXE`, the `qemu-embed: input:` statistics in the embed
   library, `PLAYER_KEYS_HOLD`, the executor's `frames/s` line,
   `xp-driver-test.sh`'s `bat` / `GAME_ISO` / `SHOTS` / `SHOT_KEYS`,
@@ -98,10 +102,10 @@ picture and the track rules, then this file, then doc 15.
   `m7g` also has `LowLevelHooksTimeout` = 5000 which proved irrelevant);
   `tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2` is the check that the
   match takes keys (pause menu on Esc). The user's own `winxp-m7` still
-  needs the M7c driver (`install`), the renames and the shim. First thing
-  to hear from the user: whether `D3DPT\DINPUT.DLL` next to
-  `fifa2000.exe` fixes their TCG keyboard, and on which machine they saw
-  it (Linux TCG or the Mac).
+  needs the M7c driver (`install`), the renames and the shim. The keyboard
+  question is answered: the user confirmed 2026-09-05 that the shim fixes
+  FIFA for them, so M7c item 1's keyboard half is closed and the next
+  item is whatever the next title asks for.
 
 ## Build / run / test
 
@@ -155,10 +159,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 
 ## Next steps, in order
 
-1. **M7c, the rest:** FIFA 2000 plays (user-verified under KVM; the TCG
-   keyboard needs `D3DPT\DINPUT.DLL` in the game folder — confirm on the
-   user's setup, then decide whether the merge belongs in a system-wide
-   place). Then what it or the next title asks for first among: colour
+1. **M7c, the rest:** FIFA 2000 plays, keyboard included — the user
+   confirmed `D3DPT\DINPUT.DLL` fixes it (2026-09-05), and the shim stays
+   per-game by decision (doc 15). Next: what it or the next title asks for
+   first among: colour
    keying (key → alpha at upload + alpha test), claiming T&L
    (`D3DDEVCAPS_HWTRANSFORMANDLIGHT`, the tokens are already mapped),
    render-to-texture, state sets, the DX8 tokens + `GUID_D3DCaps`
@@ -201,3 +205,17 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   Direct3D offered in every mode, or the HAL silently degrades to
   `DDCAPS_NOHARDWARE` (doc 15 has the disassembly trail).
 - The debugger is the DEBUG register → QEMU log. No WinDbg, no serial KD.
+- Two harness bugs found 2026-09-05 while re-checking the keyboard fix, both
+  of which make a *tool* failure look like a *driver* failure:
+  `xp-fifa-match.sh` looked for the shim as `dinput.dll` while
+  `build-wrappers.sh` upper-cases the whole staged tree for 8.3, so after any
+  real build it staged nothing (`set -u`, no `-e`: silently) and the match
+  ignored every key; and its wait for the game's mode switch was an unbounded
+  `until`, so a QEMU that never started span for ever. Both fixed: the shim is
+  looked up under either name and its absence is a loud warning, and the wait
+  is bounded and prints `qemu.log` when it gives up.
+- Only one process may hold a guest image: QEMU takes a write lock and the
+  second one dies with `Failed to get "write" lock`. With tracks running in
+  parallel, check `pgrep -af qemu-system-i386` for the image before starting a
+  headless run — `winxp-m7g` in particular is shared by the FIFA and Max Payne
+  loops.

@@ -187,9 +187,11 @@ cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/ddraw.dll" "$ROOT/guest-tools/src/d3dpt/ddraw.c" \
   "$ROOT/guest-tools/src/d3dpt/ddraw.def" -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c" -lddraw -ldxguid
-# DirectInput logging shim (d3dpt/dinput.c): forwards to the system dinput.dll
-# and writes dinput_log.txt next to the EXE — what the game asks of its
-# keyboard / mouse devices and what it gets back (FIFA 2000's match, doc 15).
+# DirectInput shim (d3dpt/dinput.c): forwards to the system dinput.dll and
+# merges GetAsyncKeyState into a non-exclusive keyboard's state — the fix for
+# a game whose loop stops pumping messages (FIFA 2000's match, doc 15).
+# Silent by default; D3DPT_DINPUT_LOG=1 in the environment adds the log of
+# what the game asks of its keyboard / mouse devices and what it gets back.
 i686-w64-mingw32-gcc -O2 -Wall -shared -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
   -o "$OUT/iso/D3DPT/dinput.dll" "$ROOT/guest-tools/src/d3dpt/dinput.c" "$ROOT/guest-tools/src/d3dpt/dinput.def" \
   -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup -ldxguid
@@ -245,9 +247,13 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             Vice City: "cannot find enough available video memory"); it
             reports 256 MB and forwards everything else to the system.
             DDVMTEST.EXE shows what such a check sees. DINPUT.DLL next to
-            the EXE logs the game's DirectInput use (devices, cooperative
-            level, buffer size, poll rate, every key/button it gets) to
-            dinput_log.txt: for "the keyboard does nothing in the game".
+            the EXE fixes "the keyboard does nothing in the game" when the
+            game polls a non-exclusive DirectInput keyboard from a loop that
+            does not pump messages (FIFA 2000's match): what Windows reports
+            pressed is merged into the state. Set D3DPT_DINPUT_LOG=1 first
+            and it also logs the game's DirectInput use (devices, cooperative
+            level, buffer size, poll rate, every key/button) to
+            dinput_log.txt.
             SSEBENCH.EXE: SSE/x87 math throughput in ns per op (console and
             SSEBENCH.LOG). Run on the rig and in each guest, also with
             -cpu ...,sse-fast=off / x87-fast=off, to compare the paths.

@@ -32,8 +32,23 @@ if [ ! -f "$SCRATCH" ]; then
 fi
 sed 's/\r$//; s/$/\r/' "$ROOT/tools/xp-fifa2000.bat" > "$OUT/RUN.BAT"
 mcopy -o -i "$SCRATCH@@1048576" "$OUT/RUN.BAT" ::/RUN.BAT
-SHIM="$ROOT/guest-tools/out/iso/D3DPT/dinput.dll"
-[ -f "$SHIM" ] && mcopy -o -i "$SCRATCH@@1048576" "$SHIM" ::/DINPUT.DLL && echo "DINPUT.DLL staged (the keyboard fix)"
+# build-wrappers.sh upper-cases the whole staged tree for 8.3, so the shim is
+# DINPUT.DLL there; the lower-case name only exists between the compile and
+# that rename. Looking for one name only made this silently stage nothing and
+# the match then ignores every key, which reads as a driver regression.
+SHIM="$ROOT/guest-tools/out/iso/D3DPT/DINPUT.DLL"
+[ -f "$SHIM" ] || SHIM="$ROOT/guest-tools/out/iso/D3DPT/dinput.dll"
+if [ -f "$SHIM" ]; then
+  mcopy -o -i "$SCRATCH@@1048576" "$SHIM" ::/DINPUT.DLL
+  echo "DINPUT.DLL staged (the keyboard fix)"
+  # this is the diagnostic harness, so ask the shim for its log too (RUN.BAT
+  # turns D3DPT_DINPUT_LOG on when it finds this marker); a game folder gets
+  # the silent shim
+  : > "$OUT/DILOG"; mcopy -o -i "$SCRATCH@@1048576" "$OUT/DILOG" ::/DILOG
+else
+  echo "WARNING: no dinput shim in guest-tools/out/iso/D3DPT (run guest-tools/build-wrappers.sh)."
+  echo "         The match will ignore every key — this harness's fault, not the HAL's."
+fi
 SOCK="/tmp/xp-fifa-$$.sock"; rm -f "$SOCK"      # short: a Unix socket path is limited to ~100 chars
 trap 'rm -f "$SOCK"' EXIT
 if [ "$MODE" = kvm ]; then ACCEL=(-accel kvm -cpu host); SLOW=1; else ACCEL=(-cpu pentium3); SLOW=3; fi
@@ -56,7 +71,17 @@ t0=$(date +%s); T() { echo "[$(( $(date +%s) - t0 ))s] $*"; }
 sleep $(( 45 * SLOW + 5 )); T "desktop"
 n0=$(grep -c "linear mode on (640x480" "$OUT/qemu.log")
 Q keys esc; sleep 1; Q keys meta_l+r; sleep 2; Q type 'cmd /k E:\RUN.BAT'; Q keys ret
-until [ "$(grep -c "linear mode on (640x480" "$OUT/qemu.log")" -gt "$n0" ]; do sleep 3; done
+# bounded: QEMU can refuse to start at all (another process holding the
+# image's write lock is the usual one) and this used to spin for ever
+for _ in $(seq 1 $(( 60 * SLOW ))); do
+  [ "$(grep -c "linear mode on (640x480" "$OUT/qemu.log")" -gt "$n0" ] && break
+  kill -0 "$QPID" 2>/dev/null || { echo "QEMU exited before the game came up:"; sed -n '1,10p' "$OUT/qemu.log"; exit 1; }
+  sleep 3
+done
+if [ "$(grep -c "linear mode on (640x480" "$OUT/qemu.log")" -le "$n0" ]; then
+  echo "the game never switched to 640x480 within $(( 180 * SLOW )) s; last of qemu.log:"; tail -10 "$OUT/qemu.log"
+  kill "$QPID" 2>/dev/null; exit 1
+fi
 T "game up"; sleep $(( 5 * SLOW )); Q keys esc          # skips the intro video
 prev=""
 for i in $(seq 1 40); do                                  # the title screen is the first static frame
