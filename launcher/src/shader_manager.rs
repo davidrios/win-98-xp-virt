@@ -122,9 +122,26 @@ impl Editor {
 pub struct ShaderManager {
     pub open: bool,
     editor: Option<Editor>,
+    /// The outer rect the window last had while *not* fullscreen, and —
+    /// for one frame after the "Fullscreen" toggle goes back off — the
+    /// rect to pin it back to. egui remembers a window's size across
+    /// frames, and the fullscreen frames overwrite that memory with the
+    /// whole screen; without this, un-fullscreening would leave the
+    /// window screen-sized forever. (The size comes back; the window
+    /// stays in the corner fullscreen moved it to — egui re-snaps the
+    /// position from its own stored area state the frame after.)
+    windowed_rect: Option<egui::Rect>,
+    restore_rect: Option<egui::Rect>,
 }
 
 impl ShaderManager {
+    /// Where the window ended up last frame while not fullscreen — for
+    /// `main.rs`'s `--diag-editor-frame`, which has to aim a synthetic
+    /// drag at its bottom edge.
+    pub fn windowed_rect(&self) -> Option<egui::Rect> {
+        self.windowed_rect
+    }
+
     pub fn open_list(&mut self) {
         self.open = true;
         self.editor = None;
@@ -160,19 +177,38 @@ impl ShaderManager {
         // pane (which fills whatever's left of the window after the
         // fixed-width controls column, see `editor_ui`) gets much bigger
         // — closer to actually seeing it "the way the player would show
-        // it". `resizable` always on so a non-fullscreen user can still
-        // grow it a bit by hand; `max_size` (rather than nothing) is what
-        // makes toggling fullscreen back *off* actually shrink it again —
-        // egui remembers a window's last rect across frames, and without
-        // this it would just stay at the fullscreen size once it had been there.
+        // it". Otherwise the window is freely resizable in *both*
+        // directions: `default_size` (not just `default_width`) so it
+        // opens tall enough for the preview and the sliders, and
+        // `editor_ui` lays its body out with panels that fill whatever
+        // height the window has — without that, egui sizes the window to
+        // its content's own height and dragging the bottom edge does
+        // nothing.
         let fullscreen = self.editor.as_ref().is_some_and(|e| e.fullscreen);
-        let mut window = egui::Window::new("Shader profiles").open(&mut still_open).collapsible(false).resizable(true);
+        // Separate ids for the two screens (egui keys a window's
+        // remembered position and size by id): the editor wants to be
+        // big and to stay wherever the user dragged it, the profile list
+        // is a handful of rows and should stay small — sharing one id
+        // would drag the editor's size onto the list.
+        let editing = self.editor.is_some();
+        let mut window = egui::Window::new("Shader profiles")
+            .id(egui::Id::new(if editing { "shader-editor" } else { "shader-list" }))
+            .open(&mut still_open)
+            .collapsible(false)
+            .resizable(true);
         window = if fullscreen {
             window.fixed_rect(ctx.viewport_rect())
+        } else if let Some(rect) = self.restore_rect.take() {
+            window.fixed_rect(rect)
+        } else if editing {
+            window
+                .default_size(egui::vec2(980.0, 700.0))
+                .min_size(egui::vec2(560.0, 360.0))
+                .max_size(ctx.viewport_rect().size())
         } else {
-            window.default_width(760.0).max_size(egui::vec2(900.0, 700.0))
+            window.default_size(egui::vec2(560.0, 240.0)).max_size(ctx.viewport_rect().size())
         };
-        window.show(ctx, |ui| {
+        let response = window.show(ctx, |ui| {
                 if let Some(editor) = &mut self.editor {
                     editor.reparse();
                     match editor_ui(ui, editor, profiles_dir, render_state) {
@@ -217,6 +253,13 @@ impl ShaderManager {
                     self.editor = Some(Editor::fresh());
                 }
             });
+        if !fullscreen {
+            self.windowed_rect = response.map(|r| r.response.rect);
+        } else if !self.editor.as_ref().is_some_and(|e| e.fullscreen) {
+            // The checkbox (or Save / Cancel) just turned fullscreen off:
+            // put the window back where it was next frame.
+            self.restore_rect = self.windowed_rect;
+        }
         if changed.is_some() {
             return changed;
         }
@@ -236,83 +279,119 @@ enum EditorAction {
 /// only `Saved` should make the caller rescan the library.
 fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path, render_state: Option<&RenderState>) -> EditorAction {
     let mut action = EditorAction::None;
-    ui.horizontal(|ui| {
-        ui.label("Name");
-        ui.text_edit_singleline(&mut editor.name);
-    });
-    filepicker::path_field(ui, "Preset (.slangp)", &mut editor.preset_path, Some(PRESET_FILTER));
-    ui.separator();
-    // A fixed-width controls column, the rest of the window (however
-    // big — see the "Fullscreen" toggle in `ShaderManager::show`) for
-    // the preview: growing the window grows the preview, not the
-    // sliders, since a bigger *preview* is the whole point of going
-    // fullscreen (the user's own ask: "use the remaining horizontal
-    // space for the shader controls" once the image no longer needs it).
-    const CONTROLS_WIDTH: f32 = 300.0;
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(CONTROLS_WIDTH);
-            if let Some(err) = &editor.parse_error {
-                ui.colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
-            } else if editor.params.is_empty() {
-                ui.label("Pick a preset to see its parameters.");
-            } else {
-                egui::ScrollArea::vertical().id_salt("params").show(ui, |ui| {
-                    for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
-                        ui.horizontal(|ui| {
-                            let mut enabled = over.is_some();
-                            if ui.checkbox(&mut enabled, "").changed() {
-                                *over = if enabled { Some(meta.default) } else { None };
-                            }
-                            ui.add_enabled_ui(enabled, |ui| {
-                                let mut value = over.unwrap_or(meta.default);
-                                let resp = ui.add(
-                                    egui::Slider::new(&mut value, meta.minimum..=meta.maximum)
-                                        .step_by(if meta.step > 0.0 { meta.step as f64 } else { 0.0 })
-                                        .text(&meta.id),
-                                );
-                                if resp.changed() {
-                                    *over = Some(value);
-                                }
-                            });
-                        });
-                        if !meta.description.is_empty() && meta.description != meta.id {
-                            ui.label(egui::RichText::new(&meta.description).weak().small());
-                        }
-                    }
-                });
-            }
+    // The form is laid out as panels inside the window rather than as a
+    // plain top-to-bottom stack: header and footer take their own
+    // height, the body gets *everything* that's left. That's what makes
+    // the window resizable vertically at all — an egui window is only as
+    // tall as its content, so a stack of auto-sized widgets snaps back
+    // the moment you let go of the bottom edge — and it's what keeps the
+    // two body columns the same height however big the window is.
+    egui::Panel::top("shader-editor-head").frame(egui::Frame::NONE).show_separator_line(false).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut editor.name);
         });
+        filepicker::path_field(ui, "Preset (.slangp)", &mut editor.preset_path, Some(PRESET_FILTER));
         ui.separator();
-        ui.vertical(|ui| preview_ui(ui, editor, render_state));
     });
-    ui.separator();
-    if let Some(err) = &editor.error {
-        ui.colored_label(egui::Color32::RED, err);
-    }
-    ui.horizontal(|ui| {
-        if ui.button("Save").clicked() {
-            if editor.name.trim().is_empty() {
-                editor.error = Some("a name is required".into());
-            } else if editor.preset_path.trim().is_empty() {
-                editor.error = Some("a preset is required".into());
-            } else {
-                let profile = editor.build();
-                let result = match &editor.path {
-                    Some(path) => profile.save(path),
-                    None => shader_library::create(profiles_dir, profile.name.clone(), profile.preset.clone()).map(|_| ()),
-                };
-                match result {
-                    Ok(()) => action = EditorAction::Saved,
-                    Err(e) => editor.error = Some(e.to_string()),
+    egui::Panel::bottom("shader-editor-foot").frame(egui::Frame::NONE).show_separator_line(false).show(ui, |ui| {
+        ui.separator();
+        if let Some(err) = &editor.error {
+            ui.colored_label(egui::Color32::RED, err);
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Save").clicked() {
+                if editor.name.trim().is_empty() {
+                    editor.error = Some("a name is required".into());
+                } else if editor.preset_path.trim().is_empty() {
+                    editor.error = Some("a preset is required".into());
+                } else {
+                    let profile = editor.build();
+                    let result = match &editor.path {
+                        Some(path) => profile.save(path),
+                        None => shader_library::create(profiles_dir, profile.name.clone(), profile.preset.clone()).map(|_| ()),
+                    };
+                    match result {
+                        Ok(()) => action = EditorAction::Saved,
+                        Err(e) => editor.error = Some(e.to_string()),
+                    }
                 }
             }
-        }
-        if ui.button("Cancel").clicked() {
-            action = EditorAction::Cancelled;
-        }
+            if ui.button("Cancel").clicked() {
+                action = EditorAction::Cancelled;
+            }
+        });
+    });
+    // A fixed-width controls column, the rest of the window (however
+    // big — see the "Fullscreen" toggle in `ShaderManager::show`) for
+    // the preview: growing the window *wider* grows the preview, not the
+    // sliders, since a bigger preview is the whole point of going
+    // fullscreen (the user's own ask: "use the remaining horizontal
+    // space for the shader controls" once the image no longer needs it).
+    // Growing it *taller* grows both: the sliders get more of their list
+    // visible at once, the preview a taller area to be scaled into.
+    const CONTROLS_WIDTH: f32 = 300.0;
+    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            let body_height = ui.available_height();
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            ui.allocate_ui_with_layout(egui::vec2(CONTROLS_WIDTH, body_height), layout, |ui| {
+                params_ui(ui, editor);
+            });
+            ui.separator();
+            ui.vertical(|ui| preview_ui(ui, editor, render_state));
+        });
     });
     action
+}
+
+/// The parameter column: one checkbox ("override this one") plus a
+/// slider per preset parameter, scrolling inside whatever height the
+/// window has. `auto_shrink(false)` on both axes so the scroll area
+/// really does take the full column — otherwise it sizes itself to its
+/// content and a taller window leaves the sliders at their old height
+/// with the scroll bar still there.
+fn params_ui(ui: &mut egui::Ui, editor: &mut Editor) {
+    if let Some(err) = &editor.parse_error {
+        ui.colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
+        return;
+    }
+    if editor.params.is_empty() {
+        ui.label("Pick a preset to see its parameters.");
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt("params").auto_shrink([false, false]).show(ui, |ui| {
+        for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
+            ui.horizontal(|ui| {
+                let mut enabled = over.is_some();
+                if ui.checkbox(&mut enabled, "").changed() {
+                    *over = if enabled { Some(meta.default) } else { None };
+                }
+                ui.add_enabled_ui(enabled, |ui| {
+                    let mut value = over.unwrap_or(meta.default);
+                    // Step only where the user is actually editing, so an
+                    // un-overridden parameter keeps showing the preset's
+                    // own default even when that sits off the step grid.
+                    let step = if enabled && meta.step > 0.0 { meta.step as f64 } else { 0.0 };
+                    let resp =
+                        ui.add(egui::Slider::new(&mut value, meta.minimum..=meta.maximum).step_by(step).text(&meta.id));
+                    // Only a *drag* counts, hence the `enabled` guard: a
+                    // greyed-out slider still snaps its value to the
+                    // step and reports `changed()` for it, and several
+                    // presets have defaults off the step grid
+                    // (crt-lottes: warpX 0.031, step 0.01) — without
+                    // this, just opening such a preset silently
+                    // overrode those parameters with the snapped value.
+                    if enabled && resp.changed() {
+                        *over = Some(value);
+                    }
+                });
+            });
+            if !meta.description.is_empty() && meta.description != meta.id {
+                ui.label(egui::RichText::new(&meta.description).weak().small());
+            }
+        }
+    });
 }
 
 /// The live preview column: an image picker plus, once both a valid
@@ -342,15 +421,11 @@ fn preview_ui(ui: &mut egui::Ui, editor: &mut Editor, render_state: Option<&Rend
     }
 
     // Everything left of the window/screen (however big) after the
-    // fields above and the controls column beside us — floored to a
-    // reasonable minimum so a compact (non-fullscreen) window doesn't
-    // just shrink the preview down to whatever little space is left
-    // over (egui auto-sizes an unconstrained window to its content,
-    // not the other way around: asking for at least this much here is
-    // what keeps the window itself from collapsing too small to show
-    // the image un-cropped).
-    let avail = ui.available_size();
-    let area = egui::vec2(avail.x.max(480.0), avail.y.max(360.0));
+    // fields above and the controls column beside us. No floor: the
+    // window's own `min_size` (`ShaderManager::show`) is what keeps this
+    // area usable, and asking for more than is actually there would
+    // push the window wider/taller every frame instead.
+    let area = ui.available_size().max(egui::vec2(64.0, 64.0));
 
     let preview = editor.preview.get_or_insert_with(|| Preview::new(render_state.clone()));
     let effective: Vec<(String, f32)> =

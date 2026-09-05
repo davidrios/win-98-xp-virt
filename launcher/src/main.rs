@@ -142,6 +142,92 @@ fn preview_area_env() -> egui::Vec2 {
         .unwrap_or(egui::Vec2::new(800.0, 600.0))
 }
 
+/// A windowless wgpu device/queue, the same way eframe opens one at
+/// startup — for the diagnostic verbs below, which run real egui frames
+/// with no window to put them in.
+fn headless_render_state() -> eframe::egui_wgpu::RenderState {
+    let instance =
+        eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    pollster::block_on(eframe::egui_wgpu::RenderState::create(
+        &eframe::egui_wgpu::WgpuConfiguration::default(),
+        &instance,
+        None,
+        eframe::egui_wgpu::RendererOptions::default(),
+    ))
+    .expect("create a headless wgpu render state")
+}
+
+/// Hands egui's renderer the textures a just-run frame created or
+/// dropped (the font atlas on the first frame, mostly). Every frame's
+/// deltas must be applied even when only the last one is painted, or
+/// that last frame paints text with no atlas.
+fn apply_texture_deltas(render_state: &eframe::egui_wgpu::RenderState, delta: &mut egui::TexturesDelta) {
+    let mut renderer = render_state.renderer.write();
+    for (id, deltas) in &delta.set {
+        for d in deltas {
+            renderer.update_texture(&render_state.device, &render_state.queue, *id, d);
+        }
+    }
+    for id in &delta.free {
+        renderer.free_texture(id);
+    }
+    delta.clear(); // also avoids the debug-only "unapplied deltas" assert on drop
+}
+
+/// Paints one already-run egui frame into an off-screen texture and
+/// dumps it as a PNG — the paint step eframe would do, minus the window.
+fn dump_egui_frame(
+    render_state: &eframe::egui_wgpu::RenderState,
+    ctx: &egui::Context,
+    mut full_output: egui::FullOutput,
+    size: [u32; 2],
+    out: &str,
+) {
+    let clipped = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+    let screen_descriptor =
+        eframe::egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: full_output.pixels_per_point };
+    let target = render_state.device.create_texture(&eframe::wgpu::TextureDescriptor {
+        label: Some("diag frame"),
+        size: eframe::wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: eframe::wgpu::TextureDimension::D2,
+        format: eframe::wgpu::TextureFormat::Rgba8Unorm,
+        usage: eframe::wgpu::TextureUsages::RENDER_ATTACHMENT | eframe::wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&eframe::wgpu::TextureViewDescriptor::default());
+    let mut encoder =
+        render_state.device.create_command_encoder(&eframe::wgpu::CommandEncoderDescriptor { label: Some("diag") });
+    apply_texture_deltas(render_state, &mut full_output.textures_delta);
+    let user_cmd_bufs = {
+        let mut renderer = render_state.renderer.write();
+        renderer.update_buffers(&render_state.device, &render_state.queue, &mut encoder, &clipped, &screen_descriptor)
+    };
+    {
+        let renderer = render_state.renderer.read();
+        let render_pass = encoder.begin_render_pass(&eframe::wgpu::RenderPassDescriptor {
+            label: Some("diag"),
+            color_attachments: &[Some(eframe::wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                resolve_target: None,
+                ops: eframe::wgpu::Operations {
+                    load: eframe::wgpu::LoadOp::Clear(eframe::wgpu::Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 }),
+                    store: eframe::wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        renderer.render(&mut render_pass.forget_lifetime(), &clipped, &screen_descriptor);
+    }
+    render_state.queue.submit(user_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
+    shader_chain::dump_texture(&render_state.device, &render_state.queue, &target, out);
+}
+
 fn main() -> eframe::Result {
     // Debug/advanced-drawer aids (doc 07), until the wizard exists:
     // `--new` bootstraps a bundle into the library from the doc 06
@@ -310,16 +396,7 @@ fn main() -> eframe::Result {
             let image_path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
             let area = preview_area_env();
-            let instance = eframe::wgpu::Instance::new(
-                eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-            );
-            let render_state = pollster::block_on(eframe::egui_wgpu::RenderState::create(
-                &eframe::egui_wgpu::WgpuConfiguration::default(),
-                &instance,
-                None,
-                eframe::egui_wgpu::RendererOptions::default(),
-            ))
-            .expect("create a headless wgpu render state");
+            let render_state = headless_render_state();
             let mut preview = shader_preview::Preview::new(render_state.clone());
             preview.update(&preset, &[], &image_path, area);
             if let Some(err) = preview.error() {
@@ -329,59 +406,101 @@ fn main() -> eframe::Result {
             let size = preview.viewport_size();
 
             let ctx = egui::Context::default();
-            let mut full_output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let full_output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 ui.image((tex_id, size));
             });
-            let clipped = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-            let screen_descriptor =
-                eframe::egui_wgpu::ScreenDescriptor { size_in_pixels: [800, 600], pixels_per_point: full_output.pixels_per_point };
+            dump_egui_frame(&render_state, &ctx, full_output, [800, 600], &out);
+            return Ok(());
+        }
+        Some("--diag-editor-frame") => {
+            // Diagnostic only: runs the *real* shader-profile editor
+            // window through egui headlessly — including a synthetic
+            // drag of its bottom edge and synthetic clicks at given
+            // screen positions (the "Fullscreen" checkbox, say) — and
+            // dumps the composited frame, plus the window's rect per
+            // frame. That's what proves the window resizes vertically
+            // and that its body (sliders and preview) grows with it, in
+            // a session with no GUI click automation to try it by hand.
+            let usage =
+                "usage: launcher --diag-editor-frame <preset.slangp> <image> <out.png> [<screen WxH>] [<drag dy>] [<x,y;x,y clicks>]";
+            let preset = args.next().expect(usage);
+            let image = args.next().expect(usage);
+            let out = args.next().expect(usage);
+            let screen = args
+                .next()
+                .and_then(|s| {
+                    let (w, h) = s.split_once('x')?;
+                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+                })
+                .unwrap_or(egui::vec2(1400.0, 900.0));
+            let drag_dy: f32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let clicks: Vec<egui::Pos2> = args
+                .next()
+                .unwrap_or_default()
+                .split(';')
+                .filter_map(|s| {
+                    let (x, y) = s.split_once(',')?;
+                    Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+                })
+                .collect();
 
-            let target = render_state.device.create_texture(&eframe::wgpu::TextureDescriptor {
-                label: Some("diag frame"),
-                size: eframe::wgpu::Extent3d { width: 800, height: 600, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: eframe::wgpu::TextureDimension::D2,
-                format: eframe::wgpu::TextureFormat::Rgba8Unorm,
-                usage: eframe::wgpu::TextureUsages::RENDER_ATTACHMENT | eframe::wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let target_view = target.create_view(&eframe::wgpu::TextureViewDescriptor::default());
-            let mut encoder = render_state
-                .device
-                .create_command_encoder(&eframe::wgpu::CommandEncoderDescriptor { label: Some("diag") });
-            let user_cmd_bufs = {
-                let mut renderer = render_state.renderer.write();
-                for (id, deltas) in &full_output.textures_delta.set {
-                    for delta in deltas {
-                        renderer.update_texture(&render_state.device, &render_state.queue, *id, delta);
-                    }
-                }
-                renderer.update_buffers(&render_state.device, &render_state.queue, &mut encoder, &clipped, &screen_descriptor)
-            };
-            full_output.textures_delta.clear(); // applied above; avoids the debug-only "unapplied deltas" assert on drop
-            {
-                let renderer = render_state.renderer.read();
-                let render_pass = encoder.begin_render_pass(&eframe::wgpu::RenderPassDescriptor {
-                    label: Some("diag"),
-                    color_attachments: &[Some(eframe::wgpu::RenderPassColorAttachment {
-                        view: &target_view,
-                        resolve_target: None,
-                        ops: eframe::wgpu::Operations {
-                            load: eframe::wgpu::LoadOp::Clear(eframe::wgpu::Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 }),
-                            store: eframe::wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                renderer.render(&mut render_pass.forget_lifetime(), &clipped, &screen_descriptor);
+            let render_state = headless_render_state();
+            let profiles_dir = shader_library::default_dir();
+            let ctx = egui::Context::default();
+            let mut manager = shader_manager::ShaderManager::default();
+            if preset == "list" {
+                manager.open_list(); // the profile list rather than the editor
+            } else {
+                manager.debug_open_editor(preset, image, false);
             }
-            render_state.queue.submit(user_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
-            shader_chain::dump_texture(&render_state.device, &render_state.queue, &target, &out);
+            let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, screen);
+
+            // One frame per step; only the last one is painted, but every
+            // frame's texture deltas are applied (see `apply_texture_deltas`).
+            let mut run = |events: Vec<egui::Event>, paint: bool| {
+                let input = egui::RawInput { screen_rect: Some(screen_rect), events, ..Default::default() };
+                let mut full_output =
+                    ctx.run_ui(input, |ui| _ = manager.show(ui.ctx(), &profiles_dir, Some(&render_state)));
+                let rect = manager.windowed_rect().unwrap_or(egui::Rect::NOTHING);
+                println!("window {:.0}x{:.0} at {:.0},{:.0}", rect.width(), rect.height(), rect.min.x, rect.min.y);
+                if paint {
+                    dump_egui_frame(&render_state, &ctx, full_output, [screen.x as u32, screen.y as u32], &out);
+                } else {
+                    apply_texture_deltas(&render_state, &mut full_output.textures_delta);
+                }
+                rect
+            };
+
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+
+            run(Vec::new(), false);
+            let rect = run(Vec::new(), false); // settle: egui needs a frame to lay a new window out
+            if drag_dy != 0.0 {
+                // Grab the bottom edge and pull: hover, press, move, release.
+                let grab = rect.center_bottom();
+                let to = grab + egui::vec2(0.0, drag_dy);
+                run(vec![egui::Event::PointerMoved(grab)], false);
+                run(vec![button(grab, true)], false);
+                run(vec![egui::Event::PointerMoved(to)], false);
+                run(vec![egui::Event::PointerMoved(to)], false);
+                run(vec![button(to, false)], false);
+                run(vec![egui::Event::PointerGone], false);
+            }
+            for pos in clicks {
+                println!("click at {:.0},{:.0}", pos.x, pos.y);
+                run(vec![egui::Event::PointerMoved(pos)], false);
+                run(vec![button(pos, true)], false);
+                run(vec![button(pos, false)], false);
+                run(vec![egui::Event::PointerGone], false);
+                run(Vec::new(), false);
+            }
+            run(Vec::new(), false);
+            run(Vec::new(), true);
             return Ok(());
         }
         _ => {}

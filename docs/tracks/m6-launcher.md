@@ -475,7 +475,10 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   full size every frame, not what stands between the user and another
   black-frame divide-by-zero.
 
-  Layout: a fixed-width (300px) controls column + the rest of the
+  Layout (the window-sizing half of this was reworked the same day, see
+  the vertical-resize bugfix below — `max_size(900×700)` and the
+  480×360 preview floor described here are gone): a fixed-width (300px)
+  controls column + the rest of the
   window for the preview (`editor_ui`, replacing the old 50/50
   `ui.columns`) — growing the window (the new "Fullscreen" checkbox
   next to "Preview", `Editor::fullscreen`) grows the *preview*, not the
@@ -507,6 +510,75 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   black) — confirms the `.max(1.0)` alone is sufficient, independent of
   the sanity cap. `cargo build --workspace` clean, no warnings.
 
+- **Bugfix — the editor window only resized horizontally** (user
+  report, 2026-09-05): "the window only resizes horizontally. It starts
+  very short and after picking an image it grows but the dials for the
+  shader stay with the original short height." All three symptoms are
+  one root cause: an `egui::Window` takes the size of its *content*, and
+  `editor_ui` was a plain top-to-bottom stack of auto-sized widgets, so
+  dragging the bottom edge grew `Resize`'s remembered `desired_size`
+  while the window still drew itself at content height and snapped back.
+  Width worked by accident: the preview pane asked for
+  `available.x.max(480)`, so a wider window really did produce wider
+  content. The same accident explains "starts very short" (with no
+  preview image the preview column returns early and asks for nothing)
+  and "the dials stay short" (the two columns were independent
+  `ui.vertical`s inside a `ui.horizontal` — the slider column sized
+  itself to its own content, the preview column set the row's height).
+
+  Fixed by giving the editor a fill-the-window layout instead of a
+  stack: `egui::Panel::top` for the name + preset header,
+  `egui::Panel::bottom` for the error + Save/Cancel footer (both
+  `Frame::NONE`, `show_separator_line(false)`, keeping the hand-drawn
+  `ui.separator()`s), `CentralPanel` for the body. Panels expand to the
+  parent `Ui`'s `max_rect`, which *is* `desired_size`, so the content
+  now always matches the window, both columns get the same height from
+  `ui.available_height()`, the params `ScrollArea` takes
+  `auto_shrink([false, false])`, and the preview takes exactly what's
+  left (the 480×360 floor is deleted — the window's own `min_size`
+  560×360 is what keeps it usable, and asking for more than exists
+  would just push the window bigger every frame). The window gets
+  `default_size(980×700)` rather than `default_width(760)`, and the
+  profile *list* screen now uses a separate `egui::Window::id`
+  (`shader-list` vs `shader-editor`) so the editor's remembered size
+  doesn't drag the two-row list open to full width. `max_size(900×700)`
+  is gone — it had been the thing capping how tall the window could
+  ever be dragged; un-fullscreening now restores the pre-fullscreen
+  rect, which `ShaderManager` remembers itself (`windowed_rect` every
+  non-fullscreen frame, applied once as `fixed_rect` on the frame after
+  the toggle goes off; egui re-snaps the *position* to where fullscreen
+  left it, the size sticks).
+
+  **Second bug, found while verifying the first:** the first frame of a
+  freshly opened preset silently marked `warpX`/`warpY` as overridden
+  (0.031 → 0.030). A greyed-out `egui::Slider` still snaps its value to
+  `step_by` and reports `changed()`, and several presets ship defaults
+  off their own step grid — so `*over = Some(value)` fired for a
+  parameter nobody had touched and "Save" wrote it into the profile.
+  The slider now only takes a step (and only accepts a change) while
+  its override checkbox is actually ticked, so an un-overridden
+  parameter also displays the preset's true default.
+
+  **Verified headlessly on the real editor window**, since this session
+  still has no GUI click automation: a new `--diag-editor-frame
+  <preset.slangp> <image> <out.png> [<screen WxH>] [<drag dy>]
+  [<x,y;x,y clicks>]` verb runs the actual `ShaderManager::show`
+  through `egui::Context::run_ui` frame by frame with synthetic pointer
+  events, prints the window rect per frame and dumps the composited
+  final frame (`--diag-preview-frame`'s render-a-frame code is now
+  shared with it as `dump_egui_frame`/`apply_texture_deltas`/
+  `headless_render_state`; `preset` = `list` shows the profile list
+  instead of the editor). Results: a 150 px drag of the bottom edge
+  takes the window 980×700 → 980×850 and it stays there after the
+  release (before the fix the height was pinned by content); the dumps
+  show the slider column and the preview both filling the taller
+  window; a synthetic click on "Fullscreen" fills the 1400×900 screen
+  and a second click returns to 980×850; with no image picked the
+  window still opens at 980×700 (the "starts very short" complaint) and
+  `warpX`/`warpY` read 0.031/0.041, unticked. The list screen is a
+  compact 560×92. `cargo build --workspace` clean, no warnings. **Still
+  not click-tested by a human.**
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -530,7 +602,8 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `launcher`'s debug verbs (`--new`, `--print-args`, `--play`,
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
-`--print-shader-args`, `--preview-shader`, `--diag-preview-frame`) were
+`--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
+`--diag-editor-frame`) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`
