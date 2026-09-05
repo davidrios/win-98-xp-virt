@@ -730,26 +730,35 @@ working; Max Payne renders on it except its clipped fans (the
   FOURCC-style entry in the GDI2 format list made the same call fail
   outright — d3d8.dll matches formats against `dwFourCC` under
   `DDPF_D3DFORMAT` only.
-- **The runtime's clipper writes into the call's vertex buffer.** With
-  `CLIPTLVERTS` withdrawn the runtime clips pre-transformed triangles
-  itself and emits them as `CLIPPEDTRIANGLEFAN` tokens whose vertices sit
-  in the DP2 vertex buffer *beyond* `dwVertexLength` (that count covers
-  the application's vertices only) — and the DX8 runtime passes that
-  buffer as user memory (`D3DNTHALDP2_USERMEMVERTICES`, flags 0x9), so
-  there is no size to consult: the runtime names the offsets itself and
-  the driver trusts them up to a 16 MiB cap, as a real driver does (a
-  dxg buffer keeps its linear size as the bound), and the fans are in
-  the *current vertex format*, not in the call's `dwVertexSize` (that is
-  the application's stream). Bounded by `dwVertexLength` or sized by
-  `dwVertexSize`, they were skipped, and they were exactly the wall and
-  ground polygons nearest the camera. **Still open at the end of the
-  session:** read at `lpVertices + FirstVertexOffset` (with
-  `dwVertexOffset` = 0) the fans are zeros — the offsets (0x930 + n ×
-  0x310, 784-byte slots) point past the 10 × 32 bytes the call declares
-  and into memory that is not theirs; what buffer they count from is the
-  next thing to read out of d3d8.dll (the track doc has the candidates).
-  Until then Max Payne's nearest walls and ground are black on the DX8
-  path, and `ddflags=0x2000` (the DX7 face) renders it clean.
+- **The runtime's clipped fans are stream-0 draws; the DP2 vertex buffer
+  is a dummy under d3d8.dll.** With `CLIPTLVERTS` withdrawn the runtime
+  clips pre-transformed triangles itself and emits them as
+  `CLIPPEDTRIANGLEFAN` tokens (58: FirstVertexOffset, dwEdgeFlags,
+  PrimitiveCount). Where the vertices are was settled in `d3d8.dll`'s
+  disassembly (2026-09-05): the DX8 DDI layer keeps two internal
+  "TL streams" (a 44-byte object each: an `IDirect3DVertexBuffer8` it
+  creates itself in `D3DPOOL_DEFAULT` with `D3DUSAGE_DYNAMIC`, a stride,
+  the bytes used, the base of the current batch), one for the software
+  pipeline's output and one for the clipper. `DrawClippedPrim` locks the
+  clip stream (`D3DLOCK_NOOVERWRITE`, or `DISCARD` when it wraps), copies
+  the fan's vertices in at the *current* FVF's stride, and writes the
+  stream's batch base into `FirstVertexOffset`; before that, when the
+  clip stream is not the current stream 0, it emits **`SETSTREAMSOURCE`
+  (49) for stream 0 with the clip buffer's handle and stride**
+  (`SETSTREAMSOURCEUM` if the buffer had no driver handle) and flags the
+  application's stream to be re-set on the next draw. So a fan's offset
+  is a byte offset into stream 0 as bound at that moment — a vertex
+  buffer the driver knows by handle, with its size as the bound. The
+  DP2 call's own vertex buffer never carries anything on the DX8 path:
+  the DDI layer's init fills `dwFlags` 0x9, `lpVertices` = a 10 × 32-byte
+  dummy, `dwVertexLength` 10, `dwVertexSize` 32 once and only
+  `DrawPrimitiveUP` swaps its user pointer in temporarily
+  (`SETSTREAMSOURCEUM`). The driver first read the fans at `lpVertices
+  + FirstVertexOffset` (as the DX7 runtime's fans are laid out) and got
+  the dummy's neighbours: heap garbage, zeros mostly — Max Payne's
+  nearest walls and ground black. Reading them from stream 0 fixed it;
+  the user-memory buffer's bound is the declared `dwVertexLength ×
+  dwVertexSize` again.
 - Tests: `tools/d3dpt-dp2-test.cpp` sends DRAW8 tokens (an indexed quad
   with a MinIndex of 10, a fan), a recorded state set executed, captured
   and deleted, a DRAW8 with an index beyond its vertices (skipped) and

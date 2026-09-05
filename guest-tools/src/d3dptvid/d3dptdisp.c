@@ -2072,12 +2072,8 @@ typedef struct _DP2WALK {
     const UCHAR *cmd;
     ULONG clen;
     const UCHAR *vtx;           /* the DP2 vertex buffer (user memory), from dwVertexOffset on */
-    const UCHAR *vraw;          /* its start (the clipper's fan offsets count from here) */
-    ULONG voffset;              /* dwVertexOffset */
     ULONG vlen, vsize, vcount;  /* its bytes (dwVertexLength * dwVertexSize), stride, vertex count */
-    ULONG vall;                 /* the whole buffer from vtx on: dwVertexLength covers the
-                                 * application's vertices only, the runtime's clipper writes its
-                                 * fans (CLIPPEDTRIANGLEFAN) further along the same buffer */
+    ULONG vall;                 /* the whole buffer from vtx on (a dxg buffer's linear size) */
     ULONG fvf;                  /* the current vertex format (SETVERTEXSHADER) */
     DP2STREAM vb, ib;           /* stream 0 and the index buffer */
     ULONG vb_handle, ib_handle;
@@ -2475,20 +2471,17 @@ static BOOL walk(DP2WALK *w)
                 walk_draw(w, e[0], e[5], &w->vb, (ULONG)((LONG)e[1] + (LONG)(e[2] * w->vb.stride)), e[3], e[4], prim_verts(e[0], e[5]), e[2]);
             }
             break;
-        case 58: {                                              /* CLIPPEDTRIANGLEFAN: first vertex offset, edge flags, count */
-            /* the clipper's fans are in the current vertex format (the
-             * call's dwVertexSize describes the application's stream), at
-             * offsets from the buffer's start, not from dwVertexOffset */
-            DP2STREAM um;
-            um.mem = (ULONG_PTR)w->vraw;
-            um.bytes = w->vall + w->voffset;
-            um.stride = w->fvf ? fvf_stride(w->fvf) : w->vsize;
+        case 58:                                                /* CLIPPEDTRIANGLEFAN: first vertex offset, edge flags, count */
+            /* the DX8 runtime clips pre-transformed triangles itself into
+             * a vertex buffer of its own and binds that buffer as stream 0
+             * (SETSTREAMSOURCE, its stride) before these tokens: the offset
+             * is a byte offset into stream 0, not into the DP2 vertex
+             * buffer (which is a dummy under d3d8.dll; doc 15) */
             for (i = 0; i < count; i++) {
                 const ULONG *e = (const ULONG *)(q + i * 12);
-                walk_draw(w, 6, e[2], &um, e[0], 0, 0, 0, 0);
+                walk_draw(w, 6, e[2], &w->vb, e[0], 0, 0, 0, 0);
             }
             break;
-        }
         case 45: case 46: case 48: case 54: case 55: case 56: case 57:   /* shaders: not claimed */
         case 61: case 62: case 63: case 64: case 66: case 67:            /* patches, volume / buffer blits, dirty rects */
             break;
@@ -2531,15 +2524,10 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
         d->ddrval = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
     }
-    /* what the buffer really holds from vtx on: a dxg buffer's linear size;
-     * the DX8 runtime passes its own vertex buffer as user memory
-     * (USERMEMVERTICES) with dwVertexLength covering the application's
-     * vertices only, its clipper's fans lie beyond, and it names their
-     * offsets itself: trusted up to a cap, as a real driver trusts it */
+    /* what the buffer really holds from vtx on: the declared vertices for
+     * user memory, a dxg buffer's linear size otherwise */
     vall = vlen;
-    if (vtx && (d->dwFlags & D3DNTHALDP2_USERMEMVERTICES)) {
-        vall = 16u << 20;
-    } else if (vtx && d->lpDDVertex->lpGbl->dwLinearSize > d->dwVertexOffset) {
+    if (vtx && !(d->dwFlags & D3DNTHALDP2_USERMEMVERTICES) && d->lpDDVertex->lpGbl->dwLinearSize > d->dwVertexOffset) {
         vall = d->lpDDVertex->lpGbl->dwLinearSize - d->dwVertexOffset;
         if (vall > (32u << 20)) vall = vlen;
     }
@@ -2554,8 +2542,6 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     w0.vsize = vsize;
     w0.vcount = d->dwVertexLength;
     w0.vall = vall;
-    w0.vraw = vtx ? vtx - d->dwVertexOffset : NULL;
-    w0.voffset = d->dwVertexOffset;
     if (p->dp2_calls < 4 && vtx) {
         dbg_hex(p, "d3dptdisp: dp2 vertices at ", (ULONG)(ULONG_PTR)vtx);
         dbg_hex(p, " offset ", d->dwVertexOffset);

@@ -119,9 +119,12 @@ picture and the track rules, then this file, then doc 15.
   DDI" for the d3d8.dll findings (the HAL-info flag; `dwActualSize`
   against the inner header; no `CLIPTLVERTS`; the FOURCC list; the
   clipper's fans). No shaders yet (VS/PS 0.0). **Max Payne on this path
-  is not done:** its clipped fans read from the wrong place (the
-  "Resuming here" list), `ddflags=0x2000` gives it the DX7 face
-  meanwhile.
+  (2026-09-05, later that day):** the clipped fans were read from the
+  DP2 vertex buffer, which is a 10 × 32-byte dummy under d3d8.dll; the
+  runtime binds its clip buffer as stream 0 (`SETSTREAMSOURCE`) before
+  the `CLIPPEDTRIANGLEFAN` tokens and their offsets count into that
+  stream (doc 15, found in the disassembly). Read from stream 0 the
+  alley renders complete on the DX8 DDI (`build/xp-driver-test/mp-fan/`).
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -140,29 +143,12 @@ picture and the track rules, then this file, then doc 15.
      texture because the DXT1 one never reaches the driver (open item 3).
      FIFA 2000 (attract-mode match) and D3D7TEST (frame == host frame)
      are unchanged on the new driver. `scripts/test.sh host` green.
-  2. **Open, the one to finish first — Max Payne's clipped fans.** The
-     game sends pre-transformed vertices even to a T&L device; the
-     runtime clips them itself (`CLIPTLVERTS` must stay unclaimed, doc
-     15) and emits `CLIPPEDTRIANGLEFAN` tokens (58: FirstVertexOffset,
-     dwEdgeFlags, PrimitiveCount). The driver rewrites them into DRAW8
-     tokens with vertices read at `lpVertices + FirstVertexOffset`, and
-     that memory reads as zeros: the fans (the nearest walls, the ground)
-     come out black while everything else in the alley is right
-     (`build/xp-driver-test/mp-dx8g/cmd-13.png`; the traced frame is
-     `mp-dx8h`, the vertex fields of the calls are in `mp-dx8i`'s log:
-     `lpVertices` 0x16c940, `dwVertexOffset` 0, `dwVertexLength` 10,
-     `dwVertexSize` 32, flags 0x9 / 0x29; the fans' offsets are 0x930 +
-     n × 0x310, i.e. 784-byte slots, far beyond those 10 × 32 bytes). So
-     `FirstVertexOffset` is relative to something else: candidates are
-     the command buffer (`lpDDCommands` + dwCommandOffset), the
-     stream-0 vertex buffer (the game's VB, 64 KB, in the VB-stream
-     calls the skipped fans had offsets like 0x310 that *did* fit it),
-     or a runtime buffer named nowhere. Settle it in `d3d8.dll`'s
-     disassembly (`build/…/scratchpad` had it; re-extract from
-     `winxp-m7f` with 7z, `i686-w64-mingw32-objdump -d`): find the
-     emitter of token 0x3a (58) and see what pointer the offset is taken
-     from. Until then, `-device d3dpt-vga,ddflags=0x2000` keeps the DX7
-     face and Max Payne renders clean on it.
+  2. **Done (2026-09-05): Max Payne's clipped fans.** Their offsets are
+     byte offsets into stream 0, which the runtime rebinds to its own
+     clip buffer before the tokens (doc 15 "M7c — the DirectX 8 DDI",
+     the clipper bullet). The driver reads them from `w->vb` now; the
+     tutorial alley renders complete with hardware T&L
+     (`build/xp-driver-test/mp-fan/cmd-*.png`). Not played by hand yet.
   3. **Open — DXT textures on the DX8 path** (doc 15 "M7c — the DirectX
      8 DDI", last bullet): `CreateTexture(DXT1)` succeeds, nothing
      reaches dxg, the runtime keeps the previous texture bound. Next
@@ -298,8 +284,9 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   dxg's `lPitch` of a DXT surface is its linear size, and a FOURCC
   surface needs its code in `DrvGetDirectDrawInfo`'s FOURCC list. Never
   claim `D3DPMISCCAPS_CLIPTLVERTS`: the host does not clip
-  pre-transformed vertices; the runtime's clipped fans live in the DP2
-  vertex buffer past `dwVertexLength`. A protocol bump (`D3DPT_PROTO_VERSION`) means QEMU (prepare →
+  pre-transformed vertices; the runtime's clipped fans are stream-0
+  draws (it rebinds stream 0 to its own clip buffer first), and the DP2
+  call's vertex buffer is a dummy under d3d8.dll. A protocol bump (`D3DPT_PROTO_VERSION`) means QEMU (prepare →
   ninja), the executor and the guest-tools ISO all rebuilt before any
   guest run.
 - The executor must never let DXVK throw: its exceptions abort QEMU
