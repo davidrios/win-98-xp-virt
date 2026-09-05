@@ -8,7 +8,8 @@
 #   tools/xp-motoracer.sh install <image.qcow2> [outdir]   # D:\SETUP.EXE (InstallShield: Install, Next x3, no DirectX 3) into
 #                                                          #   C:\Arquivos de programas\MotoRacer; then the game as below
 #   tools/xp-motoracer.sh play <image.qcow2> [outdir]      # the desktop at 800x600x16 (the game insists on 16 bpp), MOTO.EXE, the
-#                                                          #   title, a name, Play Solo / Practice / Continue / Start into a race;
+#                                                          #   title, a name, Play Solo / Practice / Continue / Start into a race — each
+#                                                          #   menu recognised by tools/motoracer-state.py from a screendump and retried;
 #                                                          #   screendumps title.png / name.png / menu.png / bike*.png / race*.png; alt+F4, power-down
 #   tools/xp-motoracer.sh vm <image.qcow2> [outdir]        # just boot with the disc as D:, QMP at /tmp/xp-moto.sock, detached
 #   tools/xp-motoracer.sh stop                             # power that VM down
@@ -76,17 +77,32 @@ fi
 Q keys meta_l+r; sleep 2; Q type 'F:\DRIVER\SETMODE.EXE 800 600 16'; Q keys ret; sleep 5
 Q keys meta_l+r; sleep 2; Q type 'cmd /c cd /d "C:\Arquivos de programas\MotoRacer" & MOTO.EXE'; Q keys ret
 until grep -q "linear mode on (640x480x16" "$OUT/qemu.log"; do sleep 2; done
-T "game up at 640x480x16"; sleep 15
-Q screendump "$OUT/title.png"
-Q keys ret; sleep 8                                  # Start -> "ENTER YOUR NAME" (3D letters: the first Direct3D-drawn screen)
-Q screendump "$OUT/name.png"
-Q keys ret; sleep 8                                  # the empty / remembered name is accepted -> the main menu (an Enter there does nothing)
-Q screendump "$OUT/menu.png"
-Q click 165 255; sleep 6                             # Play Solo
-Q click 110 260; sleep 6                             # Practice
-Q click 565 372; sleep 8                             # Select race: Continue (Speed Bay, 3 laps)
-Q screendump "$OUT/bike.png"                         # Choose bike: the showroom's bike turns under the spotlights
-sleep 6; Q screendump "$OUT/bike2.png"
+T "game up at 640x480x16"
+# The menus, driven by what the screen shows (tools/motoracer-state.py
+# classifies a screendump): the title takes an Enter (a click on it starts
+# the attract demo), the name screen a click on its return glyph (an Enter
+# there presses whichever letter the cursor was left on), the 2D menus
+# clicks. The title runs into the attract demo when left alone (a loading
+# screen and a demo both classify as "other": after 20 s of it the demo's
+# Esc menu is taken to Quit demo), so every step is checked and retried.
+state() { Q screendump "$1" >/dev/null; python3 "$ROOT/tools/motoracer-state.py" "$1.ppm"; }
+other=0
+for i in $(seq 1 80); do
+  s=$(state "$OUT/step.png")
+  case "$s" in
+    title)        cp "$OUT/step.png" "$OUT/title.png"; Q keys ret; sleep 8 ;;
+    name)         cp "$OUT/step.png" "$OUT/name.png"; Q click 550 345; sleep 6 ;;
+    menu)         cp "$OUT/step.png" "$OUT/menu.png"; Q click 165 255; sleep 6 ;;         # Play Solo
+    mode)         cp "$OUT/step.png" "$OUT/mode.png"; Q click 110 260; sleep 6 ;;         # Practice
+    race-select)  cp "$OUT/step.png" "$OUT/select.png"; Q click 565 372; sleep 8 ;;       # Continue (Speed Bay, 3 laps)
+    showroom)     cp "$OUT/step.png" "$OUT/bike.png"; break ;;
+    *)            other=$((other + 1)); sleep 2
+                  if [ "$other" -ge 10 ]; then other=0; T "a demo? Esc menu, Quit demo"; Q keys esc; sleep 4; Q keys down; sleep 3; Q keys ret; sleep 8; fi ;;
+  esac
+  [ "$s" = other ] || other=0
+done
+[ "$s" = showroom ] || { T "never reached the showroom (last screen: $s)"; }
+T "showroom"; sleep 6; Q screendump "$OUT/bike2.png"  # the showroom's bike turns under the spotlights
 Q click 565 390; sleep 20                            # Start -> the race (the countdown, then the AI rides on its own)
 for i in 1 2 3; do Q screendump "$OUT/race$i.png"; sleep 8; done
 T "race"

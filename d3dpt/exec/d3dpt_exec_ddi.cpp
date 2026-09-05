@@ -70,6 +70,15 @@ struct VramSurf {
     IDirect3DSurface9 *rt = nullptr;    /* render target or depth stencil */
     bool dirty = true;                  /* VRAM newer than the host object */
     bool rendered = false;              /* host render target newer than VRAM */
+    /* a render target's VRAM as of the last time the host and VRAM agreed
+     * (after an upload or a readback): what differs from it later was
+     * written by the guest without a VRAM_DIRTY — GDI on the surface's DC
+     * (GetDC bypasses DdLock / DdUnlock), a title's own writes through a
+     * cached pointer — and is uploaded before the frame's first draw or
+     * kept over the host's pixels at the readback (doc 15 "Untracked
+     * writes") */
+    std::vector<uint8_t> shadow;
+    bool checked = false;               /* the untracked-write check ran since the last readback */
     /* v8: a P8 texture's palette (SETPALETTE: the runtime's palette handle,
      * whether its entries carry alpha) and a source colour key
      * (VRAM_COLORKEY): both make the host texture an A8R8G8B8 expansion of
@@ -145,6 +154,8 @@ struct Ddi {
     bool ckey_forced = false, ckey_alpha_ovr = false;
     uint32_t pal_lines = 0;                     /* palette / colour-key events logged (the first few) */
     uint32_t dp2_calls = 0, draws = 0, readbacks = 0;
+    uint32_t untracked = 0;                     /* target pixels the guest wrote without VRAM_DIRTY (uploaded or kept) */
+    uint32_t untracked_lines = 0;               /* the first such events logged */
     /* D3DPT_DP2_TRACE=<flag file>: while the file exists, every token of
      * the next frame (DP2 records up to the next READBACK) is logged with
      * its arguments; the file is removed when the frame ends */
@@ -163,7 +174,7 @@ struct Ddi {
     /* a rate line every 5 s of host time while frames are read back (the
      * frame rate of the guest's Direct3D, one readback per presented frame) */
     std::chrono::steady_clock::time_point stat_t0{};
-    uint32_t stat_dp2 = 0, stat_draws = 0, stat_rb = 0;
+    uint32_t stat_dp2 = 0, stat_draws = 0, stat_rb = 0, stat_untracked = 0;
 
     bool warn_once(uint32_t key) {
         for (uint32_t k : warned) if (k == key) return false;
@@ -376,6 +387,26 @@ static void upload_texture(Exec &x, Ddi &d, VramSurf &s) {
     s.dirty = false;
 }
 
+/* the target's VRAM rows into its shadow (host and VRAM agree from here) */
+static void shadow_take(Exec &x, VramSurf &s) {
+    uint32_t row = fmt_row_bytes(s.d.format, s.d.width);
+    s.shadow.resize((size_t)row * s.d.height);
+    copy_rows(s.shadow.data(), row, x.vram + s.d.offset, s.d.pitch, row, s.d.height);
+}
+
+/* the target's VRAM differs from its shadow: the guest wrote it without a
+ * VRAM_DIRTY (counted in pixels; 0 when there is no shadow yet) */
+static uint32_t shadow_diff(Exec &x, VramSurf &s) {
+    uint32_t row = fmt_row_bytes(s.d.format, s.d.width), bpp = fmt_row_bytes(s.d.format, 1), n = 0;
+    if (s.shadow.size() != (size_t)row * s.d.height || !bpp) return 0;
+    for (uint32_t yy = 0; yy < s.d.height; yy++) {
+        const uint8_t *v = x.vram + s.d.offset + (size_t)yy * s.d.pitch, *sh = s.shadow.data() + (size_t)yy * row;
+        if (memcmp(v, sh, row) == 0) continue;
+        for (uint32_t xx = 0; xx < row; xx += bpp) if (memcmp(v + xx, sh + xx, bpp) != 0) n++;
+    }
+    return n;
+}
+
 /* VRAM -> host render target (the guest drew into the target with GDI / the HEL) */
 static void upload_target(Exec &x, Ddi &d, VramSurf &s) {
     D3DLOCKED_RECT lr;
@@ -387,9 +418,12 @@ static void upload_target(Exec &x, Ddi &d, VramSurf &s) {
     if (SUCCEEDED(x.dev->UpdateSurface(d.stage, nullptr, d.stage_def, nullptr)))
         x.dev->StretchRect(d.stage_def, nullptr, s.rt, nullptr, D3DTEXF_NONE);
     s.dirty = false;
+    shadow_take(x, s);
 }
 
-/* host render target -> VRAM */
+/* host render target -> VRAM. Pixels the guest changed since the shadow
+ * was taken (untracked writes: GDI through GetDC, drawn after the scene
+ * as a rule — a title's text and panels) stay over the host's. */
 static HRESULT readback(Exec &x, Ddi &d, VramSurf &s) {
     if (!s.rt || (s.d.caps & D3DPT_VS_ZBUFFER)) return D3DERR_INVALIDCALL;
     if (!ensure_stage(x, d, s.d.width, s.d.height, (D3DFORMAT)s.d.format, false)) return E_FAIL;
@@ -397,20 +431,40 @@ static HRESULT readback(Exec &x, Ddi &d, VramSurf &s) {
     if (FAILED(hr)) { x.log("ddi: readback: GetRenderTargetData 0x%08x", (unsigned)hr); return hr; }
     D3DLOCKED_RECT lr;
     if (FAILED(d.stage->LockRect(&lr, nullptr, D3DLOCK_READONLY))) return E_FAIL;
-    uint32_t row = fmt_row_bytes(s.d.format, s.d.width);
-    copy_rows(x.vram + s.d.offset, s.d.pitch, lr.pBits, lr.Pitch, row, s.d.height);
+    uint32_t row = fmt_row_bytes(s.d.format, s.d.width), bpp = fmt_row_bytes(s.d.format, 1), kept = 0;
+    bool have = s.shadow.size() == (size_t)row * s.d.height && bpp;
+    if (!have) s.shadow.resize((size_t)row * s.d.height);
+    for (uint32_t yy = 0; yy < s.d.height; yy++) {
+        uint8_t *v = x.vram + s.d.offset + (size_t)yy * s.d.pitch, *sh = s.shadow.data() + (size_t)yy * row;
+        const uint8_t *h = (const uint8_t *)lr.pBits + (size_t)yy * lr.Pitch;
+        if (have && memcmp(v, sh, row) != 0) {
+            for (uint32_t xx = 0; xx < row; xx += bpp) {
+                if (memcmp(v + xx, sh + xx, bpp) != 0) kept++;      /* the guest's pixel stays */
+                else memcpy(v + xx, h + xx, bpp);
+            }
+        } else memcpy(v, h, row);
+        memcpy(sh, v, row);
+    }
     d.stage->UnlockRect();
+    if (kept) {
+        d.untracked += kept;
+        if (d.untracked_lines < 8) { d.untracked_lines++; x.log("ddi: target %u: %u pixels written by the guest since the last frame without VRAM_DIRTY, kept over the host frame", s.d.handle, kept); }
+        if (d.trace) x.log("ddi: trace: readback of %u keeps %u untracked guest pixels", s.d.handle, kept);
+    }
     s.rendered = false;
-    s.dirty = false;
+    s.dirty = kept != 0;                /* the host frame lacks the kept pixels: refreshed from VRAM before the next draw */
+    s.checked = false;
     d.readbacks++;
     auto now = std::chrono::steady_clock::now();
     if (d.stat_t0 == std::chrono::steady_clock::time_point{}) d.stat_t0 = now;
     double dt = std::chrono::duration<double>(now - d.stat_t0).count();
     if (dt >= 5.0) {
-        x.log("ddi: %.1f frames/s (%u readbacks, %u dp2 calls, %u draws in %.1f s)",
-              (d.readbacks - d.stat_rb) / dt, d.readbacks - d.stat_rb, d.dp2_calls - d.stat_dp2, d.draws - d.stat_draws, dt);
+        char extra[64] = "";
+        if (d.untracked != d.stat_untracked) snprintf(extra, sizeof extra, ", %u untracked guest pixels", d.untracked - d.stat_untracked);
+        x.log("ddi: %.1f frames/s (%u readbacks, %u dp2 calls, %u draws%s in %.1f s)",
+              (d.readbacks - d.stat_rb) / dt, d.readbacks - d.stat_rb, d.dp2_calls - d.stat_dp2, d.draws - d.stat_draws, extra, dt);
         d.stat_t0 = now;
-        d.stat_rb = d.readbacks; d.stat_dp2 = d.dp2_calls; d.stat_draws = d.draws;
+        d.stat_rb = d.readbacks; d.stat_dp2 = d.dp2_calls; d.stat_draws = d.draws; d.stat_untracked = d.untracked;
     }
     if (x.ops.vram_dirty) x.ops.vram_dirty(x.ops.ud, s.d.offset, s.d.pitch * s.d.height);
     return S_OK;
@@ -430,6 +484,18 @@ static bool bind_ctx(Exec &x, Ddi &d, Ctx &c, Batch &b, bool for_draw) {
         if (c.vp.Width && c.vp.Height) x.dev->SetViewport(&c.vp);
     }
     if (for_draw) {
+        /* once per frame, before its first draw: VRAM the guest changed
+         * without telling (GDI on the surface's DC) goes into the target
+         * like a tracked write would */
+        if (!rt->dirty && !rt->checked) {
+            uint32_t n = shadow_diff(x, *rt);
+            if (n) {
+                rt->dirty = true;
+                d.untracked += n;
+                if (d.untracked_lines < 8) { d.untracked_lines++; x.log("ddi: target %u: %u pixels written by the guest without VRAM_DIRTY, uploaded before the frame's draws", rt->d.handle, n); }
+            }
+        }
+        rt->checked = true;
         if (rt->dirty) upload_target(x, d, *rt);
         rt->rendered = true;
     }
@@ -1207,7 +1273,7 @@ struct Dp2 {
         VramSurf *rt = surf(x, c.rt);
         tr("clear flags 0x%x color 0x%08x z %g stencil %u rects %u", flags, color, z, stencil, nrects);
         /* a full clear of the target makes any guest-side content moot: skip its upload */
-        if (rt && (flags & D3DCLEAR_TARGET) && nrects == 0) rt->dirty = false;
+        if (rt && (flags & D3DCLEAR_TARGET) && nrects == 0) { rt->dirty = false; rt->checked = true; }
         if (!bind_ctx(x, d, c, b, true)) return;
         std::vector<D3DRECT> r(nrects);
         if (nrects) memcpy(r.data(), rects, nrects * sizeof(D3DRECT));

@@ -241,9 +241,10 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
   copies on cached VRAM (fast enough for 2D); a host-side blit through
   the executor only makes sense once surfaces can live on the host GPU
   (M7c). Overlays, FourCC and different-format surfaces are refused
-  (8 bpp palettized modes: see the section below). Not yet exercised:
-  `GetDC` on a DirectDraw surface (`DrvDeriveSurface` absent, DirectDraw
-  falls back).
+  (8 bpp palettized modes: see the section below). `GetDC` on a
+  DirectDraw surface (`DrvDeriveSurface` absent): GDI writes the VRAM
+  behind the driver's back; the executor's shadow of each render target
+  catches those writes ("Untracked writes" below).
 - Mode table from the player (M2): a `modes=` device property or an embed
   API call that replaces the static table, pixel-aspect flags per entry.
 - Multi-monitor, DPMS/power states, hot-unplug: not planned.
@@ -574,12 +575,103 @@ loaded with `IDirect3DTexture::Load` from a system-memory surface into an
 bike under its spotlights, and the Speed Bay race — track, kerbs, the
 bike and rider, the palms and buildings cut out by colour key, the HUD —
 at 120 frames/s under KVM (`ddi: 120.0 frames/s (600 readbacks, 2400 dp2
-calls, 106573 draws in 5.0 s)`: four DP2 calls and ~175 draws per frame,
-one triangle per `D3DOP_TRIANGLE` entry the executor turns into one
-`DrawIndexedPrimitiveUP` each — batching a run of them is the obvious
-follow-up). Not played by hand yet; the showroom's 2D panels were missing
-in one screendump (timing, or a guest write to the back buffer between
-the host's draw and the flip — to be watched).
+calls, 106573 draws in 5.0 s)`: four DP2 calls and ~175 draws per frame).
+Not played by hand yet.
+
+**The one-triangle draws cannot be batched (2026-09-05, later).** A traced
+race frame (`D3DPT_DP2_TRACE`, the attract demo on the canyon track) has
+8 DP2 calls (6 `Execute`s of ~3.5 KB each plus the scene start and end),
+356 `D3DOP_TRIANGLE` draws — and 356 `TEXTUREHANDLE` render states, one
+before every draw, alternating between a handful of textures (0x8, 0xb,
+0xd, 0x1d, 0x21 …), with Z off (`rs 7 = 0`): the game sorts its polygons
+back to front and emits them in that order, switching texture per
+polygon. Consecutive triangles under one texture are already one
+`D3DOP_TRIANGLE` entry with `wCount` > 1 (the name screen draws its 3D
+letters as a single 185-triangle entry, the showroom's bike in entries of
+up to 14), so there is no run of same-state draws left to merge, and
+merging across the texture switches would break the painter's order.
+The 356 draws a frame cost DXVK nothing measurable (120 frames/s, paced
+by the flip chain); the item is closed.
+
+**The showroom's 2D panels (2026-09-05, later): untracked guest writes.**
+They were not a timing accident: in every run the bike-selection screen
+showed the bike under its spotlights and nothing else — no "CHOOSE BIKE"
+header, no arrows, no features panel, no Start / Back — while a click on
+the invisible Start button still started the race. The traced showroom
+frame is only the bike (79 draws, no clear, the first draw's snapshot
+already carrying the spotlight backdrop, so the backdrop's blit is a
+tracked write), and the 2D panels are never in VRAM when the host reads
+the frame back: they are written by the guest *without* a `DdLock` /
+`DdUnlock` pair — GDI through `GetDC` on the DirectDraw surface, which
+dxg handles with no driver callback since the driver has no
+`DrvDeriveSurface` — so the driver never sends `VRAM_DIRTY`, and the
+executor's readback of the host frame overwrote them every frame. Fixed
+in the executor by comparing the target's VRAM with a shadow of it (the
+section "Untracked writes" below): the panels are there
+(`build/xp-driver-test/moto9/bike2.png`), the device logs ~52 k
+untracked pixels a frame in the showroom and ~36 k in the race (the
+HUD's text and dials), plus a 576-pixel one now and then that is the
+24×24 software mouse cursor GDI paints into the primary.
+
+## Untracked writes — GDI on a DirectDraw surface (2026-09-05)
+
+The M7c contract between the driver and the executor was: the guest's
+writes to a render target's VRAM are announced by `VRAM_DIRTY` (sent from
+`DdUnlock`, and by the driver's own TEXBLT / system-memory copies), the
+host uploads the target before drawing when it is dirty, and the host
+frame is read back into VRAM at EndScene / Lock / Flip. Two ways a guest
+writes a surface never pass through `DdLock` / `DdUnlock`:
+
+- **`GetDC` on a DirectDraw surface.** ddraw's `IDirectDrawSurface::GetDC`
+  is `NtGdiDdGetDC` → dxg, which builds a GDI surface over the
+  DirectDraw surface's memory. A driver that exports `DrvDeriveSurface`
+  gets asked for that surface; ours does not, so dxg wraps the VRAM
+  itself and GDI's `TextOut` / `BitBlt` / `Rectangle` write straight
+  into it. There is no driver callback on either side of it.
+- **The engine's software cursor.** Without a hardware pointer GDI paints
+  the mouse cursor into the primary surface directly (24×24 = 576
+  pixels a move); in a flip chain the primary is the next frame's back
+  buffer.
+
+Moto Racer 1997 draws every 2D panel of its bike-selection screen and
+the race HUD's text through the first: the panels were missing from
+every showroom screendump (the section above) while the backdrop and
+the 3D bike were fine. Rather than add `DrvDeriveSurface` (which would
+give the driver a hook to send `VRAM_DIRTY` — but only on the way in;
+GDI does not tell the driver when it is done with a derived surface,
+so a readback could still overtake a `TextOut` in progress), the
+executor now keeps a **shadow of each render target's VRAM** as of the
+last moment the host and VRAM agreed — taken after every upload and
+every readback — and uses it twice a frame:
+
+1. Before the frame's first draw (once per readback cycle, in
+   `bind_ctx`), a target that is not dirty is compared with its shadow;
+   any difference is a guest write the driver never announced, and the
+   target is uploaded as if it had been (the draws then land on top, as
+   they would on real hardware where the write preceded them).
+2. At the readback, pixels that differ from the shadow are the guest's
+   writes since the frame's draws began (the HUD after the scene, GDI
+   during it): they are **kept over the host frame**, and the target is
+   marked dirty so the next frame's first draw refreshes the host
+   target from VRAM (the kept pixels persist where nothing draws over
+   them, exactly as on hardware).
+
+A full-target `Clear` skips the check as it skips the upload. The cost
+is one `memcmp` of the target (600 KB at 640×480×16) per frame, per row
+first and per pixel only on rows that differ, and, while a title does
+untracked writes after its scene, one upload of the target per frame;
+Moto Racer's showroom and race both stay at 120 frames/s under KVM. The
+device log counts the pixels (`ddi: … N untracked guest pixels in 5.0 s`,
+and the first eight events with the target's handle and which of the
+two paths took them); the DP2 trace notes them at the readback.
+`tools/d3dpt-dp2-test.cpp` covers both paths and the persistence: a
+block poked into the target's VRAM with no `VRAM_DIRTY` before a draw
+is drawn over where the quad is and read back as itself elsewhere, one
+poked after the draws survives the readback, and in the next frame it
+is drawn over where the quad is and persists elsewhere.
+
+`DrvDeriveSurface` stays on the list as an optimisation (GDI could then
+draw on a host-side copy) rather than a correctness item.
 
 ## 8 bpp palettized modes (2026-09-04, register set v3)
 

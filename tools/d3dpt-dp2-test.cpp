@@ -607,6 +607,36 @@ int main(int argc, char **argv) {
         Dp2Buf e4; e4.rs(21, 2); e4.tss(0, 1, D3DTOP_MODULATE); e4.tss(0, 4, D3DTOP_SELECTARG1);   /* back to the scene's stage states */
         hr = send_dp2(&enc, e4, quad);
         CHECK(hr == 0, "stage states restored (0x%08x)", hr);
+
+        /* --- untracked writes (doc 15 "Untracked writes"): the guest writes
+         * the target's VRAM with no VRAM_DIRTY (GDI through GetDC bypasses
+         * DdLock / DdUnlock). Before the frame's first draw the executor
+         * finds the change against its shadow of the target and uploads it,
+         * so the draws land on top; after the draws it keeps the guest's
+         * pixels over the host frame at the readback --- */
+        hr = readback(&enc, H_RT);                                      /* host and VRAM agree from here */
+        auto poke = [](int x0, int y0, int w, int h, uint32_t c) {
+            for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) memcpy(vram + RT_OFF + y * RT_PITCH + x * 4, &c, 4);
+        };
+        poke(200, 200, 40, 40, 0xff00ff00u);                            /* inside the quad: the draw covers it */
+        poke(500, 20, 40, 40, 0xff00ff00u);                             /* outside: read back as it is */
+        Dp2Buf u1;
+        u1.rs(1, 0);
+        u1.cmd(3, 2); u1.u16(0); u1.u16(1); u1.u16(2); u1.u16(0x1f); u1.u16(3); u1.u16(4); u1.u16(5); u1.u16(0x1f);
+        hr = send_dp2(&enc, u1, quad);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(220, 220), 0xff0000, 2) && near_(px(520, 40), 0x00ff00, 2),
+              "untracked write before the draws: uploaded, the quad on top 0x%06x, the rest kept 0x%06x", px(220, 220), px(520, 40));
+        hr = send_dp2(&enc, u1, quad);                                  /* the quad again, then writes after the draws */
+        poke(200, 200, 40, 40, 0xff00ffffu);
+        poke(500, 20, 40, 40, 0xff00ffffu);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(220, 220), 0x00ffff, 2) && near_(px(120, 100), 0xff0000, 2),
+              "untracked write after the draws: kept over the host frame 0x%06x, the quad around it 0x%06x", px(220, 220), px(120, 100));
+        hr = send_dp2(&enc, u1, quad);                                  /* the next frame: drawn over where the quad is, persisting elsewhere */
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(220, 220), 0xff0000, 2) && near_(px(520, 40), 0x00ffff, 2),
+              "kept pixels in the next frame: drawn over 0x%06x, persisting 0x%06x", px(220, 220), px(520, 40));
     }
 
     /* --- hostile records --- */

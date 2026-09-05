@@ -195,6 +195,27 @@ picture and the track rules, then this file, then doc 15.
   out, 120 frames/s under KVM, ~175 draws a frame one triangle each — a
   batching follow-up). Not played by hand yet; the user's `winxp-m7`
   needs the driver reinstalled from the ISO.
+- **Untracked writes: the showroom's 2D panels (2026-09-05, evening).**
+  The bike-selection screen's header, arrows, features panel and
+  Start / Back were missing in *every* run, not one: the game draws them
+  with GDI through `GetDC` on the back buffer, which dxg serves without
+  any driver callback (no `DrvDeriveSurface`), so no `VRAM_DIRTY` ever
+  came and the executor's readback overwrote them each frame. The
+  executor now keeps a shadow of each render target's VRAM and compares
+  it before the frame's first draw (an unannounced write is uploaded)
+  and at the readback (pixels written since the draws are kept over the
+  host frame, and the target refreshed from VRAM before the next draw)
+  — doc 15 "Untracked writes"; `tools/d3dpt-dp2-test.cpp` covers both
+  paths. The panels and the race HUD's text show
+  (`build/xp-driver-test/moto9/bike2.png`, `race1.png`); the device log
+  counts the pixels (`N untracked guest pixels`). Found on the way: the
+  one-triangle draws cannot be batched (a `TEXTUREHANDLE` before every
+  draw, painter's order with Z off — doc 15), the item is closed; and
+  `xp-motoracer.sh play` had never reached the race on its own (the
+  title takes only the keyboard and runs into an attract demo when
+  idle, the name screen's Enter presses whichever letter the cursor was
+  on) — it drives the menus by `tools/motoracer-state.py` now, a
+  screendump classifier with a retry per screen.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -288,9 +309,15 @@ picture and the track rules, then this file, then doc 15.
      3 / 8 / 13 / 11, *bounce* the rest with `D3DERR_COMMAND_UNPARSED` +
      `dwErrorOffset`), plus the DX5 texture render states mapped in the
      executor. EBTEST 5/5, Moto Racer races (doc 15 "Execute buffers — the
-     DirectX 3 path"). Open on it: batching the one-triangle draws (~175
-     a frame, one `DrawIndexedPrimitiveUP` each), the showroom's 2D
-     panels seen missing once, a hand-played check.
+     DirectX 3 path"). **Both follow-ups closed the same evening:** the
+     showroom's 2D panels were GDI writes through `GetDC` the driver
+     never sees (the executor's target shadow catches them now, doc 15
+     "Untracked writes"), and the one-triangle draws are one texture
+     switch each in painter's order — nothing to batch. Open: a
+     hand-played check; the attract demo's Esc menu shows its text
+     with a letter missing per line ("EXT DEMO", "UIT DEMO",
+     "C NTINUE DEMO"; seen with the old executor, to be re-checked
+     with the shadow).
   7. Then the small things the
      runs showed: D3DGAME8's frame still differs from the native oracle
      along the checker texture's texel edges only (2026-09-05 night:
