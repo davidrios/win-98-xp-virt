@@ -220,6 +220,31 @@ picture and the track rules, then this file, then doc 15.
   idle, the name screen's Enter presses whichever letter the cursor was
   on) — it drives the menus by `tools/motoracer-state.py` now, a
   screendump classifier with a retry per screen.
+- **The hardware cursor (2026-09-05 evening, register set v4).** The
+  user's report from hand play: the mouse cursor flickers. GDI's software
+  pointer is painted into the GDI primary — one buffer of a flip chain,
+  so under a 60 Hz title it shows every other frame, and on the desktop
+  the scanout catches its erase. Now `DrvSetPointerShape` /
+  `DrvMovePointer` write the pointer (mono AND/XOR, colour through a
+  32 bpp engine bitmap, `SPS_ALPHA`) as a8r8g8b8 into the 16 KiB above
+  the DirectDraw heap and the CURSOR registers; the device hands it to
+  QEMU's console (`dpy_cursor_define` / `dpy_mouse_set`); the player,
+  which already received `on_cursor` / `on_mouse_set` from the embed
+  library and ignored them, shows the guest's shape as the host window's
+  cursor over the image (the USB tablet puts the host pointer where the
+  guest's is: no compositing, no latency; hidden when the guest hides it,
+  hidden as before for a guest without a hardware cursor). Pointers over
+  64×64 stay software. v4 refuses a v3 driver: every image needs
+  `install` from the ISO (`winxp-m7g` done; the user's `winxp-m7`
+  pending), QEMU rebuilt (prepare → ninja). Doc 15 "The hardware cursor".
+  Verified headless by the device log (`cursor 32x32 hot 0,0 defined`,
+  `cursor shown at x,y`); the window itself is the user's check.
+- **Tried and dropped the same evening: blit / stretch caps** for FIFA
+  2000's 320×240 intro videos — `DDCAPS_BLT | BLTSTRETCH | …` with a
+  declining `DdBlt` broke DDTEST's colour fill (on XP `NOTHANDLED` is
+  E_NOTIMPL to the app, not a HEL fallback) and the game never blits its
+  movies anyway (doc 15 "Blit caps and the HEL"). Open: where the user
+  saw them full-screen.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -432,9 +457,12 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 2. Add a `driver` stage to `scripts/test.sh` (boot on `d3dpt-vga`, `modes`
    + `ddtest` with expected numbers) once the M4 track's suite structure
    is stable; until then `tools/xp-driver-test.sh` is the check.
-3. Small items: `DrvDeriveSurface` (GDI on DirectDraw surfaces), a real
-   vblank signal from the player's present, the hardware cursor (needs a
-   sprite in the player), the mode table fed from the player (M2), a macOS
+3. Small items: `DrvDeriveSurface` (GDI on DirectDraw surfaces; an
+   optimisation now, the executor's target shadow keeps GDI's writes), a
+   real vblank signal from the player's present, a real blitter behind
+   `DDCAPS_BLT` if a title ever needs the caps (doc 15 "Blit caps and the
+   HEL": a declined `DdBlt` is E_NOTIMPL to the app on XP), the mode
+   table fed from the player (M2), a macOS
    run of the same image, more 8 bpp titles (StarCraft, Age of Empires,
    Caesar 3: install + a `tools/xp-<game>.sh` each; Diablo's dungeon
    levels), a RAM-backed palette page if a title animates the palette

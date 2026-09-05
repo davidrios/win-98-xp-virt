@@ -66,6 +66,13 @@ struct D3dptVgaState {
     int64_t flips_ns;           /* and when it was made */
     uint32_t ddflags;           /* property: test knob read by the guest driver */
 
+    /* the hardware cursor (version 4): the guest's registers, and what was
+     * defined / shown so far for the log */
+    uint32_t cur_addr, cur_w, cur_h, cur_hot_x, cur_hot_y;
+    int32_t cur_x, cur_y;
+    bool cur_on, cur_defined;
+    uint32_t cur_defines, cur_moves;
+
     /* the linear mode currently shown (lin_on) */
     bool lin_on;
     bool full_update;
@@ -438,6 +445,49 @@ static void d3d_reset(D3dptVgaState *s)
 
 /* ------------------------------------------------------------- registers */
 
+/* ---------------------------------------------------- the hardware cursor
+ * (version 4): the shape is read out of VRAM at CURSOR_DEFINE and handed
+ * to the console as a QEMUCursor; the position and visibility go through
+ * dpy_mouse_set. The display clients composite it (the player: as the host
+ * window's cursor); the device draws nothing into the frame. */
+static void fb_cursor_define(D3dptVgaState *s, bool on)
+{
+    QEMUCursor *c;
+    uint32_t w = s->cur_w, h = s->cur_h;
+    uint64_t bytes = (uint64_t)w * h * 4;
+
+    if (!on) {
+        s->cur_defined = false;
+        dpy_cursor_define(s->vga.con, NULL);
+        return;
+    }
+    if (!w || !h || w > D3DPT_FB_CURSOR_MAX || h > D3DPT_FB_CURSOR_MAX ||
+        s->cur_addr + bytes > s->vga.vram_size ||
+        s->cur_hot_x >= w || s->cur_hot_y >= h) {
+        warn_report("d3dpt-vga: cursor %ux%u at %u hot %u,%u refused",
+                    w, h, s->cur_addr, s->cur_hot_x, s->cur_hot_y);
+        return;
+    }
+    c = cursor_alloc(w, h);
+    memcpy(c->data, memory_region_get_ram_ptr(&s->vga.vram) + s->cur_addr, bytes);
+    c->hot_x = s->cur_hot_x;
+    c->hot_y = s->cur_hot_y;
+    dpy_cursor_define(s->vga.con, c);
+    cursor_unref(c);
+    s->cur_defined = true;
+    if (s->cur_defines++ < 4) {
+        info_report("d3dpt-vga: cursor %ux%u hot %u,%u defined", w, h, s->cur_hot_x, s->cur_hot_y);
+    }
+}
+
+static void fb_cursor_move(D3dptVgaState *s)
+{
+    if (s->cur_moves++ < 4) {
+        info_report("d3dpt-vga: cursor %s at %d,%d", s->cur_on ? "shown" : "hidden", s->cur_x, s->cur_y);
+    }
+    dpy_mouse_set(s->vga.con, s->cur_x, s->cur_y, s->cur_on);
+}
+
 static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
 {
     D3dptVgaState *s = opaque;
@@ -452,7 +502,23 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
         return s->vga.vram_size;
     case D3DPT_FB_REG_CAPS:
         return D3DPT_FB_CAP_BPP8 | D3DPT_FB_CAP_BPP16 | D3DPT_FB_CAP_BPP32 |
-               (s->cmd_offset ? D3DPT_FB_CAP_D3D : 0);
+               D3DPT_FB_CAP_CURSOR | (s->cmd_offset ? D3DPT_FB_CAP_D3D : 0);
+    case D3DPT_FB_REG_CURSOR_ADDR:
+        return s->cur_addr;
+    case D3DPT_FB_REG_CURSOR_W:
+        return s->cur_w;
+    case D3DPT_FB_REG_CURSOR_H:
+        return s->cur_h;
+    case D3DPT_FB_REG_CURSOR_HOT_X:
+        return s->cur_hot_x;
+    case D3DPT_FB_REG_CURSOR_HOT_Y:
+        return s->cur_hot_y;
+    case D3DPT_FB_REG_CURSOR_X:
+        return (uint32_t)s->cur_x;
+    case D3DPT_FB_REG_CURSOR_Y:
+        return (uint32_t)s->cur_y;
+    case D3DPT_FB_REG_CURSOR_ENABLE:
+        return s->cur_on;
     case D3DPT_FB_REG_MODE_COUNT:
         return FB_MODE_COUNT;
     case D3DPT_FB_REG_MODE_SEL:
@@ -564,6 +630,35 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
     }
     case D3DPT_FB_REG_DOORBELL:
         d3d_doorbell(s);
+        break;
+    case D3DPT_FB_REG_CURSOR_ADDR:
+        s->cur_addr = val;
+        break;
+    case D3DPT_FB_REG_CURSOR_W:
+        s->cur_w = val;
+        break;
+    case D3DPT_FB_REG_CURSOR_H:
+        s->cur_h = val;
+        break;
+    case D3DPT_FB_REG_CURSOR_HOT_X:
+        s->cur_hot_x = val;
+        break;
+    case D3DPT_FB_REG_CURSOR_HOT_Y:
+        s->cur_hot_y = val;
+        break;
+    case D3DPT_FB_REG_CURSOR_DEFINE:
+        fb_cursor_define(s, val != 0);
+        break;
+    case D3DPT_FB_REG_CURSOR_X:
+        s->cur_x = (int32_t)val;
+        break;
+    case D3DPT_FB_REG_CURSOR_Y:
+        s->cur_y = (int32_t)val;
+        fb_cursor_move(s);
+        break;
+    case D3DPT_FB_REG_CURSOR_ENABLE:
+        s->cur_on = val != 0;
+        fb_cursor_move(s);
         break;
     default:
         if (addr >= D3DPT_FB_REG_PALETTE &&

@@ -226,12 +226,11 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
   vga.sys' (VgaSave stays registered as the VGA-compatible device); harmless,
   a `VgaCompatible = 1` INF variant would hide them but also makes our
   driver the one bootvid uses. Leave.
-- No `DrvSetPointerShape`: GDI's software pointer draws into VRAM, so the
-  cursor is part of the framebuffer (the player hides its own cursor over
-  the image, as with cirrus). A hardware cursor needs the player to
-  composite a sprite (it ignores QEMU's `on_cursor` today) plus define /
-  move registers here; deferred, the software pointer is correct and the
-  dirty rectangles it causes are small.
+- A hardware cursor since register set v4 (2026-09-05 evening, "The
+  hardware cursor" below): `DrvSetPointerShape` / `DrvMovePointer` feed
+  the CURSOR registers, the player shows the guest's shape as the host
+  window's cursor. Pointers over 64×64 fall back to GDI's software
+  pointer in the framebuffer.
 - `FRAMES` is a clock, not the player's present: it counts periods of the
   mode's `HZ` since `ENABLE`. A game therefore gets the refresh rate it
   asked for whatever the player is doing, but the two are not in phase —
@@ -675,6 +674,93 @@ is drawn over where the quad is and persists elsewhere.
 
 `DrvDeriveSurface` stays on the list as an optimisation (GDI could then
 draw on a host-side copy) rather than a correctness item.
+
+## The hardware cursor (2026-09-05 evening, register set v4)
+
+The user's report after playing Moto Racer by hand: the mouse cursor
+flickers. The driver had no pointer hooks, so GDI painted a software
+pointer into VRAM — erased and redrawn around every drawing operation
+(the scanout catches it mid-erase on the desktop) and always into the
+GDI primary at offset 0, which under a flip chain is one of the two
+buffers: in a full-screen title that flips at 60 Hz and leaves the
+Windows cursor showing, it is visible every other frame.
+
+The fix is the sprite every card of the era had, in three parts:
+
+- **Driver.** `DrvSetPointerShape` takes GDI's pointer (a 1 bpp mask
+  surface, AND rows over XOR rows, plus a colour surface with a
+  translation object for colour pointers; `SPS_ALPHA` marks a 32 bpp
+  one with its own alpha) and writes it as a8r8g8b8 into the 16 KiB
+  above the DirectDraw heap (`dd_heap_end`, the heap ends there now),
+  then CURSOR_ADDR / W / H / HOT_X / HOT_Y and CURSOR_DEFINE.
+  Monochrome pointers: AND 1 + XOR 0 is transparent, AND 0 is black or
+  white by XOR, AND 1 + XOR 1 ("invert the screen") is black — a sprite
+  cannot invert. Colour pointers in another format go through a 32 bpp
+  engine bitmap and `EngCopyBits` with the translation. Anything over
+  `D3DPT_FB_CURSOR_MAX` (64) is `SPS_DECLINE`d and GDI keeps its
+  software pointer for it. `DrvMovePointer` writes CURSOR_X / Y and
+  CURSOR_ENABLE (x = −1 hides); `GCAPS_ASYNCMOVE` lets GDI move it from
+  any context. `DrvAssertMode(FALSE)` hides it before the VGA text.
+- **Device.** CURSOR_DEFINE reads the image out of VRAM into a
+  `QEMUCursor` and `dpy_cursor_define`s it on the console; X / Y /
+  ENABLE writes are `dpy_mouse_set`. Nothing is composited into the
+  frame: a headless screendump shows no cursor, as with a real sprite,
+  and the log has the first defines and moves (`cursor 32x32 hot 0,0
+  defined`, `cursor shown at x,y`).
+- **Player.** The embed library already forwarded QEMU's cursor
+  callbacks (`on_cursor`, `on_mouse_set`); the player now takes them:
+  the shape becomes a winit custom cursor and, while the pointer is
+  over the image and the guest shows its cursor, the host window's
+  cursor *is* the guest's shape. With the USB tablet the host pointer
+  is exactly where the guest's cursor is, so there is no compositing
+  and no added latency; when the guest hides its cursor (a game's
+  `ShowCursor(FALSE)`) the host cursor is hidden over the image, and a
+  guest without a hardware cursor (cirrus, vga.sys, an older driver)
+  keeps the old behaviour — hidden over the image, the software pointer
+  in the frame. The state is applied only on change (wakes come every
+  frame).
+
+`D3DPT_FB_VERSION` is 4: an installed v3 driver refuses the device, so
+every image needs a reinstall from the ISO, and the QEMU rebuild goes
+with it (prepare → ninja). Verified headless by the device log lines at
+the desktop after the install; the flicker itself is a player-window
+observation for the user.
+
+## Blit caps and the HEL (2026-09-05, evening; nothing landed)
+
+FIFA 2000's videos (EA's `.mad` files, decoded by the game) play at
+320×240 in the middle of the 640×480 mode instead of filling it. The
+first guess was the blit caps: the driver claims none (`dwCaps` 0, the
+HEL does every blit in user mode on the mapped VRAM), and a 1999 title
+that asks `DDCAPS_BLTSTRETCH` before stretching would settle for 1:1.
+Tried: `DDCAPS_BLT | BLTSTRETCH | BLTCOLORFILL | BLTQUEUE | CANBLTSYSMEM`
+with the `DDFXCAPS_BLT*` stretch / shrink bits, in `dwCaps` and the
+SVB / VSB / SSB sets alike, with `DdBlt` returning
+`DDHAL_DRIVER_NOTHANDLED` for everything so that the HEL would still do
+the work. Two findings, both against:
+
+- **On XP a declined `DdBlt` is not a HEL fallback.** With the caps
+  claimed, dxg routes every blit to the driver and `NOTHANDLED` comes
+  back to the application as `E_NOTIMPL` (DDTEST's windowed
+  `Blt(DDBLT_COLORFILL)` failed with 0x80004001 at 8, 16 and 32 bpp).
+  Whatever the Windows 9x DDK said about the HEL taking over, the NT
+  runtime does not: claiming blit caps means writing the blitter (copy,
+  colour fill, stretch, source colour key, ROP) in the display DLL on
+  the cached VRAM mapping, or on the host once plain surfaces have a
+  host copy. Not worth it for now — the HEL's user-mode copies are
+  fast enough for the 2D titles seen so far.
+- **The videos never blit.** With the caps in place FIFA 2000 played
+  the intro at the same 320×240, and the driver logged no `DdBlt` at
+  all through the whole intro: the game writes the decoded frames into
+  the surface itself (Lock) and chooses the size by something else
+  (its own CPU or resolution heuristics, or the movies simply are
+  320×240 and were on the hardware of the day). Open until someone
+  sees them full-screen on a known configuration.
+
+Kept from the experiment: `DdBlt` logs its first calls with source and
+destination rectangles, and the `Blt` callback is registered whenever
+`DDF_CKEY_NOBLTCB` is not set (it has to exist for the colour-key
+caps, and it is never called without `DDCAPS_BLT`).
 
 ## 8 bpp palettized modes (2026-09-04, register set v3)
 

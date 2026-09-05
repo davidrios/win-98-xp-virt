@@ -39,6 +39,18 @@
  * (StarCraft, Diablo, Age of Empires) set 640x480x8 and animate the
  * palette.
  *
+ * Version 4: a hardware cursor. The display driver's DrvSetPointerShape
+ * writes the pointer as 0xAARRGGBB pixels into VRAM (anywhere below the
+ * command window; it reserves the top of its DirectDraw heap), describes
+ * it in CURSOR_ADDR / W / H / HOT_X / HOT_Y and writes CURSOR_DEFINE;
+ * DrvMovePointer writes CURSOR_X / Y and CURSOR_ENABLE. The device hands
+ * the shape and the position to QEMU's console (dpy_cursor_define /
+ * dpy_mouse_set), the embed library to the player, which shows the
+ * guest's shape as the host window's cursor — nothing is composited into
+ * the frame, and headless screendumps show no cursor, as with a real
+ * sprite. Without it GDI paints a software pointer into the primary,
+ * which flickers under a flip chain (it is in one buffer of the two).
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #ifndef D3DPT_FB_H
@@ -46,7 +58,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_FB_VERSION      3u
+#define D3DPT_FB_VERSION      4u
 #define D3DPT_FB_MAGIC        0x42463344u          /* "D3FB" at REG_MAGIC */
 
 /* PCI identity: QEMU/Bochs pseudo vendor, our device id ("3D00"). The INF
@@ -89,6 +101,19 @@
 #define D3DPT_FB_REG_DOORBELL    0x84u   /* W: 1 = execute the batch in the window; R: last D3DPT_ERR_* */
 #define D3DPT_FB_REG_D3D_STATUS  0x88u   /* R: D3DPT_STATUS_* (0 = no executor on the host, 1 = ready) */
 
+/* the hardware cursor (version 4) */
+#define D3DPT_FB_REG_CURSOR_ADDR 0x90u   /* RW: byte offset in VRAM of the a8r8g8b8 image, W * H * 4 bytes, rows packed */
+#define D3DPT_FB_REG_CURSOR_W    0x94u   /* RW: 1..D3DPT_FB_CURSOR_MAX */
+#define D3DPT_FB_REG_CURSOR_H    0x98u   /* RW: 1..D3DPT_FB_CURSOR_MAX */
+#define D3DPT_FB_REG_CURSOR_HOT_X 0x9cu  /* RW: hot spot inside the image */
+#define D3DPT_FB_REG_CURSOR_HOT_Y 0xa0u
+#define D3DPT_FB_REG_CURSOR_DEFINE 0xa4u /* W: 1 = take the image described above (0 = no cursor shape) */
+#define D3DPT_FB_REG_CURSOR_X    0xa8u   /* RW: hot spot position on the screen (signed) */
+#define D3DPT_FB_REG_CURSOR_Y    0xacu
+#define D3DPT_FB_REG_CURSOR_ENABLE 0xb0u /* RW: 1 = shown at X / Y, 0 = hidden */
+#define D3DPT_FB_CURSOR_MAX      64u     /* pixels per side; larger pointers stay with GDI's software one */
+#define D3DPT_FB_CURSOR_BYTES    (D3DPT_FB_CURSOR_MAX * D3DPT_FB_CURSOR_MAX * 4u)
+
 #define D3DPT_FB_REG_PALETTE     0x400u  /* RW: 256 x8r8g8b8 entries (version 3), 0x400..0x7fc */
 #define D3DPT_FB_PALETTE_SIZE    256u
 
@@ -96,5 +121,6 @@
 #define D3DPT_FB_CAP_BPP32       0x2u
 #define D3DPT_FB_CAP_D3D         0x4u    /* a command window exists (CMD_OFFSET != 0) */
 #define D3DPT_FB_CAP_BPP8        0x8u    /* version 3: BPP = 8 and the PALETTE block */
+#define D3DPT_FB_CAP_CURSOR      0x10u   /* version 4: the CURSOR registers */
 
 #endif

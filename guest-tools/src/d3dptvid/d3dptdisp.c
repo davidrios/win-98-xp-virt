@@ -124,6 +124,11 @@ typedef struct _PDEV {
      * (D3DOP_PROCESSVERTICES and friends) on the legacy path (doc 15) */
     HRESULT (APIENTRY *parse_unknown)(PVOID cmd, PVOID *next);
     ULONG parse_lines;
+    ULONG blt_lines;                    /* the first DdBlt calls logged */
+
+    /* the hardware cursor (register set v4): its image lives in the
+     * D3DPT_FB_CURSOR_BYTES above the DirectDraw heap */
+    ULONG cursor_lines;                 /* the first shapes logged */
 } PDEV, *PPDEV;
 
 static PPDEV d3d_pdev;              /* the PDEV whose Direct3D is on (the primary display) */
@@ -454,7 +459,7 @@ DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
     g.ulPhysicalPixelGamma = PPG_DEFAULT;
     *gi = g;
 
-    d.flGraphicsCaps = 0;
+    d.flGraphicsCaps = GCAPS_ASYNCMOVE;     /* the hardware cursor moves at any time (v4) */
     d.lfDefaultFont = font_system;
     d.lfAnsiVarFont = font_ansi_var;
     d.lfAnsiFixFont = font_ansi_fix;
@@ -467,7 +472,7 @@ DHPDEV APIENTRY DrvEnablePDEV(DEVMODEW *pdm, LPWSTR pwszLogAddress, ULONG cPat,
          * DrvSetPalette; the default palette has the 20 system colours
          * where GDI expects them */
         build_palette(p->pal);
-        d.flGraphicsCaps = GCAPS_PALMANAGED | GCAPS_COLOR_DITHER;
+        d.flGraphicsCaps = GCAPS_PALMANAGED | GCAPS_COLOR_DITHER | GCAPS_ASYNCMOVE;
         d.cxDither = d.cyDither = 8;
         d.hpalDefault = EngCreatePalette(PAL_INDEXED, 256, p->pal, 0, 0, 0);
     } else {
@@ -674,10 +679,165 @@ BOOL APIENTRY DrvAssertMode(DHPDEV dhpdev, BOOL bEnable)
         return set_mode(p);
     }
     dbg_puts(p, "d3dptdisp: assert mode off\n");
+    if (p->regs) {
+        p->regs[D3DPT_FB_REG_CURSOR_ENABLE / 4] = 0;    /* no sprite over the VGA text */
+    }
     /* another PDEV (a full-screen console, the logon desktop switching) takes
      * the screen: back to VGA text through the miniport */
     return EngDeviceIoControl(p->hDriver, IOCTL_VIDEO_RESET_DEVICE, NULL, 0,
                               NULL, 0, &ret) == 0;
+}
+
+/* ------------------------------------------------------ hardware cursor
+ * (register set v4, doc 15 "The hardware cursor"). GDI hands the pointer
+ * as a 1 bpp mask surface (AND rows over XOR rows) and, for a colour
+ * pointer, a colour surface with a translation to the screen format; the
+ * driver turns it into a8r8g8b8 in the VRAM area above the DirectDraw
+ * heap and tells the device, which hands it to the host as a cursor
+ * sprite. Pointers beyond D3DPT_FB_CURSOR_MAX stay with GDI's software
+ * pointer (SPS_DECLINE). */
+#ifndef SPS_ALPHA
+#define SPS_ALPHA 0x00000010
+#endif
+
+static ULONG cursor_offset(PPDEV p);
+
+static void cursor_show(PPDEV p, LONG x, LONG y)
+{
+    if (!p->regs) {
+        return;
+    }
+    if (x == -1) {
+        p->regs[D3DPT_FB_REG_CURSOR_ENABLE / 4] = 0;
+        return;
+    }
+    p->regs[D3DPT_FB_REG_CURSOR_X / 4] = (ULONG)x;
+    p->regs[D3DPT_FB_REG_CURSOR_Y / 4] = (ULONG)y;
+    p->regs[D3DPT_FB_REG_CURSOR_ENABLE / 4] = 1;
+}
+
+static ULONG mask_bit(const SURFOBJ *so, ULONG row, ULONG x)
+{
+    const UCHAR *b = (const UCHAR *)so->pvScan0 + (LONG)row * so->lDelta;
+    return (b[x >> 3] >> (7 - (x & 7))) & 1;
+}
+
+ULONG APIENTRY DrvSetPointerShape(SURFOBJ *pso, SURFOBJ *psoMask, SURFOBJ *psoColor, XLATEOBJ *pxlo,
+                                  LONG xHot, LONG yHot, LONG x, LONG y, RECTL *prcl, FLONG fl)
+{
+    PPDEV p = (PPDEV)pso->dhpdev;
+    ULONG w, h, i, j;
+    ULONG *img;
+    BOOL alpha = (fl & SPS_ALPHA) != 0;
+
+    if (!p->regs || !p->fb || !(p->regs[D3DPT_FB_REG_CAPS / 4] & D3DPT_FB_CAP_CURSOR)) {
+        return SPS_DECLINE;
+    }
+    if (!psoMask && !psoColor) {
+        /* no shape: the pointer goes away */
+        cursor_show(p, -1, 0);
+        return SPS_ACCEPT_NOEXCLUDE;
+    }
+    if (psoMask) {
+        w = psoMask->sizlBitmap.cx;
+        h = psoMask->sizlBitmap.cy / 2;
+        if (psoMask->iBitmapFormat != BMF_1BPP) {
+            return SPS_DECLINE;
+        }
+    } else {
+        w = psoColor->sizlBitmap.cx;
+        h = psoColor->sizlBitmap.cy;
+    }
+    if (!w || !h || w > D3DPT_FB_CURSOR_MAX || h > D3DPT_FB_CURSOR_MAX ||
+        xHot < 0 || yHot < 0 || (ULONG)xHot >= w || (ULONG)yHot >= h ||
+        (psoColor && ((ULONG)psoColor->sizlBitmap.cx < w || (ULONG)psoColor->sizlBitmap.cy < h))) {
+        return SPS_DECLINE;
+    }
+    img = (ULONG *)((UCHAR *)p->fb + cursor_offset(p));
+
+    if (psoColor) {
+        /* the colour pointer as 32 bpp: straight when it is, through a
+         * 32 bpp engine bitmap and the translation otherwise */
+        if (psoColor->iBitmapFormat == BMF_32BPP) {
+            for (j = 0; j < h; j++) {
+                const ULONG *row = (const ULONG *)((const UCHAR *)psoColor->pvScan0 + (LONG)j * psoColor->lDelta);
+                for (i = 0; i < w; i++) {
+                    img[j * w + i] = alpha ? row[i] : (row[i] | 0xff000000u);
+                }
+            }
+        } else {
+            SIZEL sz;
+            HBITMAP hb;
+            SURFOBJ *so;
+            RECTL r;
+            POINTL pt;
+
+            sz.cx = w;
+            sz.cy = h;
+            hb = EngCreateBitmap(sz, w * 4, BMF_32BPP, BMF_TOPDOWN, NULL);
+            so = hb ? EngLockSurface((HSURF)hb) : NULL;
+            if (!so) {
+                if (hb) EngDeleteSurface((HSURF)hb);
+                return SPS_DECLINE;
+            }
+            r.left = 0; r.top = 0; r.right = w; r.bottom = h;
+            pt.x = 0; pt.y = 0;
+            EngCopyBits(so, psoColor, NULL, pxlo, &r, &pt);
+            for (j = 0; j < h; j++) {
+                const ULONG *row = (const ULONG *)((const UCHAR *)so->pvScan0 + (LONG)j * so->lDelta);
+                for (i = 0; i < w; i++) {
+                    img[j * w + i] = row[i] | 0xff000000u;
+                }
+            }
+            EngUnlockSurface(so);
+            EngDeleteSurface((HSURF)hb);
+            alpha = FALSE;
+        }
+        if (psoMask && !alpha) {
+            /* the AND mask: 1 = the screen shows through */
+            for (j = 0; j < h; j++) {
+                for (i = 0; i < w; i++) {
+                    if (mask_bit(psoMask, j, i)) {
+                        img[j * w + i] &= 0x00ffffffu;
+                    }
+                }
+            }
+        }
+    } else {
+        /* a monochrome pointer: AND 1 / XOR 0 transparent, AND 0 black or
+         * white by XOR, AND 1 / XOR 1 (invert the screen) approximated as
+         * black — a sprite has no way to invert */
+        for (j = 0; j < h; j++) {
+            for (i = 0; i < w; i++) {
+                ULONG a = mask_bit(psoMask, j, i), xr = mask_bit(psoMask, h + j, i);
+                img[j * w + i] = (a && !xr) ? 0 : xr && !a ? 0xffffffffu : 0xff000000u;
+            }
+        }
+    }
+
+    p->regs[D3DPT_FB_REG_CURSOR_ADDR / 4] = cursor_offset(p);
+    p->regs[D3DPT_FB_REG_CURSOR_W / 4] = w;
+    p->regs[D3DPT_FB_REG_CURSOR_H / 4] = h;
+    p->regs[D3DPT_FB_REG_CURSOR_HOT_X / 4] = (ULONG)xHot;
+    p->regs[D3DPT_FB_REG_CURSOR_HOT_Y / 4] = (ULONG)yHot;
+    p->regs[D3DPT_FB_REG_CURSOR_DEFINE / 4] = 1;
+    cursor_show(p, x, y);
+    if (p->cursor_lines < 8) {
+        p->cursor_lines++;
+        dbg_hex(p, "d3dptdisp: pointer ", w);
+        dbg_hex(p, "x", h);
+        dbg_puts(p, psoColor ? " colour" : " mono");
+        dbg_hex(p, " hot ", (ULONG)xHot);
+        dbg_hex(p, ",", (ULONG)yHot);
+        dbg_hex(p, " flags ", fl);
+        dbg_puts(p, "\n");
+    }
+    return SPS_ACCEPT_NOEXCLUDE;
+}
+
+VOID APIENTRY DrvMovePointer(SURFOBJ *pso, LONG x, LONG y, RECTL *prcl)
+{
+    cursor_show((PPDEV)pso->dhpdev, x, y);
 }
 
 /* ------------------------------------------------------------ DirectDraw
@@ -732,6 +892,17 @@ static ULONG heap_start(PPDEV p)
 static ULONG heap_end(PPDEV p)
 {
     return p->cmd_offset ? p->cmd_offset : p->fb_len;
+}
+
+/* the DirectDraw heap ends below the hardware cursor's image (v4) */
+static ULONG dd_heap_end(PPDEV p)
+{
+    return heap_end(p) - D3DPT_FB_CURSOR_BYTES;
+}
+
+static ULONG cursor_offset(PPDEV p)
+{
+    return dd_heap_end(p);
 }
 
 
@@ -1222,6 +1393,12 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
     if (ddflags(p) & DDF_GDI_CAP) {
         pHalInfo->ddCaps.dwCaps |= DDCAPS_GDI;
     }
+    /* No DDCAPS_BLT / BLTSTRETCH / BLTCOLORFILL: tried 2026-09-05 evening
+     * (doc 15 "Blit caps and the HEL") — on XP a DdBlt that returns
+     * DDHAL_DRIVER_NOTHANDLED is E_NOTIMPL to the application, not a
+     * fallback to the HEL (DDTEST's windowed colour fill failed), so the
+     * caps need a real blitter in the driver; and they did not change
+     * FIFA 2000's 1:1 videos, which never Blt at all. */
     /* Source colour keys on video-memory textures (doc 15 "Palettized
      * textures and colour keying"): without these caps user-mode ddraw
      * keeps a texture's key to itself (SetColorKey succeeds, nothing
@@ -1234,8 +1411,8 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
         pHalInfo->ddCaps.dwCaps |= DDCAPS_COLORKEY;
         pHalInfo->ddCaps.dwCKeyCaps = DDCKEYCAPS_SRCBLT;
     }
-    pHalInfo->ddCaps.dwVidMemTotal = heap_end(p) - start;
-    pHalInfo->ddCaps.dwVidMemFree = heap_end(p) - start;
+    pHalInfo->ddCaps.dwVidMemTotal = dd_heap_end(p) - start;
+    pHalInfo->ddCaps.dwVidMemFree = dd_heap_end(p) - start;
     /* dwPalCaps stays 0 at 8 bpp too: XP's dxg.sys drops the whole HAL when
      * a driver reports palette caps (its post-enable validation, next to the
      * DDCAPS_GDI check; 2026-09-04 disassembly). On NT the primary's palette
@@ -1269,7 +1446,7 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
         for (i = 0; i < sizeof(*pvmList) / 4; i++) ((ULONG *)pvmList)[i] = 0;
         pvmList->dwFlags = VIDMEM_ISLINEAR;
         pvmList->fpStart = start;
-        pvmList->fpEnd = heap_end(p) - 1;
+        pvmList->fpEnd = dd_heap_end(p) - 1;
         pvmList->ddsCaps.dwCaps = 0;             /* any surface type */
         pvmList->ddsCapsAlt.dwCaps = 0;
         dbg_hex(p, "d3dptdisp: dd heap ", start);
@@ -1310,10 +1487,12 @@ BOOL APIENTRY DrvEnableDirectDraw(DHPDEV dhpdev, DD_CALLBACKS *cb, DD_SURFACECAL
             if (!(ddflags((PPDEV)dhpdev) & DDF_NO_CKEY)) {
                 scb->dwFlags |= DDHAL_SURFCB32_SETCOLORKEY;     /* a texture's source colour key -> the host */
                 scb->SetColorKey = DdSetColorKey;
-                if (!(ddflags((PPDEV)dhpdev) & DDF_CKEY_NOBLTCB)) {
-                    scb->dwFlags |= DDHAL_SURFCB32_BLT;         /* never called (no DDCAPS_BLT); its presence keeps the HAL */
-                    scb->Blt = DdBlt;
-                }
+            }
+            if (!(ddflags((PPDEV)dhpdev) & DDF_CKEY_NOBLTCB)) {
+                /* every blit under the blit caps: declined back to the HEL
+                 * (and its presence keeps the HAL with the colour-key caps) */
+                scb->dwFlags |= DDHAL_SURFCB32_BLT;
+                scb->Blt = DdBlt;
             }
         }
     }
@@ -2256,17 +2435,24 @@ static DWORD APIENTRY DdSetColorKey(PDD_SETCOLORKEYDATA d)
 }
 
 /* Present so that dxg accepts the colour-key caps; never called, since the
- * driver claims no DDCAPS_BLT (the HEL does every blit). Declines anything
- * that does arrive. */
+ * driver claims no DDCAPS_BLT (the HEL does every blit in user mode).
+ * Declines anything that does arrive — which on XP the application sees
+ * as E_NOTIMPL, not as a HEL fallback (doc 15 "Blit caps and the HEL"),
+ * so claiming blit caps needs a real blitter here. The first few calls
+ * are logged with their rectangles. */
 static DWORD APIENTRY DdBlt(PDD_BLTDATA d)
 {
     PPDEV p = (PPDEV)d->lpDD->dhpdev;
 
-    if (p->reg_lines < 4096) {
-        p->reg_lines++;
+    if (p->blt_lines < 8) {
+        p->blt_lines++;
         dbg_hex(p, "d3dptdisp: blt flags ", d->dwFlags);
         dbg_hex(p, " rop ", d->bltFX.dwROP);
-        dbg_puts(p, " declined\n");
+        dbg_hex(p, " src ", (ULONG)(d->rSrc.right - d->rSrc.left));
+        dbg_hex(p, "x", (ULONG)(d->rSrc.bottom - d->rSrc.top));
+        dbg_hex(p, " dst ", (ULONG)(d->rDest.right - d->rDest.left));
+        dbg_hex(p, "x", (ULONG)(d->rDest.bottom - d->rDest.top));
+        dbg_puts(p, " declined to the HEL\n");
     }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_NOTHANDLED;
@@ -3209,6 +3395,8 @@ static DRVFN drv_fn[] = {
     { INDEX_DrvAssertMode,     (PFN)DrvAssertMode },
     { INDEX_DrvSetPalette,     (PFN)DrvSetPalette },
     { INDEX_DrvGetModes,       (PFN)DrvGetModes },
+    { INDEX_DrvSetPointerShape, (PFN)DrvSetPointerShape },
+    { INDEX_DrvMovePointer,    (PFN)DrvMovePointer },
     { INDEX_DrvSynchronizeSurface, (PFN)DrvSynchronizeSurface },
     { INDEX_DrvGetDirectDrawInfo, (PFN)DrvGetDirectDrawInfo },
     { INDEX_DrvEnableDirectDraw,  (PFN)DrvEnableDirectDraw },

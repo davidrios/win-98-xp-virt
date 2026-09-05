@@ -166,8 +166,24 @@ struct Shared {
     stopped: bool,
     // the UI thread promises no further calls; qemu_embed_destroy may run
     released: bool,
+    // the guest's hardware cursor (the d3dpt-vga driver, doc 15): its shape
+    // as the guest defined it, a sequence number per define / clear, and
+    // whether the guest shows it — None until the guest ever positioned it
+    // (a guest with a software pointer, cirrus / vga.sys, never does)
+    cursor: Option<Arc<CursorImage>>,
+    cursor_seq: u64,
+    cursor_visible: Option<bool>,
 }
 unsafe impl Send for Shared {}
+
+/// A guest hardware-cursor shape: straight alpha, 0xAARRGGBB per pixel.
+pub struct CursorImage {
+    pub argb: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+}
 
 pub struct Display(Arc<Mutex<Shared>>);
 
@@ -200,6 +216,66 @@ impl Display {
     /// dma-buf slots offered since the last call (import them on the GPU thread).
     pub fn take_dmabufs(&self) -> Vec<DmaBuf> {
         std::mem::take(&mut self.0.lock().unwrap().dmabufs)
+    }
+
+    /// The guest's cursor shape if it changed since `last_seq`: the new
+    /// sequence number and the shape (None = the guest cleared it).
+    pub fn cursor_if_newer(&self, last_seq: u64) -> Option<(u64, Option<Arc<CursorImage>>)> {
+        let s = self.0.lock().unwrap();
+        if s.cursor_seq == last_seq {
+            return None;
+        }
+        Some((s.cursor_seq, s.cursor.clone()))
+    }
+
+    /// Whether the guest shows its hardware cursor; None while it never had one.
+    pub fn cursor_visible(&self) -> Option<bool> {
+        self.0.lock().unwrap().cursor_visible
+    }
+}
+
+unsafe extern "C" fn on_cursor(
+    ud: *mut c_void,
+    argb: *const u32,
+    w: c_int,
+    h: c_int,
+    hot_x: c_int,
+    hot_y: c_int,
+) {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    s.cursor = if argb.is_null() || w <= 0 || h <= 0 {
+        None
+    } else {
+        let n = w as usize * h as usize;
+        Some(Arc::new(CursorImage {
+            argb: std::slice::from_raw_parts(argb, n).to_vec(),
+            width: w as u32,
+            height: h as u32,
+            hot_x: hot_x.max(0) as u32,
+            hot_y: hot_y.max(0) as u32,
+        }))
+    };
+    s.cursor_seq += 1;
+    if s.cursor_seq <= 4 {
+        eprintln!("[cursor] guest shape {}", if s.cursor.is_some() { format!("{w}x{h} hot {hot_x},{hot_y}") } else { "cleared".into() });
+    }
+    let waker = s.waker.clone();
+    drop(s);
+    if let Some(w) = waker {
+        w();
+    }
+}
+
+unsafe extern "C" fn on_mouse_set(ud: *mut c_void, _x: c_int, _y: c_int, on: bool) {
+    let shared = &*(ud as *const Mutex<Shared>);
+    let mut s = shared.lock().unwrap();
+    let changed = s.cursor_visible != Some(on);
+    s.cursor_visible = Some(on);
+    let waker = if changed { s.waker.clone() } else { None };
+    drop(s);
+    if let Some(w) = waker {
+        w();
     }
 }
 
@@ -543,6 +619,9 @@ pub fn start(
         dmabufs: Vec::new(),
         stopped: false,
         released: false,
+        cursor: None,
+        cursor_seq: 0,
+        cursor_visible: None,
     }));
     // Leak one strong ref for the C side; the process holds one VM for life.
     let ud = Arc::into_raw(shared.clone()) as usize;
@@ -555,8 +634,8 @@ pub fn start(
                 on_switch: Some(on_switch),
                 on_update: Some(on_update),
                 on_refresh_done: Some(on_refresh_done),
-                on_cursor: None,
-                on_mouse_set: None,
+                on_cursor: Some(on_cursor),
+                on_mouse_set: Some(on_mouse_set),
                 on_3d_active: Some(on_3d_active),
                 on_3d_frame: Some(on_3d_frame),
                 on_3d_dmabuf: Some(on_3d_dmabuf),

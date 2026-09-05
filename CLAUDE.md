@@ -186,8 +186,14 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   debugger. Miniport headers: `ntdef.h`+`ddk/miniport.h`, **not** `ntddk.h`.
   dxg drops the whole HAL for `DDCAPS_GDI`, palette caps and colour-key
   caps without a Blt callback alike (the driver keeps a never-called
-  `DdBlt` for that); a flip on NT swaps the two surfaces' roles, not
-  their memory (never re-register the chain in `DdFlip`) — doc 15.
+  `DdBlt` for that, and never claim `DDCAPS_BLT` without a real blitter:
+  a declined `DdBlt` is E_NOTIMPL to the app on XP, not a HEL fallback); a
+  flip on NT swaps the two surfaces' roles, not their memory (never
+  re-register the chain in `DdFlip`); GDI through `GetDC` writes VRAM with
+  no driver callback (the executor's target shadow catches it); the
+  hardware cursor is register set v4 (the guest's shape becomes the
+  player's window cursor; a v3 driver refuses the device: reinstall from
+  the ISO) — doc 15.
 - **A game that runs far too fast is a missing frame limiter, not a clock
   bug**: titles of the era pace themselves by the DirectDraw flip chain, so
   `Flip` must block until the flip is scanned out (doc 15, "The flip chain's

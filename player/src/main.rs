@@ -25,7 +25,7 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{Cursor, CursorGrabMode, CustomCursor, Window, WindowId};
 
 struct Gpu {
     window: Arc<Window>,
@@ -502,6 +502,28 @@ struct App {
     qemu_thread: Option<std::thread::JoinHandle<i32>>,
     /// Wakes the event loop from the QEMU thread when a frame is published.
     proxy: Option<EventLoopProxy<()>>,
+    /// The guest's hardware cursor (the d3dpt-vga driver, doc 15) as a host
+    /// cursor: shown with the guest's shape while the pointer is over the
+    /// image and the guest shows it, hidden when the guest hides it. With
+    /// the USB tablet the host pointer is where the guest cursor is, so
+    /// nothing is composited. A guest without one (a software pointer in
+    /// the framebuffer) keeps the host cursor hidden over the image.
+    guest_cursor: Option<CustomCursor>,
+    guest_cursor_seq: u64,
+    /// The pointer is over the image (CursorMoved inside the viewport).
+    pointer_inside: bool,
+    /// What the window's cursor was last set to (wakes come every frame).
+    cursor_applied: HostCursor,
+}
+
+/// The host window's cursor state the player last applied.
+#[derive(Default, PartialEq, Clone, Copy)]
+enum HostCursor {
+    #[default]
+    Default,
+    Hidden,
+    /// the guest's shape of this sequence number
+    Guest(u64),
 }
 
 /// Pull the newest guest frame into the GPU: an imported dma-buf slot is
@@ -602,6 +624,64 @@ impl App {
     }
 
     /// Window pixel → guest framebuffer coordinates (None outside the image).
+    /// Pick up a new guest cursor shape (a define or a clear) and turn it
+    /// into a host cursor; needs the event loop, so it runs on wakes.
+    fn update_guest_cursor(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(Source::Qemu { display, .. }) = &self.source else { return };
+        let Some((seq, shape)) = display.cursor_if_newer(self.guest_cursor_seq) else { return };
+        self.guest_cursor_seq = seq;
+        self.guest_cursor = shape.and_then(|c| {
+            let mut rgba = Vec::with_capacity(c.argb.len() * 4);
+            for px in &c.argb {
+                rgba.extend_from_slice(&[(px >> 16) as u8, (px >> 8) as u8, *px as u8, (px >> 24) as u8]);
+            }
+            match CustomCursor::from_rgba(rgba, c.width as u16, c.height as u16, c.hot_x as u16, c.hot_y as u16) {
+                Ok(src) => Some(event_loop.create_custom_cursor(src)),
+                Err(e) => {
+                    eprintln!("[cursor] guest shape {}x{} refused: {e}", c.width, c.height);
+                    None
+                }
+            }
+        });
+        self.apply_cursor();
+    }
+
+    /// The host cursor over the window: the guest's shape while over the
+    /// image (and visible per the guest), hidden over the image when the
+    /// guest has no hardware cursor, the default elsewhere.
+    fn apply_cursor(&mut self) {
+        let Some(gpu) = &self.gpu else { return };
+        if self.grabbed {
+            return;
+        }
+        let visible = match &self.source {
+            Some(Source::Qemu { display, .. }) => display.cursor_visible(),
+            _ => None,
+        };
+        let want = if !self.pointer_inside {
+            HostCursor::Default
+        } else if let (Some(_), Some(true)) = (&self.guest_cursor, visible) {
+            HostCursor::Guest(self.guest_cursor_seq)
+        } else {
+            HostCursor::Hidden
+        };
+        if want == self.cursor_applied {
+            return;
+        }
+        match &want {
+            HostCursor::Default => {
+                gpu.window.set_cursor(Cursor::default());
+                gpu.window.set_cursor_visible(true);
+            }
+            HostCursor::Guest(_) => {
+                gpu.window.set_cursor(Cursor::Custom(self.guest_cursor.clone().unwrap()));
+                gpu.window.set_cursor_visible(true);
+            }
+            HostCursor::Hidden => gpu.window.set_cursor_visible(false),
+        }
+        self.cursor_applied = want;
+    }
+
     fn to_guest(&self, px: f64, py: f64) -> Option<(i32, i32, i32, i32)> {
         let gpu = self.gpu.as_ref()?;
         let (_, _, tw, th) = gpu.current()?;
@@ -718,9 +798,11 @@ impl ApplicationHandler for App {
                             self.set_grab(false);
                         }
                         let inside = self.to_guest(position.x, position.y);
-                        if let Some(gpu) = &self.gpu {
-                            // the guest draws its own pointer: hide ours over the image
-                            gpu.window.set_cursor_visible(inside.is_none());
+                        // over the image the host cursor is the guest's hardware
+                        // cursor, or hidden while the guest paints its own
+                        if self.pointer_inside != inside.is_some() {
+                            self.pointer_inside = inside.is_some();
+                            self.apply_cursor();
                         }
                         if let Some((x, y, w, h)) = inside {
                             vm.mouse_abs(x, y, w, h);
@@ -730,11 +812,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
-                if let Some(gpu) = &self.gpu {
-                    if !self.grabbed {
-                        gpu.window.set_cursor_visible(true);
-                    }
-                }
+                self.pointer_inside = false;
+                self.apply_cursor();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
@@ -820,6 +899,12 @@ impl ApplicationHandler for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _ev: ()) {
+        // the guest's cursor shape or visibility may have changed (a wake
+        // comes for both; the shape needs the event loop to become a cursor)
+        self.update_guest_cursor(event_loop);
+        if self.pointer_inside {
+            self.apply_cursor();
+        }
         // dma-buf ring slots are imported here, not on redraw: an occluded
         // window gets no usable swapchain image but must still keep up
         if let (Some(gpu), Some(Source::Qemu { display, .. })) = (self.gpu.as_mut(), &self.source) {
