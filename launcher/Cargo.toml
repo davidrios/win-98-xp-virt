@@ -9,5 +9,14 @@ description = "Companion launcher: machine library, guided creation, disc shelf 
 directories = "6.0.0"
 eframe = "0.36.1"
 egui = "0.36.1"
+# Native system file dialog for the wizard's path fields — NSOpenPanel on
+# macOS, the Win32 IFileDialog on Windows, the XDG desktop portal (over
+# D-Bus) on Linux/BSD. `xdg-portal` (not the default `gtk3`) selects the
+# portal backend so the Linux build needs no GTK; `default-features =
+# false` also drops rfd's `wayland` feature (the dialog isn't parented to
+# our window on Wayland, but is still a normal top-level). Needs a
+# running xdg-desktop-portal service at runtime, standard on modern
+# desktops.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.5"

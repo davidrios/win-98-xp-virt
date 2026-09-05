@@ -181,6 +181,37 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   human should click through it once. The advanced-TOML branch reuses
   `toml::from_str::<Machine>`, already exercised elsewhere (`scan()`,
   `Machine::load`), so it wasn't re-tested in isolation.
+- **Native file picker for the wizard's path fields** (user request,
+  2026-09-04): egui draws pixels only, no OS dialogs, so
+  `launcher/src/filepicker.rs` pairs a text field with a "Browse…"
+  button that pops the real system dialog via `rfd` — NSOpenPanel /
+  Win32 `IFileDialog` / the Linux XDG desktop portal (over D-Bus).
+  `rfd = { default-features = false, features = ["xdg-portal"] }` keeps
+  the Linux build off GTK entirely (mirrors how the user's own
+  `~/work/nxvim` `bemtvi-gui` crate uses it — same crate, same
+  rationale, checked directly before adding it here). `wizard.rs`'s
+  `disk_path` (existing-disk case) and `install_media` fields now go
+  through `filepicker::path_field` with extension filters (`qcow2/img/
+  raw` for disks, `iso/cue/ccd/mds` for discs, matching the M5 CD-ROM
+  formats); typing a path directly still works, the button is a
+  convenience. The dialog call blocks the calling thread, which is fine
+  here — this launcher has no async runtime for it to stall (unlike a
+  tokio-based GUI, where the same blocking portal call has to stay off
+  the runtime's own threads).
+
+  Verified for real, not just compiled: `filepicker::pick_file_headless`
+  (the same call `path_field`'s button makes) wired to a `--pick-file`
+  debug verb, run standalone — a genuine GTK-backed portal file dialog
+  opened over the Wayland session (`xdg-desktop-portal-gtk` was already
+  running), screenshotted with `grim` showing a real directory listing.
+  Couldn't cancel it via `wtype -k Escape` (the key didn't reach the
+  dialog's surface — a Wayland virtual-keyboard-vs-focus quirk, not a
+  bug in this code) so the process was killed directly; harmless, it's
+  just a file-picker window with no state to corrupt. This proves the
+  portal wiring itself works end to end; clicking through the wizard's
+  "Browse…" button specifically is still unverified for the same
+  click-automation reason as the rest of the wizard — one more thing for
+  the human click-through pass.
 
 ## Next steps, in order
 

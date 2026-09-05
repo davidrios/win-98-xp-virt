@@ -4,9 +4,13 @@
 //! a QEMU command line, per doc 07.
 
 use crate::bundle::{Family, Machine};
+use crate::filepicker;
 use crate::library;
 use crate::player;
 use std::path::{Path, PathBuf};
+
+const DISK_FILTER: filepicker::Filter = ("Disk images", &["qcow2", "img", "raw"]);
+const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
 
 pub struct Wizard {
     pub open: bool,
@@ -82,20 +86,14 @@ impl Wizard {
                 ui.separator();
                 ui.checkbox(&mut self.existing_disk, "Use an existing disk image");
                 if self.existing_disk {
-                    ui.horizontal(|ui| {
-                        ui.label("Disk path");
-                        ui.text_edit_singleline(&mut self.disk_path);
-                    });
+                    filepicker::path_field(ui, "Disk path", &mut self.disk_path, Some(DISK_FILTER));
                 } else {
                     ui.horizontal(|ui| {
                         ui.label("New disk size (GB)");
                         ui.add(egui::DragValue::new(&mut self.disk_size_gb).range(1..=128));
                     });
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Install media (optional)");
-                    ui.text_edit_singleline(&mut self.install_media);
-                });
+                filepicker::path_field(ui, "Install media (optional)", &mut self.install_media, Some(DISC_FILTER));
                 ui.separator();
                 ui.checkbox(&mut self.advanced, "Advanced: edit machine.toml directly");
                 if self.advanced {

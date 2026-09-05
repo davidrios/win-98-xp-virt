@@ -4,6 +4,7 @@
 //! over the `machine.toml` bundle format (`bundle.rs`); no thumbnails yet.
 
 mod bundle;
+mod filepicker;
 mod library;
 mod player;
 mod wizard;
@@ -103,6 +104,17 @@ fn main() -> eframe::Result {
             let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
             let child = player::spawn(&machine).expect("spawn player");
             println!("pid {}", child.id());
+            return Ok(());
+        }
+        Some("--pick-file") => {
+            // Exercises the real OS file dialog (rfd) headlessly — proof
+            // the portal/NSOpenPanel/IFileDialog wiring works, since this
+            // session has no GUI click automation to drive the wizard's
+            // "Browse…" button through an actual dialog.
+            match filepicker::pick_file_headless(None) {
+                Some(path) => println!("{}", path.display()),
+                None => println!("(cancelled)"),
+            }
             return Ok(());
         }
         Some("--wizard-new") => {
