@@ -220,6 +220,17 @@ static D3DFORMAT host_format(const VramSurf &s) {
     return (D3DFORMAT)s.d.format;
 }
 static bool needs_expand(const VramSurf &s) { return host_format(s) != (D3DFORMAT)s.d.format || s.ckey; }
+/* a format with an alpha channel of its own (the DX3 MODULATE blend reads the alpha from such a texture, else from the diffuse) */
+static bool fmt_has_alpha(uint32_t f) {
+    switch (f) {
+    case D3DFMT_A8R8G8B8: case D3DFMT_A1R5G5B5: case D3DFMT_A4R4G4B4: case D3DFMT_A8: case D3DFMT_A8R3G3B2:
+    case D3DFMT_A2B10G10R10: case D3DFMT_A8B8G8R8: case D3DFMT_A2R10G10B10: case D3DFMT_A8P8: case D3DFMT_A8L8: case D3DFMT_A4L4:
+    case D3DFMT_DXT2: case D3DFMT_DXT3: case D3DFMT_DXT4: case D3DFMT_DXT5:
+        return true;
+    default:
+        return false;
+    }
+}
 
 /* one texel of the VRAM formats the expansion handles, as A8R8G8B8 (raw = its VRAM value) */
 static uint32_t texel_argb(uint32_t f, uint32_t raw, const Palette *pal, bool pal_alpha) {
@@ -1062,11 +1073,66 @@ struct Dp2 {
         }
     }
 
+    /* The DirectX 3 / 5 texture states, which only a DX3 execute buffer
+     * still delivers as render states (the DX6+ runtimes turn them into
+     * stage states before the driver sees them; doc 15 "Execute buffers"):
+     * TEXTUREHANDLE (1) binds stage 0, TEXTUREMAPBLEND (21) picks stage 0's
+     * colour / alpha ops the way the old fixed function did — no texture:
+     * the diffuse colour; MODULATE: texture x diffuse, the alpha from the
+     * texture when its format has one (the colour-key expansion counts:
+     * apply_ckey overrides it for a keyed texture anyway), else from the
+     * diffuse. */
+    static bool legacy_texture_state(uint32_t s) { return s == 1 || s == 3 || s == 5 || s == 6 || s == 17 || s == 18 || s == 21; }
+    void apply_mapblend() {
+        uint32_t blend = d.rs_set[21] ? d.rs_val[21] : 2 /* MODULATE */;
+        VramSurf *t = d.stage_tex[0] ? surf(x, d.stage_tex[0]) : nullptr;
+        bool tex_alpha = t && (fmt_has_alpha(t->d.format) || t->ckey || needs_expand(*t));
+        uint32_t cop = D3DTOP_SELECTARG2, aop = D3DTOP_SELECTARG2;              /* no texture: diffuse only */
+        if (t) {
+            switch (blend) {
+            case 1: case 5: case 7: cop = D3DTOP_SELECTARG1; aop = D3DTOP_SELECTARG1; break;      /* DECAL, DECALMASK, COPY */
+            case 3: cop = D3DTOP_BLENDTEXTUREALPHA; aop = D3DTOP_SELECTARG2; break;              /* DECALALPHA */
+            case 4: cop = D3DTOP_MODULATE; aop = D3DTOP_MODULATE; break;                           /* MODULATEALPHA */
+            case 8: cop = D3DTOP_ADD; aop = D3DTOP_SELECTARG2; break;                              /* ADD */
+            default: cop = D3DTOP_MODULATE; aop = tex_alpha ? D3DTOP_SELECTARG1 : D3DTOP_SELECTARG2; break;   /* MODULATE, MODULATEMASK */
+            }
+        }
+        tr("map blend %u with%s texture: colour op %u alpha op %u", blend, t ? "" : "out", cop, aop);
+        stage_state(0, 2, D3DTA_TEXTURE); stage_state(0, 3, D3DTA_DIFFUSE);
+        stage_state(0, 5, D3DTA_TEXTURE); stage_state(0, 6, D3DTA_DIFFUSE);
+        stage_state(0, 1, cop); stage_state(0, 4, aop);
+    }
+    void legacy_render_state(uint32_t s, uint32_t v) {
+        switch (s) {
+        case 1:                                                             /* TEXTUREHANDLE: the surface handle */
+            stage_state(0, 0, v);
+            apply_mapblend();
+            break;
+        case 3: x.dev->SetSamplerState(0, D3DSAMP_ADDRESSU, v); x.dev->SetSamplerState(0, D3DSAMP_ADDRESSV, v); break;   /* TEXTUREADDRESS */
+        case 5: case 6: {                                                   /* WRAPU / WRAPV: WRAP0 bits */
+            uint32_t w0 = ((d.rs_set[5] && d.rs_val[5]) ? 1u : 0u) | ((d.rs_set[6] && d.rs_val[6]) ? 2u : 0u);
+            x.dev->SetRenderState(D3DRS_WRAP0, w0);
+            break;
+        }
+        case 17: x.dev->SetSamplerState(0, D3DSAMP_MAGFILTER, v == 1 ? D3DTEXF_POINT : D3DTEXF_LINEAR); break;          /* TEXTUREMAG */
+        case 18: {                                                          /* TEXTUREMIN: NEAREST, LINEAR, MIPNEAREST, MIPLINEAR, LINEARMIPNEAREST, LINEARMIPLINEAR */
+            static const D3DTEXTUREFILTERTYPE minf[7] = { D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_LINEAR, D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_LINEAR, D3DTEXF_LINEAR };
+            static const D3DTEXTUREFILTERTYPE mipf[7] = { D3DTEXF_NONE, D3DTEXF_NONE, D3DTEXF_NONE, D3DTEXF_POINT, D3DTEXF_LINEAR, D3DTEXF_POINT, D3DTEXF_LINEAR };
+            uint32_t i = v < 7 ? v : 2;
+            x.dev->SetSamplerState(0, D3DSAMP_MINFILTER, minf[i]);
+            x.dev->SetSamplerState(0, D3DSAMP_MIPFILTER, mipf[i]);
+            break;
+        }
+        case 21: apply_mapblend(); break;                                   /* TEXTUREMAPBLEND */
+        }
+    }
+
     void render_state(uint32_t s, uint32_t v) {
-        tr("rs %u = 0x%x%s", s, v, rs_passthrough(s) || s == 41 ? "" : " (dropped)");
+        tr("rs %u = 0x%x%s", s, v, rs_passthrough(s) || s == 41 || legacy_texture_state(s) ? "" : " (dropped)");
         if (s < 256) { d.rs_val[s] = v; d.rs_set[s] = 1; }
         if (s == 28 && d.nofog) v = 0;
         if (s == 41) { d.ckey_rs = v; apply_ckey(); return; }              /* COLORKEYENABLE */
+        if (legacy_texture_state(s)) { legacy_render_state(s, v); return; }
         if (rs_passthrough(s)) {
             x.dev->SetRenderState((D3DRENDERSTATETYPE)s, v);
             /* the app's alpha test states: re-forced for the key, or followed */

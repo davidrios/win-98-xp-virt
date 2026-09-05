@@ -327,17 +327,17 @@ title asks for what a Voodoo of the day had. Two gaps stand out in
   HAL that does not claim it.
 
 Both landed the same night (the next section, protocol v8): the HAL offers
-palettized textures and colour keying now. Whether Moto Racer takes the
-HAL with them is the outstanding check (the user's box). The diagnostic
-stays: `DdCanCreateSurface` prints the first eight formats it refuses —
+palettized textures and colour keying now, and Moto Racer takes it with
+them (2026-09-05, headless) — and then drew nothing through it, because it
+is a DirectX 3 title: "Execute buffers — the DirectX 3 path" below. The
+diagnostic stays: `DdCanCreateSurface` prints the first eight formats it refuses —
 
     d3dpt-vga: guest: d3dptdisp: refused pixel format, flags 0x00000020 fourcc 0x00000000 bits 0x00000008 …
 
 `flags` bit 5 (`DDPF_PALETTEINDEXED8`) with 8 bits is the palettized-texture
 case. Read it together with the context line: `d3dptdisp: d3d context 1 …`
 means the game did take the HAL, and no context line at all means it never
-got that far. Neither has been seen on a Moto Racer run yet — that log is
-the next thing to collect.
+got that far.
 
 ## Palettized textures and colour keying (2026-09-05, protocol v8)
 
@@ -452,6 +452,134 @@ Both gaps above are closed. What a 1997 title now gets from the HAL:
   `COLORKEYENABLE` on and off, every draw read back from the back buffer;
   `tools/xp-driver-test.sh <image> cktest` runs it and greps `cktest.log`
   for "0 failed".
+
+## Execute buffers — the DirectX 3 path (2026-09-05)
+
+Moto Racer (1997) takes the HAL with protocol v8's caps: the log shows
+`d3dptdisp: d3d context 1 rt 2`, 256×256 textures with `setcolorkey`
+lines, palettes through `SETPALETTE` / `UPDATEPALETTE`, and the flip
+chain at 60/s — but the title screen, the menus and the race showed only
+what the game draws itself (the 2D panels, the sky panorama, the HUD): the
+executor counted **0 draws** over minutes of play, and the 160 DP2 calls it
+did make in that time were state flushes (`tools/xp-motoracer.sh` boots
+the disc, an Alcohol MDS/MDF through the cdimage driver; the game insists
+on a 16 bpp desktop — `SETMODE 800 600 16` first).
+
+The reason is the API generation. Moto Racer ships with DirectX 3 and
+draws through **`IDirect3DDevice::Execute`**: execute buffers filled with
+`D3DOP_*` instructions (`STATERENDER`, `PROCESSVERTICES`, `TRIANGLE`,
+`EXIT`), textures bound by `D3DRENDERSTATE_TEXTUREHANDLE`, the viewport
+cleared through a background material. XP's `d3dim.dll` (the DX3–6
+runtime; `d3dim700.dll` is only `IDirect3D7`) emulates all that on a
+DrawPrimitives2 driver, and two things in our HAL broke it. Both were
+found with a new probe, `DRIVER\EBTEST.EXE`
+(`guest-tools/src/d3dptvid/ebtest.c`), which does exactly what such a
+title does — `IDirect3D` v1 by `QueryInterface` on the DirectDraw object,
+the HAL device by `QueryInterface(IID_IDirect3DHALDevice)` on the back
+buffer, `CreateViewport` / `SetViewport`, a material as the background,
+`CreateExecuteBuffer` + `Lock` + `SetExecuteData`, `Execute`, textures
+loaded with `IDirect3DTexture::Load` from a system-memory surface into an
+`ALLOCONLOAD` video one and bound by handle — and logs every HRESULT:
+
+- **Every `Execute` returned `E_OUTOFMEMORY` (0x8007000E), before a single
+  token reached the driver.** `-rgb` runs the same program on the
+  runtime's RGB software device, where it draws: the probe was right and
+  the HAL path was wrong. The kernel log showed the runtime destroying its
+  64 KiB DP2 vertex buffer inside the failing `Execute` and never getting a
+  new one (the later, state-only DP2 calls came with a stale
+  `lpDDVertex` that dxg resolved to a texture). The disassembly of
+  `d3dim.dll` (XP SP3, base 0x6de70000) gave the mechanism: the Execute
+  core (`0x6de7dc06`) first sizes its TL vertex buffer
+  (`0x6de7dbb9`) as `max(D3DEXECUTEDATA.dwVertexCount clamped to 4096,
+  D3DDEVICEDESC.dwMaxVertexCount) × 32` bytes, grows the buffer to that
+  plus 0x400 (`0x6de73450`: release the old one, create a new
+  `EXECUTEBUFFER | SYSTEMMEMORY` surface in user mode), and the vertex
+  buffer constructor (`0x6de79a03`) refuses more than 0xffff vertices —
+  and every failure of that creation is reported as `E_OUTOFMEMORY`
+  (`0x6de73527`). Our `hwCaps.dwMaxVertexCount` was 65535: 65535 × 32 +
+  0x400 bytes is 65567 vertices, one page over the limit, so the legacy
+  path could never draw. **The cap is 4096 now** (the runtime's own clamp
+  on what one Execute processes; `dwMaxBufferSize` stays 0 = unlimited);
+  `ddflags=0x40000` puts 65535 back as the repro. `dwMaxVertexCount` is
+  not consulted by the DX5+ interfaces, which is why D3D7TEST, FIFA and
+  everything else never noticed. Withdrawing T&L (`0x1000`), the DX8 face
+  (`0x2000`), adding the `*VIDEOMEMORY` device caps or a non-zero
+  `dwMaxBufferSize` all changed nothing (all tried before the
+  disassembly).
+- **The stream then carried an unknown token 9 — and the vertices were
+  zero.** The legacy path is a *pass-through*, not a translation: the
+  Execute core walks the execute buffer's instructions and, in the
+  UNCLIPPED mode, hands every run of driver instructions to
+  `DrawPrimitives2` **as they are**, with `dwFlags` =
+  `D3DHALDP2_EXECUTEBUFFER` (0x2), `lpDDCommands` = the app's execute
+  buffer surface, `dwCommandOffset` = the current instruction, and
+  `lpDDVertex` = the runtime's TL vertex buffer (`dwVertexLength` its
+  whole capacity). The `D3DOP_*` opcodes share the DP2 numbering where
+  the payloads match (`POINT` / `LINE` / `TRIANGLE` / `STATERENDER` are
+  1 / 2 / 3 / 8 = `POINTS` / `INDEXEDLINELIST` / the legacy 8-byte
+  `INDEXEDTRIANGLELIST` / `RENDERSTATE` — which is why the DP2
+  enumeration skips 4–7 and 9–14), and the driver must consume those,
+  plus `SPAN` (13, skipped) and `EXIT` (11, the end). Everything else is
+  the runtime's — `PROCESSVERTICES` (9) first of all, also the matrix /
+  light opcodes 4–7, `TEXTURELOAD`, `BRANCHFORWARD`, `SETSTATUS` — and
+  the protocol for it is the *bounce*: the driver ends the call before
+  such an instruction with `D3DERR_COMMAND_UNPARSED` (0x88760BB8) and
+  the instruction's offset in `dwErrorOffset` (from the buffer's start,
+  like `dwCommandOffset`); the runtime catches its state mirror up over
+  what the driver consumed (`0x6de7d5e8`), executes the instruction
+  itself (a `PROCESSVERTICES` COPY / TRANSFORM fills the TL buffer,
+  `0x6de7da50`) and calls again from the next one. Our first attempt
+  *skipped* opcode 9 instead: `Execute` then succeeded and the
+  triangles arrived — with an all-zero TL buffer, because nobody had
+  copied the vertices (the runtime's `D3DParseUnknownCommand`, which we
+  now store — its `lpvData` *is* the function, expected size 0 — answers
+  `D3DERR_COMMAND_UNPARSED` for these opcodes too; it is not the
+  mechanism). `walk` does the bounce now (`d3dptdisp: execute buffer:
+  opcode 9 x1 bounced to the runtime at 0x34`, the first eight); a call
+  that starts on a runtime instruction bounces without a host round trip.
+  No caps steer any of this (T&L, transform caps, `bClipping` are not
+  consulted), and a CLIPPED `Execute` never reaches the pass-through:
+  the runtime transforms and emits DP2 draws itself, which is why the
+  probe's CLIPPED case worked from the first run.
+- **The DirectX 5 texture render states.** In the pass-through the
+  render states come as the app wrote them, and a DX3 title binds its
+  texture with `D3DRENDERSTATE_TEXTUREHANDLE` (1, the surface handle
+  `IDirect3DTexture::GetHandle` returned — dxg's, i.e. ours) and picks
+  its blend with `TEXTUREMAPBLEND` (21); the DX6+ runtimes turn these into
+  stage states before the driver sees them, so the executor had always
+  dropped them. It maps them now (`legacy_render_state`): 1 binds stage 0
+  and applies the blend, 21 sets stage 0's colour / alpha ops the way
+  the old fixed function did (no texture: the diffuse alone; `DECAL` /
+  `COPY`: the texels; `MODULATE`: texels × diffuse with the alpha from the
+  texture when its format has one — the colour-key expansion counts,
+  and `apply_ckey` still overrides a keyed texture — else from the
+  diffuse; `DECALALPHA`, `MODULATEALPHA`, `ADD`), `TEXTUREADDRESS` (3)
+  and `TEXTUREMAG` / `TEXTUREMIN` (17 / 18, the six DX5 filters onto
+  MIN / MIP) go to stage 0's sampler, `WRAPU` / `WRAPV` (5 / 6) to
+  `WRAP0`. `tools/d3dpt-dp2-test.cpp` covers the legacy triangle list
+  with `TEXTUREHANDLE` + `MODULATE`, `DECAL`, and handle 0.
+- **Result:** `EBTEST` passes its five cases through XP's own
+  `d3dim.dll` on the HAL (`xp-driver-test.sh <image> ebtest`: the Clear,
+  the flat quad, the textured quad, the keyed quad with the key cut out,
+  the CLIPPED transformed quad — 0 failed on `winxp-m7g`, 2026-09-05),
+  and the RGB control still draws. Per `Execute` the runtime makes one
+  DP2 call per run of driver instructions plus one bounce per runtime
+  instruction, each a synchronous doorbell round trip, and the TL
+  buffer's 2048 × 32 bytes ride along with every call that draws — a
+  DX3 title with many small execute buffers pays for that; batching is a
+  follow-up if one shows it.
+
+**Moto Racer plays on the HAL** (2026-09-05, `tools/xp-motoracer.sh play`,
+`build/xp-driver-test/moto4/`): the name screen's 3D letters, the showroom
+bike under its spotlights, and the Speed Bay race — track, kerbs, the
+bike and rider, the palms and buildings cut out by colour key, the HUD —
+at 120 frames/s under KVM (`ddi: 120.0 frames/s (600 readbacks, 2400 dp2
+calls, 106573 draws in 5.0 s)`: four DP2 calls and ~175 draws per frame,
+one triangle per `D3DOP_TRIANGLE` entry the executor turns into one
+`DrawIndexedPrimitiveUP` each — batching a run of them is the obvious
+follow-up). Not played by hand yet; the showroom's 2D panels were missing
+in one screendump (timing, or a guest write to the back buffer between
+the host's draw and the flip — to be watched).
 
 ## 8 bpp palettized modes (2026-09-04, register set v3)
 

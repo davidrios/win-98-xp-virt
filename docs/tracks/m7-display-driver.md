@@ -12,7 +12,7 @@ picture and the track rules, then this file, then doc 15.
   the shared executor loader `d3dpt/hw/d3dpt_exec_load.[ch]`.
 - Guest driver: `guest-tools/src/d3dptvid/` (miniport `d3dptvid.c`, display
   driver `d3dptdisp.c`, `kcrt.c`, INF, `drvinst.c`, `setmode.c`, `ddtest.c`,
-  `d3d7test.c`, `ditest.c`, `dxttest.c`, vendored DDK headers `ddk/` incl. the self-contained
+  `d3d7test.c`, `ditest.c`, `dxttest.c`, `shtest.c`, `cktest.c`, `ebtest.c`, vendored DDK headers `ddk/` incl. the self-contained
   `d3dnthal.h`), `guest-tools/build-driver.sh` (also run by
   `build-wrappers.sh`, stages `DRIVER\` on the ISO).
 - Executor, M7c's half: `d3dpt/exec/d3dpt_exec_ddi.cpp` (the display
@@ -20,7 +20,7 @@ picture and the track rules, then this file, then doc 15.
   readback) and `d3dpt/exec/d3dpt_exec_int.h` (state shared with the d3d9
   half); `tools/d3dpt-dp2-test.cpp`.
 - Tests: `tools/xp-driver-test.sh`, `tools/xp-fifa-match.sh` + `tools/xp-fifa2000.bat`,
-  `tools/xp-diablo.sh`, `tools/qmpc.py` key map additions.
+  `tools/xp-diablo.sh`, `tools/xp-motoracer.sh`, `tools/qmpc.py` key map additions.
 - Docs: `docs/15-guest-display-driver.md`, this file, the M7 row of the
   state table and the M7 line of "Next steps" in `docs/00-status.md`.
 - Shared with the M4 track (rebase first, edit minimally, say so in the
@@ -163,14 +163,38 @@ picture and the track rules, then this file, then doc 15.
   pacing. Not verified on a real title yet: **Moto Racer itself is the
   outstanding check** (the user's box, `~/vms/winxp-m7` after a driver
   reinstall).
-- **Moto Racer 1997 runs its software rasterizer, not the HAL (2026-09-05,
-  open).** The user's report; not yet diagnosed on a log. The two caps a
-  1997 title wants and this HAL does not offer are palettized (P8) textures
-  and colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`) — doc 15, "When a title
-  falls back to its software renderer". `DdCanCreateSurface` now prints the
-  first eight pixel formats it refuses, so one run with the log kept says
-  which. That log is the next step here, and it decides whether the next
-  piece of work is P8 textures or colour keying.
+- **Moto Racer 1997 takes the HAL with protocol v8 — and is a DirectX 3
+  title (2026-09-05, `tools/xp-motoracer.sh`).** Headless with its
+  Alcohol MDS/MDF as D: (the cdimage driver) on `winxp-m7g`: the game
+  wants a 16 bpp desktop (`SETMODE 800 600 16` first), creates a Direct3D
+  context, 256×256 textures with colour keys and palettes, flips at 60/s —
+  and drew nothing through it: 0 draws in minutes, the menus' bikes and the
+  race's track missing while the game's own 2D (panels, panorama, HUD) is
+  there. It draws through `IDirect3DDevice::Execute` (execute buffers,
+  texture handles), which XP's `d3dim.dll` emulates on our DP2 driver, and
+  that path had never been exercised. `DRIVER\EBTEST.EXE`
+  (`guest-tools/src/d3dptvid/ebtest.c`, `xp-driver-test.sh <image> ebtest`,
+  `-rgb` = the same on the runtime's RGB device as the control) reproduces
+  it without the game; doc 15 "Execute buffers — the DirectX 3 path" has
+  the findings: (1) `dwMaxVertexCount` 65535 made every `Execute` fail with
+  `E_OUTOFMEMORY` before any token (the runtime sizes its TL vertex buffer
+  from the cap plus a page and refuses > 65535 vertices — found in the
+  d3dim.dll disassembly; the cap is 4096 now, `ddflags=0x40000` is the
+  repro); (2) the legacy path is a pass-through: an UNCLIPPED `Execute`
+  hands the execute buffer's own instruction stream to `DrawPrimitives2`
+  (`D3DHALDP2_EXECUTEBUFFER`), the driver consumes POINT / LINE /
+  TRIANGLE / STATERENDER / SPAN / EXIT and *bounces* everything else
+  (`PROCESSVERTICES` first of all) with `D3DERR_COMMAND_UNPARSED` +
+  `dwErrorOffset` so the runtime executes it and calls again — skipping
+  it left the TL vertex buffer empty; (3) the DX5 texture render states
+  (`TEXTUREHANDLE`, `TEXTUREMAPBLEND`, filters, address) arrive verbatim
+  on this path and the executor maps them onto stage 0 now. EBTEST passes
+  5/5 on `winxp-m7g`; `tools/d3dpt-dp2-test.cpp` covers the executor half.
+  **Moto Racer plays** (`tools/xp-motoracer.sh install|play`, `moto4/`:
+  name screen, showroom bike, the Speed Bay race with the palms keyed
+  out, 120 frames/s under KVM, ~175 draws a frame one triangle each — a
+  batching follow-up). Not played by hand yet; the user's `winxp-m7`
+  needs the driver reinstalled from the ISO.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -256,7 +280,18 @@ picture and the track rules, then this file, then doc 15.
      does not move memory"). Fixed: `DdFlip` re-registers nothing. Moto
      Racer itself is still the outstanding check (the user's box: does it
      take the HAL now, and does it look right).
-  6. Then the small things the
+  6. **Done (2026-09-05 afternoon): the DirectX 3 execute-buffer path.**
+     Moto Racer took the HAL with v8 and drew nothing; `EBTEST` and the
+     `d3dim.dll` disassembly found `dwMaxVertexCount` (65535 → every
+     `Execute` E_OUTOFMEMORY; 2048 now) and the pass-through protocol (the
+     raw `D3DOP_` stream under `D3DHALDP2_EXECUTEBUFFER`: consume 1 / 2 /
+     3 / 8 / 13 / 11, *bounce* the rest with `D3DERR_COMMAND_UNPARSED` +
+     `dwErrorOffset`), plus the DX5 texture render states mapped in the
+     executor. EBTEST 5/5, Moto Racer races (doc 15 "Execute buffers — the
+     DirectX 3 path"). Open on it: batching the one-triangle draws (~175
+     a frame, one `DrawIndexedPrimitiveUP` each), the showroom's 2D
+     panels seen missing once, a hand-played check.
+  7. Then the small things the
      runs showed: D3DGAME8's frame still differs from the native oracle
      along the checker texture's texel edges only (2026-09-05 night:
      8.7 k pixels beyond tolerance 8, channel difference ≤ 43, the
@@ -329,7 +364,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   Reinstall the driver (`install`) after every driver rebuild: XP loads the
   copy in `system32`, not the ISO's.
 - Bisection without reinstall: `-device d3dpt-vga,ddflags=N` (doc 15);
-  `0x20` = Direct3D off. The QEMU log's `d3dpt-vga: ddi: …` lines are the
+  `0x20` = Direct3D off, `0x1000` no T&L, `0x2000` no DX8 face, `0x10000`
+  no colour keying, `0x40000` `dwMaxVertexCount` 65535 again (the DX3
+  E_OUTOFMEMORY repro), `0x80000` never call the runtime's
+  `D3DParseUnknownCommand`. The QEMU log's `d3dpt-vga: ddi: …` lines are the
   executor's (unsupported states / tokens, once each), `batch N: error` a
   refused record, `d3dptdisp: dp2 0x…` a DrawPrimitives2 the host failed.
 
@@ -344,9 +382,11 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    a DX8 game with vs 1.1 / ps 1.1 paths). Moto Racer 1997 ran its
    software rasterizer (main, 2026-09-05) for want of palettized (P8)
    textures and colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`); both
-   landed the same night (protocol v8) — **run Moto Racer on it** (the
-   user's box, or a headless run with its disc: does it take the HAL,
-   `d3dptdisp: d3d context` in the log, and are the sprites cut out).
+   landed the same night (protocol v8), and the DirectX 3 execute-buffer
+   path the next afternoon — **Moto Racer races on the HAL headless**
+   (`tools/xp-motoracer.sh play`); the user's box needs the driver
+   reinstalled from the ISO, then a hand-played check (the showroom's 2D
+   panels, the sound of the CD tracks through the cdimage drive).
    Then what the next title asks
    for first among: **more than one stream** (the driver copies stream 0
    only; a multi-stream declaration's draws are skipped with a log line —

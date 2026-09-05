@@ -14,6 +14,8 @@
 #                                                       # every draw read back in the guest; PASS = "0 failed" in shtest.log
 #   tools/xp-driver-test.sh <image.qcow2> cktest       # CKTEST: palettized textures + colour keying through the DX7 HAL,
 #                                                       # every draw read back in the guest; PASS = "0 failed" in cktest.log
+#   tools/xp-driver-test.sh <image.qcow2> ebtest       # EBTEST: the DirectX 3 path (IDirect3D v1, execute buffers, texture
+#                                                       # handles, viewport Clear) on the HAL; PASS = "0 failed" in ebtest.log
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
 #   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
@@ -31,7 +33,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|shtest|cktest|cmd|bat}"; shift 2
+IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|shtest|cktest|ebtest|cmd|bat}"; shift 2
 OUT="${OUT:-$ROOT/build/xp-driver-test}"; mkdir -p "$OUT"
 ISO="$ROOT/guest-tools/out/d3dpt-driver.iso"
 [ -f "$ISO" ] || { echo "no $ISO: run guest-tools/build-driver.sh"; exit 1; }
@@ -148,6 +150,14 @@ case "$MODE" in
     pull cktest.log
     for n in 1 2 3 4 5 6; do mcopy -n -i "$SCRATCH@@1048576" "::/ck$n.bmp" "$OUT/ck$n.bmp" 2>/dev/null || true; done
     if grep -q 'cktest: [1-9][0-9]* cases, 0 failed' "$OUT/cktest.log" 2>/dev/null; then echo "-- cktest: PASS"; else echo "-- cktest: FAIL (see $OUT/cktest.log and the device log)"; fi ;;
+  ebtest)
+    run "cd /d %TEMP% & D:\\DRIVER\\EBTEST.EXE ${*:-} & copy ebtest.log E:\\ & copy eb*.bmp E:\\"    # extra args: e.g. -rgb, the software-device control
+    sleep 8; Q screendump "$OUT/ebtest-fullscreen.png" || true
+    sleep 17
+    finish
+    pull ebtest.log
+    for n in 1 2 3 4 5 6; do mcopy -n -i "$SCRATCH@@1048576" "::/eb$n.bmp" "$OUT/eb$n.bmp" 2>/dev/null || true; done
+    if grep -q 'ebtest: [1-9][0-9]* cases, 0 failed' "$OUT/ebtest.log" 2>/dev/null; then echo "-- ebtest: PASS"; else echo "-- ebtest: FAIL (see $OUT/ebtest.log and the device log)"; fi ;;
   cmd|bat)
     if [ "$MODE" = bat ]; then run 'E:\RUN.BAT'; else run "${1:?guest command line}"; fi
     if [ -n "${SHOTS:-}" ]; then

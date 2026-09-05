@@ -572,6 +572,43 @@ int main(int argc, char **argv) {
         CHECK(hr == 0, "SETPALETTE on an unknown surface: ignored (0x%08x)", hr);
     }
 
+    /* --- the DirectX 3 execute-buffer path (doc 15 "Execute buffers"): the
+     * legacy 8-byte INDEXEDTRIANGLELIST (v1, v2, v3, wFlags) and the DX5
+     * texture render states a DX3 title still sends, TEXTUREHANDLE (1) and
+     * TEXTUREMAPBLEND (21) first of all --- */
+    {
+        std::vector<tlv> quad(vtx.begin(), vtx.begin() + 6);
+        for (tlv &v : quad) v.diffuse = 0xffff0000u;                     /* red vertices: MODULATE with white texels keeps them red */
+        Dp2Buf e1;
+        e1.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        e1.tss(0, 16, 1); e1.tss(0, 17, 1); e1.tss(0, 18, 1);
+        e1.rs(1, H_TEX16); e1.rs(21, 2 /* MODULATE */); e1.rs(17, 1); e1.rs(18, 1);      /* the blue / white checker, no key now */
+        e1.cmd(3, 2); e1.u16(0); e1.u16(1); e1.u16(2); e1.u16(0x1f); e1.u16(3); e1.u16(4); e1.u16(5); e1.u16(0x1f);
+        hr = send_dp2(&enc, e1, quad);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x000000, 2) && near_(px(124, 84), 0xff0000, 2),
+              "DX3 TRIANGLEs with TEXTUREHANDLE + MODULATE: blue cell x red = 0x%06x, white cell x red = 0x%06x", px(104, 84), px(124, 84));
+        Dp2Buf e2;
+        e2.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        e2.rs(21, 1 /* DECAL */);
+        e2.cmd(3, 2); e2.u16(0); e2.u16(1); e2.u16(2); e2.u16(0x1f); e2.u16(3); e2.u16(4); e2.u16(5); e2.u16(0x1f);
+        hr = send_dp2(&enc, e2, quad);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x0000ff, 2) && near_(px(124, 84), 0xffffff, 2),
+              "TEXTUREMAPBLEND DECAL: the texels alone 0x%06x 0x%06x", px(104, 84), px(124, 84));
+        Dp2Buf e3;
+        e3.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        e3.rs(1, 0);                                                    /* no texture: the diffuse colour, whatever the blend */
+        e3.cmd(3, 2); e3.u16(0); e3.u16(1); e3.u16(2); e3.u16(0x1f); e3.u16(3); e3.u16(4); e3.u16(5); e3.u16(0x1f);
+        hr = send_dp2(&enc, e3, quad);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0xff0000, 2) && near_(px(124, 84), 0xff0000, 2),
+              "TEXTUREHANDLE 0: the vertex colour 0x%06x 0x%06x", px(104, 84), px(124, 84));
+        Dp2Buf e4; e4.rs(21, 2); e4.tss(0, 1, D3DTOP_MODULATE); e4.tss(0, 4, D3DTOP_SELECTARG1);   /* back to the scene's stage states */
+        hr = send_dp2(&enc, e4, quad);
+        CHECK(hr == 0, "stage states restored (0x%08x)", hr);
+    }
+
     /* --- hostile records --- */
     vram_surface(&enc, 9, VRAM_SIZE - 4096, 64, 64, 256, D3DFMT_X8R8G8B8, D3DPT_VS_TEXTURE);
     d3dpt_enc_flush(&enc);

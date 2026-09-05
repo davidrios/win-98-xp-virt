@@ -65,6 +65,8 @@
 #define DDF_NO_VSYNC           0x8000 /* flips complete instantly again (M7b): throughput runs */
 #define DDF_NO_CKEY            0x10000 /* bisection: no colour keying (caps, callbacks, the key check), no P8 textures */
 #define DDF_CKEY_NOBLTCB       0x20000 /* the repro: the colour-key caps without a Blt callback make dxg drop the HAL */
+#define DDF_EB_MAXVERT_65535   0x40000 /* the repro: dwMaxVertexCount 65535 makes every DX3 Execute fail with E_OUTOFMEMORY (doc 15) */
+#define DDF_NO_PARSEUNKNOWN_CALL 0x80000 /* bisection: never call the runtime's D3DParseUnknownCommand (legacy tokens reach the host) */
 
 #define D3D_MAX_CTX 16
 
@@ -117,6 +119,11 @@ typedef struct _PDEV {
     D3DCTX ctx[D3D_MAX_CTX];
     ULONG ctx_live;
     ULONG dp2_calls, dp2_errors, reg_lines;
+    /* the runtime's parser for the tokens a DrawPrimitives2 stream may carry
+     * that are not the driver's: the DX3 execute-buffer opcodes
+     * (D3DOP_PROCESSVERTICES and friends) on the legacy path (doc 15) */
+    HRESULT (APIENTRY *parse_unknown)(PVOID cmd, PVOID *next);
+    ULONG parse_lines;
 } PDEV, *PPDEV;
 
 static PPDEV d3d_pdev;              /* the PDEV whose Direct3D is on (the primary display) */
@@ -854,6 +861,16 @@ static DWORD APIENTRY DdCanCreateSurface(PDD_CANCREATESURFACEDATA d)
 {
     PPDEV p = (PPDEV)d->lpDD->dhpdev;
 
+    if (p->reg_lines < 4096 && d->lpDDSurfaceDesc && (d->lpDDSurfaceDesc->ddsCaps.dwCaps & DDSCAPS_EXECUTEBUFFER)) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: can create buffer, caps ", d->lpDDSurfaceDesc->ddsCaps.dwCaps);
+        dbg_hex(p, " flags ", d->lpDDSurfaceDesc->dwFlags);
+        dbg_hex(p, " width ", d->lpDDSurfaceDesc->dwWidth);
+        dbg_hex(p, " height ", d->lpDDSurfaceDesc->dwHeight);
+        dbg_hex(p, " linear ", d->lpDDSurfaceDesc->dwLinearSize);
+        dbg_hex(p, " different pf ", d->bIsDifferentPixelFormat);
+        dbg_puts(p, "\n");
+    }
     /* the display format always; with Direct3D also the texture and Z
      * formats the host mirrors (pf_format) */
     if (!d->bIsDifferentPixelFormat) {
@@ -1123,7 +1140,10 @@ static DWORD APIENTRY DdGetDriverInfo(PDD_GETDRIVERINFODATA d)
         cb.GetDriverState = DdGetDriverState;
         info_copy(d, &cb, sizeof(cb));
     } else if (p->d3d && !(ddflags(p) & DDF_NO_PARSEUNKNOWN) && guid_eq(&d->guidInfo, &guid_parseunknown)) {
-        /* the runtime hands us its parser for driver-private tokens; we emit none */
+        /* the runtime hands us its parser (lpvData is the function itself,
+         * dwExpectedSize 0): the legacy execute-buffer opcodes the DX3 path
+         * leaves in a DrawPrimitives2 stream are skipped with it (walk) */
+        p->parse_unknown = (HRESULT (APIENTRY *)(PVOID, PVOID *))d->lpvData;
         d->dwActualSize = d->dwExpectedSize;
         d->ddRVal = DD_OK;
     } else if (p->d3d && !(ddflags(p) & DDF_NO_DX8) && guid_eq(&d->guidInfo, &guid_stereomode) &&
@@ -1490,8 +1510,17 @@ static void d3d_caps_init(PPDEV p)
     c->dpcLineCaps = *t;
     c->dwDeviceRenderBitDepth = DDBD_16_ | DDBD_32_;
     c->dwDeviceZBufferBitDepth = DDBD_16_ | DDBD_24_ | DDBD_32_;
+    /* The DX3 execute-buffer path (d3dim.dll's IDirect3DDevice::Execute)
+     * sizes its vertex buffer as max(the buffer's vertex count, this cap)
+     * vertices plus a page, and its vertex-buffer constructor refuses more
+     * than 65535 vertices: with 65535 here every Execute failed with
+     * E_OUTOFMEMORY before a single token was built (doc 15 "Execute
+     * buffers"). 2048 vertices are exactly the 64 KiB DP2 vertex buffer
+     * dxg gives every context, so the runtime never has to regrow it at
+     * Execute time (a regrow there left the TL buffer it then handed us
+     * empty: the copied vertices went into the old one). */
     c->dwMaxBufferSize = 0;
-    c->dwMaxVertexCount = 65535;
+    c->dwMaxVertexCount = (ddflags(p) & DDF_EB_MAXVERT_65535) ? 65535 : 2048;
 
     /* texture formats: what the host reads straight from VRAM */
     pf_rgb(&d3d_texformats[0].ddpfPixelFormat, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0);
@@ -1644,14 +1673,39 @@ static void d3d_caps_init(PPDEV p)
 
 static DWORD APIENTRY D3dCanCreateD3DBuffer(PDD_CANCREATESURFACEDATA d)
 {
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    if (p && p->reg_lines < 4096 && d->lpDDSurfaceDesc) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: can create d3d buffer, caps ", d->lpDDSurfaceDesc->ddsCaps.dwCaps);
+        dbg_hex(p, " flags ", d->lpDDSurfaceDesc->dwFlags);
+        dbg_hex(p, " width ", d->lpDDSurfaceDesc->dwWidth);
+        dbg_hex(p, " linear ", d->lpDDSurfaceDesc->dwLinearSize);
+        dbg_puts(p, "\n");
+    }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_HANDLED;
 }
 
 static DWORD APIENTRY D3dCreateD3DBuffer(PDD_CREATESURFACEDATA d)
 {
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
     ULONG i;
 
+    if (p && p->reg_lines < 4096 && d->lpDDSurfaceDesc) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: create d3d buffer, caps ", d->lpDDSurfaceDesc->ddsCaps.dwCaps);
+        dbg_hex(p, " flags ", d->lpDDSurfaceDesc->dwFlags);
+        dbg_hex(p, " width ", d->lpDDSurfaceDesc->dwWidth);
+        dbg_hex(p, " linear ", d->lpDDSurfaceDesc->dwLinearSize);
+        dbg_hex(p, " count ", d->dwSCnt);
+        if (d->dwSCnt && d->lplpSList[0] && d->lplpSList[0]->lpGbl) {
+            dbg_hex(p, " lcl caps ", d->lplpSList[0]->ddsCaps.dwCaps);
+            dbg_hex(p, " gbl linear ", d->lplpSList[0]->lpGbl->dwLinearSize);
+            dbg_hex(p, " vidmem ", (ULONG)d->lplpSList[0]->lpGbl->fpVidMem);
+        }
+        dbg_puts(p, "\n");
+    }
     for (i = 0; i < d->dwSCnt; i++) {
         d->lplpSList[i]->ddsCaps.dwCaps |= DDSCAPS_SYSTEMMEMORY;
         d->lplpSList[i]->ddsCaps.dwCaps &= ~DDSCAPS_VIDEOMEMORY;
@@ -1670,6 +1724,17 @@ static DWORD APIENTRY D3dDestroyD3DBuffer(PDD_DESTROYSURFACEDATA d)
 
 static DWORD APIENTRY D3dLockD3DBuffer(PDD_LOCKDATA d)
 {
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    if (p && p->reg_lines < 4096 && d->lpDDSurface && d->lpDDSurface->lpGbl) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: lock d3d buffer ", surf_handle(d->lpDDSurface));
+        dbg_hex(p, " caps ", d->lpDDSurface->ddsCaps.dwCaps);
+        dbg_hex(p, " vidmem ", (ULONG)d->lpDDSurface->lpGbl->fpVidMem);
+        dbg_hex(p, " linear ", d->lpDDSurface->lpGbl->dwLinearSize);
+        dbg_hex(p, " flags ", d->dwFlags);
+        dbg_puts(p, "\n");
+    }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_NOTHANDLED;
 }
@@ -2056,9 +2121,24 @@ static BOOL surf_is_target(PDD_SURFACE_LOCAL s)
 static DWORD APIENTRY DdCreateSurface(PDD_CREATESURFACEDATA d)
 {
     DDSURFACEDESC *sd = d->lpDDSurfaceDesc;
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
     ULONG i, f;
 
     d->ddRVal = DD_OK;
+    if (p && p->reg_lines < 4096 && sd && (sd->ddsCaps.dwCaps & DDSCAPS_EXECUTEBUFFER)) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: create buffer, caps ", sd->ddsCaps.dwCaps);
+        dbg_hex(p, " flags ", sd->dwFlags);
+        dbg_hex(p, " width ", sd->dwWidth);
+        dbg_hex(p, " linear ", sd->dwLinearSize);
+        dbg_hex(p, " count ", d->dwSCnt);
+        if (d->dwSCnt && d->lplpSList[0] && d->lplpSList[0]->lpGbl) {
+            dbg_hex(p, " lcl caps ", d->lplpSList[0]->ddsCaps.dwCaps);
+            dbg_hex(p, " gbl linear ", d->lplpSList[0]->lpGbl->dwLinearSize);
+            dbg_hex(p, " vidmem ", (ULONG)d->lplpSList[0]->lpGbl->fpVidMem);
+        }
+        dbg_puts(p, "\n");
+    }
     if (!sd || !(sd->ddpfPixelFormat.dwFlags & DDPF_FOURCC) || !fmt_is_dxt(sd->ddpfPixelFormat.dwFourCC)) {
         return DDHAL_DRIVER_NOTHANDLED;
     }
@@ -2113,6 +2193,12 @@ static DWORD APIENTRY DdDestroySurface(PDD_DESTROYSURFACEDATA d)
     PPDEV p = (PPDEV)d->lpDD->dhpdev;
     SURF *t = d->lpDDSurface ? surf_slot(surf_handle(d->lpDDSurface), FALSE) : NULL;
 
+    if (p->reg_lines < 4096 && d->lpDDSurface && (d->lpDDSurface->ddsCaps.dwCaps & DDSCAPS_EXECUTEBUFFER)) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: destroy buffer ", surf_handle(d->lpDDSurface));
+        dbg_hex(p, " caps ", d->lpDDSurface->ddsCaps.dwCaps);
+        dbg_puts(p, "\n");
+    }
     if (t) {
         t->used = 0;
     }
@@ -2413,6 +2499,9 @@ typedef struct _DP2WALK {
     ULONG skip_why;             /* bits: 2 no fvf, 4 no stream, 8 stride < fvf, 16 vertex range, 32 index range, 64 prim */
     ULONG skip_info[6];         /* the first skipped draw: prim, count, voff, nverts, ioff, nindices */
     DWORD *rstates;
+    BOOL eb;                    /* D3DNTHALDP2_EXECUTEBUFFER: the stream is a DX3 execute buffer's instructions (doc 15) */
+    ULONG bounce;               /* eb: offset of the first instruction the runtime must execute itself (~0 = none) */
+    ULONG stop;                 /* eb: bytes of the stream walked (an EXIT or the bounce ends it early) */
 } DP2WALK;
 
 static ULONG prim_verts(ULONG prim, ULONG n)
@@ -2707,7 +2796,73 @@ static BOOL walk(DP2WALK *w)
         ULONG op = c->bCommand, count = c->wPrimitiveCount, left = w->clen - pos - 4, size;
         ULONG stride = w->vsize ? w->vsize : (w->fvf ? fvf_stride(w->fvf) : 0);
 
+        if (w->eb) {
+            /* A DX3 execute buffer (IDirect3DDevice::Execute, d3dim.dll's
+             * UNCLIPPED path): the stream is the buffer's own D3DINSTRUCTION
+             * list from the current instruction on, and the runtime is a
+             * pass-through — it executes nothing here itself. The opcodes
+             * share the DP2 numbering where the payloads match (POINT /
+             * LINE / TRIANGLE / STATERENDER are 1 / 2 / 3 / 8: POINTS,
+             * INDEXEDLINELIST, the 8-byte INDEXEDTRIANGLELIST, RENDERSTATE),
+             * and those the driver must consume, along with SPAN (13,
+             * skipped) and EXIT (11, the end). Everything else —
+             * PROCESSVERTICES (9) first of all, the matrix / light opcodes
+             * 4..7, TEXTURELOAD, BRANCHFORWARD, SETSTATUS — is the runtime's:
+             * the call ends *before* it with D3DERR_COMMAND_UNPARSED and its
+             * offset in dwErrorOffset, the runtime executes it (a
+             * PROCESSVERTICES COPY / TRANSFORM fills the TL vertex buffer
+             * we draw from) and calls again from the next instruction.
+             * Skipping it instead leaves the vertices unwritten (doc 15
+             * "Execute buffers"). */
+            if (op == 11) {                                     /* EXIT */
+                w->stop = pos;
+                return TRUE;
+            }
+            if (op == 13) {                                     /* SPAN: bSize x count, nothing for the host */
+                size = (ULONG)c->bReserved * count;
+                if (size > left) size = left;
+                pos += 4 + size;
+                continue;
+            }
+            if (op != 1 && op != 2 && op != 3 && op != 8) {
+                w->bounce = pos;
+                w->stop = pos;
+                if (!w->out && w->p->parse_lines < 8) {
+                    w->p->parse_lines++;
+                    dbg_hex(w->p, "d3dptdisp: execute buffer: opcode ", op);
+                    dbg_hex(w->p, " x", count);
+                    dbg_hex(w->p, " bounced to the runtime at ", pos);
+                    dbg_puts(w->p, "\n");
+                }
+                return TRUE;
+            }
+        }
         size = walk_body_size(op, count, q, left, pos, stride);
+        if (size == ~0u && w->p->parse_unknown && !(ddflags(w->p) & DDF_NO_PARSEUNKNOWN_CALL)) {
+            /* not one of ours and not a legacy opcode: the runtime's parser
+             * gets a chance (it knows VIEWPORTINFO / WINFO, which the host
+             * handles anyway); the token is dropped from the host's stream */
+            PVOID next = NULL;
+            HRESULT hr = w->p->parse_unknown((PVOID)c, &next);
+            if (hr == DD_OK && next && (const UCHAR *)next > q && (const UCHAR *)next <= w->cmd + w->clen) {
+                size = (ULONG)((const UCHAR *)next - q);
+                if (!w->out && w->p->parse_lines < 8) {
+                    w->p->parse_lines++;
+                    dbg_hex(w->p, "d3dptdisp: dp2 token ", op);
+                    dbg_hex(w->p, " x", count);
+                    dbg_hex(w->p, " parsed by the runtime, bytes ", size);
+                    dbg_puts(w->p, "\n");
+                }
+                pos += 4 + size;
+                continue;
+            }
+            if (!w->out && w->p->parse_lines < 8) {
+                w->p->parse_lines++;
+                dbg_hex(w->p, "d3dptdisp: dp2 token ", op);
+                dbg_hex(w->p, " unparsed by the runtime too, hr ", (ULONG)hr);
+                dbg_puts(w->p, "\n");
+            }
+        }
         if (size == ~0u || size > left) {
             walk_put(w, w->cmd + pos, w->clen - pos);
             return FALSE;
@@ -2844,6 +2999,7 @@ static BOOL walk(DP2WALK *w)
     if (pos < w->clen) {
         walk_put(w, w->cmd + pos, w->clen - pos);
     }
+    w->stop = w->clen;
     return TRUE;
 }
 
@@ -2858,8 +3014,32 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     DP2WALK w, w0;
 
     if (!c || !d->lpDDCommands || !d->lpDDCommands->lpGbl) {
+        if (p && p->dp2_errors < 8) {
+            p->dp2_errors++;
+            dbg_hex(p, "d3dptdisp: dp2 refused, context ", (ULONG)d->dwhContext);
+            dbg_hex(p, " commands ", (ULONG)(ULONG_PTR)d->lpDDCommands);
+            dbg_puts(p, "\n");
+        }
         d->ddrval = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
+    }
+    if (p->dp2_calls < 8) {
+        dbg_hex(p, "d3dptdisp: dp2 call flags ", d->dwFlags);
+        dbg_hex(p, " cmd caps ", d->lpDDCommands->ddsCaps.dwCaps);
+        dbg_hex(p, " at ", (ULONG)d->lpDDCommands->lpGbl->fpVidMem);
+        dbg_hex(p, " +", d->dwCommandOffset);
+        dbg_hex(p, " len ", d->dwCommandLength);
+        if (d->lpDDVertex && d->lpDDVertex->lpGbl) {
+            dbg_hex(p, " vtx caps ", d->lpDDVertex->ddsCaps.dwCaps);
+            dbg_hex(p, " at ", (ULONG)d->lpDDVertex->lpGbl->fpVidMem);
+            dbg_hex(p, " linear ", d->lpDDVertex->lpGbl->dwLinearSize);
+        } else {
+            dbg_hex(p, " user vtx ", (ULONG)(ULONG_PTR)d->lpVertices);
+        }
+        dbg_hex(p, " +", d->dwVertexOffset);
+        dbg_hex(p, " n ", d->dwVertexLength);
+        dbg_hex(p, " type ", d->dwVertexType);
+        dbg_puts(p, "\n");
     }
     cmd = (const UCHAR *)d->lpDDCommands->lpGbl->fpVidMem + d->dwCommandOffset;
     if (d->dwFlags & D3DNTHALDP2_USERMEMVERTICES) {
@@ -2871,6 +3051,12 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     }
     vlen = vtx ? d->dwVertexLength * vsize : 0;
     if (clen > (16u << 20) || vlen > (32u << 20)) {
+        if (p->dp2_errors < 8) {
+            p->dp2_errors++;
+            dbg_hex(p, "d3dptdisp: dp2 refused, command bytes ", clen);
+            dbg_hex(p, " vertex bytes ", vlen);
+            dbg_puts(p, "\n");
+        }
         d->ddrval = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
     }
@@ -2892,14 +3078,8 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     w0.vsize = vsize;
     w0.vcount = d->dwVertexLength;
     w0.vall = vall;
-    if (p->dp2_calls < 4 && vtx) {
-        dbg_hex(p, "d3dptdisp: dp2 vertices at ", (ULONG)(ULONG_PTR)vtx);
-        dbg_hex(p, " offset ", d->dwVertexOffset);
-        dbg_hex(p, " length ", d->dwVertexLength);
-        dbg_hex(p, " size ", vsize);
-        dbg_hex(p, " flags ", d->dwFlags);
-        dbg_puts(p, "\n");
-    }
+    w0.eb = (d->dwFlags & D3DNTHALDP2_EXECUTEBUFFER) != 0;
+    w0.bounce = ~0u;
     w0.fvf = c->fvf ? c->fvf : (d->dwVertexType & 1 ? 0 : d->dwVertexType);
     w0.shader = c->shader;
     w0.vb_um = c->vb_um;
@@ -2923,8 +3103,20 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     w = w0;
     w.rstates = d->lpdwRStates;
     walk(&w);
+    if (w.eb && w.bounce == 0) {
+        /* nothing of ours before the runtime's instruction: bounce at once */
+        d->ddrval = D3DERR_COMMAND_UNPARSED_;
+        d->dwErrorOffset = d->dwCommandOffset;
+        return DDHAL_DRIVER_HANDLED;
+    }
     vcopy = w.needs_vb ? vlen : 0;
     if (w.outlen > (48u << 20) || D3DPT_ALIGN8(w.outlen) + vcopy + sizeof(*r) + sizeof(d3dpt_cmd) > D3DPT_CMD_SIZE) {
+        if (p->dp2_errors < 8) {
+            p->dp2_errors++;
+            dbg_hex(p, "d3dptdisp: dp2 refused, output bytes ", w.outlen);
+            dbg_hex(p, " vertex copy ", vcopy);
+            dbg_puts(p, "\n");
+        }
         d->ddrval = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
     }
@@ -2985,11 +3177,17 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     if (p->enc.last_status) {
         d->ddrval = DDERR_GENERIC;
         d->dwErrorOffset = 0;
+    } else if (w.eb && w.bounce != ~0u && res->hr == DD_OK) {
+        /* the host drew what came before it; the runtime takes over at
+         * this instruction (dwErrorOffset counts from the buffer's start,
+         * like dwCommandOffset) and calls again from the next one */
+        d->ddrval = D3DERR_COMMAND_UNPARSED_;
+        d->dwErrorOffset = d->dwCommandOffset + w.bounce;
     } else {
         d->ddrval = (HRESULT)res->hr;
         d->dwErrorOffset = res->bytes;
     }
-    if (d->ddrval != DD_OK && p->dp2_errors < 8) {
+    if (d->ddrval != DD_OK && !(w.eb && w.bounce != ~0u) && p->dp2_errors < 8) {
         p->dp2_errors++;
         dbg_hex(p, "d3dptdisp: dp2 ", (ULONG)d->ddrval);
         dbg_hex(p, " at ", d->dwErrorOffset);

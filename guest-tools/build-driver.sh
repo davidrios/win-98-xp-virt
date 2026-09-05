@@ -65,6 +65,9 @@ echo "==> dxttest.exe (which texture formats d3d8.dll creates, per pool)"
 echo "==> cktest.exe (palettized textures and colour keying through the DX7 HAL)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/cktest.exe" "$SRC/cktest.c" -lddraw -ldxguid -lgdi32 -luser32
+echo "==> ebtest.exe (the DirectX 3 path: execute buffers and texture handles on the HAL)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/ebtest.exe" "$SRC/ebtest.c" -lddraw -ldxguid -lgdi32 -luser32
 echo "==> shtest.exe (vertex / pixel shaders 1.x through d3d8.dll on the DX8 DDI)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/shtest.exe" "$SRC/shtest.c" -ld3d8 -lgdi32 -luser32
@@ -121,7 +124,13 @@ again; every draw read back and compared, shtest.log ends with
 CKTEST.EXE (Direct3D 7: an 8-bit palettized texture with its own palette,
 SetEntries changing it, a colour-keyed R5G6B5 texture with COLORKEYENABLE
 on and off; every draw read back from the back buffer and compared,
-cktest.log ends with "cktest: N cases, M failed").
+cktest.log ends with "cktest: N cases, M failed"),
+EBTEST.EXE (the DirectX 3 path a 1997 title takes: IDirect3D v1 on the
+back buffer, the viewport's Clear through a background material, execute
+buffers with PROCESSVERTICES_COPY / _TRANSFORM and D3DOP_TRIANGLE, textures
+loaded with IDirect3DTexture::Load and bound by TEXTUREHANDLE, a
+colour-keyed one; every case read back, ebtest.log ends with
+"ebtest: N cases, M failed").
 TXT
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 
