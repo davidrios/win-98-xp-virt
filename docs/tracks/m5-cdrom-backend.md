@@ -51,11 +51,19 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   reads the data anomaly, not Q") is **void** — it assumed the check reads
   something. What survives from that pair is only that replay vs synthesis
   makes no difference to this title.
-  **Next, in this order** (doc 17 §2.6b): run each title with **no disc in the
-  drive** — if it still launches, no disc check happens in these installs and
-  this was never about our drive model; if it refuses, the check does run, and
-  an ATAPI trace across a launch on the original dump shows whether the band's
-  LBAs (811 for FIFA, 195539 for Settlers) are ever requested at all.
+  **Empty drive (user, same day): FIFA 2002 asks for the CD.** So *a* disc
+  check runs and an empty drive does not satisfy it — but that is all it says.
+  A volume-label or file-presence check behaves exactly this way, and the
+  repaired disc satisfies it too, so original-runs / repaired-runs / empty-
+  refuses is equally consistent with a presence check that always ran and an
+  authentication that never did. Settlers has not had this run yet.
+  **Next** (doc 17 §2.6b): an ATAPI trace across a launch on the original
+  dump, looking for the band's LBAs — 811 for FIFA, 195539 for Settlers. Never
+  requested = the authentication is not reaching the disc; requested = it reads
+  our errors and accepts a repaired disc anyway, which is a more interesting
+  finding about the scheme. Pair it with an offline look at the installed tree
+  for whether the EXE is SafeDisc-wrapped at all and whether `secdrv.sys` is
+  there — an unwrapped binary explains everything at once.
   The likeliest single cause of both: protections of the era skip
   authentication rather than risk a false positive when they cannot get the
   low-level access they want (no SPTI/ASPI, `secdrv.sys` absent, a drive that

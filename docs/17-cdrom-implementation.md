@@ -369,17 +369,31 @@ common cause is likelier than two coincidences:
    not identify as they expect, `secdrv.sys` not loaded. Our drive would then
    never be asked, and every disc would "pass".
 
-**The experiment that separates them, in order.** First, run each title with
-**no disc in the drive at all**: if it still launches, no disc check happens
-here and the rows are about the games, not about us. If it refuses, the check
-does run and reads *something* — then trace what (`-trace 'ide_atapi*'`, or a
-per-command log behind `CDIMAGE_TRACE=1` in atapi.c) across a launch on the
-original dump and see whether the band's LBAs are ever requested. A launch
-that never touches LBA 811 (FIFA) or 195539 (Settlers) settles it.
+**Empty drive, run 2026-09-05: FIFA 2002 asks for the CD.** So reading 1 is
+out for that title — *a* disc check runs, and it is not satisfied by an empty
+drive. Be careful how much that buys: "asks for the CD" is exactly what a
+volume-label or data-file presence check does, and the repaired disc satisfies
+it, so all it establishes is that something looks for a disc with the right
+files on it. It does **not** establish that SafeDisc's authentication runs. The
+three observations together — original disc runs, repaired disc runs, no disc
+refuses — are equally consistent with a presence check that always ran and an
+authentication that never did.
 
-Until one of those runs, the drive model's error delivery is proven only
-host-side and by `atapi-guest-test.py` — which is real evidence, just not
-evidence about protections.
+**What is left to separate, and the run that does it.** Trace a launch on the
+original dump (`-trace 'ide_atapi*'`, or a per-command log behind
+`CDIMAGE_TRACE=1` in atapi.c) and look for the band's LBAs: 811 for FIFA,
+195539 for Settlers. If the launch never requests them, the authentication is
+not reaching the disc and reading 2 stands; if it does request them, it reads
+our errors and accepts a repaired disc anyway, which is a different and more
+interesting finding about the scheme. Worth pairing with an offline look at
+the installed tree (`qemu-img convert` + `7z x`, doc 15's recipe) for whether
+the EXE is actually SafeDisc-wrapped and whether `secdrv.sys` is present —
+an unwrapped binary would explain everything at once. Settlers has not had
+the empty-drive run yet; do it for symmetry.
+
+Until then, the drive model's error delivery is proven only host-side and by
+`atapi-guest-test.py` — which is real evidence, just not evidence about
+protections.
 
 The lesson meanwhile is that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
