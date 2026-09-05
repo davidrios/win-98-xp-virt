@@ -78,6 +78,17 @@ struct Dp2Buf {
     void indexed_trilist2(uint16_t base, const std::vector<uint16_t> &idx) {
         cmd(26, idx.size() / 3); u16(base); for (uint16_t i : idx) u16(i);
     }
+    /* TRIANGLEFAN_IMM as the runtime lays it out: the 4-byte header (which
+     * may sit at offset 2 mod 4), padding to a DWORD boundary, the edge
+     * flags, the vertices inline, padding so the next token starts at a
+     * DWORD-aligned offset */
+    template <class T> void trifan_imm(const std::vector<T> &v) {
+        cmd(23, v.size() - 2);
+        while (b.size() % 4) b.push_back(0xcc);                 /* the pad bytes are not data */
+        u32(0);
+        for (const T &e : v) { const uint8_t *q = (const uint8_t *)&e; b.insert(b.end(), q, q + sizeof(T)); }
+        while (b.size() % 4) b.push_back(0xcc);
+    }
 };
 
 static tlv V(float x, float y, float z, uint32_t c, float u, float v) { return { x, y, z, 1.0f, c, 0xff000000u, u, v }; }
@@ -108,15 +119,17 @@ static void build_scene(Dp2Buf &d, std::vector<tlv> &vtx) {
     /* the cyan triangle first, behind the quad (z 0.7) */
     d.tss(0, 0, 0); d.tss(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2); d.tss(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     d.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2); d.tss(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-    d.indexed_trilist2(12, { 0, 1, 2 });
+    /* twice, so the next token lands at offset 2 mod 4 (2 + 6 × 2 index words) */
+    d.indexed_trilist2(12, { 0, 1, 2, 0, 1, 2 });
+    /* the coloured fan in front, as inline vertices at that odd offset (the
+     * DX8 runtime's legacy path does this; the parser must realign after it) */
+    d.trifan_imm(std::vector<tlv>(vtx.begin() + 6, vtx.begin() + 12));
     /* the textured quad */
     d.tss(0, 0, H_TEX); d.tss(0, D3DTSS_COLOROP, D3DTOP_MODULATE); d.tss(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     d.tss(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE); d.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1); d.tss(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     d.tss(0, 16, 1); d.tss(0, 17, 1); d.tss(0, 18, 1); d.tss(0, 12, D3DTADDRESS_WRAP);   /* point sampling, no mips */
     d.trilist(0, 2);
-    /* the coloured fan in front */
     d.tss(0, 0, 0); d.tss(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2); d.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
-    d.trifan(6, 4);
     /* a half-transparent red strip */
     d.rs(D3DRS_ALPHABLENDENABLE, 1); d.rs(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA); d.rs(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
     d.tristrip(15, 2);
@@ -251,6 +264,14 @@ int main(int argc, char **argv) {
     uint32_t err_off = 0;
     hr = send_dp2(&enc, bad, vtx, 0, &err_off);
     CHECK(hr == 0x88760BB8u && err_off == 12, "truncated token stream -> D3DERR_COMMAND_UNPARSED at %u (0x%08x)", err_off, hr);
+    /* a light index / transform id off the scale: DXVK would grow its light
+     * array to the index (std::bad_alloc, uncatchable across its own
+     * unwinder: the process aborts) or index past its transform array */
+    Dp2Buf wild; wild.cmd(34, 2); wild.u32(0xfffffff0u); wild.u32(0); wild.u32(0xfffffff0u); wild.u32(2); for (int i = 0; i < 26; i++) wild.u32(0);
+    wild.cmd(36, 1); wild.u32(0x7fffffffu); for (int i = 0; i < 16; i++) wild.f32(i % 5 == 0 ? 1.0f : 0.0f);
+    wild.trilist(0, 2);
+    hr = send_dp2(&enc, wild, vtx);
+    CHECK(hr == 0, "wild light index / transform id dropped, the draw still runs (0x%08x)", hr);
     Dp2Buf oob; oob.trilist(100, 4);                                 /* vertices beyond the buffer: skipped, not fatal */
     hr = send_dp2(&enc, oob, vtx);
     CHECK(hr == 0, "out-of-range vertices skipped (0x%08x)", hr);

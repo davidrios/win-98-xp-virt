@@ -545,3 +545,90 @@ KVM) and working under KVM. What the investigation established
   thing headless (menus, side, kickoff, the tap test with screendumps,
   `dinput_log.txt` pulled from the image): the regression check for
   "keys in a real DX7 game" on the HAL.
+
+### Max Payne on the HAL: XP's own d3d8.dll on a DX7 driver (2026-09-05)
+
+The first DX8 title with **no wrapper DLL in the game folder**
+(`tools/xp-maxpayne.bat` renames the M4 track's `D3D8.DLL` away; run by
+`GAME_ISO=DINO-MAP.iso CPU=pentium3 SHOTS=30 SHOT_KEYS="2:ret,6:ret"
+tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 bat tools/xp-maxpayne.bat`).
+XP's d3d8.dll treats a driver without a `D3DCAPS8` answer as a
+"DirectX 7 driver": it does the vertex processing itself and feeds the
+DX7 token set (`INDEXEDTRIANGLELIST2`, `TRIANGLEFAN_IMM`, the DX7 render
+and stage states) through DrawPrimitives2 — the same HAL FIFA runs on.
+Result: the launcher, the main menu and the tutorial level (Max in the
+alley, textures, lightmaps, decals, snow, HUD, matching the M4 device's
+frame of the same scene) render at 800×600×16, ~290 frames/s under KVM
+`-cpu pentium3` with 18 DP2 calls and ~230 draws per frame, no
+unsupported token, no refused record; screendumps in
+`build/xp-driver-test/mp-hal10/`. What it took, and what it taught:
+
+- **`TRIANGLEFAN_IMM` / `LINELIST_IMM`: the payload after the 4-byte
+  header is DWORD-aligned, and so is the next token.** The first runs
+  desynchronised (garbage tokens 86, 115, 255…, "truncated" errors, the
+  runtime re-submitting from `dwErrorOffset`) exactly after every
+  inline-vertex token that started at offset 2 mod 4 — which happens
+  after an `INDEXEDTRIANGLELIST2` with an even primitive count (2 + 6n
+  bytes), a sequence the DX7 runtime never produced for D3D7TEST or FIFA.
+  The DX8 runtime's legacy path does it every frame. Aligning only the
+  token's *end* made the stream parse but still read the edge flags and
+  vertices two bytes early: the per-draw snapshots of the frame trace
+  (below) showed one fan per frame with positions of 10¹¹ and colours
+  that were the top halves of floats — the **black bands across the
+  alley** (a garbage triangle clipped to the screen), which no state,
+  texture or fog experiment had explained. The rule (the DDK's perm3
+  sample does the same): after the `D3DHAL_DP2COMMAND`, round the
+  offset up to 4, then the `D3DHAL_DP2TRIANGLEFAN_IMM` and the vertices;
+  round up again for the next command. `tools/d3dpt-dp2-test.cpp` draws
+  its fan as an inline token at such an offset with the runtime's
+  padding (0xcc bytes, so a parser that reads them as data fails). The
+  executor also logs the token history (`ddi: dp2: tokens before it
+  (offset:op x count): …`) with every first failure of a kind, which is
+  how the pattern showed.
+- **DXVK's exceptions abort QEMU; validate before calling.** The garbage
+  streams reached `LightEnable` with an index of ~2³² and DXVK grows its
+  light array to the index: `std::bad_alloc`. It cannot be caught in the
+  executor — DXVK carries its own statically linked unwinder, the system
+  `__gxx_personality_v0` is handed its context and `abort()`s (two
+  core dumps, `_Unwind_Resume` in `libdxvk_d3d9.so.0` under
+  `LightEnable.cold`). The interpreter now drops light indices ≥ 1024 and
+  transform ids outside VIEW / PROJECTION / TEXTURE0–7 / WORLD0–3 (DXVK
+  indexes an array with them), and `d3dpt_exec_submit` still wraps each
+  record in a `try` for the executor's own allocations. The host test
+  sends both and expects the draw to go on; on the old library the test
+  process aborts (exit 134), which is the reproduction.
+- **A per-frame DP2 trace, armed by a file.** `D3DPT_DP2_TRACE=<path>`
+  in QEMU's environment: `touch <path>` when the screendump shows the
+  scene in question; the executor arms, and from the next frame boundary
+  (a readback) to the one after it logs every token with its arguments —
+  a snapshot of every render / stage state seen so far at the start
+  (most are set once per scene), then render states (marked when
+  dropped), stage states, each bound texture's size / format / levels /
+  caps and the mean of its VRAM texels, every draw with its first three
+  vertices (position, colours, both uv sets), clears, targets, viewports
+  — and writes next to the flag file every bound texture's levels
+  (`tex-<handle>-l<n>.ppm` + `-a.pgm` for alpha) and the render target
+  after every draw (`draw-<n>.ppm`), then removes the file. That last
+  part is what found the garbage fan: a script that counts black pixels
+  per snapshot names the draw, and its vertex lines in the log name the
+  bug. `D3DPT_DDI_REREAD=1` re-reads every texture from VRAM at every
+  bind (a stale host copy vs VRAM the guest never wrote);
+  `D3DPT_DDI_NOFOG=1` forces FOGENABLE off. Both were used to rule
+  things out here. The driver now logs every surface it registers
+  (`d3dptdisp: surface <handle> caps … w h fmt at …`, `sysmem, skipped`
+  / `no format, skipped`), so an unknown handle in the executor's log can
+  be looked up: the `render target handle 3 unknown` line at start is
+  the third buffer of the game's flip chain, set as a target once before
+  its `CreateSurfaceEx` (harmless).
+- The DX7 states the DX8 runtime sets on a legacy driver and the executor
+  drops once: 4, 10, 30, 33, 40, 47 (TEXTUREPERSPECTIVE, LINEPATTERN,
+  ZVISIBLE, STIPPLEDALPHA, EDGEANTIALIAS, ZBIAS — the last one matters
+  for decals and has a d3d9 twin, DEPTHBIAS; the alley sets it to 0).
+  What the traced frame looks like, for the next title: 230 draws, sky as
+  38 opaque fans of one 512×256 texture, world geometry as `ADD(lightmap,
+  diffuse)` on stage 0 (uv set 1) then `MODULATE(material)` on stage 1,
+  decals and sprites blended SRCALPHA / INVSRCALPHA with A8R8G8B8
+  textures (alpha test on for some), fog on with table mode NONE and
+  the factor in the specular alpha, all textures 16- or 32-bit RGB (no
+  DXT, no palettes).
+

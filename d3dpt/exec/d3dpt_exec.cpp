@@ -13,6 +13,7 @@
 #include <dlfcn.h>
 #include <cstdlib>
 #include <string>
+#include <exception>
 
 #include "d3dpt_exec_int.h"
 
@@ -784,7 +785,12 @@ uint32_t d3dpt_exec_submit(d3dpt_exec_t *xp, void *shm, uint32_t shm_size)
         if (end - p < (ptrdiff_t)sizeof(d3dpt_cmd)) { b.err = D3DPT_ERR_MALFORMED; break; }
         const d3dpt_cmd *c = (const d3dpt_cmd *)p;
         if (c->size < sizeof(d3dpt_cmd) || c->size % 8 || c->size > (uint32_t)(end - p)) { b.err = D3DPT_ERR_MALFORMED; break; }
-        exec_one(b, c);
+        /* a record must never take the process down: an exception (a
+         * std::bad_alloc out of DXVK on a garbage count, say) refuses the
+         * batch like a malformed record does */
+        try { exec_one(b, c); }
+        catch (const std::exception &e) { x->log("record %u (op %u) threw: %s", b.index, c->op, e.what()); if (!b.err) b.err = D3DPT_ERR_HOST; }
+        catch (...) { x->log("record %u (op %u) threw", b.index, c->op); if (!b.err) b.err = D3DPT_ERR_HOST; }
         p += c->size;
         b.index++;
     }

@@ -88,7 +88,7 @@ typedef struct _PDEV {
     d3dpt_enc enc;
     D3DCTX ctx[D3D_MAX_CTX];
     ULONG ctx_live;
-    ULONG dp2_calls, dp2_errors;
+    ULONG dp2_calls, dp2_errors, reg_lines;
 } PDEV, *PPDEV;
 
 static PPDEV d3d_pdev;              /* the PDEV whose Direct3D is on (the primary display) */
@@ -1401,13 +1401,29 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     ULONG handle, fmt, caps, n = 1, i;
     PDD_SURFACE_LOCAL m;
 
-    if (!p->d3d || !s || !s->lpGbl || (s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
+    if (!p->d3d || !s || !s->lpGbl) {
         return;
     }
     handle = surf_handle(s);
     fmt = surf_format(p, s);
     caps = surf_caps(s);
-    if (!handle || !fmt || (ULONGLONG)offset + (ULONGLONG)s->lpGbl->lPitch * s->lpGbl->wHeight > heap_end(p)) {
+    /* one line per surface in the QEMU log: what the host will know it as
+     * (a "skipped" surface is one a later SETRENDERTARGET / TEXTUREMAP
+     * would report unknown) */
+    if (p->reg_lines < 4096) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: surface ", handle);
+        dbg_hex(p, " caps ", s->ddsCaps.dwCaps);
+        dbg_hex(p, " w ", s->lpGbl->wWidth);
+        dbg_hex(p, " h ", s->lpGbl->wHeight);
+        dbg_hex(p, " fmt ", fmt);
+        dbg_hex(p, " at ", offset);
+        if (s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) dbg_puts(p, " sysmem, skipped");
+        else if (!fmt) dbg_puts(p, " no format, skipped");
+        dbg_puts(p, "\n");
+    }
+    if ((s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) || !handle || !fmt ||
+        (ULONGLONG)offset + (ULONGLONG)s->lpGbl->lPitch * s->lpGbl->wHeight > heap_end(p)) {
         return;
     }
     if (caps & D3DPT_VS_TEXTURE) {

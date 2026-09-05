@@ -82,6 +82,31 @@ picture and the track rules, then this file, then doc 15.
   `winxp-m7g` has Diablo installed at `C:\Diablo`; it and the user's
   `winxp-m7` carry the v3 driver (installed 2026-09-05 00:50); `m7f` still
   has v2, which refuses the v3 device: reinstall from the ISO first.
+- **Max Payne on the HAL with no wrapper DLL (2026-09-05, branch
+  `track/m7-fifa`):** XP's own d3d8.dll on our DX7-level DDI (no
+  `D3DCAPS8` answer = "DirectX 7 driver" to the DX8 runtime: software
+  vertex processing, the DX7 token set). Launcher, menu and the tutorial
+  level render (`tools/xp-maxpayne.bat`, `build/xp-driver-test/mp-hal3/`,
+  ~290 frames/s under KVM `-cpu pentium3`). Two executor bugs came out
+  (doc 15 "Max Payne on the HAL"): the inline-vertex tokens' payload and
+  the next token are DWORD-aligned by *offset* (the DX8 runtime puts
+  them at offset 2 mod 4 after an `INDEXEDTRIANGLELIST2`; the stream
+  desynchronised, and once the end was aligned the vertices were still
+  read 2 bytes early — the "black bands" across the alley), and a
+  garbage light index made DXVK throw `std::bad_alloc` through its own
+  statically linked unwinder — uncatchable, QEMU aborted; light indices
+  and transform ids are now validated before DXVK sees them. New
+  diagnostics: the token history on the first failure of a kind,
+  `D3DPT_DP2_TRACE=<flag file>` (one whole frame: a state snapshot, every
+  token with arguments, each draw's first vertices, every bound texture's
+  levels and the render target after every draw as image files),
+  `D3DPT_DDI_REREAD=1`, `D3DPT_DDI_NOFOG=1`, the driver's per-surface
+  registration lines. `tools/d3dpt-dp2-test.cpp` covers the misaligned
+  fan with the runtime's padding and the wild light / transform (the old
+  library fails both: parse error, then abort). `winxp-m7g` carries this
+  driver build (surface log lines); `cd.ini` in it points at D: now (the
+  batch rewrites it). Not played by hand yet; ZBIAS (47) is still dropped
+  (the alley sets it to 0).
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -122,6 +147,11 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL 
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
 # a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
 GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat
+# Max Payne through XP's own d3d8.dll on the DX7-level HAL (no wrapper DLL): launcher, menu, tutorial; ~4 min
+GAME_ISO="/mnt/data2/david/Downloads/oldstuff/Max Payne/DINO-MAP.iso" CPU=pentium3 SHOTS=30 SHOT_KEYS="2:ret,6:ret" \
+  tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 bat tools/xp-maxpayne.bat
+# one frame of its DP2 stream in the QEMU log: export D3DPT_DP2_TRACE=$PWD/build/xp-driver-test/trace.flag before the
+# run and `touch` that file when the screendump shows the scene (D3DPT_DDI_REREAD=1 re-reads every texture at every bind)
 # a real match, driven over QMP (menus, side, kickoff) and a keyboard test in it (F2 / Esc / F12 taps + screendumps),
 # dinput_log.txt pulled from the image at the end; ~6 min under kvm, ~9 under tcg
 tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2      # or tcg
@@ -158,11 +188,15 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 1. **M7c, the rest:** FIFA 2000 plays (user-verified under KVM; the TCG
    keyboard needs `D3DPT\DINPUT.DLL` in the game folder — confirm on the
    user's setup, then decide whether the merge belongs in a system-wide
-   place). Then what it or the next title asks for first among: colour
-   keying (key → alpha at upload + alpha test), claiming T&L
+   place). Max Payne runs through XP's d3d8.dll on the DX7-level DDI
+   (tutorial level clean); play it by hand, ZBIAS → DEPTHBIAS when a
+   title needs it. Then what the next title asks for first among: colour keying (key →
+   alpha at upload + alpha test), claiming T&L
    (`D3DDEVCAPS_HWTRANSFORMANDLIGHT`, the tokens are already mapped),
-   render-to-texture, state sets, the DX8 tokens + `GUID_D3DCaps`
-   (`D3DCAPS8`) for DX8 games without the DLL, presenting the host frame
+   render-to-texture, state sets, the real DX8 DDI (`GUID_GetDriverInfo2`
+   / `D3DGDI2_TYPE_GETD3DCAPS8`, streams, shaders — the tokens are in
+   mingw's `ddk/d3dhal.h`; only needed for DX8 titles that insist on
+   hardware vertex processing or shaders), presenting the host frame
    through the player's 3D path instead of the per-frame readback copy.
 2. Add a `driver` stage to `scripts/test.sh` (boot on `d3dpt-vga`, `modes`
    + `ddtest` with expected numbers) once the M4 track's suite structure
@@ -201,3 +235,8 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   Direct3D offered in every mode, or the HAL silently degrades to
   `DDCAPS_NOHARDWARE` (doc 15 has the disassembly trail).
 - The debugger is the DEBUG register → QEMU log. No WinDbg, no serial KD.
+- The executor must never let DXVK throw: its exceptions abort QEMU
+  (DXVK's own static unwinder vs the system personality routine), a
+  `try` in the executor does not help. Validate every index / count
+  before the call. `pgrep -f '<image>'` matches the shell loop that
+  contains the pattern — use `pgrep -a qemu-system` to see guests.
