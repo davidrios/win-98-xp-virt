@@ -242,6 +242,36 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   entry. **Not click-tested** for the same reason as the rest of the
   wizard — a human should click "Edit…", change a field, and click
   "Save" once.
+- **Bugfix: "New machine" without a custom disk failed with "No such
+  file or directory"** (user-reported, 2026-09-04). `player::pc_bios_dir`
+  and `player::qemu_img_binary` defaulted to bare relative paths
+  (`"qemu/pc-bios"`, `"build/qemu/qemu-img"`) resolved against the
+  *process's current working directory* — fine only when the launcher
+  happens to be started with that directory as the workspace root, not
+  guaranteed for a real launch (double-click, a shortcut, `cargo run`
+  from a subdirectory). `player_binary` was already immune to this
+  (`current_exe()`-relative), but disk creation always goes through
+  `qemu_img_binary`, so any "new disk" flow from the wrong cwd broke —
+  the existing-disk flow never called it, which is why only "no custom
+  image" reproduced. Fixed by anchoring both at the build-time
+  `CARGO_MANIFEST_DIR` (baked into the binary via `concat!(env!(...))`),
+  the same technique `qemu-embed/build.rs` already uses for its own
+  default — not a new pattern for this codebase. `LAUNCHER_PC_BIOS_DIR`/
+  `LAUNCHER_QEMU_IMG_BIN` still override it. Also improved `create_disk`
+  and `spawn`'s error messages to name the resolved binary path on a
+  spawn failure (previously a bare `Os { code: 2, .. }` with no context).
+
+  Verified for real: reproduced the exact bug first (`cd /tmp &&
+  launcher --wizard-new win98 "…" 2` → `Os { code: 2, kind: NotFound,
+  message: "No such file or directory" }`, matching the report
+  verbatim), confirmed the fix via `--print-args` from `/tmp` showing an
+  absolute, cwd-independent `-L` path, then ran the full "new machine,
+  new disk" flow from `/tmp` with `LAUNCHER_QEMU_IMG_BIN` pointed at the
+  main checkout's real `qemu-img` (standing in for a real checkout that
+  has `build/qemu` built, which this worktree still doesn't) — created a
+  real qcow2 and a correct bundle. This worktree's own *default* (no
+  override) still fails the same way, but that's the pre-existing,
+  already-documented "no `build/qemu` here" limitation, not the cwd bug.
 
 ## Next steps, in order
 
