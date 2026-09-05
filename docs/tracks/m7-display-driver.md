@@ -177,9 +177,9 @@ picture and the track rules, then this file, then doc 15.
   2026-09-04 evening; the 8 bpp work continues on it). New work: branch
   `track/m7-<topic>` off main.
 - **Resuming here (2026-09-05, after the DX8 DDI session):** pull main,
-  then prepare → configure → ninja (protocol v7 is checked by the
+  then prepare → configure → ninja (protocol v8 is checked by the
   device), `scripts/build-d3dpt-exec.sh`, `guest-tools/build-driver.sh`,
-  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v7),
+  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v8),
   `cargo build --release`. `winxp-m7g` carries the last driver build
   (`install` it again after any driver change). State of the DX8 DDI:
   1. **Works:** D3DGAME8 through XP's own d3d8.dll with hardware vertex
@@ -219,7 +219,44 @@ picture and the track rules, then this file, then doc 15.
      it). A protocol bump: QEMU (prepare → ninja), the
      executor, the driver ISO and the guest-tools ISO all rebuilt;
      `winxp-m7g` has the v7 driver installed.
-  5. Then the small things the
+  5. **Done (2026-09-05 night, protocol v8): palettized textures and
+     colour keying**, the two caps Moto Racer 1997 wants (main's
+     diagnosis). P8 in both format lists, `TRANSPARENCY` / `ALPHAPALETTE`
+     in the texture caps, `DDCAPS_COLORKEY` + `DDCKEYCAPS_SRCBLT` with a
+     `SetColorKey` *and* a `Blt` surface callback (dxg drops the HAL for
+     the caps without a Blt callback; without the caps user-mode ddraw
+     never hands the key down; no `DDCAPS_BLT`, so the Blt is never
+     called — doc 15 has the four runs), the key sent by `DdSetColorKey`
+     and re-checked off dxg's `DD_SURFACE_LOCAL` when a
+     `TEXTURESTAGESTATE` binds the texture → `D3DPT_OP_VRAM_COLORKEY`;
+     the executor
+     takes the palettes from the DP2 `SETPALETTE` / `UPDATEPALETTE`
+     tokens, expands P8 and keyed textures to A8R8G8B8 (key = alpha 0),
+     forces the alpha test while render state 41 is on and overrides
+     stage 0's alpha op when the app's ignores the texture alpha (the
+     DX7 runtime's `TEXTUREMAPBLEND` emulation does exactly that for a
+     keyed 16-bit texture), and re-uploads bound textures whose palette
+     or VRAM changed before each draw (doc 15 "Palettized textures and
+     colour keying"). `tools/d3dpt-dp2-test.cpp` covers it;
+     `DRIVER\CKTEST.EXE` + `xp-driver-test.sh <image> cktest` is the guest
+     check (4 cases, 0 failed on `winxp-m7g` under KVM; with it D3D7TEST's
+     frame still equals the host test's, SHTEST 9/9, Diablo into Tristram
+     in the right colours, FIFA 2000's attract-mode match as before —
+     one observation from that run: with the vertical blank the match
+     *flips* at ~24/s (`119 page flips in 5.0 s`, 121 readbacks, ~145
+     DP2 calls per frame, each a synchronous doorbell round trip), so
+     the per-call round trip is what bounds a title that batches
+     little; it used to blit). `ddflags=0x10000` withdraws the caps for
+     an A/B. **Found on the way, in `DdFlip`:** on NT a flip exchanges the
+     two surfaces' *roles*, not their memory (handles keep their VRAM,
+     the PRIMARYSURFACE caps move, dxg re-issues `CreateSurfaceEx` for
+     both), and the M7c first cut re-registered them as if the memory had
+     swapped — the host rendered into the displayed buffer every other
+     frame since 2026-09-04 without any test noticing (doc 15 "A flip
+     does not move memory"). Fixed: `DdFlip` re-registers nothing. Moto
+     Racer itself is still the outstanding check (the user's box: does it
+     take the HAL now, and does it look right).
+  6. Then the small things the
      runs showed: D3DGAME8's frame still differs from the native oracle
      along the checker texture's texel edges only (2026-09-05 night:
      8.7 k pixels beyond tolerance 8, channel difference ≤ 43, the
@@ -255,6 +292,7 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 modes     # SETMODE switches + the
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL scene, diffed against build/d3dpt-dp2-test's frame
 tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 d3dgame8  # D3DGAME8 through XP's own d3d8.dll on the DX8 DDI, diffed against build/test/g9-native.bmp
 OUT=build/xp-driver-test/sh tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 shtest   # SHTEST: shaders 1.x through d3d8.dll, "0 failed" in shtest.log is the pass
+OUT=build/xp-driver-test/ck tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 cktest   # CKTEST: a P8 texture + palette, a colour-keyed texture through the DX7 HAL
 # (OUT= relative under build/: the QMP socket path must stay under 108 characters, and the worktree path is long)
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
 # a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
@@ -303,11 +341,13 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    (tutorial level clean, now on the DX8 DDI with hardware T&L); play it
    by hand, ZBIAS → DEPTHBIAS when a title needs it. Shaders 1.x landed
    2026-09-05 (protocol v7; a title that uses them is the next check —
-   a DX8 game with vs 1.1 / ps 1.1 paths). Moto Racer 1997 runs its
-   software rasterizer (main, 2026-09-05): palettized (P8) textures and
-   colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`) are the two caps a 1997
-   title wants that this HAL does not offer — both next. Then what the
-   next title asks
+   a DX8 game with vs 1.1 / ps 1.1 paths). Moto Racer 1997 ran its
+   software rasterizer (main, 2026-09-05) for want of palettized (P8)
+   textures and colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`); both
+   landed the same night (protocol v8) — **run Moto Racer on it** (the
+   user's box, or a headless run with its disc: does it take the HAL,
+   `d3dptdisp: d3d context` in the log, and are the sprites cut out).
+   Then what the next title asks
    for first among: **more than one stream** (the driver copies stream 0
    only; a multi-stream declaration's draws are skipped with a log line —
    the DRAW8 token would carry one blob per stream), cube / volume textures, presenting the
@@ -351,7 +391,14 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   longer than a short chain goes through a staged `E:\RUN.BAT`.
 - Palettized DirectDraw on XP: `dwPalCaps` 0, no palette callbacks, and
   Direct3D offered in every mode, or the HAL silently degrades to
-  `DDCAPS_NOHARDWARE` (doc 15 has the disassembly trail).
+  `DDCAPS_NOHARDWARE` (doc 15 has the disassembly trail). The same for
+  `DDCAPS_COLORKEY` / `dwCKeyCaps` *without a Blt callback* (CKTEST
+  bisection): the driver keeps a `DdBlt` that is never called (no
+  `DDCAPS_BLT`) so dxg accepts the caps, and without the caps user-mode
+  ddraw never hands a texture's colour key down at all.
+- A flip on NT exchanges the two surfaces' roles, not their memory: each
+  handle keeps its VRAM, the PRIMARYSURFACE caps move, dxg re-issues
+  `CreateSurfaceEx` for both. Never re-register the chain in `DdFlip`.
 - The debugger is the DEBUG register → QEMU log. No WinDbg, no serial KD.
 - The DX8 runtime asks its `GetDriverInfo2` questions only with
   `DDHALINFO_GETDRIVERINFO2` in the HAL info, and checks `dwActualSize`

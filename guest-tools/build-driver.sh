@@ -62,6 +62,9 @@ echo "==> ditest.exe (DirectInput keyboard under load)"
 echo "==> dxttest.exe (which texture formats d3d8.dll creates, per pool)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/dxttest.exe" "$SRC/dxttest.c" -ld3d8 -lgdi32 -luser32
+echo "==> cktest.exe (palettized textures and colour keying through the DX7 HAL)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/cktest.exe" "$SRC/cktest.c" -lddraw -ldxguid -lgdi32 -luser32
 echo "==> shtest.exe (vertex / pixel shaders 1.x through d3d8.dll on the DX8 DDI)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/shtest.exe" "$SRC/shtest.c" -ld3d8 -lgdi32 -luser32
@@ -114,7 +117,11 @@ vertex processing: vs 1.1 through a declaration and its constants, from
 user memory and from a vertex + index buffer, a declaration-only shader,
 D3DVSD_CONST, ps 1.1 with a constant and with a texture, the FVF path
 again; every draw read back and compared, shtest.log ends with
-"shtest: N cases, M failed").
+"shtest: N cases, M failed"),
+CKTEST.EXE (Direct3D 7: an 8-bit palettized texture with its own palette,
+SetEntries changing it, a colour-keyed R5G6B5 texture with COLORKEYENABLE
+on and off; every draw read back from the back buffer and compared,
+cktest.log ends with "cktest: N cases, M failed").
 TXT
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 

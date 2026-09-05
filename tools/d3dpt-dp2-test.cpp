@@ -45,7 +45,8 @@ static void doorbell(d3dpt_enc *e) { p_submit(X, e->shm, D3DPT_SHM_SIZE); }
 /* --- the scene, shared with guest-tools/src/d3dptvid/d3d7test.c --- */
 enum { W = 640, H = 480, TEX = 64 };
 enum { RT_OFF = 0, RT_PITCH = W * 4, Z_OFF = 0x200000, Z_PITCH = W * 2, TEX_OFF = 0x300000, TEX_PITCH = TEX * 4, VRAM_SIZE = 0x400000 };
-enum { H_RT = 1, H_Z = 2, H_TEX = 3, CTX = 1 };
+enum { TEX16_OFF = 0x310000, TEX16_PITCH = TEX * 2, TEXP8_OFF = 0x320000, TEXP8_PITCH = TEX };   /* v8: a 16-bit keyed texture, a palettized one */
+enum { H_RT = 1, H_Z = 2, H_TEX = 3, H_TEX16 = 4, H_TEXP8 = 5, CTX = 1 };
 #define CLEAR_COLOR 0xff203040u
 
 struct tlv { float x, y, z, rhw; uint32_t diffuse, specular; float tu, tv; };
@@ -107,6 +108,13 @@ struct Dp2Buf {
     void vs_const(uint32_t reg, float a, float b, float c, float d) { cmd(48, 1); u32(reg); u32(1); f32(a); f32(b); f32(c); f32(d); }
     void ps_const(uint32_t reg, float a, float b, float c, float d) { cmd(57, 1); u32(reg); u32(1); f32(a); f32(b); f32(c); f32(d); }
     void transform(uint32_t t, const float *m) { cmd(36, 1); u32(t); for (int i = 0; i < 16; i++) f32(m[i]); }
+    /* the runtime's palette tokens (v8): SETPALETTE binds palette handle ->
+     * surface, UPDATEPALETTE carries PALETTEENTRYs (r, g, b, flags) */
+    void set_palette(uint32_t pal, uint32_t flags, uint32_t surface) { cmd(30, 1); u32(pal); u32(flags); u32(surface); }
+    void update_palette(uint32_t pal, uint16_t start, const std::vector<uint32_t> &rgb) {
+        cmd(31, 1); u32(pal); u16(start); u16((uint16_t)rgb.size());
+        for (uint32_t c : rgb) { b.push_back((c >> 16) & 0xff); b.push_back((c >> 8) & 0xff); b.push_back(c & 0xff); b.push_back((c >> 24) & 0xff); }
+    }
     /* TRIANGLEFAN_IMM as the runtime lays it out: the 4-byte header (which
      * may sit at offset 2 mod 4), padding to a DWORD boundary, the edge
      * flags, the vertices inline, padding so the next token starts at a
@@ -479,6 +487,89 @@ int main(int argc, char **argv) {
         hr = send_dp2(&enc, s10, vtx);
         hr |= readback(&enc, H_RT);
         CHECK(hr == 0 && near_(px(480, 240), 0xffffff, 2), "shaders deleted, the fan still draws (0x%06x)", px(480, 240));
+    }
+
+    /* --- palettized textures and colour keying (v8) --- */
+    {
+        std::vector<tlv> quad(vtx.begin(), vtx.begin() + 6);
+        /* a P8 texture: index = (x / 8 + y / 8) & 3, so the quad's cells cycle
+         * through four palette entries; a R5G6B5 checker of blue / white */
+        for (int y = 0; y < TEX; y++)
+            for (int x = 0; x < TEX; x++) {
+                vram[TEXP8_OFF + y * TEXP8_PITCH + x] = (uint8_t)(((x / 8) + (y / 8)) & 3);
+                uint16_t c = ((x / 8) + (y / 8)) & 1 ? 0xffff : 0x001f;
+                memcpy(vram + TEX16_OFF + y * TEX16_PITCH + x * 2, &c, 2);
+            }
+        vram_surface(&enc, H_TEXP8, TEXP8_OFF, TEX, TEX, TEXP8_PITCH, D3DFMT_P8, D3DPT_VS_TEXTURE);
+        vram_surface(&enc, H_TEX16, TEX16_OFF, TEX, TEX, TEX16_PITCH, D3DFMT_R5G6B5, D3DPT_VS_TEXTURE);
+        Dp2Buf p1;
+        std::vector<uint32_t> pal(256, 0);
+        pal[0] = 0xffff0000u; pal[1] = 0xff00ff00u; pal[2] = 0xff0000ffu; pal[3] = 0xffffff00u;
+        p1.update_palette(77, 0, pal);
+        p1.set_palette(77, 1, H_TEXP8);
+        p1.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        p1.tss(0, 0, H_TEXP8); p1.tss(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1); p1.tss(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        p1.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2); p1.tss(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+        p1.tss(0, 16, 1); p1.tss(0, 17, 1); p1.tss(0, 18, 1);
+        p1.set_vs(FVF_TLVERTEX);
+        p1.draw8(4, 2, FVF_TLVERTEX, quad);
+        hr = send_dp2(&enc, p1, vtx);
+        hr |= readback(&enc, H_RT);
+        /* the quad maps 2 texels per 2.5 px: cell 0 at (104, 84), cell 1 at (124, 84), cell 2 at (144, 84), cell 3 at (164, 84) */
+        CHECK(hr == 0 && near_(px(104, 84), 0xff0000, 2) && near_(px(124, 84), 0x00ff00, 2) && near_(px(144, 84), 0x0000ff, 2) && near_(px(164, 84), 0xffff00, 2),
+              "P8 texture through its palette: 0x%06x 0x%06x 0x%06x 0x%06x", px(104, 84), px(124, 84), px(144, 84), px(164, 84));
+        Dp2Buf p2;
+        p2.update_palette(77, 1, { 0xff00ffffu });                          /* entry 1 becomes cyan: the texture is re-expanded */
+        p2.draw8(4, 2, FVF_TLVERTEX, quad);
+        hr = send_dp2(&enc, p2, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(124, 84), 0x00ffff, 2) && near_(px(104, 84), 0xff0000, 2), "UPDATEPALETTE changes the texels: 0x%06x 0x%06x", px(124, 84), px(104, 84));
+        /* colour key: blue (0x001f) keyed on the 16-bit checker; render state
+         * 41 on -> the blue cells show the clear colour, off -> blue again */
+        { d3dpt_u32x4 *k = (d3dpt_u32x4 *)d3dpt_enc_cmd(&enc, D3DPT_OP_VRAM_COLORKEY, sizeof *k, 0); *k = { H_TEX16, 0x001f, 0x001f, 1 }; }
+        Dp2Buf k1;
+        k1.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        k1.rs(41, 1);
+        k1.tss(0, 0, H_TEX16);
+        k1.draw8(4, 2, FVF_TLVERTEX, quad);
+        hr = send_dp2(&enc, k1, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && px(104, 84) == (CLEAR_COLOR & 0xffffff) && near_(px(124, 84), 0xffffff, 2),
+              "colour-keyed R5G6B5 texture, COLORKEYENABLE on: keyed cell 0x%06x, other 0x%06x", px(104, 84), px(124, 84));
+        Dp2Buf k2;
+        k2.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        k2.rs(41, 0);
+        k2.draw8(4, 2, FVF_TLVERTEX, quad);
+        hr = send_dp2(&enc, k2, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x0000ff, 2), "COLORKEYENABLE off: the keyed cell draws again 0x%06x", px(104, 84));
+        /* the app's own alpha test survives the key: ALPHATESTENABLE on with
+         * ALWAYS, key on -> the keyed cell still draws (the app's test wins),
+         * then the key removed and the alpha test off */
+        Dp2Buf k3;
+        k3.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        k3.rs(15, 1); k3.rs(25, D3DCMP_ALWAYS); k3.rs(41, 1);
+        k3.draw8(4, 2, FVF_TLVERTEX, quad);
+        k3.rs(15, 0); k3.rs(41, 0);
+        hr = send_dp2(&enc, k3, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x0000ff, 2), "the app's own alpha test (ALWAYS) wins over the key: 0x%06x", px(104, 84));
+        { d3dpt_u32x4 *k = (d3dpt_u32x4 *)d3dpt_enc_cmd(&enc, D3DPT_OP_VRAM_COLORKEY, sizeof *k, 0); *k = { H_TEX16, 0, 0, 0 }; }
+        Dp2Buf k4;
+        k4.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        k4.rs(41, 1);
+        k4.draw8(4, 2, FVF_TLVERTEX, quad);
+        k4.rs(41, 0); k4.tss(0, 0, 0);
+        hr = send_dp2(&enc, k4, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x0000ff, 2), "key removed: the cell draws with COLORKEYENABLE on 0x%06x", px(104, 84));
+        /* hostile: a palette beyond 256 entries, a SETPALETTE on an unknown surface */
+        Dp2Buf p3; p3.update_palette(78, 250, std::vector<uint32_t>(10, 0));
+        hr = send_dp2(&enc, p3, vtx, 0, &err_off);
+        CHECK(hr == 0x88760BB8u, "UPDATEPALETTE beyond 256 entries -> D3DERR_COMMAND_UNPARSED (0x%08x)", hr);
+        Dp2Buf p4; p4.set_palette(77, 1, 999); p4.draw8(6, 4, FVF_TLVERTEX, std::vector<tlv>(vtx.begin() + 6, vtx.begin() + 12));
+        hr = send_dp2(&enc, p4, vtx);
+        CHECK(hr == 0, "SETPALETTE on an unknown surface: ignored (0x%08x)", hr);
     }
 
     /* --- hostile records --- */

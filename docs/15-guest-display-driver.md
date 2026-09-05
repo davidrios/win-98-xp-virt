@@ -326,8 +326,10 @@ title asks for what a Voodoo of the day had. Two gaps stand out in
   rather than an alpha channel; a game that requires it will not take a
   HAL that does not claim it.
 
-Either is enough on its own, and the log now says which: `DdCanCreateSurface`
-prints the first eight formats it refuses —
+Both landed the same night (the next section, protocol v8): the HAL offers
+palettized textures and colour keying now. Whether Moto Racer takes the
+HAL with them is the outstanding check (the user's box). The diagnostic
+stays: `DdCanCreateSurface` prints the first eight formats it refuses —
 
     d3dpt-vga: guest: d3dptdisp: refused pixel format, flags 0x00000020 fourcc 0x00000000 bits 0x00000008 …
 
@@ -336,6 +338,120 @@ case. Read it together with the context line: `d3dptdisp: d3d context 1 …`
 means the game did take the HAL, and no context line at all means it never
 got that far. Neither has been seen on a Moto Racer run yet — that log is
 the next thing to collect.
+
+## Palettized textures and colour keying (2026-09-05, protocol v8)
+
+Both gaps above are closed. What a 1997 title now gets from the HAL:
+
+- **The caps.** The DX7 texture format list has a tenth entry,
+  `DDPF_RGB | DDPF_PALETTEINDEXED8` at 8 bits, and the DX8 list
+  `D3DFMT_P8`; `dpcTriCaps.dwTextureCaps` carries
+  `D3DPTEXTURECAPS_TRANSPARENCY` and `ALPHAPALETTE` (masked out of
+  `D3DCAPS8.TextureCaps`, where bit 3 means nothing); the DirectDraw caps
+  carry `DDCAPS_COLORKEY` with `dwCKeyCaps = DDCKEYCAPS_SRCBLT`, and the
+  surface callbacks a `SetColorKey` **and a `Blt`** — the four
+  CKTEST runs that settled the shape (2026-09-05):
+  1. caps + `SetColorKey` callback, no `Blt`: dxg drops the whole HAL
+     (`GetCaps` answers `DDCAPS_NOHARDWARE`, no Direct3D device — the same
+     post-enable validation as `DDCAPS_GDI` and palette caps;
+     `ddflags=0x20000` is the repro);
+  2. no caps: the HAL stays and `SetColorKey(DDCKEY_SRCBLT)` succeeds,
+     but user-mode ddraw keeps the key to itself — dxg's `DD_SURFACE_LOCAL`
+     shows no `DDRAWISURF_HASCKEYSRCBLT`, `DdSetColorKey` is never called;
+  3. caps + `DDCAPS_BLT` + a `DdBlt` that declines: the HAL stays, dxg
+     calls `DdSetColorKey` *and* records the key in the surface, and
+     DDTEST's chains and windowed blits are unchanged with `DdBlt` never
+     called;
+  4. caps + the `DdBlt` callback **without** `DDCAPS_BLT`: the same, and
+     nothing can ever be routed to `DdBlt` — this is the driver's shape.
+  So dxg's rule is "colour-key caps need a Blt callback"; the HEL keeps
+  doing every blit, keyed ones included. `ddflags=0x10000`
+  (`DDF_NO_CKEY`) withdraws the D3D caps, the DirectDraw caps, the P8
+  format and the key check together.
+- **Two ways the key arrives**, both kept: `DdSetColorKey` sends
+  `D3DPT_OP_VRAM_COLORKEY` (handle, low, high, on/off) as the app sets
+  it, and the DP2 walk, on every `TEXTURESTAGESTATE` that binds a
+  texture (state 0, pass 1), reads the surface's `DDRAWISURF_HASCKEYSRCBLT`
+  / `ddckCKSrcBlt` off the `DD_SURFACE_LOCAL` the surface table remembers
+  (valid until `DestroySurface`) and sends the record when it differs
+  from what the host was told — as the DDK's sample drivers read it —
+  which covers a key set before the surface was mirrored. The record goes
+  into the batch ahead of the DP2 record, so the host has the key before
+  the draw.
+- **A flip does not move memory — found on the way.** The first case
+  passed and the second read back black: CKTEST's per-case frame dumps
+  and a flip / lock trace showed dxg's flip model on NT. `DdFlip` gets
+  `lpSurfCurr` (front) and `lpSurfTarg` (back); the driver scans out
+  `Targ`'s memory. Afterwards dxg does *not* exchange the two objects'
+  `fpVidMem`: the handles keep their VRAM and the *roles* move — the
+  `DDSCAPS_PRIMARYSURFACE` bit goes to the object now displayed, the
+  application's `back` pointer means the other object from then on, and
+  dxg tells the driver with a `CreateSurfaceEx` pair (same offsets,
+  swapped caps). The M7c first cut re-registered `Targ` at `Curr`'s
+  offset and vice versa in `DdFlip`, so from the second frame of every
+  flip chain the host rendered and read back into the *displayed*
+  buffer on alternate frames; the runtime's `SETRENDERTARGET` alternates
+  the handle (2, 1, 2, 1 …) as the roles alternate, and with the stale
+  offsets the app's `Lock` of its back buffer found nothing (black), or
+  the previous frame. `D3D7TEST`'s golden compare never caught it (every
+  frame identical, the last one read back before its flip), and a
+  spinning scene looks the same either way. `DdFlip` re-registers
+  nothing now.
+- **Palettes never touch the driver.** A texture's palette reaches the
+  host inside the DP2 stream: `SETPALETTE` (palette handle, flags with
+  `DDRAWIPAL_ALPHA` 0x2000 when the entries' `peFlags` are alpha, surface
+  handle) binds a palette to a surface and `UPDATEPALETTE` (palette
+  handle, start, count, `PALETTEENTRY`s) fills it — the same two tokens
+  DX7 and DX8 use (`SetPaletteEntries` / `SetCurrentTexturePalette` in
+  DX8), and the executor answered "palettes are not supported" to them
+  until now. `dwPalCaps` stays 0 and there are still no palette
+  callbacks (the 8 bpp section: dxg drops the HAL otherwise).
+- **The colour key goes by a record**, `D3DPT_OP_VRAM_COLORKEY` (handle,
+  low, high, flags), sent by the texture-bind check above. The key values
+  are the surface's own pixel values (0xf81f for magenta in R5G6B5, an
+  index for P8), a range inclusive.
+- **The host expands both to A8R8G8B8.** DXVK has no P8, and a key needs
+  an alpha channel, so a P8 or keyed texture's host object is created in
+  A8R8G8B8 (`host_format`) and `upload_texture` converts texel by texel:
+  the palette's colour (alpha from `peFlags` when the palette is an alpha
+  one, a grey ramp when no palette was set), the 16-bit formats decoded,
+  alpha 0 for a texel whose raw value is inside the key range. A palette
+  update marks every texture using it dirty; a key set or cleared
+  releases the host object when its format changes (`refresh_object`).
+  Since a bound texture can change under the runtime's nose (a palette
+  edit, a `Lock` of a bound texture), every draw first re-uploads the
+  bound stages whose surface is dirty (`pre_draw`) — the runtime re-sends
+  `TEXTUREMAP` only on a `SetTexture`.
+- **Keying is alpha 0 plus the alpha test, with one override.** Render
+  state 41 (`COLORKEYENABLE`) is a host state now. While it is on and the
+  texture at stage 0 has a key, the alpha test is forced on
+  (`GREATEREQUAL 1`) unless the app runs its own (`ALPHATESTENABLE`),
+  and — the part that matters for 1997 titles — stage 0's alpha op is
+  made `SELECTARG1 TEXTURE` when the app's alpha pipeline does not read
+  the texture alpha: the DX7 runtime's `TEXTUREMAPBLEND` emulation sets
+  `ALPHAOP = SELECTARG2 DIFFUSE` for any texture format without alpha,
+  which is every keyed R5G6B5 / P8 texture, and an alpha test cannot see
+  a key the alpha pipeline threw away. The app's alpha test states and
+  stage-0 alpha op come back the moment the key stops applying (state 41
+  off, another texture bound, the key removed); an app change to those
+  states while overridden is recorded and the override re-applied. The
+  cost of the override: a title that colour-keys *and* blends by the
+  diffuse alpha in the same draw loses the fade (it blends by the
+  texture's alpha, 255 everywhere but the key) — the DX7 SDK's own
+  `TEXTUREMAPBLEND` semantics make that combination rare.
+- Tests: `tools/d3dpt-dp2-test.cpp` — a P8 texture through a palette
+  (four entries, four cells), `UPDATEPALETTE` changing an entry under a
+  bound texture, a keyed R5G6B5 checker with state 41 on (the keyed cell
+  is the clear colour) and off (blue again), the app's own alpha test
+  winning over the key, the key removed, `UPDATEPALETTE` beyond 256
+  entries refused, `SETPALETTE` on an unknown surface ignored.
+  `DRIVER\CKTEST.EXE` (`guest-tools/src/d3dptvid/cktest.c`) does it on XP
+  through the DX7 API: a `DDPF_PALETTEINDEXED8` texture with an
+  `IDirectDrawPalette`, `SetEntries` turning an entry blue, a R5G6B5
+  texture with `SetColorKey(DDCKEY_SRCBLT, magenta)` drawn with
+  `COLORKEYENABLE` on and off, every draw read back from the back buffer;
+  `tools/xp-driver-test.sh <image> cktest` runs it and greps `cktest.log`
+  for "0 failed".
 
 ## 8 bpp palettized modes (2026-09-04, register set v3)
 

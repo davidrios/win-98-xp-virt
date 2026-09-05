@@ -70,12 +70,24 @@ struct VramSurf {
     IDirect3DSurface9 *rt = nullptr;    /* render target or depth stencil */
     bool dirty = true;                  /* VRAM newer than the host object */
     bool rendered = false;              /* host render target newer than VRAM */
+    /* v8: a P8 texture's palette (SETPALETTE: the runtime's palette handle,
+     * whether its entries carry alpha) and a source colour key
+     * (VRAM_COLORKEY): both make the host texture an A8R8G8B8 expansion of
+     * the VRAM texels (host_format) */
+    uint32_t palette = 0;
+    bool pal_alpha = false;
+    bool ckey = false;
+    uint32_t ckey_lo = 0, ckey_hi = 0;
+    D3DFORMAT host_fmt = D3DFMT_UNKNOWN;    /* the format tex was created in */
     void release() {
         if (tex) tex->Release();
         if (rt) rt->Release();
         tex = nullptr; rt = nullptr;
+        host_fmt = D3DFMT_UNKNOWN;
     }
 };
+
+struct Palette { uint32_t argb[256]; };
 
 /* a DX8 vertex shader (CREATEVERTEXSHADER, protocol v7): the D3DVSD_*
  * declaration as a d3d9 vertex declaration, the function (if any) as a
@@ -124,6 +136,14 @@ struct Ddi {
     /* DX8 state sets (STATESET tokens) as d3d9 state blocks, by the runtime's handle */
     std::unordered_map<uint32_t, IDirect3DStateBlock9 *> sblocks;
     bool recording = false;
+    /* v8: the runtime's palettes (UPDATEPALETTE) by handle, and colour
+     * keying: render state 41, the surface bound at stage 0, whether the
+     * alpha test is forced on for its key (the app's own alpha test state
+     * is restored when it is not) */
+    std::unordered_map<uint32_t, Palette> palettes;
+    uint32_t ckey_rs = 0, stage_tex[8] = {};    /* the surface handle bound at each stage */
+    bool ckey_forced = false, ckey_alpha_ovr = false;
+    uint32_t pal_lines = 0;                     /* palette / colour-key events logged (the first few) */
     uint32_t dp2_calls = 0, draws = 0, readbacks = 0;
     /* D3DPT_DP2_TRACE=<flag file>: while the file exists, every token of
      * the next frame (DP2 records up to the next READBACK) is logged with
@@ -192,6 +212,37 @@ static uint32_t fmt_row_bytes(uint32_t f, uint32_t w) {
 }
 static uint32_t fmt_rows(uint32_t f, uint32_t h) { return fmt_dxt(f) ? (h + 3) / 4 : h; }
 
+/* the format the host texture is created in: P8 and colour-keyed textures
+ * are expanded to A8R8G8B8 at upload (DXVK has no P8; the key becomes alpha 0) */
+static D3DFORMAT host_format(const VramSurf &s) {
+    if (s.d.format == D3DFMT_P8) return D3DFMT_A8R8G8B8;
+    if (s.ckey && !fmt_dxt(s.d.format) && fmt_row_bytes(s.d.format, 1) && s.d.format != D3DFMT_A8R8G8B8) return D3DFMT_A8R8G8B8;
+    return (D3DFORMAT)s.d.format;
+}
+static bool needs_expand(const VramSurf &s) { return host_format(s) != (D3DFORMAT)s.d.format || s.ckey; }
+
+/* one texel of the VRAM formats the expansion handles, as A8R8G8B8 (raw = its VRAM value) */
+static uint32_t texel_argb(uint32_t f, uint32_t raw, const Palette *pal, bool pal_alpha) {
+    switch (f) {
+    case D3DFMT_A8R8G8B8: return raw;
+    case D3DFMT_X8R8G8B8: return raw | 0xff000000u;
+    case D3DFMT_R5G6B5: return 0xff000000u | ((raw & 0xf800) << 8) | ((raw & 0xe000) << 3) | ((raw & 0x07e0) << 5) | ((raw & 0x0600) >> 1) | ((raw & 0x1f) << 3) | ((raw & 0x1c) >> 2);
+    case D3DFMT_X1R5G5B5: case D3DFMT_A1R5G5B5: {
+        uint32_t c = ((raw & 0x7c00) << 9) | ((raw & 0x7000) << 4) | ((raw & 0x03e0) << 6) | ((raw & 0x0380) << 1) | ((raw & 0x1f) << 3) | ((raw & 0x1c) >> 2);
+        return c | (f == D3DFMT_A1R5G5B5 && !(raw & 0x8000) ? 0u : 0xff000000u);
+    }
+    case D3DFMT_X4R4G4B4: case D3DFMT_A4R4G4B4: {
+        uint32_t c = ((raw & 0xf00) << 12) | ((raw & 0xf00) << 8) | ((raw & 0x0f0) << 8) | ((raw & 0x0f0) << 4) | ((raw & 0x00f) << 4) | (raw & 0x00f);
+        return c | (f == D3DFMT_A4R4G4B4 ? ((raw & 0xf000) << 16) | ((raw & 0xf000) << 12) : 0xff000000u);
+    }
+    case D3DFMT_P8: {
+        uint32_t c = pal ? pal->argb[raw & 0xff] : (0xff000000u | (raw & 0xff) * 0x010101u);
+        return pal && !pal_alpha ? c | 0xff000000u : c;
+    }
+    default: return 0xff000000u;
+    }
+}
+
 /* -------------------------------------------------------------- surfaces */
 
 static VramSurf *surf(Exec &x, uint32_t h) {
@@ -243,10 +294,18 @@ static bool ensure_object(Exec &x, VramSurf &s) {
         hr = x.dev->CreateRenderTarget(s.d.width, s.d.height, (D3DFORMAT)s.d.format, D3DMULTISAMPLE_NONE, 0, FALSE, &s.rt, nullptr);
         if (FAILED(hr)) x.log("ddi: render target %ux%u fmt %u: 0x%08x", s.d.width, s.d.height, s.d.format, (unsigned)hr);
     } else {
-        hr = x.dev->CreateTexture(s.d.width, s.d.height, s.d.levels, 0, (D3DFORMAT)s.d.format, D3DPOOL_MANAGED, &s.tex, nullptr);
-        if (FAILED(hr)) x.log("ddi: texture %ux%u fmt %u levels %u: 0x%08x", s.d.width, s.d.height, s.d.format, s.d.levels, (unsigned)hr);
+        s.host_fmt = host_format(s);
+        hr = x.dev->CreateTexture(s.d.width, s.d.height, s.d.levels, 0, s.host_fmt, D3DPOOL_MANAGED, &s.tex, nullptr);
+        if (FAILED(hr)) x.log("ddi: texture %ux%u fmt %u (host %u) levels %u: 0x%08x", s.d.width, s.d.height, s.d.format, s.host_fmt, s.d.levels, (unsigned)hr);
     }
     return SUCCEEDED(hr);
+}
+
+/* the host texture of a surface whose expansion changed (a colour key set or
+ * cleared): recreated in the new format on the next use */
+static void refresh_object(VramSurf &s) {
+    if (s.tex && !s.rt && s.host_fmt != host_format(s)) s.release();
+    s.dirty = true;
 }
 
 static void copy_rows(void *dst, uint32_t dpitch, const void *src, uint32_t spitch, uint32_t row, uint32_t rows) {
@@ -266,9 +325,17 @@ static bool ensure_stage(Exec &x, Ddi &d, uint32_t w, uint32_t h, D3DFORMAT fmt,
     return true;
 }
 
-/* VRAM -> host texture (every level) */
-static void upload_texture(Exec &x, VramSurf &s) {
+/* VRAM -> host texture (every level); a P8 or colour-keyed texture is
+ * expanded texel by texel: the palette's colour, alpha 0 for a keyed value */
+static void upload_texture(Exec &x, Ddi &d, VramSurf &s) {
     D3DLOCKED_RECT lr;
+    bool expand = needs_expand(s) && s.host_fmt == D3DFMT_A8R8G8B8;
+    const Palette *pal = nullptr;
+    if (s.d.format == D3DFMT_P8) {
+        auto it = d.palettes.find(s.palette);
+        if (it != d.palettes.end()) pal = &it->second;
+    }
+    uint32_t bpp = fmt_row_bytes(s.d.format, 1);
     for (uint32_t l = 0; l < s.d.levels; l++) {
         uint32_t w = s.d.width >> l, h = s.d.height >> l;
         if (!w) w = 1;
@@ -276,7 +343,23 @@ static void upload_texture(Exec &x, VramSurf &s) {
         uint32_t off = l ? s.levels[l - 1].a : s.d.offset, pitch = l ? s.levels[l - 1].b : s.d.pitch;
         uint32_t row = fmt_row_bytes(s.d.format, w), rows = fmt_rows(s.d.format, h);
         if (FAILED(s.tex->LockRect(l, &lr, nullptr, 0))) continue;
-        copy_rows(lr.pBits, lr.Pitch, x.vram + off, pitch, row < (uint32_t)lr.Pitch ? row : (uint32_t)lr.Pitch, rows);
+        if (!expand || (bpp != 1 && bpp != 2 && bpp != 4)) {
+            copy_rows(lr.pBits, lr.Pitch, x.vram + off, pitch, row < (uint32_t)lr.Pitch ? row : (uint32_t)lr.Pitch, rows);
+        } else {
+            for (uint32_t yy = 0; yy < rows; yy++) {
+                const uint8_t *src = x.vram + off + (size_t)yy * pitch;
+                uint32_t *dst = (uint32_t *)((uint8_t *)lr.pBits + (size_t)yy * lr.Pitch);
+                for (uint32_t xx = 0; xx < w; xx++) {
+                    uint32_t raw;
+                    if (bpp == 1) raw = src[xx];
+                    else if (bpp == 2) { uint16_t v; memcpy(&v, src + xx * 2, 2); raw = v; }
+                    else memcpy(&raw, src + xx * 4, 4);
+                    uint32_t c = texel_argb(s.d.format, raw, pal, s.pal_alpha);
+                    if (s.ckey && raw >= s.ckey_lo && raw <= s.ckey_hi) c &= 0x00ffffffu;
+                    dst[xx] = c;
+                }
+            }
+        }
         s.tex->UnlockRect(l);
     }
     s.dirty = false;
@@ -818,6 +901,7 @@ struct Dp2 {
         } else if (d.trace) trv(vd, h.nverts, h.stride, h.fvf);
         apply_vs(h.fvf);
         if (!h.prim_count) return true;
+        pre_draw();
         if (!h.nindices) {
             if (nv > h.nverts) { if (d.warn_once(0xa0000 | t)) x.log("ddi: dp2: draw8 primitive %u: %u vertices of %u", t, nv, h.nverts); return true; }
             x.dev->DrawPrimitiveUP(t, h.prim_count, vd, h.stride);
@@ -883,6 +967,7 @@ struct Dp2 {
         tr("draw type %u first %u prims %u (%u vertices)%s", t, first, count, nv, ok ? "" : " OUT OF RANGE");
         if (!ok) { if (d.warn_once(0x20000 | t)) x.log("ddi: dp2: primitive %u: vertices %u+%u of %u", t, first, nv, nverts); return; }
         if (d.trace) trv(vtx + (size_t)first * stride, nv);
+        pre_draw();
         x.dev->DrawPrimitiveUP(t, count, vtx + (size_t)first * stride, stride);
         d.draws++;
         snap();
@@ -897,6 +982,7 @@ struct Dp2 {
             return;
         }
         if (d.trace) trv(vtx + (size_t)d.idx[0] * stride, 1), trv(vtx + (size_t)d.idx[1] * stride, 1), trv(vtx + (size_t)d.idx[2 < d.idx.size() ? 2 : 0] * stride, 1);
+        pre_draw();
         x.dev->DrawIndexedPrimitiveUP(t, lo, hi - lo + 1, count, d.idx.data(), D3DFMT_INDEX16, vtx, stride);
         d.draws++;
         snap();
@@ -912,13 +998,82 @@ struct Dp2 {
         return true;
     }
 
+    /* a stage's texture: the surface's host object, re-read from VRAM when
+     * dirty (the guest wrote it, its palette changed, its key changed) */
+    void bind_texture(uint32_t stage, uint32_t handle) {
+        IDirect3DBaseTexture9 *t = nullptr;
+        VramSurf *s = handle ? surf(x, handle) : nullptr;
+        if (s && ensure_object(x, *s) && s->tex) {
+            if (s->dirty) {
+                if (d.pal_lines < 48 && needs_expand(*s)) { d.pal_lines++; x.log("ddi: dp2: expanding texture %u (fmt %u, palette %u%s, key %s 0x%x..0x%x) for stage %u", handle, s->d.format, s->palette, d.palettes.count(s->palette) ? "" : " unknown", s->ckey ? "on" : "off", s->ckey_lo, s->ckey_hi, stage); }
+                if (s->rt) upload_target(x, d, *s); else upload_texture(x, d, *s);
+            }
+            t = s->tex;
+        }
+        x.dev->SetTexture(stage, t);
+        if (stage < 8) d.stage_tex[stage] = t ? handle : 0;
+        if (stage == 0) apply_ckey();
+    }
+    /* before a draw: a bound texture whose VRAM / palette / key changed
+     * since it was bound is uploaded again (the runtime re-sends TEXTUREMAP
+     * only on a SetTexture) */
+    void pre_draw() {
+        for (uint32_t st = 0; st < 8; st++) {
+            VramSurf *s = d.stage_tex[st] ? surf(x, d.stage_tex[st]) : nullptr;
+            if (s && (s->dirty || !s->tex)) bind_texture(st, d.stage_tex[st]);
+        }
+    }
+
+    /* colour keying (v8): a keyed texture's key texels carry alpha 0, so
+     * while COLORKEYENABLE is on and such a texture is at stage 0 the alpha
+     * test is forced on (GREATEREQUAL 1) unless the app runs its own, and
+     * stage 0's alpha op is made to pass the texture alpha through when the
+     * app's does not (the DX7 runtime's TEXTUREMAPBLEND emulation selects
+     * the diffuse alpha for a texture format without alpha — every keyed
+     * R5G6B5 / P8 texture); the app's states come back when the key no
+     * longer applies */
+    void apply_ckey() {
+        VramSurf *s = surf(x, d.stage_tex[0]);
+        bool want = d.ckey_rs && s && s->ckey && !(d.rs_set[15] && d.rs_val[15]);
+        uint32_t aop = d.tss_set[0][4] ? d.tss_val[0][4] : D3DTOP_SELECTARG1;
+        uint32_t a1 = d.tss_set[0][5] ? d.tss_val[0][5] : D3DTA_TEXTURE, a2 = d.tss_set[0][6] ? d.tss_val[0][6] : D3DTA_CURRENT;
+        bool uses_tex = aop == D3DTOP_SELECTARG1 ? (a1 & 0xf) == D3DTA_TEXTURE
+                      : aop == D3DTOP_SELECTARG2 ? (a2 & 0xf) == D3DTA_TEXTURE
+                      : aop != D3DTOP_DISABLE && ((a1 & 0xf) == D3DTA_TEXTURE || (a2 & 0xf) == D3DTA_TEXTURE);
+        bool ovr = want && !uses_tex;
+        if (want != d.ckey_forced) {
+            d.ckey_forced = want;
+            tr("colour key alpha test %s", want ? "forced on" : "restored");
+            if (want) {
+                x.dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+                x.dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+                x.dev->SetRenderState(D3DRS_ALPHAREF, 1);
+            } else {
+                x.dev->SetRenderState(D3DRS_ALPHATESTENABLE, d.rs_set[15] ? d.rs_val[15] : 0);
+                x.dev->SetRenderState(D3DRS_ALPHAFUNC, d.rs_set[25] ? d.rs_val[25] : D3DCMP_ALWAYS);
+                x.dev->SetRenderState(D3DRS_ALPHAREF, d.rs_set[24] ? d.rs_val[24] : 0);
+            }
+        }
+        if (ovr != d.ckey_alpha_ovr) {
+            d.ckey_alpha_ovr = ovr;
+            tr("colour key stage 0 alpha op %s", ovr ? "= texture alpha" : "restored");
+            x.dev->SetTextureStageState(0, D3DTSS_ALPHAOP, ovr ? D3DTOP_SELECTARG1 : aop);
+            x.dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, ovr ? D3DTA_TEXTURE : a1);
+        }
+    }
+
     void render_state(uint32_t s, uint32_t v) {
-        tr("rs %u = 0x%x%s", s, v, rs_passthrough(s) ? "" : " (dropped)");
+        tr("rs %u = 0x%x%s", s, v, rs_passthrough(s) || s == 41 ? "" : " (dropped)");
         if (s < 256) { d.rs_val[s] = v; d.rs_set[s] = 1; }
         if (s == 28 && d.nofog) v = 0;
-        if (rs_passthrough(s)) { x.dev->SetRenderState((D3DRENDERSTATETYPE)s, v); return; }
-        if (s == 41 && v && d.warn_once(0x40000 | s)) x.log("ddi: dp2: colour keying (render state 41) is not implemented");
-        else if (s != 41 && s < 64 && d.warn_once(0x40000 | s)) x.log("ddi: dp2: render state %u dropped (no d3d9 equivalent)", s);
+        if (s == 41) { d.ckey_rs = v; apply_ckey(); return; }              /* COLORKEYENABLE */
+        if (rs_passthrough(s)) {
+            x.dev->SetRenderState((D3DRENDERSTATETYPE)s, v);
+            /* the app's alpha test states: re-forced for the key, or followed */
+            if ((s == 15 || s == 24 || s == 25) && d.ckey_forced) { d.ckey_forced = false; apply_ckey(); }
+            return;
+        }
+        if (s < 64 && d.warn_once(0x40000 | s)) x.log("ddi: dp2: render state %u dropped (no d3d9 equivalent)", s);
     }
 
     void stage_state(uint32_t stage, uint32_t st, uint32_t v) {
@@ -951,9 +1106,9 @@ struct Dp2 {
                     if (d.trace && (bpp == 4 || bpp == 2)) dump_texture(*s, v);
                 }
                 if (!s) { if (d.warn_once(0x50000)) x.log("ddi: dp2: texture handle %u unknown", v); }
-                else if (ensure_object(x, *s) && s->tex) { if (s->dirty) { if (s->rt) upload_target(x, d, *s); else upload_texture(x, *s); } t = s->tex; }
             }
-            x.dev->SetTexture(stage, t);
+            (void)t;
+            bind_texture(stage, v);
             break;
         }
         case 12: x.dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, v); x.dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, v); break;
@@ -968,6 +1123,8 @@ struct Dp2 {
         case 21: x.dev->SetSamplerState(stage, D3DSAMP_MAXANISOTROPY, v); break;
         default:
             if (st < 33) x.dev->SetTextureStageState(stage, (D3DTEXTURESTAGESTATETYPE)st, v);
+            /* the app's stage-0 alpha op while the key overrides it: re-applied or followed */
+            if (stage == 0 && st >= 4 && st <= 6 && d.ckey_alpha_ovr) { d.ckey_alpha_ovr = false; apply_ckey(); }
             break;
         }
     }
@@ -1088,7 +1245,7 @@ struct Dp2 {
                 size_t pad = align_next(0);
                 need = pad + 4 + (size_t)(count + 2) * stride;
                 if (need > left) return fail("truncated TRIANGLEFAN_IMM");
-                if (count) { if (d.trace) trv(q + pad + 4, count + 2); x.dev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count, q + pad + 4, stride); d.draws++; snap(); }
+                if (count) { if (d.trace) trv(q + pad + 4, count + 2); pre_draw(); x.dev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count, q + pad + 4, stride); d.draws++; snap(); }
                 need = align_next(need);
                 break;
             }
@@ -1096,7 +1253,7 @@ struct Dp2 {
                 size_t pad = align_next(0);
                 need = pad + (size_t)count * 2 * stride;
                 if (need > left) return fail("truncated LINELIST_IMM");
-                if (count) { if (d.trace) trv(q + pad, count * 2); x.dev->DrawPrimitiveUP(D3DPT_LINELIST, count, q + pad, stride); d.draws++; snap(); }
+                if (count) { if (d.trace) trv(q + pad, count * 2); pre_draw(); x.dev->DrawPrimitiveUP(D3DPT_LINELIST, count, q + pad, stride); d.draws++; snap(); }
                 need = align_next(need);
                 break;
             }
@@ -1134,15 +1291,35 @@ struct Dp2 {
                 if (need > left) return fail("truncated WINFO");
                 break;                                          /* w-buffer range: no d3d9 equivalent */
             case DP2_SETPALETTE:
+                /* palette handle, flags (DDRAWIPAL_ALPHA 0x2000: the entries' peFlags are alpha), surface handle */
                 need = count * 12u;
                 if (need > left) return fail("truncated SETPALETTE");
-                if (d.warn_once(op)) x.log("ddi: dp2: palettes are not supported");
+                for (uint32_t i = 0; i < count; i++) {
+                    uint32_t ph = u32(q + 12 * i), fl = u32(q + 12 * i + 4), sh = u32(q + 12 * i + 8);
+                    VramSurf *s = surf(x, sh);
+                    tr("palette %u (flags 0x%x) on surface %u%s", ph, fl, sh, s ? "" : " (unknown)");
+                    if (d.pal_lines < 48) { d.pal_lines++; x.log("ddi: dp2: SETPALETTE palette %u flags 0x%x on surface %u%s", ph, fl, sh, s ? "" : " (unknown)"); }
+                    if (!s) { if (d.warn_once(0xd0000)) x.log("ddi: dp2: SETPALETTE on unknown surface %u", sh); continue; }
+                    if (s->palette != ph || s->pal_alpha != ((fl & 0x2000) != 0)) { s->palette = ph; s->pal_alpha = (fl & 0x2000) != 0; s->dirty = true; }
+                }
                 break;
-            case DP2_UPDATEPALETTE:
+            case DP2_UPDATEPALETTE: {
+                /* palette handle, start index, entry count, then PALETTEENTRYs (r, g, b, flags) */
                 if (left < 8) return fail("truncated UPDATEPALETTE");
-                need = 8 + (size_t)u16(q + 6) * 4;
+                uint32_t ph = u32(q), start = u16(q + 4), n = u16(q + 6);
+                need = 8 + (size_t)n * 4;
                 if (need > left) return fail("truncated UPDATEPALETTE");
+                if (start + n > 256) return fail("UPDATEPALETTE beyond 256 entries");
+                tr("palette %u entries %u..%u", ph, start, start + n);
+                if (d.pal_lines < 48) { d.pal_lines++; x.log("ddi: dp2: UPDATEPALETTE palette %u entries %u..%u (first %02x%02x%02x/%02x)", ph, start, start + n, q[8], q[9], q[10], q[11]); }
+                Palette &pal = d.palettes[ph];
+                for (uint32_t i = 0; i < n; i++) {
+                    const uint8_t *e = q + 8 + 4 * i;
+                    pal.argb[start + i] = ((uint32_t)e[3] << 24) | ((uint32_t)e[0] << 16) | ((uint32_t)e[1] << 8) | e[2];
+                }
+                for (auto &kv : d.surfs) if (kv.second.palette == ph && kv.second.d.format == D3DFMT_P8) kv.second.dirty = true;
                 break;
+            }
             case DP2_ZRANGE:
                 need = count * 8u;
                 if (need > left) return fail("truncated ZRANGE");
@@ -1448,6 +1625,7 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
             if (x.dev) { x.dev->SetDepthStencilSurface(nullptr); }
             x.ddi->bound_rt = x.ddi->bound_z = 0;
         }
+        for (uint32_t st = 0; st < 8; st++) if (x.ddi->stage_tex[st] == a->handle) x.ddi->stage_tex[st] = 0;
         it->second.release();
         x.ddi->surfs.erase(it);
         break;
@@ -1456,6 +1634,18 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
         auto *a = body<d3dpt_handle>(c, 0, b); if (!a) return true;
         VramSurf *s = surf(x, a->handle);
         if (s) { s->dirty = true; s->rendered = false; }
+        break;
+    }
+    case D3DPT_OP_VRAM_COLORKEY: {
+        auto *a = body<d3dpt_u32x4>(c, 0, b); if (!a) return true;
+        VramSurf *s = surf(x, a->a);
+        if (ddi(x).pal_lines < 48) { ddi(x).pal_lines++; x.log("ddi: colour key on surface %u: 0x%x..0x%x flags %u%s", a->a, a->b, a->c, a->d, s ? "" : " (unknown)"); }
+        if (!s) { if (ddi(x).warn_once(0xd0001)) x.log("ddi: colour key on unknown surface %u", a->a); break; }
+        bool on = (a->d & 1) != 0;
+        if (s->ckey != on || s->ckey_lo != a->b || s->ckey_hi != a->c) {
+            s->ckey = on; s->ckey_lo = a->b; s->ckey_hi = a->c;
+            refresh_object(*s);
+        }
         break;
     }
     case D3DPT_OP_CTX_CREATE: {

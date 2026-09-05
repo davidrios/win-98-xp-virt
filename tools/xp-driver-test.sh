@@ -12,6 +12,8 @@
 #                                                       # its frame diffed against the native d3d9 oracle of scripts/test.sh
 #   tools/xp-driver-test.sh <image.qcow2> shtest       # SHTEST: vertex / pixel shaders 1.x through d3d8.dll on the DX8 DDI,
 #                                                       # every draw read back in the guest; PASS = "0 failed" in shtest.log
+#   tools/xp-driver-test.sh <image.qcow2> cktest       # CKTEST: palettized textures + colour keying through the DX7 HAL,
+#                                                       # every draw read back in the guest; PASS = "0 failed" in cktest.log
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
 #   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
@@ -29,7 +31,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|shtest|cmd|bat}"; shift 2
+IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|shtest|cktest|cmd|bat}"; shift 2
 OUT="${OUT:-$ROOT/build/xp-driver-test}"; mkdir -p "$OUT"
 ISO="$ROOT/guest-tools/out/d3dpt-driver.iso"
 [ -f "$ISO" ] || { echo "no $ISO: run guest-tools/build-driver.sh"; exit 1; }
@@ -137,7 +139,15 @@ case "$MODE" in
     sleep 17
     finish
     pull shtest.log
-    if grep -q 'shtest: .* cases, 0 failed' "$OUT/shtest.log" 2>/dev/null; then echo "-- shtest: PASS"; else echo "-- shtest: FAIL (see $OUT/shtest.log and the device log)"; fi ;;
+    if grep -q 'shtest: [1-9][0-9]* cases, 0 failed' "$OUT/shtest.log" 2>/dev/null; then echo "-- shtest: PASS"; else echo "-- shtest: FAIL (see $OUT/shtest.log and the device log)"; fi ;;
+  cktest)
+    run 'cd /d %TEMP% & D:\DRIVER\CKTEST.EXE & copy cktest.log E:\ & copy ck*.bmp E:\'
+    sleep 8; Q screendump "$OUT/cktest-fullscreen.png" || true
+    sleep 17
+    finish
+    pull cktest.log
+    for n in 1 2 3 4 5 6; do mcopy -n -i "$SCRATCH@@1048576" "::/ck$n.bmp" "$OUT/ck$n.bmp" 2>/dev/null || true; done
+    if grep -q 'cktest: [1-9][0-9]* cases, 0 failed' "$OUT/cktest.log" 2>/dev/null; then echo "-- cktest: PASS"; else echo "-- cktest: FAIL (see $OUT/cktest.log and the device log)"; fi ;;
   cmd|bat)
     if [ "$MODE" = bat ]; then run 'E:\RUN.BAT'; else run "${1:?guest command line}"; fi
     if [ -n "${SHOTS:-}" ]; then

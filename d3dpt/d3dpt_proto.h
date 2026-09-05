@@ -30,7 +30,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   7u
+#define D3DPT_PROTO_VERSION   8u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -163,6 +163,9 @@ enum d3dpt_op {
     D3DPT_OP_CTX_CLEAR = 102,           /* body: d3dpt_ctx_clear + rects (D3DRECT) */
     D3DPT_OP_DP2 = 103,                 /* body: d3dpt_dp2 (sync) + command bytes (8-aligned) + vertex bytes: a DrawPrimitives2 call */
     D3DPT_OP_READBACK = 104,            /* body: d3dpt_sync (handle = surface; sync): copy the host render target into its VRAM */
+    D3DPT_OP_VRAM_COLORKEY = 105,       /* body: d3dpt_u32x4 (surface handle, key low, key high, flags: 1 = the surface has a
+                                         * source colour key): texels in [low, high] (the surface's own pixel value) render
+                                         * transparent while render state 41 (COLORKEYENABLE) is on (v8; forward) */
     D3DPT_OP_MAX
 };
 
@@ -282,7 +285,9 @@ typedef struct d3dpt_stretch_rect {
  * dwSurfaceHandle (unique per process), offset relative to the start of
  * VRAM, format = D3DFORMAT (the driver translates the DDPIXELFORMAT),
  * caps = D3DPT_VS_*; levels = mip levels for textures (each level follows
- * the previous one in VRAM at its own pitch, DirectDraw layout) */
+ * the previous one in VRAM at its own pitch, DirectDraw layout). A P8
+ * (palettized) texture's palette arrives in the DP2 stream as the runtime's
+ * SETPALETTE / UPDATEPALETTE tokens; the host expands the indices (v8) */
 typedef struct d3dpt_vram_surface {
     uint32_t handle, offset;
     uint32_t width, height, pitch, format;

@@ -63,6 +63,8 @@
 #define DDF_NO_DX8             0x2000 /* bisection: refuse GetDriverInfo2 (a DirectX 7 driver to d3d8.dll) */
 #define DDF_NO_SHADERS         0x4000 /* bisection: no vertex / pixel shader versions in D3DCAPS8 */
 #define DDF_NO_VSYNC           0x8000 /* flips complete instantly again (M7b): throughput runs */
+#define DDF_NO_CKEY            0x10000 /* bisection: no colour keying (caps, callbacks, the key check), no P8 textures */
+#define DDF_CKEY_NOBLTCB       0x20000 /* the repro: the colour-key caps without a Blt callback make dxg drop the HAL */
 
 #define D3D_MAX_CTX 16
 
@@ -680,6 +682,11 @@ BOOL APIENTRY DrvAssertMode(DHPDEV dhpdev, BOOL bEnable)
 static BOOL d3d_init(PPDEV p);
 static ULONG pf_format(const DDPIXELFORMAT *f);
 static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset);
+static ULONG surf_handle(PDD_SURFACE_LOCAL s);
+static void d3d_colorkey_op(PPDEV p, ULONG handle, ULONG lo, ULONG hi, ULONG flags);
+static void surf_colorkey_check(PPDEV p, ULONG handle);
+static DWORD APIENTRY DdSetColorKey(PDD_SETCOLORKEYDATA d);
+static DWORD APIENTRY DdBlt(PDD_BLTDATA d);
 static HRESULT d3d_readback(PPDEV p, PDD_SURFACE_LOCAL s);
 static DWORD APIENTRY DdCreateSurface(PDD_CREATESURFACEDATA d);
 static DWORD APIENTRY DdCreateSurfaceEx(PDD_CREATESURFACEEXDATA d);
@@ -907,16 +914,18 @@ static DWORD APIENTRY DdFlip(PDD_FLIPDATA d)
     }
     if (p->ctx_live) {
         /* what Direct3D rendered into the back buffer must be in its VRAM
-         * before it is scanned out; afterwards dxg exchanges the two
-         * surfaces' VRAM, so the host mirror follows */
+         * before it is scanned out */
         d3d_readback(p, d->lpSurfTarg);
     }
-    /* the page flip: scan out from the target's VRAM offset */
+    /* the page flip: scan out from the target's VRAM offset. Nothing to
+     * re-register: on NT dxg does not exchange the two surfaces' memory, it
+     * exchanges their roles (the PRIMARYSURFACE caps move, each handle keeps
+     * its VRAM, the application's "back buffer" is the other object from now
+     * on) and tells the driver with a CreateSurfaceEx pair. The first M7c cut
+     * re-registered the target at the current surface's offset and vice versa
+     * here, which put the host's render target in the displayed buffer every
+     * other frame (CKTEST, 2026-09-05). */
     p->regs[D3DPT_FB_REG_OFFSET / 4] = (ULONG)d->lpSurfTarg->lpGbl->fpVidMem;
-    if (p->ctx_live) {
-        d3d_register_at(p, d->lpSurfTarg, (ULONG)d->lpSurfCurr->lpGbl->fpVidMem);
-        d3d_register_at(p, d->lpSurfCurr, (ULONG)d->lpSurfTarg->lpGbl->fpVidMem);
-    }
     p->flip_frame = p->regs[D3DPT_FB_REG_FRAMES / 4];
     EngQueryPerformanceCounter(&p->flip_qpc);
     p->flip_pending = !(ddflags(p) & DDF_NO_VSYNC);
@@ -1193,6 +1202,18 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
     if (ddflags(p) & DDF_GDI_CAP) {
         pHalInfo->ddCaps.dwCaps |= DDCAPS_GDI;
     }
+    /* Source colour keys on video-memory textures (doc 15 "Palettized
+     * textures and colour keying"): without these caps user-mode ddraw
+     * keeps a texture's key to itself (SetColorKey succeeds, nothing
+     * reaches the kernel); with them dxg calls DdSetColorKey and records
+     * the key in the surface — provided the driver also has a Blt
+     * callback, or dxg drops the whole HAL (DDCAPS_NOHARDWARE; CKTEST
+     * bisection 2026-09-05, DDF_CKEY_NOBLTCB is the repro). No DDCAPS_BLT,
+     * so the HEL still does every blit and DdBlt is never called. */
+    if (p->d3d && !(ddflags(p) & DDF_NO_CKEY)) {
+        pHalInfo->ddCaps.dwCaps |= DDCAPS_COLORKEY;
+        pHalInfo->ddCaps.dwCKeyCaps = DDCKEYCAPS_SRCBLT;
+    }
     pHalInfo->ddCaps.dwVidMemTotal = heap_end(p) - start;
     pHalInfo->ddCaps.dwVidMemFree = heap_end(p) - start;
     /* dwPalCaps stays 0 at 8 bpp too: XP's dxg.sys drops the whole HAL when
@@ -1266,6 +1287,14 @@ BOOL APIENTRY DrvEnableDirectDraw(DHPDEV dhpdev, DD_CALLBACKS *cb, DD_SURFACECAL
             scb->DestroySurface = DdDestroySurface;
             scb->Lock = DdLock;
             scb->Unlock = DdUnlock;
+            if (!(ddflags((PPDEV)dhpdev) & DDF_NO_CKEY)) {
+                scb->dwFlags |= DDHAL_SURFCB32_SETCOLORKEY;     /* a texture's source colour key -> the host */
+                scb->SetColorKey = DdSetColorKey;
+                if (!(ddflags((PPDEV)dhpdev) & DDF_CKEY_NOBLTCB)) {
+                    scb->dwFlags |= DDHAL_SURFCB32_BLT;         /* never called (no DDCAPS_BLT); its presence keeps the HAL */
+                    scb->Blt = DdBlt;
+                }
+            }
         }
     }
     /* CreateSurface only sizes compressed textures for dxg's allocator */
@@ -1294,6 +1323,7 @@ VOID APIENTRY DrvDisableDirectDraw(DHPDEV dhpdev)
 #define D3DFMT_A1R5G5B5_  25u
 #define D3DFMT_A4R4G4B4_  26u
 #define D3DFMT_X4R4G4B4_  30u
+#define D3DFMT_P8_        41u
 #define D3DFMT_D16_       80u
 #define D3DFMT_D24X8_     77u
 #define D3DFMT_D24S8_     75u
@@ -1328,6 +1358,9 @@ static ULONG pf_format(const DDPIXELFORMAT *f)
         if (bits == 32 || bits == 24) return st ? D3DFMT_D24S8_ : D3DFMT_D24X8_;
         return 0;
     }
+    if ((f->dwFlags & DDPF_PALETTEINDEXED8) && f->dwRGBBitCount == 8) {
+        return D3DFMT_P8_;                  /* the palette reaches the host in the DP2 stream (SETPALETTE / UPDATEPALETTE) */
+    }
     if (f->dwFlags & DDPF_RGB) {
         BOOL alpha = (f->dwFlags & DDPF_ALPHAPIXELS) && f->dwRGBAlphaBitMask;
         if (f->dwRGBBitCount == 32 && f->dwRBitMask == 0x00ff0000) return alpha ? D3DFMT_A8R8G8B8_ : D3DFMT_X8R8G8B8_;
@@ -1348,6 +1381,15 @@ static void pf_rgb(DDPIXELFORMAT *f, ULONG bits, ULONG r, ULONG g, ULONG b, ULON
     f->dwFlags = DDPF_RGB | (a ? DDPF_ALPHAPIXELS : 0);
     f->dwRGBBitCount = bits;
     f->dwRBitMask = r; f->dwGBitMask = g; f->dwBBitMask = b; f->dwRGBAlphaBitMask = a;
+}
+
+static void pf_p8(DDPIXELFORMAT *f)
+{
+    ULONG i;
+    for (i = 0; i < sizeof(*f) / 4; i++) ((ULONG *)f)[i] = 0;
+    f->dwSize = sizeof(*f);
+    f->dwFlags = DDPF_RGB | DDPF_PALETTEINDEXED8;
+    f->dwRGBBitCount = 8;
 }
 
 static void pf_fourcc(DDPIXELFORMAT *f, ULONG cc)
@@ -1371,7 +1413,8 @@ static void pf_z(DDPIXELFORMAT *f, ULONG bits, ULONG stencil)
     f->dwStencilBitMask = stencil ? 0xff : 0;
 }
 
-static DDSURFACEDESC d3d_texformats[9];
+static DDSURFACEDESC d3d_texformats[10];
+static ULONG d3d_texformats_n;
 
 static void fmt8_add(ULONG fmt, ULONG ops)
 {
@@ -1460,11 +1503,20 @@ static void d3d_caps_init(PPDEV p)
     pf_fourcc(&d3d_texformats[6].ddpfPixelFormat, FOURCC_('D', 'X', 'T', '1'));
     pf_fourcc(&d3d_texformats[7].ddpfPixelFormat, FOURCC_('D', 'X', 'T', '3'));
     pf_fourcc(&d3d_texformats[8].ddpfPixelFormat, FOURCC_('D', 'X', 'T', '5'));
-    for (i = 0; i < 9; i++) {
+    d3d_texformats_n = 9;
+    if (!(ddflags(p) & DDF_NO_CKEY)) {
+        /* 8-bit palettized textures (a palette per texture, what a 1997
+         * title's art is stored as) and colour keying: the host expands
+         * both to A8R8G8B8 (doc 15 "Palettized textures and colour keying") */
+        pf_p8(&d3d_texformats[9].ddpfPixelFormat);
+        d3d_texformats_n = 10;
+        t->dwTextureCaps |= D3DPTEXTURECAPS_TRANSPARENCY | D3DPTEXTURECAPS_ALPHAPALETTE;
+    }
+    for (i = 0; i < d3d_texformats_n; i++) {
         d3d_texformats[i].dwSize = sizeof(DDSURFACEDESC);
         d3d_texformats[i].dwFlags = DDSD_PIXELFORMAT;
     }
-    g->dwNumTextureFormats = 9;
+    g->dwNumTextureFormats = d3d_texformats_n;
     g->lpTextureFormats = d3d_texformats;
 
     d3d_zformats.count = 3;
@@ -1510,7 +1562,7 @@ static void d3d_caps_init(PPDEV p)
     c8->DestBlendCaps = t->dwDestBlendCaps;
     c8->AlphaCmpCaps = t->dwAlphaCmpCaps;
     c8->ShadeCaps = t->dwShadeCaps;
-    c8->TextureCaps = t->dwTextureCaps | D3DPTEXTURECAPS_MIPMAP;
+    c8->TextureCaps = (t->dwTextureCaps & ~D3DPTEXTURECAPS_TRANSPARENCY) | D3DPTEXTURECAPS_MIPMAP;   /* DX8 has no colour key; bit 3 is unused there */
     c8->TextureFilterCaps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MINFLINEAR | D3DPTFILTERCAPS_MIPFPOINT |
                             D3DPTFILTERCAPS_MIPFLINEAR | D3DPTFILTERCAPS_MAGFPOINT | D3DPTFILTERCAPS_MAGFLINEAR;
     c8->TextureAddressCaps = t->dwTextureAddressCaps | D3DPTADDRESSCAPS_MIRRORONCE;
@@ -1562,6 +1614,9 @@ static void d3d_caps_init(PPDEV p)
     fmt8_add(FOURCC_('D', 'X', 'T', '1'), D3DFORMAT_OP_TEXTURE_);
     fmt8_add(FOURCC_('D', 'X', 'T', '3'), D3DFORMAT_OP_TEXTURE_);
     fmt8_add(FOURCC_('D', 'X', 'T', '5'), D3DFORMAT_OP_TEXTURE_);
+    if (!(ddflags(p) & DDF_NO_CKEY)) {
+        fmt8_add(D3DFMT_P8_, D3DFORMAT_OP_TEXTURE_);
+    }
     fmt8_add(D3DFMT_D16_, D3DFORMAT_OP_ZSTENCIL_ | D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_);
     fmt8_add(D3DFMT_D24X8_, D3DFORMAT_OP_ZSTENCIL_ | D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_);
     fmt8_add(D3DFMT_D24S8_, D3DFORMAT_OP_ZSTENCIL_ | D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_);
@@ -1723,6 +1778,9 @@ typedef struct _SURF {
     ULONG pitch, w, h, fmt;
     UCHAR used, sysmem, buffer, levels;
     SURF_LEVEL lv[15];          /* mip levels 1.. */
+    PDD_SURFACE_LOCAL lcl;      /* dxg's surface (valid until DestroySurface): the colour key lives in it */
+    UCHAR ck_on;                /* the key the host was told (0xff: not yet) */
+    ULONG ck_lo, ck_hi;
 } SURF;
 
 static SURF *surf_tab;
@@ -1767,6 +1825,8 @@ static ULONG fmt_row_bytes(ULONG f, ULONG w)
     case D3DFMT_R5G6B5_: case D3DFMT_X1R5G5B5_: case D3DFMT_A1R5G5B5_: case D3DFMT_A4R4G4B4_: case D3DFMT_X4R4G4B4_:
     case D3DFMT_D16_: case D3DFMT_D15S1_:
         return w * 2;
+    case D3DFMT_P8_:
+        return w;
     default:
         if (f == FOURCC_('D', 'X', 'T', '1')) return ((w + 3) / 4) * 8;
         if (f == FOURCC_('D', 'X', 'T', '2') || f == FOURCC_('D', 'X', 'T', '3') ||
@@ -1848,6 +1908,8 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     t = surf_slot(handle, TRUE);
     if (t) {
         t->used = 1;
+        t->lcl = s;
+        t->ck_on = 0xff;
         t->sysmem = sysmem;
         t->buffer = buffer;
         t->mem = sysmem ? (ULONG_PTR)s->lpGbl->fpVidMem : (ULONG_PTR)p->fb + offset;
@@ -1878,6 +1940,73 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     r->caps = caps;
     r->levels = n;
     for (i = 0; i + 1 < n; i++) ((d3dpt_u32x2 *)(r + 1))[i] = lv[i];
+}
+
+/* The texture's source colour key, read off dxg's surface when a
+ * TEXTURESTAGESTATE binds it (DDRAWISURF_HASCKEYSRCBLT + ddckCKSrcBlt, as
+ * the DDK's sample drivers do). dxg records it there — and calls
+ * DdSetColorKey — only for a driver with the colour-key DirectDraw caps;
+ * this check covers a key set before the surface was mirrored and a
+ * surface re-created under the same handle. The host hears of it once per
+ * change. */
+static void surf_colorkey_check(PPDEV p, ULONG handle)
+{
+    SURF *t = surf_slot(handle, FALSE);
+    PDD_SURFACE_LOCAL s;
+    UCHAR on;
+    ULONG lo, hi;
+
+    if (!t || !t->lcl || t->sysmem || t->buffer) {
+        return;
+    }
+    s = t->lcl;
+    on = (s->dwFlags & DDRAWISURF_HASCKEYSRCBLT) ? 1 : 0;
+    lo = on ? s->ddckCKSrcBlt.dwColorSpaceLowValue : 0;
+    hi = on ? s->ddckCKSrcBlt.dwColorSpaceHighValue : 0;
+    if (t->ck_on == 0xff && p->reg_lines < 4096) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: texture ", handle);
+        dbg_hex(p, " bound, surface flags ", s->dwFlags);
+        dbg_hex(p, " src key ", s->ddckCKSrcBlt.dwColorSpaceLowValue);
+        dbg_hex(p, "..", s->ddckCKSrcBlt.dwColorSpaceHighValue);
+        dbg_hex(p, " dst key ", s->ddckCKDestBlt.dwColorSpaceLowValue);
+        dbg_puts(p, "\n");
+    }
+    if (t->ck_on == on && t->ck_lo == lo && t->ck_hi == hi) {
+        return;
+    }
+    if (t->ck_on == 0xff && !on) {
+        t->ck_on = 0;               /* never keyed: nothing to tell */
+        return;
+    }
+    t->ck_on = on;
+    t->ck_lo = lo;
+    t->ck_hi = hi;
+    if (p->reg_lines < 4096) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: colour key of surface ", handle);
+        dbg_hex(p, on ? " on " : " off ", lo);
+        dbg_hex(p, "..", hi);
+        dbg_puts(p, "\n");
+    }
+    d3d_colorkey_op(p, handle, lo, hi, on);
+}
+
+/* VRAM_COLORKEY: the texture's source colour key (protocol v8) */
+static void d3d_colorkey_op(PPDEV p, ULONG handle, ULONG lo, ULONG hi, ULONG flags)
+{
+    d3dpt_u32x4 *k;
+
+    if (!p->d3d || !handle) {
+        return;
+    }
+    k = d3dpt_enc_cmd(&p->enc, D3DPT_OP_VRAM_COLORKEY, sizeof(*k), 0);
+    if (k) {
+        k->a = handle;
+        k->b = lo;
+        k->c = hi;
+        k->d = flags;
+    }
 }
 
 static void d3d_register(PPDEV p, PDD_SURFACE_LOCAL s)
@@ -2003,6 +2132,55 @@ static DWORD APIENTRY DdLock(PDD_LOCKDATA d)
     /* a render target the host drew into: bring the frame into VRAM first */
     if (p->ctx_live && s && surf_is_target(s)) {
         d3d_readback(p, s);
+    }
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_NOTHANDLED;
+}
+
+/* SetColorKey(DDCKEY_SRCBLT) on a video-memory texture: the host keys the
+ * texels in [low, high] (alpha 0 + alpha test while COLORKEYENABLE is on).
+ * dxg records the key in the surface as well (surf_colorkey_check finds
+ * it there at texture bind, which covers a key set before the surface was
+ * mirrored); dwFlags also carries DDCKEY_COLORSPACE for a range */
+static DWORD APIENTRY DdSetColorKey(PDD_SETCOLORKEYDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+    PDD_SURFACE_LOCAL s = d->lpDDSurface;
+
+    if (p->reg_lines < 4096) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: setcolorkey surface ", s ? surf_handle(s) : 0);
+        dbg_hex(p, " flags ", d->dwFlags);
+        dbg_hex(p, " key ", d->ckNew.dwColorSpaceLowValue);
+        dbg_hex(p, "..", d->ckNew.dwColorSpaceHighValue);
+        dbg_puts(p, "\n");
+    }
+    if (p->d3d && s && (d->dwFlags & DDCKEY_SRCBLT) && !(s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) &&
+        (s->ddsCaps.dwCaps & DDSCAPS_TEXTURE)) {
+        SURF *t = surf_slot(surf_handle(s), FALSE);
+        if (t) {
+            t->ck_on = 1;
+            t->ck_lo = d->ckNew.dwColorSpaceLowValue;
+            t->ck_hi = d->ckNew.dwColorSpaceHighValue;
+        }
+        d3d_colorkey_op(p, surf_handle(s), d->ckNew.dwColorSpaceLowValue, d->ckNew.dwColorSpaceHighValue, 1);
+    }
+    d->ddRVal = DD_OK;
+    return DDHAL_DRIVER_HANDLED;
+}
+
+/* Present so that dxg accepts the colour-key caps; never called, since the
+ * driver claims no DDCAPS_BLT (the HEL does every blit). Declines anything
+ * that does arrive. */
+static DWORD APIENTRY DdBlt(PDD_BLTDATA d)
+{
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    if (p->reg_lines < 4096) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp: blt flags ", d->dwFlags);
+        dbg_hex(p, " rop ", d->bltFX.dwROP);
+        dbg_puts(p, " declined\n");
     }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_NOTHANDLED;
@@ -2560,6 +2738,17 @@ static BOOL walk(DP2WALK *w)
         case 1: case 2: case 3: case 15: case 16: case 17: case 18: case 19: case 20: case 21: case 22:
         case 26: case 27:
             w->needs_vb = TRUE;
+            walk_put(w, c, 4 + size);
+            break;
+        case 25:                                                /* TEXTURESTAGESTATE: a bound texture's colour key, in pass 1 */
+            if (!w->out) {
+                for (i = 0; i < count; i++) {
+                    const USHORT *e = (const USHORT *)(q + i * 8);
+                    if (e[1] == 0 && ((const ULONG *)(q + i * 8))[1] != 0) {
+                        surf_colorkey_check(w->p, ((const ULONG *)(q + i * 8))[1]);
+                    }
+                }
+            }
             walk_put(w, c, 4 + size);
             break;
         case 38:                                                /* TEXBLT: done here, in pass 1 */
