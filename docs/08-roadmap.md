@@ -133,6 +133,18 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 - **Exit:** a stranger can go from install → playing a disc dump of a 1999
   game with a CRT shader in under an hour, on any of the three platforms.
 
+## M9 — TCG on Apple Silicon (track opened 2026-09-05: `docs/tracks/m9-tcg-aarch64.md`)
+
+- Profile first: XP idle / 7-Zip / a game under TCG on the Air, the vCPU
+  thread split into generated code, helpers, softmmu, translation; the hot
+  guest instructions' host code classified (`tools/tcg-profile.sh`,
+  `tools/tcg-hot.py`).
+- Then the optimization the data picks (candidates: flags in NZCV in the
+  aarch64 backend, barrier elision on one vCPU, cheaper TLB lookups),
+  with M8's on/off-oracle methodology.
+- **Exit:** a measured, reproducible gain on the game workload with both
+  guest batteries identical and `scripts/test.sh all` green.
+
 ## Post-v1 candidates
 
 Recording/streaming, gamepads / DirectInput, CRT bezel packs, VRR pacing,
