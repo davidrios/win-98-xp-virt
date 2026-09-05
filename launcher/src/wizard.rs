@@ -42,6 +42,11 @@ pub struct Wizard {
     /// one, the family's own default follows the family (Win98 is
     /// emulated, XP is automatic — `bundle::default_accel`).
     accel_chosen: bool,
+    /// Whether the machine gets a network adapter at all
+    /// (`Machine::network`). No `_chosen` twin: unlike memory and the
+    /// accelerator this doesn't follow the family, so nothing has to
+    /// move under a user who switched Win98 to XP.
+    network: bool,
     existing_disk: bool,
     disk_path: String,
     disk_size_gb: u32,
@@ -66,6 +71,7 @@ impl Default for Wizard {
             ram_chosen: false,
             accel: bundle::default_accel(Family::Win98),
             accel_chosen: false,
+            network: true,
             existing_disk: false,
             disk_path: String::new(),
             disk_size_gb: 2,
@@ -108,6 +114,7 @@ impl Wizard {
             ram_chosen: true,
             accel: machine.effective_accel(),
             accel_chosen: true,
+            network: machine.network,
             existing_disk: true,
             disk_path: machine.disk.display().to_string(),
             install_media: machine.boot_disc().map(|d| d.display().to_string()).unwrap_or_default(),
@@ -135,6 +142,10 @@ impl Wizard {
     pub fn set_accel(&mut self, accel: Accel) {
         self.accel = accel;
         self.accel_chosen = true;
+    }
+
+    pub fn set_network(&mut self, network: bool) {
+        self.network = network;
     }
 
     /// Headless construction (a debug verb; see `main.rs`'s `--wizard-new`)
@@ -200,6 +211,7 @@ impl Wizard {
                 ui.separator();
                 self.memory_ui(ui);
                 self.accel_ui(ui);
+                self.network_ui(ui);
                 ui.separator();
                 if editing {
                     filepicker::path_field(ui, "Disk path", &mut self.disk_path, Some(DISK_FILTER));
@@ -331,6 +343,25 @@ impl Wizard {
         }
     }
 
+    /// The networking row: one checkbox, because there is one question
+    /// here — does this machine have a network card. What it gets when
+    /// it does is QEMU's user-mode NAT (doc 06's per-family NIC), which
+    /// needs no host privileges and gives nothing on the network a way
+    /// in; the line under the box says so, since "networking" otherwise
+    /// sounds like the guest is being put on the LAN.
+    fn network_ui(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(&mut self.network, "Networking");
+        if self.network {
+            ui.small("Outbound only, through the host (user-mode NAT): nothing on the network can reach the guest.");
+            // Worth saying once, next to the switch: these guests stopped
+            // getting security fixes over twenty years ago, and their own
+            // browsers are the least safe thing on the machine.
+            ui.small("These are unpatched systems — don't browse the web on one.");
+        } else {
+            ui.small("No network adapter at all: Windows won't see a card or ask for its driver.");
+        }
+    }
+
     /// The `Machine` the current field values describe, given the disk
     /// path to use (a fresh disk's path isn't known until it's created,
     /// so callers that might still need to do that pass it in rather
@@ -344,6 +375,7 @@ impl Wizard {
                 family: self.family,
                 ram_mb: self.ram_mb,
                 accel: Some(self.accel),
+                network: self.network,
                 disk,
                 disc: None,
                 discs: Vec::new(),
@@ -365,6 +397,7 @@ impl Wizard {
         // the machine gets, even when it is the family's own default.
         machine.accel =
             Some(if self.accel_chosen { self.accel } else { bundle::default_accel(self.family) });
+        machine.network = self.network;
         machine.shader_profile = self.shader_profile.clone();
         // The single slot this form has is the machine's *boot* disc;
         // everything else lives on the shared shelf (`disc_library.rs`),

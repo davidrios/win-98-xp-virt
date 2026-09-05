@@ -51,6 +51,17 @@ pub struct Machine {
     /// launcher saves carries an explicit value: the form always has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accel: Option<Accel>,
+    /// Whether the machine has a network adapter at all (doc 06's
+    /// per-family NIC on QEMU's user-mode NAT). `false` gives the guest
+    /// no adapter rather than an unplugged one: "no networking" should
+    /// mean Windows never sees a card, never asks for its driver and
+    /// never waits on a network at boot.
+    ///
+    /// Defaults to `true` when the field is absent, which is how every
+    /// bundle written before it existed ran — a machine must not lose
+    /// its network by being read by a newer launcher.
+    #[serde(default = "network_enabled_default")]
+    pub network: bool,
     /// Primary IDE hard disk (qcow2).
     pub disk: PathBuf,
     /// The disc in the CD-ROM drive when the machine boots, if any. Just
@@ -92,6 +103,13 @@ pub fn default_accel(family: Family) -> Accel {
     }
 }
 
+/// Networking is on unless a bundle says otherwise: an era machine came
+/// with a network card, and this is what every machine did before the
+/// field existed.
+fn network_enabled_default() -> bool {
+    true
+}
+
 /// doc 06's RAM default for a family.
 pub fn default_ram_mb(family: Family) -> u32 {
     match family {
@@ -120,6 +138,7 @@ impl Machine {
             family,
             ram_mb: default_ram_mb(family),
             accel: Some(default_accel(family)),
+            network: network_enabled_default(),
             disk,
             disc: None,
             discs: Vec::new(),
@@ -200,19 +219,49 @@ impl Machine {
             "-device".into(),
             "usb-tablet".into(),
         ];
+        // Doc 06's per-family NIC on QEMU's user-mode NAT, or no adapter
+        // at all — not an unplugged cable: a card that is present would
+        // still make Windows enumerate it, ask for its driver on a fresh
+        // install and wait on it at boot, none of which is what turning
+        // networking off is for.
+        //
+        // `-nic none` is the half that actually turns it off. QEMU
+        // *creates a NIC of its own* when the command line asks for no
+        // networking at all — leaving out the `-netdev` doesn't remove
+        // the card, it only replaces ours with an e1000 in the slot
+        // below (`query-pci` says so), which is the opposite of what the
+        // setting means.
+        //
+        // The XP devices carry explicit PCI addresses because removing
+        // the NIC would otherwise slide the sound card up into its slot,
+        // and a card that moves is a hardware change an installed
+        // Windows re-detects. These are the addresses those devices
+        // already get from their `-device` order today, so pinning them
+        // changes nothing for an existing machine — it only keeps them
+        // still when the NIC comes and goes. Win98 needs none of this:
+        // its display is `-vga` (not a `-device`) and its SB16 is ISA,
+        // so its NIC is the only card in the sequence.
+        if !self.network {
+            args.extend(["-nic".into(), "none".into()]);
+        }
         match self.family {
             Family::Win98 => {
                 args.extend(["-vga".into(), "cirrus".into()]);
-                args.extend(["-netdev".into(), "user,id=n0".into()]);
-                args.extend(["-device".into(), "pcnet,netdev=n0".into()]);
+                if self.network {
+                    args.extend(["-netdev".into(), "user,id=n0".into()]);
+                    args.extend(["-device".into(), "pcnet,netdev=n0".into()]); // in-box 98 driver
+                }
                 args.extend(["-device".into(), "sb16,audiodev=embed0".into()]);
             }
             Family::Xp => {
                 args.extend(["-vga".into(), "none".into()]);
-                args.extend(["-device".into(), "d3dpt-vga".into()]);
-                args.extend(["-netdev".into(), "user,id=n0".into()]);
-                args.extend(["-device".into(), "rtl8139,netdev=n0".into()]);
-                args.extend(["-device".into(), "AC97,audiodev=embed0".into()]);
+                args.extend(["-device".into(), "d3dpt-vga,addr=0x02".into()]);
+                if self.network {
+                    args.extend(["-netdev".into(), "user,id=n0".into()]);
+                    // in-box XP driver
+                    args.extend(["-device".into(), "rtl8139,netdev=n0,addr=0x03".into()]);
+                }
+                args.extend(["-device".into(), "AC97,audiodev=embed0,addr=0x04".into()]);
             }
         }
         // The CD-ROM drive is always attached, empty tray and all: a

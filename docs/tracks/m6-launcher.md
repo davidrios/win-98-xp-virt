@@ -1013,6 +1013,50 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   chosen "KVM (required)" survives the same switch — with its own
   "Default" button now offered next to the picker.
 
+- **Networking is a switch in the machine form** (user request,
+  2026-09-05). `Machine::network` (a bool, `#[serde(default)]` **true**)
+  decides whether the machine has a network adapter at all; the form is
+  one checkbox under Acceleration, with a line saying what the guest
+  gets when it is on (QEMU's user-mode NAT: outbound through the host,
+  nothing on the network can reach the guest) and what it loses when it
+  is off. Absent means on, so no bundle written before the field existed
+  loses its network by being read by a newer launcher. Unlike memory and
+  the accelerator it does not follow the family, so there is no
+  `_chosen` twin.
+
+  Two things this took that the argument list alone would not have
+  shown, both found by asking a running machine with `query-pci` instead
+  of trusting `--print-args`:
+  - **Leaving out `-netdev` does not remove the card.** QEMU creates a
+    NIC of its own when the command line asks for no networking, so "off"
+    was really "an e1000 instead of ours", one slot *below* — the
+    opposite of the setting. `-nic none` is what turns it off, and is
+    what the bundle now emits when `network = false`.
+  - **Removing the NIC moved the sound card.** PCI slots are handed out
+    in `-device` order, so without the NIC XP's AC97 slid from slot 4 up
+    into slot 3 — a card that moves is a hardware change an installed
+    Windows re-detects. The XP devices now carry explicit `addr=`
+    (`d3dpt-vga` 0x02, `rtl8139` 0x03, `AC97` 0x04), which are exactly
+    the addresses their order already gave them, so nothing changes for
+    an existing machine and the NIC can come and go without disturbing
+    its neighbours. Win98 needs none of it: its display is `-vga` rather
+    than a `-device` and its SB16 is ISA, so the NIC is the only card in
+    the sequence.
+
+  Verified for real. **The machine QEMU actually builds:** the real
+  `player` spawned on all four combinations and asked `query-pci` over
+  the launcher's own QMP socket — XP on: VGA 2, Ethernet 3, Audio 4; XP
+  off: VGA 2, Audio 4, *no Ethernet controller*; Win98 on: VGA 2,
+  Ethernet 3; Win98 off: VGA 2 alone. **The bundle:** `--wizard-new xp`
+  writes `network = true`; `--wizard-edit <bundle> - - - nonet` and
+  `… net` flip it and the command line follows (`rtl8139,netdev=n0`
+  present or absent); an edit that only renames the machine leaves it
+  alone; a bundle with no `network` line at all still translates with
+  the NIC. **The widget:** `--diag-wizard-frame` dumps show the row
+  checked by default with its NAT hint, a synthetic click unchecking it
+  and swapping the hint to "No network adapter at all", and the edit
+  form opening on a stored `network = false`.
+
   One bug found by this and fixed: `Wizard::with_new_disk` (the headless
   constructor behind `--wizard-new`) sets the family directly, so it
   never went through the combo box that moves the memory default along
@@ -1111,8 +1155,8 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`,
 `--snapshots` (`--live` for a running machine), `--diag-snapshots-frame`,
 `--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`; and
-`--wizard-edit` now takes optional `[ram-mb] [auto|kvm|tcg]`, `-` keeping
-a field) were
+`--wizard-edit` now takes optional `[ram-mb] [auto|kvm|tcg] [net|nonet]`,
+`-` keeping a field) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`

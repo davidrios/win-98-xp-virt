@@ -28,8 +28,9 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
 - Machine library grid with last-frame thumbnails, family badge, running
   state; spawns a player per machine.
 - **Guided creation:** family (Win98/XP) → name → memory → acceleration →
-  disk size → install media → bundle from the reference definitions
-  (doc 06). Advanced drawer edits the TOML. Never a QEMU command line.
+  networking → disk size → install media → bundle from the reference
+  definitions (doc 06). Advanced drawer edits the TOML. Never a QEMU
+  command line.
 - **Memory and acceleration** are the two machine settings worth exposing
   next to the family, and the same form edits them on an existing
   machine. Memory offers the family's own default and is bounded by
@@ -47,6 +48,16 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   tested on here. A bundle with no `accel` field follows its family
   rather than a fixed default, so nothing written before the field
   existed silently changes how it runs.
+- **Networking** is one checkbox (`network` in the bundle, default on):
+  the machine either has doc 06's per-family NIC on QEMU's user-mode NAT
+  — outbound through the host, nothing on the network able to reach the
+  guest — or it has no adapter at all, so Windows never sees a card, asks
+  for its driver or waits on a network at boot. Off emits `-nic none`,
+  because QEMU otherwise supplies a NIC of its own when the command line
+  asks for none; and XP's PCI devices carry the explicit addresses their
+  order already gave them, so the NIC's absence doesn't slide the sound
+  card into its slot and make an installed guest re-detect hardware. An
+  absent `network` field means on, as every bundle written before it ran.
 - **Disc shelf:** the user's disc images, labelled, shared by every machine
   (`discs.toml` beside the machine and shader-profile libraries) — a rip is a
   property of the person, not of the machine that installed it first. A

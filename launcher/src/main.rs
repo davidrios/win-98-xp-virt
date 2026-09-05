@@ -455,7 +455,7 @@ fn main() -> eframe::Result {
             // Headless equivalent of clicking "Edit…" then "Save": loads
             // a bundle, changes the fields given, saves it back in place,
             // without a GUI click. `-` keeps a field as it is.
-            let usage = "usage: launcher --wizard-edit <machine.toml> <new-name|-> [ram-mb|-] [auto|kvm|tcg]";
+            let usage = "usage: launcher --wizard-edit <machine.toml> <new-name|-> [ram-mb|-] [auto|kvm|tcg|-] [net|nonet]";
             let path = args.next().expect(usage);
             let new_name = args.next().expect(usage);
             let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
@@ -469,11 +469,17 @@ fn main() -> eframe::Result {
                 Some(ram) => w.set_ram_mb(ram.parse().expect("ram must be a number")),
             }
             match args.next().as_deref() {
-                None => {}
+                None | Some("-") => {}
                 Some("auto") => w.set_accel(bundle::Accel::Auto),
                 Some("kvm") => w.set_accel(bundle::Accel::Kvm),
                 Some("tcg") => w.set_accel(bundle::Accel::Tcg),
                 Some(other) => panic!("unknown accelerator {other:?}; {usage}"),
+            }
+            match args.next().as_deref() {
+                None | Some("-") => {}
+                Some("net") => w.set_network(true),
+                Some("nonet") => w.set_network(false),
+                Some(other) => panic!("networking is net or nonet, not {other:?}; {usage}"),
             }
             let saved = w.submit(&library::default_dir()).expect("save bundle");
             println!("{}", saved.display());
