@@ -48,10 +48,8 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
 ## State (2026-09-04)
 
 - **Skeleton landed:** `launcher/Cargo.toml` takes `eframe`/`egui`
-  0.36.1; `main.rs` opens a native window (`eframe::run_native`) with an
-  empty-state central panel ("No machines yet.", a disabled "New
-  machine…" button). No library scanning yet — this is the M0 stub
-  replaced with a real (if empty) window. Verified: `cargo build` clean
+  0.36.1; `main.rs` opens a native window (`eframe::run_native`). This is
+  the M0 stub replaced with a real window. Verified: `cargo build` clean
   (no warnings), the binary runs against the box's Wayland session for
   5 s with no crash (RADV's usual non-conformant-ICD notice only).
 - **Step 1 (bundle format) landed:** `launcher/src/bundle.rs` — `Machine`
@@ -64,27 +62,40 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   d3dpt-vga` + `rtl8139` + `AC97` for XP; `-cpu pentium3` per doc 06's
   floor rationale; `usb-tablet`; the first disc shelf entry as a
   `bus=ide.1` CD-ROM, `audiodev=embed0` throughout — the id the player
-  itself adds, per README). Two debug verbs on `launcher` exercise this
-  for real until the wizard and library grid exist: `--new
-  <win98|xp> <name> <disk> <out.toml>` (bootstrap from the reference
-  defaults) and `--print-args <machine.toml>` (the translated command
-  line). Verified by hand: bootstrapped both families against real
-  `~/vms/*.qcow2` paths, round-tripped through real TOML files on disk,
-  `--print-args` output checked field-by-field against doc 06 and the
-  invocation shapes already validated elsewhere (README's player
-  example, `tools/xp-cdimage-test.sh`'s `ide-cd` line); also checked with
-  a disc-shelf entry added by hand. Not yet run through an actual QEMU
-  boot (no `build/qemu` in this worktree) — that's the natural point to
-  add a real check once step 3 (spawning a player) exists; see the
-  testing note below.
+  itself adds, per README). Verified by hand: bootstrapped both families
+  against real `~/vms/*.qcow2` paths, round-tripped through real TOML
+  files on disk, `--print-args` output checked field-by-field against
+  doc 06 and the invocation shapes already validated elsewhere (README's
+  player example, `tools/xp-cdimage-test.sh`'s `ide-cd` line); also
+  checked with a disc-shelf entry added by hand. Not yet run through an
+  actual QEMU boot (no `build/qemu` in this worktree) — that's the
+  natural point to add a real check once step 3 (spawning a player)
+  exists; see the testing note below.
+- **Step 2 (library grid) landed:** `launcher/src/library.rs` —
+  `default_dir()` (the platform data dir via the `directories` crate,
+  `~/.local/share/win98-xp-virt/machines` on Linux; `LAUNCHER_LIBRARY_DIR`
+  overrides it, matching the project's `PLAYER_*` env-knob convention),
+  `slug()` (a directory name from a machine name, deduplicated against
+  what's already there — "XP test box" twice became `xp-test-box` and
+  `xp-test-box-2`), `create()` (makes the subdirectory, writes
+  `machine.toml` from `Machine::reference`), `scan()` (one level of
+  subdirectories, each needing a readable `machine.toml`; a corrupt one
+  is skipped with a `[library]` stderr line, not fatal). `launcher --new`
+  now writes into the library by default instead of an explicit output
+  path (the same call the wizard, step 4, will eventually make);
+  `main.rs` scans the library at startup and renders a real `egui::Grid`
+  (name / family / bundle directory) in place of the empty state when
+  non-empty. Verified visually: three bundles created via `--new`,
+  screenshotted the real window over the Wayland session (`grim`) — the
+  grid renders all three, striped, in a-z order, dedup slug correct.
+  Running-state and thumbnails are not modeled yet (need step 3's process
+  spawning; adding a fake/always-stopped field now would be the kind of
+  half-built abstraction CLAUDE.md warns against).
 
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
-2. **Library grid**: scan a configured library directory for bundles,
-   render as a grid (name, family badge, running state; thumbnails come
-   later — decide the thumbnail source, e.g. `PLAYER_DUMP_OUT` style
-   headless capture on save, once the player side exists).
+2. ~~**Library grid**~~ — done above.
 3. **Spawn a player**: launch `player` as a child process pointed at a
    bundle; surface its running/exited state back in the grid.
 4. **Guided creation wizard**: family → name → disk size → install media
