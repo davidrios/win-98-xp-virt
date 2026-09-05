@@ -536,7 +536,11 @@ KVM) and working under KVM. What the investigation established
   takes 100 ms taps (F2 camera, Esc pause, F12 exit) under KVM and TCG
   alike. The user-facing recipe: copy `D3DPT\DINPUT.DLL` next to
   `fifa2000.exe`; `tools/xp-fifa2000.bat` does it from `E:\DINPUT.DLL`.
-  **Confirmed by the user 2026-09-05: the shim fixes their TCG match.**
+  **Confirmed by the user 2026-09-05, both directions:** on a TCG run on
+  this Linux box the match takes keys with `DINPUT.DLL` next to the EXE, and
+  moving the DLL away brings the dead keyboard straight back. That is the
+  causal check the headless harness alone could not give — the shim is the
+  variable, not the driver, the CPU model or the run.
 - **How much this matters, from the same day:** the user's everyday setup is
   the Linux host run natively (KVM) with `-vga none -device d3dpt-vga`, and
   there they have **no input issues and no custom DLLs anywhere** — no

@@ -63,8 +63,9 @@ picture and the track rules, then this file, then doc 15.
   ("FIFA 2000 on the HAL"): the game's non-exclusive DirectInput keyboard
   never updates in the match because its thread stops pumping messages;
   `D3DPT\DINPUT.DLL` next to the EXE merges `GetAsyncKeyState` into the
-  state and logs the game's DirectInput use. **The user confirmed the fix
-  2026-09-05.** Decided with it (doc 15): the merge stays a per-game,
+  state and logs the game's DirectInput use. **Confirmed by the user 2026-09-05 by A/B on a
+  Linux TCG run: keys with the DLL in place, dead keyboard again with it
+  moved away.** Decided with it (doc 15): the merge stays a per-game,
   side-by-side DLL — not `system32`, not `AppInit_DLLs` — and the launcher
   (M6) gets the job of staging it; the shim is now silent by default, with
   the log and the sampler thread behind `D3DPT_DINPUT_LOG=1`. Tools that came out of it:
