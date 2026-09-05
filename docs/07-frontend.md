@@ -27,9 +27,21 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
 
 - Machine library grid with last-frame thumbnails, family badge, running
   state; spawns a player per machine.
-- **Guided creation:** family (Win98/XP) → name → disk size → install media →
-  bundle from the reference definitions (doc 06). Advanced drawer edits the
-  TOML. Never a QEMU command line.
+- **Guided creation:** family (Win98/XP) → name → memory → acceleration →
+  disk size → install media → bundle from the reference definitions
+  (doc 06). Advanced drawer edits the TOML. Never a QEMU command line.
+- **Memory and acceleration** are the two machine settings worth exposing
+  next to the family, and the same form edits them on an existing
+  machine. Memory offers the family's own default and is bounded by
+  doc 06 (Win98 stops at its 512 MB ceiling — more and it will not boot).
+  Acceleration is Automatic / KVM-required / Emulation, written into the
+  bundle as `accel`: *Automatic* becomes QEMU's own `accel=kvm:tcg`
+  fallback rather than anything the launcher probes, so it cannot be
+  wrong at spawn time; the form says separately whether this host has
+  KVM, since "Automatic" otherwise means something invisible. Emulation
+  stays a first-class choice — it is the era-CPU behaviour docs 13 and
+  16's fast paths are tuned for, and the honest setting for Win98, which
+  KVM runs at host speed straight into Win9x's own fast-CPU bugs.
 - **Disc shelf:** the user's disc images, labelled, shared by every machine
   (`discs.toml` beside the machine and shader-profile libraries) — a rip is a
   property of the person, not of the machine that installed it first. A

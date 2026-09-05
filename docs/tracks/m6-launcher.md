@@ -937,6 +937,69 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   business. Re-run `tools/cdshelf-guest-test.sh ~/vms/win98.qcow2 win98`
   once that image's shell works, or against a fresh 98 install.
 
+- **Memory and acceleration in the machine form** (user request,
+  2026-09-05). Two settings the bundle already carried or wanted, now
+  chosen where a machine is created and edited rather than only by
+  hand-editing TOML.
+
+  **Memory** (`Machine::ram_mb`, which the form previously preserved but
+  never showed): a drag field bounded per family by the new
+  `bundle::ram_mb_range` — Win98 32–512 MB, XP 64–3072 — with a
+  "Default" button back to doc 06's own value for the family, and a note
+  on screen when Win98 is at its ceiling. The bound is doc 06's hard cap,
+  not a guess: offering Win9x 2 GB only produces a machine that does not
+  boot. Switching family moves the field to that family's default *until
+  someone has set a number*, after which it is left alone
+  (`Wizard::ram_chosen`).
+
+  **Acceleration** is new: `Machine::accel` = `auto` (default) | `kvm` |
+  `tcg`, and `qemu_args` turns it into `-machine pc,accel=…`.
+  - `auto` becomes **QEMU's own `kvm:tcg` fallback list**, not a
+    `/dev/kvm` probe on our side. A probe's answer can be stale by the
+    time the player spawns (permissions, a module unloaded), and QEMU's
+    list already means exactly "KVM if you can, emulation otherwise". On
+    a non-Linux host it is plain `tcg`, because naming an accelerator
+    that does not exist there would print a warning on every boot for
+    nothing.
+  - `kvm` is the "required" choice, and really does refuse to start
+    without KVM — otherwise it would be indistinguishable from `auto`.
+  - `tcg` stays first-class: it is the era-CPU behaviour docs 13 and 16's
+    x87/SSE fast paths exist for, and the honest setting for Win98, since
+    KVM runs the guest at host speed and the `pentium3` *model* does not
+    protect against Win9x's fast-CPU bugs — it is the speed that trips
+    them. The form says so under the picker when a Win98 machine is set
+    to anything but emulation.
+  - `player::kvm_available()` (open `/dev/kvm` for writing — the group
+    permission is what a bare `exists()` would miss) backs the hint line
+    only; nothing in the translated command line depends on it.
+
+  Verified for real, not just rendered. **The command line:** a new XP
+  bundle, then `--wizard-edit <bundle> - 1536 kvm`, then `- - tcg`, each
+  read back from the TOML and through `--print-args`
+  (`-machine pc,accel=kvm:tcg` / `accel=kvm` / `accel=tcg`, `-m 1536`); a
+  Win98 machine asked for 4096 MB came back clamped to 512. **The
+  accelerator actually engaging:** the real `player` binary spawned on
+  each of the three settings and asked over the launcher's own QMP
+  socket — `query-kvm` returns `enabled: true` for `auto` and `kvm`, and
+  `enabled: false` for `tcg`. That is QEMU's own answer from inside the
+  in-process embed library, not an inference from the argument list.
+  **The widgets:** a new `--diag-wizard-frame new <family> | edit
+  <machine.toml>` verb runs the real form through `egui::Context::run_ui`
+  with synthetic clicks (the track's standing practice) — the dumps show
+  XP opening at 512 MB and Win98 at 256, the acceleration combo actually
+  switching to Emulation (and the Win98 fast-CPU note correctly
+  disappearing with it), a typed 384 enabling the "Default" button and
+  that button putting 256 back, a family switch moving an untouched value
+  and leaving a chosen one at 384, and the edit form opening on the
+  stored 1536 MB / "KVM (required)".
+
+  One bug found by this and fixed: `Wizard::with_new_disk` (the headless
+  constructor behind `--wizard-new`) sets the family directly, so it
+  never went through the combo box that moves the memory default along
+  with it — an XP machine was created with Win98's 256 MB. `build_machine`
+  now decides from `ram_chosen` rather than from the field's contents, so
+  any constructor that skips the widgets still gets the family's default.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -974,7 +1037,9 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
 `--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`,
 `--snapshots` (`--live` for a running machine), `--diag-snapshots-frame`,
-`--qmp-socket`, `--insert-disc`) were
+`--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`; and
+`--wizard-edit` now takes optional `[ram-mb] [auto|kvm|tcg]`, `-` keeping
+a field) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`

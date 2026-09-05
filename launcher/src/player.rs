@@ -23,6 +23,18 @@ pub fn player_binary() -> PathBuf {
     dir.join(if cfg!(windows) { "player.exe" } else { "player" })
 }
 
+/// Whether this host can actually give a guest KVM, for the wizard to
+/// say so next to the acceleration picker. Deliberately not consulted by
+/// `bundle::qemu_args`, which leaves the decision to QEMU's own
+/// `accel=kvm:tcg` fallback: this is a hint for a human, and being open
+/// to *write* is the part a bare `exists()` would miss (the device node
+/// is there on a host whose user is not in the `kvm` group, and that is
+/// the common way for this to be unavailable).
+pub fn kvm_available() -> bool {
+    cfg!(target_os = "linux")
+        && std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
+}
+
 /// `qemu/pc-bios` (README's `-L`). Bundling this is a packaging (M6 step
 /// 6) concern; for now it's found relative to the workspace checkout
 /// this binary was *built* from (`CARGO_MANIFEST_DIR` is baked in at

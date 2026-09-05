@@ -5,7 +5,7 @@
 //! machine" dialog for an existing bundle (`open_edit`); `submit` writes
 //! back in place instead of reserving a new library directory.
 
-use crate::bundle::{Family, Machine};
+use crate::bundle::{self, Accel, Family, Machine};
 use crate::filepicker;
 use crate::library;
 use crate::player;
@@ -15,14 +15,13 @@ const DISK_FILTER: filepicker::Filter = ("Disk images", &["qcow2", "img", "raw"]
 const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
 
 /// What editing an existing bundle needs to preserve: fields this form
-/// doesn't expose (RAM, the shader override), so a quick edit can't
+/// doesn't expose (the raw shader override), so a quick edit can't
 /// silently discard them. `original_toml` is the file's
 /// exact current text, used as the advanced box's starting point instead
 /// of a reconstruction — no information loss even for a field this form
 /// (or a future one) doesn't model.
 struct EditTarget {
     bundle_path: PathBuf,
-    ram_mb: u32,
     shader: Option<PathBuf>,
     original_toml: String,
 }
@@ -31,6 +30,14 @@ pub struct Wizard {
     pub open: bool,
     family: Family,
     name: String,
+    ram_mb: u32,
+    /// Whether the RAM field holds a value someone chose. Until it does,
+    /// switching family moves it to that family's own default (doc 06),
+    /// which is what a user picking "XP" after "Win98" means; once they
+    /// have set a number, a later family switch must not silently throw
+    /// it away.
+    ram_chosen: bool,
+    accel: Accel,
     existing_disk: bool,
     disk_path: String,
     disk_size_gb: u32,
@@ -51,6 +58,9 @@ impl Default for Wizard {
             open: false,
             family: Family::Win98,
             name: String::new(),
+            ram_mb: bundle::default_ram_mb(Family::Win98),
+            ram_chosen: false,
+            accel: Accel::default(),
             existing_disk: false,
             disk_path: String::new(),
             disk_size_gb: 2,
@@ -70,6 +80,14 @@ impl Wizard {
         *self = Wizard { open: true, ..Default::default() };
     }
 
+    /// The same, starting on a given family — the defaults that follow
+    /// from it (memory) come with it.
+    pub fn open_new(&mut self, family: Family) {
+        self.open_fresh();
+        self.family = family;
+        self.ram_mb = bundle::default_ram_mb(family);
+    }
+
     /// Open the form pre-filled from an existing bundle, to edit it in
     /// place instead of creating a new one.
     pub fn open_edit(&mut self, machine: &Machine, bundle_path: PathBuf) {
@@ -78,16 +96,16 @@ impl Wizard {
             open: true,
             family: machine.family,
             name: machine.name.clone(),
+            ram_mb: machine.ram_mb,
+            // an existing machine's RAM is a chosen value, whatever it
+            // came from: changing family must not rewrite it
+            ram_chosen: true,
+            accel: machine.accel,
             existing_disk: true,
             disk_path: machine.disk.display().to_string(),
             install_media: machine.boot_disc().map(|d| d.display().to_string()).unwrap_or_default(),
             shader_profile: machine.shader_profile.clone(),
-            editing: Some(EditTarget {
-                bundle_path,
-                ram_mb: machine.ram_mb,
-                shader: machine.shader.clone(),
-                original_toml,
-            }),
+            editing: Some(EditTarget { bundle_path, shader: machine.shader.clone(), original_toml }),
             ..Default::default()
         };
     }
@@ -99,12 +117,30 @@ impl Wizard {
         self.name = name;
     }
 
+    /// Same, for the memory and acceleration fields (`--wizard-edit`'s
+    /// optional arguments): the values the widgets above would have set.
+    pub fn set_ram_mb(&mut self, ram_mb: u32) {
+        let range = bundle::ram_mb_range(self.family);
+        self.ram_mb = ram_mb.clamp(*range.start(), *range.end());
+        self.ram_chosen = true;
+    }
+
+    pub fn set_accel(&mut self, accel: Accel) {
+        self.accel = accel;
+    }
+
     /// Headless construction (a debug verb; see `main.rs`'s `--wizard-new`)
     /// with the same fields the window's widgets would otherwise have set,
     /// so the wizard's actual disk-creation/save logic (`submit`, below)
     /// can be exercised without clicking through the GUI.
     pub fn with_new_disk(family: Family, name: String, disk_size_gb: u32) -> Wizard {
-        Wizard { family, name, disk_size_gb, ..Default::default() }
+        Wizard {
+            family,
+            name,
+            disk_size_gb,
+            ram_mb: bundle::default_ram_mb(family),
+            ..Default::default()
+        }
     }
 
     /// Renders the wizard window if open. `shader_profiles` is the
@@ -129,6 +165,7 @@ impl Wizard {
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
+                let was = self.family;
                 egui::ComboBox::from_label("Family")
                     .selected_text(match self.family {
                         Family::Win98 => "Win98",
@@ -138,10 +175,16 @@ impl Wizard {
                         ui.selectable_value(&mut self.family, Family::Win98, "Win98");
                         ui.selectable_value(&mut self.family, Family::Xp, "XP");
                     });
+                if self.family != was && !self.ram_chosen {
+                    self.ram_mb = bundle::default_ram_mb(self.family);
+                }
                 ui.horizontal(|ui| {
                     ui.label("Name");
                     ui.text_edit_singleline(&mut self.name);
                 });
+                ui.separator();
+                self.memory_ui(ui);
+                self.accel_ui(ui);
                 ui.separator();
                 if editing {
                     filepicker::path_field(ui, "Disk path", &mut self.disk_path, Some(DISK_FILTER));
@@ -202,6 +245,68 @@ impl Wizard {
         done
     }
 
+    /// The RAM row. The range is per family (`bundle::ram_mb_range`), so
+    /// the form cannot produce a Win98 machine with more memory than
+    /// Win98 can boot with; a clamped value is corrected in place rather
+    /// than refused at save time, and the reason is on screen next to it.
+    fn memory_ui(&mut self, ui: &mut egui::Ui) {
+        let range = bundle::ram_mb_range(self.family);
+        let (min, max) = (*range.start(), *range.end());
+        ui.horizontal(|ui| {
+            ui.label("Memory (MB)");
+            let r = ui.add(egui::DragValue::new(&mut self.ram_mb).speed(16.0).range(range.clone()));
+            if r.changed() {
+                self.ram_chosen = true;
+            }
+            if ui
+                .add_enabled(
+                    self.ram_mb != bundle::default_ram_mb(self.family),
+                    egui::Button::new("Default"),
+                )
+                .clicked()
+            {
+                self.ram_mb = bundle::default_ram_mb(self.family);
+                self.ram_chosen = false;
+            }
+        });
+        self.ram_mb = self.ram_mb.clamp(min, max);
+        if self.family == Family::Win98 && self.ram_mb >= max {
+            ui.small("512 MB is Win98's ceiling (doc 06): more and it does not boot.");
+        }
+    }
+
+    /// The acceleration row, plus what this host can actually do — the
+    /// picker alone would leave "Automatic" meaning something invisible.
+    fn accel_ui(&mut self, ui: &mut egui::Ui) {
+        let have_kvm = crate::player::kvm_available();
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_label("Acceleration")
+                .selected_text(match self.accel {
+                    Accel::Auto => "Automatic",
+                    Accel::Kvm => "KVM (required)",
+                    Accel::Tcg => "Emulation",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.accel, Accel::Auto, "Automatic");
+                    ui.selectable_value(&mut self.accel, Accel::Kvm, "KVM (required)");
+                    ui.selectable_value(&mut self.accel, Accel::Tcg, "Emulation");
+                });
+        });
+        match (self.accel, have_kvm) {
+            (Accel::Auto, true) => ui.small("KVM is available on this host and will be used."),
+            (Accel::Auto, false) => ui.small("No KVM on this host: this machine will be emulated."),
+            (Accel::Kvm, true) => ui.small("KVM is available on this host."),
+            (Accel::Kvm, false) => ui.colored_label(
+                egui::Color32::from_rgb(200, 140, 0),
+                "No KVM on this host: this machine will refuse to start.",
+            ),
+            (Accel::Tcg, _) => ui.small("Emulated: the era-CPU behaviour everything here is tuned for."),
+        };
+        if self.family == Family::Win98 && self.accel != Accel::Tcg && have_kvm {
+            ui.small("Win98 runs at host speed under KVM, which its own fast-CPU bugs dislike.");
+        }
+    }
+
     /// The `Machine` the current field values describe, given the disk
     /// path to use (a fresh disk's path isn't known until it's created,
     /// so callers that might still need to do that pass it in rather
@@ -213,7 +318,8 @@ impl Wizard {
             Some(edit) => Machine {
                 name: self.name.clone(),
                 family: self.family,
-                ram_mb: edit.ram_mb,
+                ram_mb: self.ram_mb,
+                accel: self.accel,
                 disk,
                 disc: None,
                 discs: Vec::new(),
@@ -222,6 +328,16 @@ impl Wizard {
             },
             None => Machine::reference(self.family, self.name.clone(), disk),
         };
+        // the form owns these for a new machine too, where `reference`
+        // has just filled in the family defaults. `ram_chosen` decides,
+        // not the field's current contents: a constructor that set the
+        // family without going through the combo box (`with_new_disk`,
+        // the headless verb) never had the chance to move the default
+        // along with it, and silently writing Win98's 256 MB into an XP
+        // machine is exactly the bug that produced.
+        machine.ram_mb =
+            if self.ram_chosen { self.ram_mb } else { bundle::default_ram_mb(self.family) };
+        machine.accel = self.accel;
         machine.shader_profile = self.shader_profile.clone();
         // The single slot this form has is the machine's *boot* disc;
         // everything else lives on the shared shelf (`disc_library.rs`),

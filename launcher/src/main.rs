@@ -453,17 +453,36 @@ fn main() -> eframe::Result {
         }
         Some("--wizard-edit") => {
             // Headless equivalent of clicking "Edit…" then "Save": loads
-            // a bundle, renames it, saves it back in place, without a
-            // GUI click.
-            let usage = "usage: launcher --wizard-edit <machine.toml> <new-name>";
+            // a bundle, changes the fields given, saves it back in place,
+            // without a GUI click. `-` keeps a field as it is.
+            let usage = "usage: launcher --wizard-edit <machine.toml> <new-name|-> [ram-mb|-] [auto|kvm|tcg]";
             let path = args.next().expect(usage);
             let new_name = args.next().expect(usage);
             let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
             let mut w = wizard::Wizard::default();
             w.open_edit(&machine, path.clone().into());
-            w.set_name(new_name);
+            if new_name != "-" {
+                w.set_name(new_name);
+            }
+            match args.next().as_deref() {
+                None | Some("-") => {}
+                Some(ram) => w.set_ram_mb(ram.parse().expect("ram must be a number")),
+            }
+            match args.next().as_deref() {
+                None => {}
+                Some("auto") => w.set_accel(bundle::Accel::Auto),
+                Some("kvm") => w.set_accel(bundle::Accel::Kvm),
+                Some("tcg") => w.set_accel(bundle::Accel::Tcg),
+                Some(other) => panic!("unknown accelerator {other:?}; {usage}"),
+            }
             let saved = w.submit(&library::default_dir()).expect("save bundle");
             println!("{}", saved.display());
+            return Ok(());
+        }
+        Some("--kvm") => {
+            // What the wizard's acceleration hint reads, on its own: this
+            // host's answer, not the bundle's setting.
+            println!("{}", if player::kvm_available() { "available" } else { "not available" });
             return Ok(());
         }
         Some("--discs") => {
@@ -748,6 +767,52 @@ fn main() -> eframe::Result {
             for snap in window.snapshots() {
                 println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
             }
+            return Ok(());
+        }
+        Some("--diag-wizard-frame") => {
+            // The same, for the machine form: `new <win98|xp>` opens it as
+            // "New machine", `edit <machine.toml>` as "Edit machine". The
+            // dump is how the memory and acceleration rows are checked
+            // for real (they render per family, and the acceleration hint
+            // depends on this host), and a click script drives them.
+            let usage =
+                "usage: launcher --diag-wizard-frame new <win98|xp> | edit <machine.toml> -- <out.png> [<screen WxH>] [<script>]";
+            let mode = args.next().expect(usage);
+            let arg = args.next().expect(usage);
+            let mut w = wizard::Wizard::default();
+            match mode.as_str() {
+                "new" => {
+                    let family = match arg.as_str() {
+                        "win98" => bundle::Family::Win98,
+                        "xp" => bundle::Family::Xp,
+                        _ => panic!("{usage}"),
+                    };
+                    w.open_new(family);
+                }
+                "edit" => {
+                    let path: PathBuf = arg.into();
+                    let machine = bundle::Machine::load(&path).expect("load bundle");
+                    w.open_edit(&machine, path);
+                }
+                _ => panic!("{usage}"),
+            }
+            let out = args.next().expect(usage);
+            let screen = args
+                .next()
+                .and_then(|s| {
+                    let (w, h) = s.split_once('x')?;
+                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+                })
+                .unwrap_or(egui::vec2(700.0, 600.0));
+            let script = parse_script(&args.next().unwrap_or_default());
+            let library_dir = library::default_dir();
+            let profiles = shader_library::scan(&shader_library::default_dir());
+            let render_state = headless_render_state();
+            diag_window_frames(&render_state, screen, &script, &out, |ctx| {
+                if let Some(saved) = w.show(ctx, &library_dir, &profiles) {
+                    println!("saved {}", saved.display());
+                }
+            });
             return Ok(());
         }
         Some("--diag-shelf-frame") => {
