@@ -317,7 +317,18 @@ discs the conventions differ on, and both play their CD soundtracks in-game in
 XP, in the player, from their `.mds` (user, 2026-09-05) — so the ~0.7 % of Q
 frames we synthesize wrongly on a Moto-Racer-shaped disc is below what a
 title's own audio code looks at. That is what makes the guess safe to keep,
-not merely cheapest to keep. The lesson is that anything
+not merely cheapest to keep.
+
+**The one A/B that would isolate what a protection reads.** Settlers 3 CD01
+is dumped as both a `.ccd` (with `.sub`) and a `.cue` (without), and its
+ProtectCD band is corrupt in the data *and* in the Q relative timing. The
+game passes its check from the `.ccd` (user, 2026-09-05). Running the same
+disc from the `.cue` — identical sectors, Q synthesized instead of replayed —
+separates the two: still passing means the check reads the data anomaly and
+synthesis is good enough for it; failing means it reads Q, and pins how
+faithful replay has to be. One boot, and it is the only direct evidence
+available about what these checks actually look at. The lesson meanwhile is
+that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
 MDS 2448), where `read_sub` replays the bytes verbatim and none of this
 applies.

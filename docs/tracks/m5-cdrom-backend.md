@@ -46,6 +46,27 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   drove PLAY / position / routing, over a real 14- and 12-audio-track disc.
   It also settles the pregap question below.
 
+- **VOB ProtectCD: PASS, and it is the first CCD run in a guest.** The
+  Settlers 3 plays from `CD01.ccd` and `CD02.ccd` in XP — tutorial from CD1,
+  campaign from CD2, which it asks for and accepts (user, 2026-09-05). Every
+  earlier guest pass was an `.mds`; this is the `.sub`-carrying CCD path
+  (`read_sub` replaying bytes verbatim) under a real protection.
+  **What it does not prove:** which of the two anomalies ProtectCD looks at.
+  The band is corrupt in the data *and* in the Q relative timing, so a pass
+  says the drive model delivered what the check wanted, not which signal it
+  read. `CD01.cue` sits next to the `.ccd` and carries **no** `.sub`, so the
+  same disc through the cue synthesizes Q instead of replaying it — running
+  the game from `CD01.cue` is a one-run A/B that isolates it. Worth doing:
+  it is the only direct evidence we can get about what a protection actually
+  reads, and it costs one boot.
+  Scans, for the record: CD01 has 697 L-EC failures — the 538-sector band at
+  195539–196076, **nine scattered singles past it** (196654, 196823, 197060,
+  197160, 197219, 197424, 197584, 198370, 198977, EDC wrong as well), and 150
+  sync-less sectors at 219692–219841 which are the ordinary run-out before
+  track 02. **CD02 carries no band at all** (its only 150 failures are the
+  same benign run-out at 234254–234403): the protection is on disc 1 only,
+  and disc 2 is a plain mixed-mode disc with 12 audio tracks.
+
 - **Step 8, first title: PASS.** FIFA 2002 installed from `FIFA2002.mds`,
   launched and navigated its menus in XP (user, 2026-09-05). SafeDisc 2.x's
   check runs at launch, so reaching the menus means the wrapped EXE and

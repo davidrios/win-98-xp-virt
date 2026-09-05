@@ -112,9 +112,10 @@ Using dumps of discs we own, one title per scheme:
 | **SafeDisc 2.x** | launch check passes from raw dump with error sectors | **PASS** — FIFA 2002 from `FIFA2002.mds` (584 weak sectors from LBA 811) installs, launches and reaches its menus in XP, user-confirmed 2026-09-05. The check reads the band through `cdimage` → patch 51 → libdisc and gets the errors it expects |
 | SafeDisc 1.x | *(the row's premise does not hold)* | **n/a** — 1.x writes no error sectors at all (doc 17 §6.x, measured on The Sims and Rayman 2). It checks the medium another way; a separate expectation has to be written once we know which |
 | SecuROM (early + 4.x) | launch check passes from dump with subchannel | not tested. Early needs a `.sub` (replay path exists); 4.x needs DPM, which `mds.rs` ignores — that is the stretch goal below, not this row |
-| VOB ProtectCD | launch check passes from a dump carrying both the data and the Q anomaly | material ready (Settlers 3 CD01), not tested |
+| VOB ProtectCD | launch check passes from a dump carrying both the data and the Q anomaly | **PASS** — The Settlers 3 from `CD01.ccd` + `CD02.ccd` in XP (user, 2026-09-05): the tutorial runs from CD1, the campaign asks for and accepts CD2. First pass on a CCD carrying real `.sub`. Which of the two anomalies the check reads is **not** isolated by this — see the cue/ccd A/B in doc 17 §2.6 |
 | StarForce (stretch) | documented result with DPM-carrying MDS dump | not started |
 | Multisession disc | both sessions visible, TOC correct | not tested |
+| Multi-disc title | the guest sees a disc change and the game accepts the new disc | **PASS** incidentally — Settlers 3's campaign asked for CD2 and took it (user, 2026-09-05) |
 
 Plus a synthetic MMC exerciser (host-side unit tests against the disc model,
 no guest needed) for command-level regression coverage. The exerciser's
