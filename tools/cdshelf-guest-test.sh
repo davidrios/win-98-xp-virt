@@ -51,8 +51,12 @@ fi
   printf 'Not on the host\t%s\n' "$OUT/no-such-disc.iso"; } > "$SHELF"
 rm -f "$OUT/no-such-disc.iso"
 
+# -mwindows because the program's normal face is a window; its command-line
+# verbs (the ones below) still write to a redirected stdout, which is how
+# their output gets out of the guest over COM1.
 i686-w64-mingw32-gcc -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
-  -march=pentium3 -I"$ROOT/cdshelf" -o "$OUT/CDSHELF.EXE" "$ROOT/guest-tools/src/cdshelf.c"
+  -march=pentium3 -mwindows -I"$ROOT/cdshelf" -o "$OUT/CDSHELF.EXE" \
+  "$ROOT/guest-tools/src/cdshelf.c"
 
 # One batch for both families: COMMAND.COM (98) and CMD.EXE (XP) both take
 # it, and every line's output goes to COM1, which needs no writable disk in
@@ -64,7 +68,7 @@ cat > "$OUT/RUN.BAT" <<'BAT'
 A:
 cd \
 echo ==== list, empty tray > COM1
-CDSHELF.EXE > COM1
+CDSHELF.EXE list > COM1
 echo ==== load 0 > COM1
 CDSHELF.EXE 0 > COM1
 dir /b D:\ > COM1
@@ -75,7 +79,7 @@ echo ==== load 1, missing on the host > COM1
 CDSHELF.EXE 1 > COM1
 echo ==== eject > COM1
 CDSHELF.EXE E > COM1
-CDSHELF.EXE > COM1
+CDSHELF.EXE list > COM1
 echo CDSHELFDONE > COM1
 BAT
 sed -i 's/\r$//; s/$/\r/' "$OUT/RUN.BAT"

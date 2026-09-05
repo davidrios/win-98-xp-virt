@@ -86,12 +86,34 @@ device and nothing to install in the guest.
   one that answers is used, so a machine with two drives needs no
   argument; `-d E:` overrides on XP, `-v` shows each CDB. Writes
   `cdshelf.log` next to itself when it can.
+
+  **With no arguments it opens a window** — a list of the shelf with
+  Insert / Eject / Refresh — because swapping a disc is something you do
+  while a game is asking for disc 2, not a command line you retype. Plain
+  USER32 controls created in code (no resource file, nothing newer than
+  Windows 95), and the insert runs on a worker thread so the window keeps
+  painting while the drive settles. The verbs below still work for
+  scripting, and still write to a redirected stdout even though the EXE
+  is `-mwindows`.
 - `CDSHELF.COM` (`guest-tools/src/cdshelf.asm`) — the DOS build, NASM,
   driving the drive by PIO exactly as `tools/atapi-guest-test.py` does
   (there is no DOS C toolchain in this build). It finds the drive with
   IDENTIFY PACKET DEVICE rather than by reading the ATAPI signature out
   of the cylinder registers: by the time a DOS program runs, the BIOS has
   long since detected the drive and left those at zero.
+
+  DOS gets no window, so with no arguments it prints the shelf and waits
+  for a key: **0-9 puts that disc in the drive**, `E` empties it, `R`
+  re-reads the shelf, Esc quits, and the listing is reprinted after each
+  one. `CDSHELF LIST` is the non-interactive form for a batch file or a
+  redirect.
+
+Both **empty the drive before inserting**, and wait for the drive to
+confirm the tray is empty before loading. Two reasons: Windows and MSCDEX
+cache what they last saw, so a swap they never observed as a removal
+leaves the old disc's files on screen; and the device runs the medium
+change from a single bottom half (patch 52), so an eject and a load sent
+back to back without waiting collapse into one.
 
 Both are exercised on every `tools/atapi-guest-test.py` run: the opcode
 itself through the test's own PIO program, and then `CDSHELF.COM` for

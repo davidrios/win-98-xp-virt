@@ -54,9 +54,10 @@ E_FLAGS         equ     2
 E_LABEL_LEN     equ     3
 E_LABEL         equ     4
 
-MODE_LIST       equ     0
-MODE_LOAD       equ     1
-MODE_EJECT      equ     2
+MODE_MENU       equ     0                 ; no arguments: list, then keys
+MODE_LIST       equ     1                 ; CDSHELF LIST: print and exit
+MODE_LOAD       equ     2
+MODE_EJECT      equ     3
 
 ; ---------------------------------------------------------------- entry point
 start:
@@ -80,6 +81,8 @@ start:
 .list_ok:
                 call    show_list
                 mov     al, [cmdmode]
+                cmp     al, MODE_MENU
+                je      do_menu
                 cmp     al, MODE_LIST
                 je      done
                 cmp     al, MODE_EJECT
@@ -91,6 +94,61 @@ done:
                 int     21h
 
 ; ---------------------------------------------------------------- the modes
+; With no arguments the program is a menu rather than a command: the shelf
+; is on screen, a digit key puts that disc in the drive, and the listing is
+; reprinted with the new one marked. Typing "CDSHELF 3" for every disc swap
+; is the kind of thing you only do once.
+do_menu:
+                mov     si, str_menu
+                call    puts
+.key:
+                call    getkey                  ; al = the key
+                cmp     al, 27                  ; Esc
+                je      done
+                cmp     al, 'q'
+                je      done
+                cmp     al, 'Q'
+                je      done
+                cmp     al, 'e'
+                je      .eject
+                cmp     al, 'E'
+                je      .eject
+                cmp     al, 'r'
+                je      .again
+                cmp     al, 'R'
+                je      .again
+                cmp     al, '0'
+                jb      .key
+                cmp     al, '9'
+                ja      .key
+                sub     al, '0'
+                mov     ah, 0
+                cmp     ax, [nshelf]            ; a key past the end of the
+                jae     .key                    ; shelf is not a mistake worth
+                mov     [cmdslot], ax           ; a message, just ignore it
+                call    newline
+                call    load_slot
+                jmp     .again
+.eject:
+                call    newline
+                call    eject_now
+                mov     si, str_ejected
+                call    puts
+.again:
+                call    list_shelf
+                jc      .key
+                call    show_list
+                mov     si, str_menu
+                call    puts
+                jmp     .key
+
+; al <- a key press. int 16h rather than DOS input: this is a menu, it
+; wants the keyboard whatever stdout happens to be redirected to.
+getkey:
+                xor     ah, ah
+                int     16h
+                ret
+
 do_load:
                 mov     ax, [cmdslot]
                 cmp     ax, [nshelf]
@@ -99,6 +157,21 @@ do_load:
                 call    puts
                 jmp     fail
 .in_range:
+                call    load_slot
+                jc      fail
+                jmp     done
+
+do_eject:
+                mov     si, str_ejecting
+                call    puts
+                call    eject_now
+                jc      cmd_failed
+                mov     si, str_ejected
+                call    puts
+                jmp     done
+
+; Put [cmdslot] in the drive. Carry on failure (the reason is printed).
+load_slot:
                 ; the host flagged this one as unreachable in the listing we
                 ; just printed; the drive would refuse the load anyway, but
                 ; say why here rather than after a failed command
@@ -107,7 +180,8 @@ do_load:
                 jz      .ok
                 mov     si, str_host_missing
                 call    puts
-                jmp     fail
+                stc
+                ret
 .ok:
                 mov     si, str_loading
                 call    puts
@@ -118,6 +192,17 @@ do_load:
                 mov     ax, [cmdslot]
                 call    print_slot_label
                 call    newline
+                ; EMPTY THE DRIVE FIRST, and wait for it. Two reasons: DOS
+                ; (and Windows) cache what they last saw in the drive, so a
+                ; swap they never saw as a removal leaves the old disc's
+                ; directory on screen; and the device runs the medium change
+                ; from a single bottom half (patch 52), so an eject and a
+                ; load sent back to back without waiting collapse into one.
+                call    eject_now
+                jnc     .ejected
+                ret
+.ejected:
+                call    wait_empty
                 mov     byte [pkt + 1], SUB_LOAD
                 mov     ax, [cmdslot]
                 xchg    al, ah                  ; the slot is big-endian
@@ -126,25 +211,24 @@ do_load:
                 call    set_alloc
                 call    send_packet
                 jnc     .sent
-                jmp     cmd_failed
+                call    print_sense
+                mov     si, str_cmd_failed
+                call    puts
+                stc
+                ret
 .sent:
                 call    wait_medium
-                jmp     done
+                clc
+                ret
 
-do_eject:
-                mov     si, str_ejecting
-                call    puts
+; Empty the drive. Carry on failure.
+eject_now:
                 mov     byte [pkt + 1], SUB_EJECT
                 mov     word [pkt + 2], 0
                 xor     ax, ax
                 call    set_alloc
                 call    send_packet
-                jnc     .sent
-                jmp     cmd_failed
-.sent:
-                mov     si, str_ejected
-                call    puts
-                jmp     done
+                ret
 
 ; ---------------------------------------------------------------- the listing
 ; LIST twice: a header-only request first (that is how a guest learns how
@@ -318,6 +402,40 @@ print_slot_label:
 .out:
                 ret
 
+; Wait for the tray to actually be empty after an eject: TEST UNIT READY
+; failing with 02/3A (not ready, medium not present) is what that looks
+; like. Bounded, and silent — a stuck eject shows up as the load that
+; follows failing, which says more than a message here would.
+wait_empty:
+                push    cx
+                mov     cx, 20
+.poll:
+                push    cx
+                mov     al, 2
+                call    wait_ticks
+                call    test_unit_ready
+                pop     cx
+                jnc     .again                  ; still a disc in there
+                cmp     byte [sense_key], 2
+                jne     .again
+                cmp     byte [sense_asc], 3Ah
+                je      .done
+.again:
+                loop    .poll
+.done:
+                pop     cx
+                ret
+
+; TEST UNIT READY, leaving [pkt] as the shelf command it was.
+test_unit_ready:
+                mov     byte [pkt + 0], 0
+                mov     word [pkt + 1], 0
+                mov     word [pkt + 3], 0
+                mov     word [pkt + 7], 0
+                call    send_packet
+                mov     byte [pkt + 0], OPCODE
+                ret
+
 ; After a LOAD the medium change happens behind the command (the device
 ; runs it from a bottom half, patch 52), and the drive then reports the
 ; ATAPI medium-change dance — "no medium", then UNIT ATTENTION — before
@@ -331,12 +449,7 @@ wait_medium:
                 push    cx
                 mov     al, 2
                 call    wait_ticks
-                mov     byte [pkt + 0], 0       ; TEST UNIT READY
-                mov     word [pkt + 1], 0
-                mov     word [pkt + 3], 0
-                mov     word [pkt + 7], 0
-                call    send_packet
-                mov     byte [pkt + 0], OPCODE
+                call    test_unit_ready
                 pop     cx
                 jnc     .ready
                 ; 02/3A is "the tray is still empty" and 06/28 is the medium
@@ -713,7 +826,7 @@ wait_ticks:                                     ; al = BIOS ticks (18.2 Hz)
 
 ; ---------------------------------------------------------------- arguments
 parse_args:
-                mov     byte [cmdmode], MODE_LIST
+                mov     byte [cmdmode], MODE_MENU
                 mov     si, 81h
                 mov     cl, [80h]
                 xor     ch, ch
@@ -736,6 +849,10 @@ parse_args:
                 je      .eject
                 cmp     al, 'E'
                 je      .eject
+                cmp     al, 'l'                 ; LIST: print and exit, for a
+                je      .list                   ; script or a redirect
+                cmp     al, 'L'
+                je      .list
                 cmp     al, '0'
                 jb      .bad
                 cmp     al, '9'
@@ -767,6 +884,10 @@ parse_args:
                 ret
 .eject:
                 mov     byte [cmdmode], MODE_EJECT
+                clc
+                ret
+.list:
+                mov     byte [cmdmode], MODE_LIST
                 clc
                 ret
 .bad:
@@ -907,9 +1028,12 @@ newline:
 ; ---------------------------------------------------------------- data
 str_banner:     db      "CDSHELF - the host's disc shelf", 13, 10, 0
 str_drive:      db      "drive: ", 0
-str_usage:      db      "usage: CDSHELF        list the discs on the host's shelf", 13, 10
+str_usage:      db      "usage: CDSHELF        the shelf, then a key per disc", 13, 10
+                db      "       CDSHELF LIST   print the shelf and exit", 13, 10
                 db      "       CDSHELF <n>    put slot <n> in the drive", 13, 10
                 db      "       CDSHELF E      empty the drive", 13, 10, 0
+str_menu:       db      "Press 0-9 to put that disc in the drive, E to empty it,", 13, 10
+                db      "R to re-read the shelf, Esc to quit.", 13, 10, 0
 str_no_drive:   db      "no drive with a disc shelf found on either IDE channel.", 13, 10, 0
 str_no_shelf:   db      "this drive has no shelf: the machine was started without one", 13, 10
                 db      "(the launcher passes it; plain qemu-system needs -device ide-cd,shelf=...)", 13, 10, 0

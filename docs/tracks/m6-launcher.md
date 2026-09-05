@@ -1020,6 +1020,59 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   now decides from `ram_chosen` rather than from the field's contents, so
   any constructor that skips the widgets still gets the family's default.
 
+- **CDSHELF grew a face, and always ejects first** (user, 2026-09-05,
+  after running it in Win98: *"it worked, but can't you make a gui
+  program? it's too unwieldy to use as a terminal command"*, and *"when
+  selecting to mount a disc, make it eject the current one first. if i
+  tried mounting without ejecting the current one it would do nothing"*).
+
+  **The window** (`run_gui` in `guest-tools/src/cdshelf.c`): the shelf as
+  a list, with Insert / Eject / Refresh / Close and a status line. Plain
+  USER32 controls created in code — no resource file, no common controls,
+  nothing newer than Windows 95 — so the same EXE comes up on a stock
+  Win98 and on XP. The EXE is now `-mwindows`: run with no arguments it
+  opens the window, and the verbs still work for scripting, which is why
+  the listing one had to become explicit (`CDSHELF LIST`; no argument
+  means the window now). A verb's output still reaches a redirected
+  stdout even in the GUI subsystem — that is what `tools/cdshelf-guest-
+  test.sh` relies on, and it still passes.
+  The insert runs on a worker thread and posts its result back, because
+  a swap takes a second or two and a window that stops painting through
+  it looks broken.
+
+  **DOS gets the same idea without a window**: with no arguments
+  `CDSHELF.COM` prints the shelf and waits for a key — 0-9 puts that disc
+  in the drive, `E` empties it, `R` re-reads the shelf, Esc quits, and
+  the listing is reprinted after each. `int 16h`, not DOS input, so the
+  menu reads the keyboard whatever stdout is redirected to.
+
+  **Eject-before-insert** is now what "insert" means in both programs and
+  the reason is two-fold. The user's half: Windows and MSCDEX cache what
+  they last saw in the drive, so a swap they never observed as a removal
+  leaves the old disc's files on screen — "it would do nothing". The half
+  found while implementing it: the device runs the medium change from a
+  *single* bottom half (patch 52), so an eject and a load issued back to
+  back without waiting collapse into one and only the last request
+  survives. So both programs wait for the drive to report an empty tray
+  (TEST UNIT READY answering 02/3A) between the two commands; that wait
+  is load-bearing, not politeness.
+
+  Verified on real guests, not just built. **XP:** the window opened over
+  the desktop and was screendumped (title "Disc shelf - drive D: (SPTI)",
+  both shelf entries listed with the missing one flagged, "2 discs on the
+  shelf"), then driven from the keyboard while `query-block` on the
+  machine's own QEMU said which file was really in the drive — the medium,
+  not a screenshot's word for it. That first run also caught a real bug: a
+  plain window keeps the focus itself, so Tab and Enter had nothing to act
+  on; the frame now hands focus to the list (`WM_SETFOCUS`) and Insert is
+  the default push button, so Enter on the highlighted disc inserts it.
+  `tools/cdshelf-guest-test.sh xp` still passes all nine checks with the
+  `-mwindows` build and the new eject-first insert. **DOS:** the menu was
+  driven by real key presses over QMP (`1`, `e`, `0`, Esc) — each load is
+  visible in the reprinted listing with `[in the drive]` moving, and the
+  eject in between empties it; `tools/atapi-guest-test.py` still passes
+  (206 replies, and its `CDSHELF.COM` stage now drives the `LIST` verb).
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.

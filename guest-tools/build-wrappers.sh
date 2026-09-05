@@ -203,10 +203,12 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/cdtest.exe" "$ROOT/guest-tools/src
 # CDSHELF: the host's disc shelf from inside the machine (doc 07, patch 52;
 # protocol cdshelf/cdshelf_proto.h). One EXE for both Windows families — SPTI
 # on XP, WNASPI32 loaded at run time on Win98 — plus a DOS .COM that drives
-# the drive by PIO, for a DOS box that has neither.
+# the drive by PIO, for a DOS box that has neither. -mwindows: run with no
+# arguments it is a window (a disc swap is a thing you do, not a command line
+# you retype); its verbs still write to a redirected stdout.
 mkdir -p "$OUT/iso/CDSHELF"
-i686-w64-mingw32-gcc -O2 -Wall -o "$OUT/iso/CDSHELF/cdshelf.exe" "$ROOT/guest-tools/src/cdshelf.c" \
-  -I"$ROOT/cdshelf"
+i686-w64-mingw32-gcc -O2 -Wall -mwindows -o "$OUT/iso/CDSHELF/cdshelf.exe" \
+  "$ROOT/guest-tools/src/cdshelf.c" -I"$ROOT/cdshelf"
 nasm -f bin -o "$OUT/iso/CDSHELF/cdshelf.com" "$ROOT/guest-tools/src/cdshelf.asm"
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
@@ -264,13 +266,20 @@ WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
 CDSHELF\ -> the host's disc shelf, from inside the machine (the launcher's
             shelf, doc 07). CDSHELF.EXE on Windows 98 / 2000 / XP,
             CDSHELF.COM in a DOS box; copy either one anywhere and run it.
-              CDSHELF        list the discs on the host's shelf
+            Run with no arguments, CDSHELF.EXE opens a window: pick a disc,
+            press Insert, and it is in the drive (Eject empties it).
+            CDSHELF.COM does the same with the keyboard: the shelf is
+            listed and 0-9 puts that disc in the drive, E empties it,
+            R re-reads the shelf, Esc quits. Either also takes a command:
+              CDSHELF LIST   print the shelf and exit
               CDSHELF 3      put slot 3 in the drive
               CDSHELF E      empty the drive
-            Nothing to install: it talks to the machine's own CD-ROM drive,
-            which answers a vendor command with the shelf. A machine started
-            without a shelf (plain qemu-system, no -device ide-cd,shelf=...)
-            says so instead of listing.
+            Inserting always empties the drive first and waits for it —
+            without that, Windows and MSCDEX keep showing the old disc's
+            files. Nothing to install: it talks to the machine's own CD-ROM
+            drive, which answers a vendor command with the shelf. A machine
+            started without a shelf (plain qemu-system, no -device
+            ide-cd,shelf=...) says so instead of listing.
 DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with
             -vga none -device d3dpt-vga): DRVINST.EXE -reboot installs it;
             see DRIVER\README.TXT. Not for Win9x.

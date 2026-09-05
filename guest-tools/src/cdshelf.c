@@ -527,34 +527,76 @@ static int is_win9x(void)
  * The medium change happens behind the command: the device runs it from a
  * bottom half (patch 52), and the drive then reports the ATAPI
  * medium-change dance — "no medium", then UNIT ATTENTION — before the new
- * disc can be read. Poll TEST UNIT READY through it, so the program only
- * says the disc is in when the drive agrees, and Windows sees a settled
- * drive by the time we exit.
+ * disc can be read. `wait_medium` polls TEST UNIT READY through that until
+ * the drive agrees the tray is (or is not) occupied, so nothing here
+ * reports success before the drive does, and Windows sees a settled drive.
+ *
+ * `dots` prints progress for the command-line mode; the window passes 0.
  */
-static void wait_for_medium(Drive *d)
+static int wait_medium(Drive *d, int want_present, int dots)
 {
     BYTE cdb[CDB_LEN];
     Sense sense;
     int i;
 
-    logf_("waiting for the drive");
     for (i = 0; i < 40; i++) {
         int r;
 
         Sleep(100);
         memset(cdb, 0, sizeof cdb);     /* TEST UNIT READY */
         r = send_cdb(d, cdb, NULL, 0, DIR_NONE, &sense);
-        if (r == CDB_OK) {
-            logf_("\nthe disc is in the drive.\n");
-            return;
+        if (want_present && r == CDB_OK) {
+            return 1;
+        }
+        /* an empty tray is exactly "not ready, medium not present" */
+        if (!want_present && r == CDB_SENSE && sense.key == 2 && sense.asc == 0x3A) {
+            return 1;
         }
         if (r == CDB_SENSE && sense.key != 2 && sense.key != 6) {
-            logf_("\nthe drive reports %02x/%02x/%02x.\n", sense.key, sense.asc, sense.ascq);
-            return;
+            vlogf("  drive reports %02x/%02x/%02x while settling\n",
+                  sense.key, sense.asc, sense.ascq);
         }
-        logf_(".");
+        if (dots) {
+            logf_(".");
+        }
     }
-    logf_("\nthe drive still reports no disc.\n");
+    return 0;
+}
+
+/*
+ * Put a disc in the drive: EMPTY IT FIRST, wait for the drive to say the
+ * tray really is empty, and only then load the new one.
+ *
+ * Two reasons, both learned the hard way. Windows caches what it last saw
+ * in the drive, and a swap it never saw as a removal leaves Explorer (and
+ * MSCDEX) showing the previous disc's files — "inserting did nothing".
+ * And on the device side the medium change runs from a *single* bottom
+ * half (patch 52): an eject and a load issued back to back without
+ * waiting collapse into one, and the one that survives is the last
+ * request — so the wait between them is load-bearing, not politeness.
+ *
+ * `slot < 0` just empties the drive.
+ */
+static int cdshelf_insert(Drive *d, int slot, int dots, Sense *sense)
+{
+    BYTE cdb[CDB_LEN];
+    int r;
+
+    cdb_eject(cdb);
+    r = send_cdb(d, cdb, NULL, 0, DIR_NONE, sense);
+    if (r != CDB_OK) {
+        return r;
+    }
+    wait_medium(d, 0, dots);
+    if (slot < 0) {
+        return CDB_OK;
+    }
+    cdb_load(cdb, slot);
+    r = send_cdb(d, cdb, NULL, 0, DIR_NONE, sense);
+    if (r != CDB_OK) {
+        return r;
+    }
+    return wait_medium(d, 1, dots) ? CDB_OK : CDB_FAILED;
 }
 
 /*
@@ -590,22 +632,297 @@ static void print_sense(const Sense *s)
 
 static void usage(void)
 {
-    logf_("usage: CDSHELF          list the discs on the host's shelf\n"
+    logf_("usage: CDSHELF          open the disc-shelf window\n"
+          "       CDSHELF list     print the discs on the host's shelf\n"
           "       CDSHELF <n>      put slot <n> in the drive\n"
           "       CDSHELF E        empty the drive\n"
           "       -d <letter>:     use that drive instead of searching (XP only)\n"
           "       -v               show the commands sent to the drive\n");
 }
 
+/* ------------------------------------------------------------- the window */
+/*
+ * Plain USER32: a listbox, four buttons and a status line, created in code
+ * rather than from a dialog resource so this stays one .c file the mingw
+ * build compiles with no .rc step. Nothing here is newer than Windows 95 —
+ * no common controls, no manifest — because the same EXE has to come up on
+ * a stock Win98 as on XP.
+ *
+ * Inserting a disc takes a second or two (the drive has to settle twice,
+ * see cdshelf_insert), so it runs on a worker thread and posts the result
+ * back: a window that stops painting mid-swap looks broken, and on Win9x a
+ * blocked message loop is how a program gets a "not responding" reputation.
+ */
+#define WM_SHELF_DONE (WM_APP + 1)
+
+#define ID_LIST    100
+#define ID_INSERT  101
+#define ID_EJECT   102
+#define ID_REFRESH 103
+#define ID_CLOSE   104
+
+typedef struct {
+    Drive *drive;
+    BYTE *buf;
+    int buflen, total, count, entry_size, loaded;
+    HWND wnd, list, status, insert, eject, refresh;
+    HANDLE thread;
+    int busy;
+    int op_slot;            /* what the worker is doing; <0 = eject */
+    int op_result;
+    Sense op_sense;
+} Gui;
+
+static Gui gui;
+
+static void gui_status(const char *fmt, ...)
+{
+    va_list ap;
+    char buf[256];
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    SetWindowTextA(gui.status, buf);
+}
+
+static void gui_enable(int on)
+{
+    EnableWindow(gui.insert, on);
+    EnableWindow(gui.eject, on);
+    EnableWindow(gui.refresh, on);
+}
+
+/* Re-read the shelf and repaint the list, keeping the selected row. */
+static void gui_reload(void)
+{
+    Sense sense;
+    int sel = (int)SendMessageA(gui.list, LB_GETCURSEL, 0, 0);
+    int i, r;
+
+    r = shelf_list(gui.drive, gui.buf, gui.buflen, &gui.total, &gui.count,
+                   &gui.entry_size, &gui.loaded, &sense);
+    SendMessageA(gui.list, LB_RESETCONTENT, 0, 0);
+    if (r != CDB_OK) {
+        SendMessageA(gui.list, LB_ADDSTRING, 0, (LPARAM) "(the drive did not answer)");
+        gui_status("Could not read the shelf.");
+        return;
+    }
+    for (i = 0; i < gui.count; i++) {
+        const BYTE *e = gui.buf + CDSHELF_LIST_HEADER_SIZE + i * gui.entry_size;
+        char label[CDSHELF_LABEL_MAX + 1], line[CDSHELF_LABEL_MAX + 64];
+
+        entry_label(e, label, sizeof label);
+        sprintf(line, "%s%s%s", label,
+                e[CDSHELF_ENTRY_FLAGS_OFF] & CDSHELF_FLAG_LOADED ? "   [in the drive]" : "",
+                e[CDSHELF_ENTRY_FLAGS_OFF] & CDSHELF_FLAG_MISSING ? "   [missing on the host]" : "");
+        SendMessageA(gui.list, LB_ADDSTRING, 0, (LPARAM)line);
+    }
+    if (sel < 0 || sel >= gui.count) {
+        /* first time, or the shelf changed under us: show what is loaded */
+        sel = gui.loaded < gui.count ? gui.loaded : 0;
+    }
+    SendMessageA(gui.list, LB_SETCURSEL, sel, 0);
+    if (gui.total == 0) {
+        gui_status("The host's shelf is empty.");
+    } else if (gui.loaded < gui.count) {
+        char label[CDSHELF_LABEL_MAX + 1];
+        entry_label(gui.buf + CDSHELF_LIST_HEADER_SIZE + gui.loaded * gui.entry_size,
+                    label, sizeof label);
+        gui_status("In the drive: %s", label);
+    } else {
+        gui_status("%d disc%s on the shelf.", gui.total, gui.total == 1 ? "" : "s");
+    }
+}
+
+static DWORD WINAPI gui_worker(LPVOID param)
+{
+    (void)param;
+    gui.op_result = cdshelf_insert(gui.drive, gui.op_slot, 0, &gui.op_sense);
+    tell_windows(gui.drive);
+    PostMessageA(gui.wnd, WM_SHELF_DONE, 0, 0);
+    return 0;
+}
+
+/* `slot < 0` empties the drive. */
+static void gui_start(int slot)
+{
+    DWORD tid;
+
+    if (gui.busy) {
+        return;
+    }
+    if (slot >= 0) {
+        const BYTE *e = gui.buf + CDSHELF_LIST_HEADER_SIZE + slot * gui.entry_size;
+        char label[CDSHELF_LABEL_MAX + 1];
+
+        if (e[CDSHELF_ENTRY_FLAGS_OFF] & CDSHELF_FLAG_MISSING) {
+            gui_status("The host cannot reach that disc image.");
+            return;
+        }
+        entry_label(e, label, sizeof label);
+        gui_status("Inserting %s...", label);
+    } else {
+        gui_status("Emptying the drive...");
+    }
+    gui.op_slot = slot;
+    gui.busy = 1;
+    gui_enable(FALSE);
+    gui.thread = CreateThread(NULL, 0, gui_worker, NULL, 0, &tid);
+    if (!gui.thread) {   /* no thread: do it inline rather than not at all */
+        gui_worker(NULL);
+    }
+}
+
+static void gui_finished(void)
+{
+    if (gui.thread) {
+        CloseHandle(gui.thread);
+        gui.thread = NULL;
+    }
+    gui.busy = 0;
+    gui_enable(TRUE);
+    gui_reload();
+    if (gui.op_result == CDB_SENSE) {
+        const Sense *s = &gui.op_sense;
+        if (s->key == 2 && s->asc == 0x3A) {
+            gui_status("The host cannot reach that disc image.");
+        } else {
+            gui_status("The drive refused it (sense %02x/%02x/%02x).", s->key, s->asc, s->ascq);
+        }
+    } else if (gui.op_result != CDB_OK) {
+        gui_status("The drive did not settle; try again.");
+    }
+}
+
+static LRESULT CALLBACK gui_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_SETFOCUS:
+        /* a plain window keeps the focus itself, and then Tab and Enter
+         * have nothing to act on: hand it to the list, which is what the
+         * user is choosing from anyway */
+        SetFocus(gui.list);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        /* Enter with the focus in the list: IsDialogMessage turns that
+         * into the default push button, which is Insert. Esc closes. */
+        case IDOK:
+        case ID_INSERT:
+            gui_start((int)SendMessageA(gui.list, LB_GETCURSEL, 0, 0));
+            return 0;
+        case ID_EJECT:
+            gui_start(-1);
+            return 0;
+        case ID_REFRESH:
+            gui_reload();
+            return 0;
+        case IDCANCEL:
+        case ID_CLOSE:
+            if (!gui.busy) {
+                DestroyWindow(wnd);
+            }
+            return 0;
+        case ID_LIST:
+            if (HIWORD(wp) == LBN_DBLCLK) {
+                gui_start((int)SendMessageA(gui.list, LB_GETCURSEL, 0, 0));
+            }
+            return 0;
+        }
+        break;
+    case WM_SHELF_DONE:
+        gui_finished();
+        return 0;
+    case WM_CLOSE:
+        if (gui.busy) {   /* the worker still owns the drive handle */
+            return 0;
+        }
+        DestroyWindow(wnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcA(wnd, msg, wp, lp);
+}
+
+static HWND gui_button(HWND parent, const char *text, int id, int x, int y, HFONT font,
+                       int is_default)
+{
+    HWND b = CreateWindowA("BUTTON", text,
+                           WS_CHILD | WS_VISIBLE | WS_TABSTOP
+                               | (is_default ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON),
+                           x, y, 90, 24, parent, (HMENU)(INT_PTR)id, NULL, NULL);
+    SendMessageA(b, WM_SETFONT, (WPARAM)font, TRUE);
+    return b;
+}
+
+static int run_gui(Drive *drive, BYTE *buf, int buflen)
+{
+    WNDCLASSA wc;
+    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    MSG msg;
+    char title[96];
+
+    memset(&gui, 0, sizeof gui);
+    gui.drive = drive;
+    gui.buf = buf;
+    gui.buflen = buflen;
+
+    memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = gui_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "CdshelfWindow";
+    if (!RegisterClassA(&wc)) {
+        return 1;
+    }
+    sprintf(title, "Disc shelf - %s", drive->name);
+    gui.wnd = CreateWindowA("CdshelfWindow", title,
+                            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                            CW_USEDEFAULT, CW_USEDEFAULT, 440, 320,
+                            NULL, NULL, wc.hInstance, NULL);
+    if (!gui.wnd) {
+        return 1;
+    }
+    gui.list = CreateWindowA("LISTBOX", NULL,
+                             WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | WS_TABSTOP
+                                 | LBS_NOTIFY,
+                             8, 8, 310, 240, gui.wnd, (HMENU)(INT_PTR)ID_LIST, NULL, NULL);
+    SendMessageA(gui.list, WM_SETFONT, (WPARAM)font, TRUE);
+    gui.insert = gui_button(gui.wnd, "&Insert", ID_INSERT, 326, 8, font, 1);
+    gui.eject = gui_button(gui.wnd, "&Eject", ID_EJECT, 326, 40, font, 0);
+    gui.refresh = gui_button(gui.wnd, "&Refresh", ID_REFRESH, 326, 72, font, 0);
+    gui_button(gui.wnd, "&Close", ID_CLOSE, 326, 224, font, 0);
+    gui.status = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
+                               8, 254, 410, 20, gui.wnd, NULL, NULL, NULL);
+    SendMessageA(gui.status, WM_SETFONT, (WPARAM)font, TRUE);
+
+    gui_reload();
+    ShowWindow(gui.wnd, SW_SHOWNORMAL);
+    UpdateWindow(gui.wnd);
+    SetFocus(gui.list);   /* so Enter inserts the highlighted disc straight away */
+    while (GetMessageA(&msg, NULL, 0, 0) > 0) {
+        if (!IsDialogMessageA(gui.wnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     enum { MODE_LIST, MODE_LOAD, MODE_EJECT } mode = MODE_LIST;
-    BYTE *buf, cdb[CDB_LEN];
+    BYTE *buf;
     Drive drive;
     Sense sense;
     char want_letter = 0, label[CDSHELF_LABEL_MAX + 1];
     int slot = 0, total = 0, count = 0, entry_size = CDSHELF_ENTRY_SIZE;
-    int loaded = CDSHELF_NO_SLOT, i, r, buflen;
+    int loaded = CDSHELF_NO_SLOT, i, r, buflen, mode_given = 0;
 
     lg = fopen("cdshelf.log", "w");
     logf_("CDSHELF - the host's disc shelf\n");
@@ -614,6 +931,8 @@ int main(int argc, char **argv)
             verbose = 1;
         } else if (!strcmp(argv[i], "-d") && i + 1 < argc) {
             want_letter = (char)toupper((unsigned char)argv[++i][0]);
+        } else if (!strcmp(argv[i], "list") || !strcmp(argv[i], "LIST")) {
+            mode = MODE_LIST;
         } else if (argv[i][0] == 'e' || argv[i][0] == 'E') {
             mode = MODE_EJECT;
         } else if (argv[i][0] >= '0' && argv[i][0] <= '9') {
@@ -622,6 +941,10 @@ int main(int argc, char **argv)
         } else {
             usage();
             return 2;
+        }
+        /* a verb, as opposed to a flag, means the command line was meant */
+        if (argv[i][0] != '-') {
+            mode_given = 1;
         }
     }
 
@@ -633,6 +956,17 @@ int main(int argc, char **argv)
             logf_("this drive has no shelf: the machine was started without one\n"
                   "(the launcher passes it; plain qemu-system needs "
                   "-device ide-cd,shelf=...).\n");
+        }
+        /* Without a console there is nothing to have read that, so the one
+         * thing this program has to say gets a message box instead. */
+        if (!mode_given) {
+            MessageBoxA(NULL,
+                        saw_no_shelf
+                            ? "This machine's CD-ROM drive has no disc shelf.\n\n"
+                              "The launcher gives its machines one; a machine started "
+                              "by hand needs -device ide-cd,shelf=..."
+                            : "No CD-ROM drive with a disc shelf was found.",
+                        "Disc shelf", MB_OK | MB_ICONINFORMATION);
         }
         return 1;
     }
@@ -646,6 +980,11 @@ int main(int argc, char **argv)
     }
     /* page-aligned: SPTI hands the buffer straight to the miniport, which
      * has its own alignment requirement, and a stack buffer can fail it */
+
+    /* No verb: this was a double-click, not a command line. */
+    if (!mode_given) {
+        return run_gui(&drive, buf, buflen);
+    }
 
     r = shelf_list(&drive, buf, buflen, &total, &count, &entry_size, &loaded, &sense);
     if (r == CDB_SENSE) {
@@ -694,24 +1033,24 @@ int main(int argc, char **argv)
         } else {
             logf_("loading slot %d\n", slot);
         }
-        cdb_load(cdb, slot);
-        r = send_cdb(&drive, cdb, NULL, 0, DIR_NONE, &sense);
+        logf_("waiting for the drive");
+        r = cdshelf_insert(&drive, slot, 1, &sense);
+        logf_("\n");
         if (r == CDB_SENSE) {
             print_sense(&sense);
             return 1;
         }
         if (r != CDB_OK) {
-            logf_("the drive did not accept the load.\n");
+            logf_("the drive did not settle after the load.\n");
             return 1;
         }
-        wait_for_medium(&drive);
         tell_windows(&drive);
+        logf_("the disc is in the drive.\n");
         return 0;
     }
 
     logf_("emptying the drive\n");
-    cdb_eject(cdb);
-    r = send_cdb(&drive, cdb, NULL, 0, DIR_NONE, &sense);
+    r = cdshelf_insert(&drive, -1, 0, &sense);
     if (r == CDB_SENSE) {
         print_sense(&sense);
         return 1;

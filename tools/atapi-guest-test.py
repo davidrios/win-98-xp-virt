@@ -898,7 +898,10 @@ def check(bcl, entries):
 
 # What FDAUTO.BAT runs, each line's output redirected to COM1 (DOS function
 # 02h goes through STDOUT, so the program needs nothing special for this).
-CDSHELF_RUNS = ["", "1", "", "E", "", "0", ""]
+# `list` rather than no argument: with no argument the program is a menu
+# that waits for a key, which is the right thing for a person and no use to
+# a batch file.
+CDSHELF_RUNS = ["list", "1", "list", "E", "list", "0", "list"]
 
 
 def check_cdshelf(text):

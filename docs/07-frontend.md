@@ -54,7 +54,10 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   swapped in while it runs. One-click guest-tools ISO attach.
 - **The shelf from inside the guest** (`CDSHELF`, guest-tools ISO): the
   same shelf, listed and swapped from a program running in the guest — a
-  disc-2 prompt in a game is answered without leaving it. The channel is a
+  disc-2 prompt in a game is answered without leaving it. It is a
+  *window* on Windows (pick a disc, press Insert) and a key-per-disc menu
+  in a DOS box, because a disc swap is something a player does mid-game,
+  not a command line they retype; both also take verbs for scripting. The channel is a
   vendor ATAPI command on the machine's own CD-ROM drive (opcode 0xD0,
   patch 52, protocol `cdshelf/cdshelf_proto.h`), because that drive is the
   one thing DOS, Win98 and XP can all send a raw command to — PIO, ASPI
