@@ -579,6 +579,52 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   compact 560×92. `cargo build --workspace` clean, no warnings. **Still
   not click-tested by a human.**
 
+- **Step 5a — disc-shelf editing landed** (2026-09-05):
+  `launcher/src/discshelf.rs` is a per-machine "Discs (n)…" window off the
+  library grid that edits `Machine::discs` — the ordered shelf whose
+  *first* entry `qemu_args` attaches as the boot CD-ROM. Add (the
+  `filepicker` field, same `iso/cue/ccd/mds` filter as the wizard's
+  install-media slot), Up/Down, Remove, and doc 07's **one-click
+  guest-tools ISO attach**: `discshelf::guest_tools_iso()` finds the
+  newest `guest-tools/out/guest-tools-*.iso` (the name `scripts/test.sh`
+  already globs), canonicalized because unlike `pc_bios_dir` this path
+  gets written *into* a bundle file, and `LAUNCHER_GUEST_TOOLS_ISO`
+  overrides it; the button is greyed with a reason when none is built.
+  `save()` re-reads the bundle and replaces only `discs`, so nothing
+  else in the file can be lost (and a wizard save in between isn't
+  clobbered). The window stays usable while the machine runs — nothing
+  it writes touches a live guest — and says so instead of greying out;
+  live media change is 5c below.
+
+  This is deliberately the half of step 5 that needs **no IPC at all**:
+  it's a bundle edit, so it applies at the next boot.
+
+  Verified for real, and this time *through the actual widgets*: a new
+  `--diag-shelf-frame <machine.toml> <out.png> [WxH] [x,y;x,y] [running]`
+  verb runs the real `DiscShelf::show` through `egui::Context::run_ui`
+  with synthetic pointer clicks and dumps the composited frame (the
+  click/paint machinery factored out of `--diag-editor-frame` as
+  `diag_window_frames`/`parse_clicks`). Clicking "Down" on row 1 then
+  "Save" reordered the shelf and wrote it; "Remove" on row 3 dropped that
+  disc; "Add guest-tools ISO" appended the found ISO and "Save" wrote a
+  four-disc shelf — each confirmed by reading `machine.toml` back, with
+  `ram_mb = 768`, `shader_profile` and `shader` (fields this window
+  doesn't model) intact every time, and `--print-args` attaching the
+  new first entry as `ide-cd`. Newest-ISO selection was checked against
+  three files with staggered mtimes (it correctly ignores a newer
+  `d3dpt-driver.iso`, not a guest-tools build), and the greyed-out
+  no-ISO state was screenshotted too. Two layout bugs were found and
+  fixed *by* those dumps: long disc paths widened the grid until the
+  buttons sat off-screen (buttons moved before the path, path split
+  file-name + truncating directory, window `max_width`), and `↑`/`↓`
+  rendered as tofu in egui's default font (now "Up"/"Down").
+  A headless `--disc-shelf <machine.toml> [<disc>|+tools ...]` verb does
+  the same edit without a window, for scripting.
+
+  Still **not click-tested by a human**; the library grid's own new
+  "Discs (n)…" button is the one part not covered headlessly (the grid
+  lives inside `eframe::App::ui`, which needs a real window).
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -587,10 +633,21 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
 4. ~~**Guided creation wizard**~~ — done above, including editing an
    existing machine and a native file picker (needs a human
    click-through, see the caveats above).
-5. **Snapshots UI + disc-shelf editing**: once the player exposes QMP
-   snapshot/media-change operations for the launcher to drive (may need
-   a small IPC surface between the two binaries — design it when this
-   item is reached, not before).
+5. **Snapshots UI + disc-shelf editing**, split by what needs IPC:
+   - ~~5a **disc-shelf editing**~~ — done above (a bundle edit; no IPC).
+   - 5b **snapshots, offline**: a machine that isn't running has no
+     monitor to ask, so go at the qcow2 with `qemu-img snapshot`, which
+     is what `savevm`/`loadvm` write into anyway.
+   - 5c **live control** (media swap and snapshots on a *running*
+     machine). Design decided 2026-09-05: **no new protocol and no
+     player change** — the launcher adds `-qmp unix:<path>,server,nowait`
+     to the args it spawns the player with and talks QMP to that socket
+     itself, exactly the way `tools/qmpc.py` already drives a guest over
+     an extra monitor. QEMU allows several monitors, so the player's own
+     in-process one (`player/src/qmp.rs`, on a socketpair with no
+     filesystem path) is untouched. Unix-socket-only, so live control is
+     Linux/macOS for now; Windows needs a named pipe or a loopback port,
+     a packaging-time (step 6) question.
 6. **Packaging** (last, per doc 08 M6): signed macOS .app + notarization,
    Windows installer + portable zip, Linux Flatpak — the M6 exit
    criterion ("stranger installs → plays a disc dump with a CRT shader
@@ -603,7 +660,7 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
-`--diag-editor-frame`) were
+`--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`

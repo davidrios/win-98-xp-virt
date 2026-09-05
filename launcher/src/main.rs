@@ -5,6 +5,7 @@
 //! thumbnails yet.
 
 mod bundle;
+mod discshelf;
 mod filepicker;
 mod library;
 mod player;
@@ -28,6 +29,7 @@ struct LauncherApp {
     /// `try_wait` removes it below the moment it exits).
     running: HashMap<PathBuf, Child>,
     wizard: wizard::Wizard,
+    disc_shelf: discshelf::DiscShelf,
     shader_manager: shader_manager::ShaderManager,
     /// `None` on a non-wgpu eframe backend (not expected in practice —
     /// `wgpu` is a default feature, see `docs/tracks/m6-launcher.md` —
@@ -99,6 +101,10 @@ impl eframe::App for LauncherApp {
                             if ui.button("Edit…").clicked() {
                                 self.wizard.open_edit(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
                             }
+                            let discs = entry.machine.discs.len();
+                            if ui.button(format!("Discs ({discs})…")).clicked() {
+                                self.disc_shelf.open_for(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
+                            }
                         });
                         ui.end_row();
                     }
@@ -116,6 +122,17 @@ impl eframe::App for LauncherApp {
         });
 
         if let Some(_bundle_path) = self.wizard.show(&ctx, &self.library_dir, &self.shader_profiles) {
+            self.entries = library::scan(&self.library_dir);
+        }
+        // The shelf window is per-machine but the app owns one: whether
+        // *that* machine is running decides the "applies to the next
+        // boot" note, so look it up by the bundle it has open.
+        let shelf_running = self
+            .disc_shelf
+            .bundle_dir()
+            .map(|dir| self.running.contains_key(dir))
+            .unwrap_or(false);
+        if self.disc_shelf.show(&ctx, shelf_running).is_some() {
             self.entries = library::scan(&self.library_dir);
         }
         if self
@@ -228,6 +245,60 @@ fn dump_egui_frame(
     shader_chain::dump_texture(&render_state.device, &render_state.queue, &target, out);
 }
 
+/// Drives one of the app's windows through egui headlessly with
+/// synthetic pointer clicks and dumps the composited frame — the same
+/// trick `--diag-editor-frame` uses, generalized so a window whose whole
+/// content is buttons (the disc shelf, the snapshot list) can have its
+/// wiring exercised in a session with no GUI click automation. Each
+/// click gets its own move/press/release/settle frames, because egui
+/// needs a frame to notice a widget was pressed and another to react.
+fn diag_window_frames(
+    render_state: &eframe::egui_wgpu::RenderState,
+    screen: egui::Vec2,
+    clicks: &[egui::Pos2],
+    out: &str,
+    mut window: impl FnMut(&egui::Context),
+) {
+    let ctx = egui::Context::default();
+    let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, screen);
+    let mut run = |events: Vec<egui::Event>, paint: bool| {
+        let input = egui::RawInput { screen_rect: Some(screen_rect), events, ..Default::default() };
+        let mut full_output = ctx.run_ui(input, |ui| window(ui.ctx()));
+        if paint {
+            dump_egui_frame(render_state, &ctx, full_output, [screen.x as u32, screen.y as u32], out);
+        } else {
+            apply_texture_deltas(render_state, &mut full_output.textures_delta);
+        }
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    run(Vec::new(), false);
+    run(Vec::new(), false); // settle: egui needs a frame to lay a new window out
+    for pos in clicks {
+        println!("click at {:.0},{:.0}", pos.x, pos.y);
+        run(vec![egui::Event::PointerMoved(*pos)], false);
+        run(vec![button(*pos, true)], false);
+        run(vec![button(*pos, false)], false);
+        run(vec![egui::Event::PointerGone], false);
+        run(Vec::new(), false);
+    }
+    run(Vec::new(), true);
+}
+
+/// `<x,y;x,y;…>` click positions for the diagnostic verbs.
+fn parse_clicks(spec: &str) -> Vec<egui::Pos2> {
+    spec.split(';')
+        .filter_map(|s| {
+            let (x, y) = s.split_once(',')?;
+            Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+        })
+        .collect()
+}
+
 fn main() -> eframe::Result {
     // Debug/advanced-drawer aids (doc 07), until the wizard exists:
     // `--new` bootstraps a bundle into the library from the doc 06
@@ -292,6 +363,32 @@ fn main() -> eframe::Result {
             w.set_name(new_name);
             let saved = w.submit(&library::default_dir()).expect("save bundle");
             println!("{}", saved.display());
+            return Ok(());
+        }
+        Some("--disc-shelf") => {
+            // Headless equivalent of the "Discs…" window: with no discs
+            // given it prints the current shelf, otherwise it sets the
+            // shelf to the given paths (in order — the first is the boot
+            // disc) and calls the same `save()` the "Save" button does.
+            // `+tools` stands for the "Add guest-tools ISO" button.
+            let usage = "usage: launcher --disc-shelf <machine.toml> [<disc>|+tools ...]";
+            let path: PathBuf = args.next().expect(usage).into();
+            let machine = bundle::Machine::load(&path).expect("load bundle");
+            let mut shelf = discshelf::DiscShelf::default();
+            shelf.open_for(&machine, path.clone());
+            let discs: Vec<PathBuf> = args
+                .map(|a| match a.as_str() {
+                    "+tools" => discshelf::guest_tools_iso().expect("no guest-tools ISO built"),
+                    other => other.into(),
+                })
+                .collect();
+            if !discs.is_empty() {
+                shelf.set_discs(discs);
+                shelf.save().expect("save shelf");
+            }
+            for (i, disc) in shelf.discs().iter().enumerate() {
+                println!("{}{}", if i == 0 { "boot " } else { "     " }, disc.display());
+            }
             return Ok(());
         }
         Some("--new") => {
@@ -412,6 +509,42 @@ fn main() -> eframe::Result {
             dump_egui_frame(&render_state, &ctx, full_output, [800, 600], &out);
             return Ok(());
         }
+        Some("--diag-shelf-frame") => {
+            // Diagnostic only: runs the *real* disc-shelf window through
+            // egui headlessly, applies synthetic clicks (↑/↓/Remove/Add/
+            // Save — read their positions off a dump with no clicks
+            // first), dumps the composited frame and prints the resulting
+            // shelf. That's what proves the buttons are wired to the list
+            // they appear next to, in a session with no GUI click
+            // automation to try it by hand.
+            let usage =
+                "usage: launcher --diag-shelf-frame <machine.toml> <out.png> [<screen WxH>] [<x,y;x,y clicks>] [running]";
+            let path: PathBuf = args.next().expect(usage).into();
+            let out = args.next().expect(usage);
+            let screen = args
+                .next()
+                .and_then(|s| {
+                    let (w, h) = s.split_once('x')?;
+                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+                })
+                .unwrap_or(egui::vec2(900.0, 600.0));
+            let clicks = parse_clicks(&args.next().unwrap_or_default());
+            let running = args.next().as_deref() == Some("running");
+
+            let machine = bundle::Machine::load(&path).expect("load bundle");
+            let mut shelf = discshelf::DiscShelf::default();
+            shelf.open_for(&machine, path);
+            let render_state = headless_render_state();
+            diag_window_frames(&render_state, screen, &clicks, &out, |ctx| {
+                if let Some(saved) = shelf.show(ctx, running) {
+                    println!("saved {}", saved.display());
+                }
+            });
+            for (i, disc) in shelf.discs().iter().enumerate() {
+                println!("{}{}", if i == 0 { "boot " } else { "     " }, disc.display());
+            }
+            return Ok(());
+        }
         Some("--diag-editor-frame") => {
             // Diagnostic only: runs the *real* shader-profile editor
             // window through egui headlessly — including a synthetic
@@ -434,15 +567,7 @@ fn main() -> eframe::Result {
                 })
                 .unwrap_or(egui::vec2(1400.0, 900.0));
             let drag_dy: f32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let clicks: Vec<egui::Pos2> = args
-                .next()
-                .unwrap_or_default()
-                .split(';')
-                .filter_map(|s| {
-                    let (x, y) = s.split_once(',')?;
-                    Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
-                })
-                .collect();
+            let clicks = parse_clicks(&args.next().unwrap_or_default());
 
             let render_state = headless_render_state();
             let profiles_dir = shader_library::default_dir();
@@ -533,6 +658,7 @@ fn main() -> eframe::Result {
                 shader_profiles,
                 running: HashMap::new(),
                 wizard: wizard::Wizard::default(),
+                disc_shelf: discshelf::DiscShelf::default(),
                 shader_manager,
                 wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
