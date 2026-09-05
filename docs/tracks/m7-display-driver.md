@@ -237,8 +237,10 @@ picture and the track rules, then this file, then doc 15.
   64×64 stay software. v4 refuses a v3 driver: every image needs
   `install` from the ISO (`winxp-m7g` done; the user's `winxp-m7`
   pending), QEMU rebuilt (prepare → ninja). Doc 15 "The hardware cursor".
-  Verified headless by the device log (`cursor 32x32 hot 0,0 defined`,
-  `cursor shown at x,y`); the window itself is the user's check.
+  Without the tablet (a relative mouse, the grab) the player composites
+  the sprite into the frame at the guest's position instead — the first
+  cut lacked that and showed no cursor at all in the game. **User-confirmed
+  the same evening: steady desktop cursor, present in Moto Racer's menus.**
 - **Tried and dropped the same evening: blit / stretch caps** for FIFA
   2000's 320×240 intro videos — `DDCAPS_BLT | BLTSTRETCH | …` with a
   declining `DdBlt` broke DDTEST's colour fill (on XP `NOTHANDLED` is

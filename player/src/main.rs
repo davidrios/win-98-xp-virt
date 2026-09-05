@@ -532,15 +532,23 @@ fn present_guest_frame(
     gpu: &mut Gpu,
     display: &qemu_vm::Display,
     last_seq: &mut u64,
+    composite_cursor: bool,
 ) -> Option<std::time::Instant> {
     for d in display.take_dmabufs() {
         gpu.import_slot(&d);
     }
-    let f = display.take_if_newer(*last_seq)?;
+    let mut f = display.take_if_newer(*last_seq)?;
     *last_seq = f.seq;
     match f.ext_slot {
         Some(s) => gpu.use_slot(Some(s)),
         None => {
+            // the guest's hardware cursor as a sprite in the frame, where the
+            // host cursor cannot stand in for it (a relative mouse, a grab)
+            if composite_cursor {
+                if let Some((c, x, y)) = display.cursor_sprite() {
+                    qemu_vm::composite_cursor(&mut f.pixels, f.width, f.height, &c, x, y);
+                }
+            }
             gpu.use_slot(None);
             gpu.upload(&f.pixels, f.width as u32, f.height as u32);
         }
@@ -649,6 +657,14 @@ impl App {
     /// The host cursor over the window: the guest's shape while over the
     /// image (and visible per the guest), hidden over the image when the
     /// guest has no hardware cursor, the default elsewhere.
+    /// The host pointer sits exactly where the guest's cursor is only with an
+    /// absolute device (the USB tablet) and no grab: then the guest's shape
+    /// can be the host cursor. Otherwise (a relative mouse, PS/2, whether
+    /// grabbed or not) the sprite is composited into the frame.
+    fn host_cursor_possible(&self) -> bool {
+        !self.grabbed && self.vm().map(|v| v.mouse_is_absolute()).unwrap_or(false)
+    }
+
     fn apply_cursor(&mut self) {
         let Some(gpu) = &self.gpu else { return };
         if self.grabbed {
@@ -660,13 +676,23 @@ impl App {
         };
         let want = if !self.pointer_inside {
             HostCursor::Default
-        } else if let (Some(_), Some(true)) = (&self.guest_cursor, visible) {
+        } else if let (true, Some(_), Some(true)) = (self.host_cursor_possible(), &self.guest_cursor, visible) {
             HostCursor::Guest(self.guest_cursor_seq)
         } else {
             HostCursor::Hidden
         };
         if want == self.cursor_applied {
             return;
+        }
+        if std::env::var("PLAYER_CURSOR_LOG").is_ok() {
+            eprintln!(
+                "[cursor] host: {}",
+                match &want {
+                    HostCursor::Default => "default".to_string(),
+                    HostCursor::Hidden => format!("hidden (shape {}, guest visible {:?})", self.guest_cursor.is_some(), visible),
+                    HostCursor::Guest(s) => format!("the guest's shape #{s}"),
+                }
+            );
         }
         match &want {
             HostCursor::Default => {
@@ -856,6 +882,7 @@ impl ApplicationHandler for App {
                 self.lift_all_keys();
             }
             WindowEvent::RedrawRequested => {
+                let sprite = !self.host_cursor_possible();
                 let Some(gpu) = self.gpu.as_mut() else { return };
                 let Some(frame) = gpu.acquire() else { return };
                 let mut published = None;
@@ -867,7 +894,7 @@ impl ApplicationHandler for App {
                     Some(Source::Qemu {
                         display, last_seq, ..
                     }) => {
-                        published = present_guest_frame(gpu, display, last_seq);
+                        published = present_guest_frame(gpu, display, last_seq, sprite);
                     }
                     None => {}
                 }
@@ -970,7 +997,7 @@ impl ApplicationHandler for App {
             }) = self.source.as_mut()
             {
                 if let Some(gpu) = self.gpu.as_mut() {
-                    if present_guest_frame(gpu, display, last_seq).is_some() {
+                    if present_guest_frame(gpu, display, last_seq, true).is_some() {
                         gpu.render(None);
                     }
                 }

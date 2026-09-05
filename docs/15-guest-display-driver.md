@@ -718,7 +718,16 @@ The fix is the sprite every card of the era had, in three parts:
   guest without a hardware cursor (cirrus, vga.sys, an older driver)
   keeps the old behaviour — hidden over the image, the software pointer
   in the frame. The state is applied only on change (wakes come every
-  frame).
+  frame). **That is the tablet path only.** With a relative mouse (no
+  `usb-tablet`: the PS/2 mouse, the player's grab) the host pointer is
+  nowhere near the guest's cursor, so the player composites the sprite
+  into the frame at the position the guest reports, alpha-blended, and a
+  move alone republishes the frame so the sprite follows between guest
+  redraws (the first cut had only the host-cursor path and the user saw
+  no cursor at all in Moto Racer without the tablet). The headless dump
+  takes the sprite path, so a `PLAYER_DUMP_OUT` frame shows the cursor.
+  User-confirmed 2026-09-05 evening: steady on the desktop, present in
+  Moto Racer's menus, no blink.
 
 `D3DPT_FB_VERSION` is 4: an installed v3 driver refuses the device, so
 every image needs a reinstall from the ISO, and the QEMU rebuild goes

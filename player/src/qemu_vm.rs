@@ -173,6 +173,11 @@ struct Shared {
     cursor: Option<Arc<CursorImage>>,
     cursor_seq: u64,
     cursor_visible: Option<bool>,
+    // where the guest put it (the hot spot, guest pixels): the sprite is
+    // composited there when the host cursor cannot stand in for it (a
+    // relative mouse, a grab)
+    cursor_x: i32,
+    cursor_y: i32,
 }
 unsafe impl Send for Shared {}
 
@@ -232,6 +237,51 @@ impl Display {
     pub fn cursor_visible(&self) -> Option<bool> {
         self.0.lock().unwrap().cursor_visible
     }
+
+    /// The sprite to composite: the shape and the hot spot's guest position,
+    /// while the guest shows a hardware cursor.
+    pub fn cursor_sprite(&self) -> Option<(Arc<CursorImage>, i32, i32)> {
+        let s = self.0.lock().unwrap();
+        if s.cursor_visible != Some(true) {
+            return None;
+        }
+        s.cursor.clone().map(|c| (c, s.cursor_x, s.cursor_y))
+    }
+}
+
+/// Blend a cursor sprite into an XRGB frame at its hot-spot position.
+pub fn composite_cursor(pixels: &mut [u32], width: usize, height: usize, c: &CursorImage, x: i32, y: i32) {
+    let x0 = x - c.hot_x as i32;
+    let y0 = y - c.hot_y as i32;
+    for cy in 0..c.height as i32 {
+        let fy = y0 + cy;
+        if fy < 0 || fy >= height as i32 {
+            continue;
+        }
+        for cx in 0..c.width as i32 {
+            let fx = x0 + cx;
+            if fx < 0 || fx >= width as i32 {
+                continue;
+            }
+            let src = c.argb[(cy as u32 * c.width + cx as u32) as usize];
+            let a = src >> 24;
+            if a == 0 {
+                continue;
+            }
+            let dst = &mut pixels[fy as usize * width + fx as usize];
+            if a == 255 {
+                *dst = src & 0x00ff_ffff;
+                continue;
+            }
+            let mut out = 0u32;
+            for shift in [0, 8, 16] {
+                let s = (src >> shift) & 0xff;
+                let d = (*dst >> shift) & 0xff;
+                out |= ((s * a + d * (255 - a)) / 255) << shift;
+            }
+            *dst = out;
+        }
+    }
 }
 
 unsafe extern "C" fn on_cursor(
@@ -258,7 +308,8 @@ unsafe extern "C" fn on_cursor(
     };
     s.cursor_seq += 1;
     if s.cursor_seq <= 4 {
-        eprintln!("[cursor] guest shape {}", if s.cursor.is_some() { format!("{w}x{h} hot {hot_x},{hot_y}") } else { "cleared".into() });
+        let opaque = s.cursor.as_ref().map(|c| c.argb.iter().filter(|p| **p >> 24 != 0).count()).unwrap_or(0);
+        eprintln!("[cursor] guest shape {}", if s.cursor.is_some() { format!("{w}x{h} hot {hot_x},{hot_y}, {opaque} opaque pixels") } else { "cleared".into() });
     }
     let waker = s.waker.clone();
     drop(s);
@@ -267,11 +318,22 @@ unsafe extern "C" fn on_cursor(
     }
 }
 
-unsafe extern "C" fn on_mouse_set(ud: *mut c_void, _x: c_int, _y: c_int, on: bool) {
+unsafe extern "C" fn on_mouse_set(ud: *mut c_void, x: c_int, y: c_int, on: bool) {
     let shared = &*(ud as *const Mutex<Shared>);
     let mut s = shared.lock().unwrap();
-    let changed = s.cursor_visible != Some(on);
+    let changed = s.cursor_visible != Some(on) || s.cursor_x != x || s.cursor_y != y;
+    if s.cursor_visible != Some(on) && s.cursor_seq <= 4 {
+        eprintln!("[cursor] guest {} it at {x},{y}", if on { "shows" } else { "hides" });
+    }
     s.cursor_visible = Some(on);
+    s.cursor_x = x;
+    s.cursor_y = y;
+    // a move alone republishes the frame: the UI composites the sprite at
+    // the new place when it has to (no cost when the host cursor is used —
+    // the copy happens only if the UI takes the frame)
+    if changed && s.cursor.is_some() && s.front.width != 0 && s.front.ext_slot.is_none() {
+        s.front.seq += 1;
+    }
     let waker = if changed { s.waker.clone() } else { None };
     drop(s);
     if let Some(w) = waker {
@@ -622,6 +684,8 @@ pub fn start(
         cursor: None,
         cursor_seq: 0,
         cursor_visible: None,
+        cursor_x: 0,
+        cursor_y: 0,
     }));
     // Leak one strong ref for the C side; the process holds one VM for life.
     let ud = Arc::into_raw(shared.clone()) as usize;
