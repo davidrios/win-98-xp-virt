@@ -35,7 +35,7 @@ build/hvf-el1/hvf-el1 x --native-only      # only the host baseline
 
 macOS on Apple Silicon only (`kern.hv_support`); ~2 s. Every line is
 `key: value` text; the results and their reading are in the track doc.
-Not part of `scripts/test.sh` — it is a measurement, not a regression
+A reference run is `results-m1air-2026-09-05.txt`. Not part of `scripts/test.sh` — it is a measurement, not a regression
 guard. On a guest fault the host prints the vCPU state (`dump`) and the
 guest's own `ESR_EL1`/`FAR_EL1`/`ELR_EL1`; `llvm-objdump -d` on
 `build/hvf-el1/payload/aarch64-unknown-none/release/payload` maps the

@@ -286,6 +286,10 @@ items nobody owns yet:
    define cursors the player ignores today), the vblank signal for guests.
 4. **M5** → `docs/tracks/m5-cdrom-backend.md` (steps 1–6 done 2026-09-04; step 7 needs a protected dump; M5e MDS done early, CHD open); M6 launcher.
 5. x87 / SSE: the **M8** track (`docs/tracks/m8-tcg-fastpaths.md`).
+6. **M9** → `docs/tracks/m9-tcg-aarch64.md`: the user picks between the
+   translator work (inline TB lookup, pinned guest registers) and the
+   HVF VM port the probe of 2026-09-05 found feasible; the day-long
+   working-set measurement there decides the latter.
 
 ## Gotchas learned (don't relearn)
 

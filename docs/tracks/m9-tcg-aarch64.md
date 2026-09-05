@@ -84,6 +84,12 @@ Gotchas met on the way (2026-09-04/05):
 
 ## State (2026-09-05)
 
+Two things exist: the profiles below (patches 13 and 14 came out of
+them), and the HVF EL1 probe (its own section further down, raw output
+in `tools/hvf-el1/results-m1air-2026-09-05.txt`). Nothing of the
+optimization itself is written yet; the next session starts at "Next
+steps" with the user's pick.
+
 All on the M1 Air (macOS 26.6.2), `-cpu pentium3`, one vCPU, XP SP3, 30–40 s
 samples at 1 ms (`build/tcg-profile/<name>/report.txt`, `hot.txt`).
 
