@@ -310,7 +310,14 @@ track's index 01, Q keeps counting up in the previous track at index 01.
 That reproduces AoE's own subchannel **exactly** — 277,626 of 277,626 ADR 1
 frames — and costs ~0.7 % of frames on a Moto-Racer-shaped disc. Changing it
 to the second convention was tried and reverted: it trades 1,633 wrong frames
-on one disc for 1,866 and 1,650 on two others. The lesson is that anything
+on one disc for 1,866 and 1,650 on two others.
+
+**The residual does not reach a game.** AoE Gold and Moto Racer are the two
+discs the conventions differ on, and both play their CD soundtracks in-game in
+XP, in the player, from their `.mds` (user, 2026-09-05) — so the ~0.7 % of Q
+frames we synthesize wrongly on a Moto-Racer-shaped disc is below what a
+title's own audio code looks at. That is what makes the guess safe to keep,
+not merely cheapest to keep. The lesson is that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
 MDS 2448), where `read_sub` replays the bytes verbatim and none of this
 applies.

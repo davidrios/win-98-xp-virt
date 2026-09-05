@@ -39,6 +39,13 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 
 ## State (2026-09-05: the protected dumps arrived, and one passed)
 
+- **Doc 05's plain mixed-mode + CD-DA row: PASS.** Age of Empires Gold and
+  Moto Racer both play their CD soundtracks while the game runs — XP, in the
+  player, from their `.mds` (user, 2026-09-05). Step 6 had proven CD-DA
+  host-side and through MCI; this is the first time a title's own audio code
+  drove PLAY / position / routing, over a real 14- and 12-audio-track disc.
+  It also settles the pregap question below.
+
 - **Step 8, first title: PASS.** FIFA 2002 installed from `FIFA2002.mds`,
   launched and navigated its menus in XP (user, 2026-09-05). SafeDisc 2.x's
   check runs at launch, so reaching the menus means the wrapped EXE and
@@ -125,6 +132,11 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   Moto's convention was implemented, measured and reverted: it fixed 1,633
   frames on one disc and broke 1,866 and 1,650 on two others. Anything that
   really reads subchannel wants a dump that carries it.
+  **And the residual does not reach a game:** AoE Gold and Moto Racer are the
+  very two discs the conventions differ on, and both play their CD audio
+  in-game (above), so the ~0.7 % of Q frames we get wrong on a
+  Moto-Racer-shaped disc is below what a title's own audio code looks at. The
+  guess is safe to keep, not just cheapest to keep.
 
 ## State (2026-09-04, evening)
 

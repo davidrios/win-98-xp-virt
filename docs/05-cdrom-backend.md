@@ -108,7 +108,7 @@ Using dumps of discs we own, one title per scheme:
 
 | Scheme | Expectation | Result |
 |---|---|---|
-| Plain mixed-mode + CD-DA | installs; in-game CD audio plays, tracks/seek correct | CD-DA proven host-side and in XP through MCI (step 6); a title still to do |
+| Plain mixed-mode + CD-DA | installs; in-game CD audio plays, tracks/seek correct | **PASS** — Age of Empires Gold and Moto Racer both play their CD soundtracks while the game runs, in XP, in the player, from their `.mds` (user, 2026-09-05). Step 6 had proven CD-DA host-side and through MCI; this is the first time a title's *own* audio code drove the path |
 | **SafeDisc 2.x** | launch check passes from raw dump with error sectors | **PASS** — FIFA 2002 from `FIFA2002.mds` (584 weak sectors from LBA 811) installs, launches and reaches its menus in XP, user-confirmed 2026-09-05. The check reads the band through `cdimage` → patch 51 → libdisc and gets the errors it expects |
 | SafeDisc 1.x | *(the row's premise does not hold)* | **n/a** — 1.x writes no error sectors at all (doc 17 §6.x, measured on The Sims and Rayman 2). It checks the medium another way; a separate expectation has to be written once we know which |
 | SecuROM (early + 4.x) | launch check passes from dump with subchannel | not tested. Early needs a `.sub` (replay path exists); 4.x needs DPM, which `mds.rs` ignores — that is the stretch goal below, not this row |
