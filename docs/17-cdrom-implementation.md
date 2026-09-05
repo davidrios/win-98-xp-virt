@@ -326,34 +326,62 @@ relative timing. The game plays from **both**, on both discs (user). The two
 images deliver an identical data anomaly — `discx scan` gives the same 697
 failing LBAs for each — and differ only in subchannel: the `.ccd` replays the
 disc's own Q, the `.cue` synthesizes regular, CRC-correct Q that has no
-anomaly in it at all. **So VOB ProtectCD's check reads the data anomaly, not
-the Q timing, and synthesized subchannel is sufficient for it.**
+anomaly in it at all.
 
-That is worth more than one acceptance row. It means the L-EC-verified-
-never-corrected design (§2.5) is the part doing the work for this scheme,
-that a dump without subchannel is a perfectly good source for a ProtectCD
-title, and — with the pregap result above — that nothing we have yet met
-actually reads Q. Verbatim replay stays right for the dumps that carry it,
-but no measured behaviour depends on it so far. A scheme that reads Q (early
-SecuROM is the candidate) would be the first, and until one turns up this is
-the honest state.
+**The conclusion drawn from that pair — "the check reads the data anomaly,
+not Q" — is void.** It assumed the check reads *something*, and the negative
+control below shows it does not read the band at all. What the cue/ccd pair
+actually established is narrower and still useful: subchannel replay versus
+synthesis makes no difference to this title. The remaining honest statement
+about Q is the one from the pregap result — nothing we have met so far is
+known to read it.
 
-**Caveat: we have never seen a check fail.** Three schemes pass; none has
-been shown to reject a disc that should be rejected, so a pass could in
-principle mean the check never ran. Until that has been seen, "the protection
-is satisfied" is inference from a game that started, not a measurement.
+### 2.6b The negative control, and what it took away (2026-09-05)
 
-**The control discs exist** (`discx repair`, 2026-09-05, not in the repo):
-`clean/fifa2002/FIFA2002.mds` — 584 sectors repaired, the disc now scans with
-0 L-EC failures — and `clean/settlers3/CD01.cue` — 547 repaired, leaving only
-the 150 sync-less run-out sectors a real drive fails too. Both were diffed
-against their originals byte for byte: the difference is confined to offsets
-2064–2351 of exactly those sectors, which is the EDC, the reserved gap and the
-ECC of a Mode 1 sector. Sync, header and all 2048 user bytes are identical, so
-each pair differs in one variable. Run each title from its clean copy and
-SafeDisc 2.x and ProtectCD must now *refuse*; if either still starts, its
-earlier pass proved much less than it appeared to. The lesson meanwhile is
-that anything
+Three schemes appeared to pass and not one had been seen to *fail*, so every
+conclusion rested on inference from a game that started. `discx repair` builds
+the disc that separates the two readings: a copy in which every L-EC-failing
+sector verifies, the user data left exactly as dumped, the difference confined
+to offsets 2064–2351 of exactly those sectors (EDC, reserved gap, ECC) — one
+variable, verified by a byte-for-byte diff against the original.
+
+`clean/fifa2002/FIFA2002.mds` (584 sectors repaired, 0 failures on a rescan)
+and `clean/settlers3/CD01.cue` (547 repaired, only the 150 sync-less run-out
+sectors left, which a real drive fails too).
+
+**Both titles run from their clean copies** (user, 2026-09-05). FIFA 2002
+launches and reaches its menus; Settlers 3 plays. The protections did not
+refuse a disc they should have refused.
+
+So the SafeDisc 2.x and ProtectCD acceptance rows are **inconclusive**, not
+passing, and doc 05 says so. Nothing measured so far shows that our error
+delivery is what satisfied either check — a check that ran and was satisfied
+and a check that never ran look identical from outside, and the control was
+the only thing that could tell them apart. Two readings remain, and one
+common cause is likelier than two coincidences:
+
+1. **Neither check runs in these installs.** The wrapped EXE never
+   authenticates (a full install path that skips it, or a binary that is not
+   actually SafeDisc-wrapped).
+2. **Both checks bail out permissively before reaching the disc.** Protections
+   of the era skip authentication rather than risk a false positive when they
+   cannot get the low-level access they want — no SPTI/ASPI, a drive that does
+   not identify as they expect, `secdrv.sys` not loaded. Our drive would then
+   never be asked, and every disc would "pass".
+
+**The experiment that separates them, in order.** First, run each title with
+**no disc in the drive at all**: if it still launches, no disc check happens
+here and the rows are about the games, not about us. If it refuses, the check
+does run and reads *something* — then trace what (`-trace 'ide_atapi*'`, or a
+per-command log behind `CDIMAGE_TRACE=1` in atapi.c) across a launch on the
+original dump and see whether the band's LBAs are ever requested. A launch
+that never touches LBA 811 (FIFA) or 195539 (Settlers) settles it.
+
+Until one of those runs, the drive model's error delivery is proven only
+host-side and by `atapi-guest-test.py` — which is real evidence, just not
+evidence about protections.
+
+The lesson meanwhile is that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
 MDS 2448), where `read_sub` replays the bytes verbatim and none of this
 applies.

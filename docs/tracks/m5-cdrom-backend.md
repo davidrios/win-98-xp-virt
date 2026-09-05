@@ -37,6 +37,32 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   `-drive`/`-device ide-cd,audiodev=` lines in M5b), `CLAUDE.md` (the
   testing-tools table), `docs/00-status.md` outside the M5 row.
 
+## State (2026-09-05, late: the negative control failed, and it matters)
+
+- **Both titles also run from their repaired discs, so the protection results
+  are inconclusive** (user, 2026-09-05). `discx repair` built copies whose
+  L-EC-failing sectors all verify — FIFA 2002's 584, Settlers CD01's 547 —
+  differing from the originals only in the parity fields of exactly those
+  sectors (byte-for-byte diffed: offsets 2064–2351, user data untouched).
+  FIFA 2002 still launches and reaches its menus; Settlers 3 still plays.
+  A check that does not notice its band has been repaired is not a check we
+  have watched pass. Doc 05's SafeDisc 2.x and ProtectCD rows are downgraded
+  from PASS to **inconclusive**, and the cue/ccd A/B conclusion below ("it
+  reads the data anomaly, not Q") is **void** — it assumed the check reads
+  something. What survives from that pair is only that replay vs synthesis
+  makes no difference to this title.
+  **Next, in this order** (doc 17 §2.6b): run each title with **no disc in the
+  drive** — if it still launches, no disc check happens in these installs and
+  this was never about our drive model; if it refuses, the check does run, and
+  an ATAPI trace across a launch on the original dump shows whether the band's
+  LBAs (811 for FIFA, 195539 for Settlers) are ever requested at all.
+  The likeliest single cause of both: protections of the era skip
+  authentication rather than risk a false positive when they cannot get the
+  low-level access they want (no SPTI/ASPI, `secdrv.sys` absent, a drive that
+  does not identify as expected) — in which case our drive is never asked.
+  What is *not* in doubt: the host-side and `atapi-guest-test.py` evidence
+  that the model delivers the errors. That was never the questionable part.
+
 ## State (2026-09-05: the protected dumps arrived, and one passed)
 
 - **Doc 05's plain mixed-mode + CD-DA row: PASS.** Age of Empires Gold and
