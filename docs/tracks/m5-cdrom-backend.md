@@ -39,22 +39,46 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
 
 ## State (2026-09-05: the protected dumps arrived)
 
-- **Step 7 has its material.** Four real dumps in
+- **Step 7 has its material.** Real dumps in
   `/mnt/data2/david/Downloads/oldstuff` (not in the repo), checked with
   `discx info` / `scan` / `subscan`:
 
   | Dump | Protection, from the disc | Signal in the dump |
   |---|---|---|
-  | `AOM_D1.ccd` | SafeDisc 2 (`00000001.TMP`, `DRVMGT.DLL`, `SECDRV.SYS`) | **intact** — 580 weak sectors, all between LBA 825 and 12000, valid sync+header, 0x55 fill, wrong EDC |
+  | `fifa2002/` (DIC **and** Alcohol sets of one disc) | SafeDisc 2.x (`00000001.TMP`, `00000002.TMP`, `DRVMGT.DLL`, `SECDRV.SYS`) | **intact in both**, and they agree: 584 sectors from LBA 811, identical in each — see the acceptance note below |
+  | `AOM_D1.ccd` | SafeDisc 2.x (`00000001.TMP`, `DRVMGT.DLL`, `SECDRV.SYS`) | **intact** — 580 weak sectors between LBA 825 and 12000, valid sync+header, 0x55 fill, wrong EDC |
   | `AOM_D2.ccd` | none (second disc) | clean |
   | `the settlers 3/CD01.ccd` | VOB ProtectCD (`.ficken` section in `S3.EXE`) | **intact** — 538 sectors 195539–196076 corrupt in the data *and* in the Q relative timing, over otherwise flawless subchannel |
-  | `The Sims (PT-BR) (CCD)` | SafeDisc 1.x (`CLCD16/32.DLL`, `DPLAYERX.DLL`, `SIMS.ICD`) | **lost** — 0 L-EC failures; keep as the lossy-dump fixture |
+  | `The Sims (PT-BR) (CCD)` | SafeDisc 1.x (`CLCD16/32.DLL`, `DPLAYERX.DLL`, `SIMS.ICD`) | none to find — see the version rule below |
+  | `rayman2/` (DIC/redump submission) | SafeDisc 1.1x–1.3x (submission info names every file) | none to find; the best-documented dump here (full `.sub`, C2, DAT hashes verified) |
+
+  **The acceptance criterion is met on FIFA 2002.** Doc 17 asks that the
+  dumper's own log of bad sectors be exactly the LBAs where
+  `sector_info.lec == 0`. Three independent sources agree on the same 584:
+  DiscImageCreator's `FIFA2002.img_EccEdc.txt` ("584 unmatch sector is
+  replaced at 0x55 except header"), our scan of its `.bin`, and our scan of
+  an Alcohol dump of the same disc made four years later. Outside the
+  protection band the two dumps differ — DIC reports 64 sectors it could not
+  descramble (LBA 135084–135086, 161089, 223875, 224045) where Alcohol
+  reports none, i.e. DIC records read damage honestly and Alcohol fills it
+  silently. Neither is inside the band.
+
+  **The SafeDisc version decides whether there is a band at all**, not the
+  dumping tool (measured on four discs): 2.x writes deliberately corrupt
+  sectors (AoM 580, FIFA 2002 584), 1.x does not (The Sims, Rayman 2, both
+  0) and checks the disc another way. So a 1.x title cannot serve as an
+  L-EC fixture no matter how it was dumped, and **redump / DiscImageCreator
+  sets are perfectly good sources for 2.x titles** — `/sf` fills the bad
+  sectors with 0x55 and leaves the parity wrong, so the failure survives.
+  The Sims and Rayman are the fixtures for the *other* case: protection
+  files present, nothing for `scan` to find, which is what
+  `cd-dump-verify.sh` must report as "this dump cannot test the check".
 
   AoM disc 1 already exercises the path end to end with no code change:
   `qemu-img convert -f cdimage AOM_D1.ccd` fails `Input/output error`
   because the block driver refuses the sectors whose L-EC does not verify.
-  Settlers CD01 is the better of the two — it needs the `.sub` replay path
-  as well as the L-EC one, and it is mixed-mode with 12 audio tracks.
+  Settlers CD01 is the widest of them — it needs the `.sub` replay path as
+  well as the L-EC one, and it is mixed-mode with 12 audio tracks.
 
 - **`discx subscan` (new)** walks every sector's stored subchannel: Q CRC
   failures with their clustering, kind/track/ADR distribution, whether the

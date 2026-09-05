@@ -299,6 +299,12 @@ field is 0 for every such track on both Alcohol dumps we have:
 | Moto Racer | `0xFF` (pause) | next track, **index 00**, counting down to 0 over 149 sectors |
 | Settlers 3 | `0x00` (no pause) | previous track, index 01, counting up |
 
+The same caveat covers **MCN frame placement**: we interleave ADR 2 at
+`lba % 100 == 98` when the disc has a catalog number, and Rayman 2 — the one
+disc here that carries MCN frames at all, 3,307 of them — puts them
+elsewhere, which is 99.0 % agreement rather than 100 %. Where a disc chooses
+to put its ADR 2 and 3 frames is a mastering decision no descriptor records.
+
 We synthesize the first of those: P pauses for the 150 sectors before a
 track's index 01, Q keeps counting up in the previous track at index 01.
 That reproduces AoE's own subchannel **exactly** — 277,626 of 277,626 ADR 1
@@ -807,6 +813,33 @@ Wired into the guest stage as `atapi-guest`.
   the tool to write when M5c starts (a filter driver is out of scope);
   dumps of owned discs with CloneCD (subchannel) for SecuROM and with a
   raw-capable tool for SafeDisc.
+
+### 6.x Which dumps carry a protection signal (measured 2026-09-05)
+
+Checked with `discx scan` over six real dumps; the details and the per-disc
+table are in the M5 track doc. Two rules came out of it:
+
+- **The SafeDisc *version* decides whether an L-EC band exists, not the
+  dumping tool.** SafeDisc 2.x writes deliberately corrupt sectors near the
+  start of the data track (Age of Mythology 580 from LBA 825, FIFA 2002 584
+  from LBA 811); SafeDisc 1.x writes none at all (The Sims, Rayman 2, both
+  0 failures over a complete disc) and checks the medium some other way. A
+  1.x title is not an L-EC fixture however it was dumped.
+- **DiscImageCreator / redump sets do carry the 2.x band.** `/sf` replaces
+  each bad sector's user data with `0x55` and leaves the header and the
+  wrong parity alone ("N unmatch sector is replaced at 0x55 except header"
+  in `*.img_EccEdc.txt`), so the sector still fails L-EC and still reaches
+  the guest as `-EIO`. FIFA 2002 exists here as both a DIC set and an
+  Alcohol set of the same disc, dumped four years apart: inside the band
+  they are identical, 584 sectors either way. Outside it they differ — DIC
+  logs 64 sectors it could not descramble where Alcohol silently filled
+  them, so DIC is the more truthful record of a damaged copy.
+
+A useful shape to remember when judging a new dump: real protection is a
+**band** (hundreds of sectors against hundreds of thousands clean). Whole-
+disc failure is a format problem, not a protection one — most likely a
+scrambled image (§2.x, `ccd.rs` refuses `DataTracksScrambled=1`, but a bare
+`.scm` from DIC's pipeline carries no flag to catch it by).
 
 ## 7. Milestones (detail and order in the track doc)
 
