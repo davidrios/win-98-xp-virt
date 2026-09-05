@@ -26,7 +26,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tcg_profile_lib import parse_sample, load_map, map_lookup, walk, vcpu_thread  # noqa: E402
+from tcg_profile_lib import parse_sample, load_map_for, map_lookup, walk, vcpu_thread  # noqa: E402
 
 
 BUCKETS = [  # (bucket, regex on the symbol), first match wins
@@ -75,7 +75,7 @@ def main():
     d = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('--') else '.'
     hot = '--hot' in sys.argv
     interval, threads = parse_sample(os.path.join(d, 'sample.txt'))
-    mp = load_map(os.path.join(d, 'perf.map')) if os.path.exists(os.path.join(d, 'perf.map')) else ([], [], [], None, None)
+    mp, map_note = load_map_for(d)
     if not threads:
         print('no call graph in sample.txt'); return 1
     total = sum(t.n for t in threads)
@@ -90,6 +90,8 @@ def main():
 
     print(f'== {os.path.basename(os.path.abspath(d))}: {total} samples at {interval:g} ms'
           + (f', {secs} s wall ({pct(total, wall)} of one core)' if wall else ''))
+    if map_note:
+        print(f'   {map_note}')
     print('\n-- threads (samples = ms of CPU)')
     vcpu = vcpu_thread(threads)
     if vcpu is None:

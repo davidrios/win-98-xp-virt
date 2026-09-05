@@ -81,6 +81,23 @@ extern "C" {
     fn bench_sum_direct(base: u64, idx: u64, n: u64) -> u64;
     fn bench_sum_softmmu(env: u64, idx: u64, n: u64) -> u64;
     fn bench_sum_pinned(env: u64, idx: u64, n: u64) -> u64;
+    fn bench_movs_softmmu(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_movs_direct(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_movs_fast(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_movs_today(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_movs_today_nomb(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_movs_direct_nocc(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_stos_direct(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_lods_direct(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_stenv(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_stenv_far(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_ldst_env(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_ststack(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_stwin_ldline(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_stenv_ldbase(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_stenv_stbase(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn bench_diag_stenv_ldstbase(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8;
 }
 
 fn check(what: &str, r: HvReturn) {
@@ -454,6 +471,7 @@ fn native_baseline() {
     native_set("8 MiB", 2048, mem, &mut rng, freq);
     native_set("16 MiB", 4096, mem, &mut rng, freq);
     native_set("32 MiB", 8192, mem, &mut rng, freq);
+    native_movs(mem, freq);
     let _ = unsafe { read_volatile(mem) };
     native_jit(freq);
 }
@@ -465,6 +483,59 @@ extern "C" {
 
 /// What a JIT patch costs the QEMU process today: the macOS W^X toggle
 /// pair around the write (patch 14 only removed the redundant ones).
+/// The rep movsd kernels natively (see the payload's exp_movs), plus libc
+/// memcpy per row as the floor.
+fn native_movs(mem: *mut u8, freq: u64) {
+    let w = 160u64;
+    let table = vec![0u64; 4096 * 4 + 8].leak();
+    let table_ptr = unsafe { table.as_mut_ptr().add(8) };
+    let env = vec![0u64; 0x40].leak();   // mask/table + the kernels' env area
+    for (name, rows) in [("32 KiB", 51u64), ("512 KiB", 819), ("8 MiB", 13107)] {
+        let bytes = rows * w * 4;
+        let pages = ((2 * bytes + 4095) / 4096) as usize;
+        unsafe { build_tlb(env.as_mut_ptr(), table_ptr, 4096, pages, mem as u64) };
+        let passes = ((96u64 << 20) / bytes).max(1);
+        let n = passes * rows * w;
+        let (t, chk) = unsafe {
+            run_movs(mem as u64, env.as_ptr() as u64, rows, w, passes, ticks,
+                     [bench_movs_today as MovsFn, bench_movs_today_nomb, bench_movs_softmmu, bench_movs_direct, bench_movs_fast])
+        };
+        if chk.iter().any(|&x| x != chk[0]) {
+            println!("movs: {name:>7} kernels disagree or a probe refused: {chk:x?}");
+            continue;
+        }
+        let t0 = ticks();
+        for _ in 0..passes {
+            for r in 0..rows {
+                unsafe { memcpy(mem.add((bytes + r * w * 4) as usize), mem.add((r * w * 4) as usize), (w * 4) as usize) };
+            }
+        }
+        let tm = ticks() - t0;
+        let f = |dt: u64| {
+            let (a, b) = ns(ps_per(dt, freq, n));
+            format!("{a}.{b:02}")
+        };
+        println!(
+            "movs: {name:>7} x2, rows of {} B  today {} ns/dword  no-mb {}  pinned+softmmu {}  pinned+direct {}  fast {}  memcpy {}   [{rows} rows, {passes} passes]",
+            w * 4, f(t[0]), f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(tm)
+        );
+        let (t, _) = unsafe {
+            run_movs(mem as u64, env.as_ptr() as u64, rows, w, passes, ticks, [bench_movs_direct_nocc as MovsFn, bench_stos_direct, bench_lods_direct])
+        };
+        println!("movs: {name:>7} diag  direct-no-cc {}  stores-only {}  loads-only {}", f(t[0]), f(t[1]), f(t[2]));
+        let (t, _) = unsafe {
+            run_movs(mem as u64, env.as_ptr() as u64, rows, w, passes, ticks, [bench_diag_stenv as MovsFn, bench_diag_stenv_far, bench_diag_ldst_env, bench_diag_ststack, bench_diag_stwin_ldline])
+        };
+        println!("movs: {name:>7} diag2 st-env {}  st-env-far {}  ld+st-env {}  st-stack {}  st+ld-window-line {}", f(t[0]), f(t[1]), f(t[2]), f(t[3]), f(t[4]));
+        {
+        let (t, _) = unsafe {
+            run_movs(mem as u64, env.as_ptr() as u64, rows, w, passes, ticks, [bench_diag_stenv_ldbase as MovsFn, bench_diag_stenv_stbase, bench_diag_stenv_ldstbase])
+        };
+        println!("movs: {name:>7} diag3 native: st-env+ld {}  st-env+st {}  st-env+ld+st {}", f(t[0]), f(t[1]), f(t[2]));
+        }
+    }
+}
+
 fn native_jit(freq: u64) {
     let p = unsafe {
         libc::mmap(

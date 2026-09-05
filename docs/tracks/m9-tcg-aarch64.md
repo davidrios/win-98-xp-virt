@@ -85,6 +85,12 @@ Gotchas met on the way (2026-09-04/05):
   pages; on a workload that retranslates them 20k times a second (the
   game below) that is 6 GB in 30 s and the log writer takes over the
   vCPU thread. Turn it off over QMP (`log none`) or filter a cold page.
+- The perf map spans every code-buffer epoch (a `tb_flush` restarts the
+  bump allocator), so a host address names a different TB per epoch: the
+  report tools now pick the epoch of the sample window from the `info
+  jit` flush counts taken before and after the sample and print which;
+  a window that straddles a flush is mis-mapped for its earlier part
+  (keep `SECS` short on workloads that flush every minute).
 - A guest's *frame rate* is the only honest before/after number for a
   game; `%` of a 100 %-busy vCPU says where the time goes, not how much
   work gets done. `tools/tcg-fps.py` counts distinct VGA screendumps per
@@ -280,17 +286,83 @@ invalidated with its patched immediates read from guest memory at
 runtime and let writes to those bytes skip the invalidation (a translator
 feature, days). Not before the register pinning of step 2.
 
-The guest-side loop itself, after the patches: the samples sit on the
-block end (`jmp` back, `dec esi`, the store) — the register-file-in-`env`
-cost at TB boundaries that step 2 targets.
+**Correction (2026-09-05, later in the day): the generated-code time is
+not the span loop.** The profiler attributed samples through a perf map
+that merges every code-buffer epoch: TCG bump-allocates TBs and every
+`tb_flush` restarts at the buffer's start, so a host address holds a
+different TB in each epoch, and `load_map`'s "later entries win" picked
+whichever entry started nearest — the game's hottest instruction came
+out as `0x4365f6/ff/600` in one run, `0x46054e` in another, an ntdll
+address in a third, a kernel one in the race. Fixed the same day
+(`tcg_profile_lib.load_map(path, epoch)` splits the map where the
+addresses jump back; `tcg-profile.py` / `tcg-hot.py` take the epoch from
+the `TB flush count` of `info-jit-before/after.txt` and say so in the
+report; a sample window that straddles a flush is flagged). Regenerated,
+every Moto Racer run agrees: **80–90 % of the generated-code samples
+(≈ 47 % of the vCPU) are one instruction, `rep movsd` at `0x46054e`** —
+the game's own rectangle blit (`mov edi,eax; mov esi,ebp; ecx = width/4;
+rep movsd; rep movsb; next row`, source and destination both system RAM:
+a second of `memory_notdirty_write_access` traces shows no VRAM page).
+The span loop of page `0x436000` is 2 % of the generated code; its
+retranslation storm (25 % of the vCPU, the SMC pathology above) stands.
+Second pass on the blit page (`moto-blit-d`, `hot.txt`): one `rep movsd`
+iteration is **37 host instructions** — two `dmb` barriers, two softmmu
+chains, and ESI/EDI/ECX loaded from and stored to `env` every iteration
+with `cx_next` and the loaded value spilled to the stack, because the
+loop's back edge is a TCG basic-block boundary and globals are synced
+there; the samples sit on the two chains' addend loads and the loop-end
+spill. The other runs with a flush (Super PI, D3DGAME9, FIFA) were
+re-checked: their sample windows had no flush after them, so their
+attribution was right.
+
+`tools/hvf-el1` got the blit as kernels (`bench.S`, `exp_movs` /
+`native_movs`, results in `results-movs-m1air-2026-09-05.txt`): rows of
+640 bytes copied five ways, ns per dword, M1 Air, source and
+destination of 32 KiB / 512 KiB / 8 MiB each (the numbers do not move
+with the size):
+
+| kernel | native | in the VM (env in the window) |
+|---|---|---|
+| today: TCG's loop transcribed from `qemu-d.log` (37 insns, registers through env, spills, barriers) | 2.11–2.16 | 4.4 (see the hazard below) |
+| the same without the barriers | 2.12 | 4.2 |
+| pinned guest registers + the softmmu chains (step 2 alone) | 1.17 | 1.17–1.19 |
+| pinned registers + direct window accesses (the VM design) | 0.40 | 0.40 |
+| a REP MOVS fast path: one softmmu probe of the source and one of the destination per run inside a page, then a 16-byte vector copy | 0.09 | 0.09 |
+| libc memcpy per row (the floor) | 0.05 | — |
+
+So on this loop the barriers cost nothing, pinned registers 1.8×, the
+VM's mirror 5×, and a fast path 23× — without a VM. The fast path is a
+translator change (patch 17 below): `rep movs`/`stos` with count ≥ N
+probe both pages once per page-run (`probe_access`-style, refusing
+MMIO / not-dirty / watchpoint pages and overlapping runs to the
+per-element loop), copy with host memcpy, and restart the instruction
+at the page boundary with ECX/ESI/EDI updated; the per-element loop
+stays for the rest. Windows' own `memcpy`/`memset` (`RtlCopyMemory`,
+`RtlFillMemory`) are `rep movsd`/`stosd`, so every guest benefits.
+
+**A hazard the VM design must respect (found on the way).** In the VM
+the pinned kernels first ran at 2.5 ns instead of 0.40 (`results-movs`,
+the `env identity` lines): a store to `env` followed by a store through
+the window costs ~2.2 ns extra per pair when `env` lives in the
+payload's identity map (2 MiB blocks, global) and the window is 4 KiB
+non-global pages — the `diag3` kernels isolate it (env store + window
+load: fine; env store + window store: 2.5 ns; the same through the
+identity view of the same RAM: fine; every single-mapping pattern,
+stack included: fine). With `env` placed inside the window the loops run
+at native speed; "today" stays at 4.4 because its stack spills still go
+to the block-mapped image. Rule for the port: everything translated
+code stores to — `env`, the TCG stack frame, the TLB, the TB cache —
+must be mapped with the same kind of stage-1 entry as the guest window
+(4 KiB pages; whether the global/non-global mix or the block/page mix is
+the trigger is a one-hour follow-up in the probe). The verdict below
+stands with that constraint added.
 
 **The race, A/B** (`tools/xp-moto-race.sh`: demo → title → Play Solo →
 Practice → Speed Bay, throttle held, `tools/tcg-fps.py` for 15 s;
 `moto-race-base` / `moto-race-fix`): **4.9 → 7.1–7.3 fps** (+45–50 %, two runs of the fixed build). Less than
-the four-fold rise of the generated-code share because the renderer's
-frame now pays the SMC retranslations (25 %) and its own per-pixel loop,
-whose samples sit on the block boundary (registers through `env` — step
-2). Two leads beyond this track: the game's options screen says
+the four-fold rise of the generated-code share because the frame now
+pays the SMC retranslations (25 %) and, above all, the blit's `rep
+movsd` (the correction above: 90 % of the race's generated code too). Two leads beyond this track: the game's options screen says
 `D3D: NOT DETECTED` — Moto Racer has a Direct3D 5 renderer and its HAL
 probe fails against our M7 driver; with it detected the software
 rasterizer (and all of the above) would be bypassed (an M7 item). And the
@@ -507,7 +579,8 @@ redundant macOS W^X toggles: Super PI 1M 1:36.2 → 1:25.3), and from the
 Moto Racer profile patches 15 (TB invalidation: the vAPIC ROM page
 storm, per-page code ranges, no jump-cache flush per TB) and 16 (the
 4096-entry TLB floor) — the game's vCPU went from 14 % to 57 % generated
-code. The user
+code; then the profiler's epoch fix and the blit finding (the correction
+in the Moto Racer section), which puts a REP MOVS fast path first. The user
 picks the next item (the track was opened profile-first); the
 recommended order, each with M8's methodology (an on/off switch as the
 oracle, both guest batteries identical, `scripts/test.sh all` green,
@@ -523,6 +596,16 @@ above):
    `winxp-m7`; Super PI before/after patches 15/16. And hand M7 the
    `D3D: NOT DETECTED` lead — Moto Racer's Direct3D 5 HAL probe against
    our driver would take the software rasterizer out of the picture.
+0b. **REP MOVS / STOS fast path** (patch 17, a day): the probe's table
+   above — 23× on the blit loop that is half of Moto Racer's vCPU, and
+   Windows' `memcpy`/`memset` everywhere. In `do_gen_rep` (or a helper
+   called from it) for `movs`/`stos` with a count worth it: probe the
+   source and destination pages once per run inside a page (refuse
+   MMIO, not-dirty, watchpoints, overlap, DF=1 → the existing loop),
+   `memcpy`/`memset` on the host, advance ESI/EDI/ECX, re-enter the
+   instruction at the page boundary; `-cpu …,rep-fast=off` as the
+   oracle; `tools/xp-moto-race.sh` fps and 7-Zip / Super PI before and
+   after; the DOS battery identical on/off.
 1. **Inline the TB lookup for indirect branches** (`ret`, `call *`,
    `jmp *`): the jump-cache probe (hash of pc, compare pc / cs_base /
    flags / cflags, `goto_ptr`) emitted as TCG ops instead of

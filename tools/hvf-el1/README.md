@@ -25,7 +25,14 @@ stage-1 root per x86 CR3, ASID-tagged), and measures:
   and the same kernels natively in the host process for the baseline;
 - executing code written by the host process, self-patching without a
   W^X toggle, and the latency of a host-thread kick to the guest's IRQ
-  handler.
+  handler;
+- the `rep movsd` blit loop of a 2D game (`exp_movs` / `native_movs`,
+  `results-movs-m1air-2026-09-05.txt`): TCG's actual loop transcribed
+  from a `-d out_asm` log, the same with pinned guest registers, with
+  direct window accesses, and a per-page-run probe + vector-copy fast
+  path — with `env` in the identity map and inside the window, because
+  a store to block-mapped memory followed by a store through a 4 KiB
+  page mapping costs ~2 ns extra per pair in the VM (the `diag3` lines).
 
 ```sh
 tools/hvf-el1/build.sh                     # payload (flat binary) + host, signed with hv.entitlements

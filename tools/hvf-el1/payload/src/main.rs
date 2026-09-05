@@ -58,6 +58,38 @@ extern "C" {
     fn bench_sum_pinned(env: u64, idx: u64, n: u64) -> u64;
     #[link_name = "_bench_touch"]
     fn bench_touch(base: u64, count: u64, stride: u64) -> u64;
+    #[link_name = "_bench_movs_softmmu"]
+    fn bench_movs_softmmu(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_movs_direct"]
+    fn bench_movs_direct(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_movs_fast"]
+    fn bench_movs_fast(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_movs_today"]
+    fn bench_movs_today(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_movs_today_nomb"]
+    fn bench_movs_today_nomb(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_movs_direct_nocc"]
+    fn bench_movs_direct_nocc(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_stos_direct"]
+    fn bench_stos_direct(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_lods_direct"]
+    fn bench_lods_direct(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_stenv"]
+    fn bench_diag_stenv(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_stenv_far"]
+    fn bench_diag_stenv_far(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_ldst_env"]
+    fn bench_diag_ldst_env(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_ststack"]
+    fn bench_diag_ststack(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_stwin_ldline"]
+    fn bench_diag_stwin_ldline(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_stenv_ldbase"]
+    fn bench_diag_stenv_ldbase(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_stenv_stbase"]
+    fn bench_diag_stenv_stbase(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
+    #[link_name = "_bench_diag_stenv_ldstbase"]
+    fn bench_diag_stenv_ldstbase(base: u64, src: u64, dst: u64, rows: u64, w: u64, env: u64) -> u64;
 }
 
 #[no_mangle]
@@ -510,6 +542,62 @@ fn bench_set(c: &Ctx, name: &str, pages: usize, rng: &mut Rng) {
     );
 }
 
+/// The blit loop of a 2D game (`rep movsd` per 640-byte row) five ways:
+/// today's TCG loop exactly (with and without its barriers), the same
+/// loop with pinned guest registers and the softmmu chain, with pinned
+/// registers and direct window accesses (the VM design), and a per-row
+/// probe + vector copy (a REP MOVS fast path, no VM needed).  Buffers of
+/// three sizes: L1, L2 and beyond.
+fn exp_movs(c: &Ctx) {
+    let env = tlbtab() as *mut u64;
+    let table = (tlbtab() + 0x1000) as *mut u64;
+    let w = 160u64;
+    for (name, rows) in [("32 KiB", 51u64), ("512 KiB", 819), ("8 MiB", 13107)] {
+        let bytes = rows * w * 4;
+        let pages = ((2 * bytes + 4095) / 4096) as usize;
+        let passes = ((96u64 << 20) / bytes).max(1);
+        let n = passes * rows * w;
+        let f = |x: u64| ns_str(ps_per(x, c.freq, n));
+        // env (the emulated CPU state the loop stores to) in the block-mapped
+        // identity region, then inside the 4 KiB-page window like the guest data
+        let ewin = (WIN0 + (24 << 20)) as *mut u64;   // the window maps [0, 32 MiB); the buffers end at 16 MiB
+        for (en, e, tb) in [("env identity", env, table), ("env in window", ewin, (ewin as u64 + 0x1000) as *mut u64)] {
+            unsafe { build_tlb(e, tb, 4096, pages, WIN0) };
+            let (t, chk) = unsafe {
+                run_movs(WIN0, e as u64, rows, w, passes, ticks,
+                         [bench_movs_today as MovsFn, bench_movs_today_nomb, bench_movs_softmmu, bench_movs_direct, bench_movs_fast])
+            };
+            if chk.iter().any(|&x| x != chk[0]) {
+                prln!("movs: {:>7} {}: kernels disagree or a probe refused: {:x?}", name, en, chk);
+                continue;
+            }
+            let (a1, a2) = f(t[0]); let (b1, b2) = f(t[1]); let (c1, c2) = f(t[2]); let (d1, d2) = f(t[3]); let (e1, e2) = f(t[4]);
+            prln!(
+                "movs: {:>7} x2, rows of {} B, {}  today {}.{:02} ns/dword  no-mb {}.{:02}  pinned+softmmu {}.{:02}  pinned+direct {}.{:02}  fast {}.{:02}   [{} rows, {} passes]",
+                name, w * 4, en, a1, a2, b1, b2, c1, c2, d1, d2, e1, e2, rows, passes
+            );
+        }
+        unsafe { build_tlb(env, table, 4096, pages, WIN0) };
+        let (t, _) = unsafe {
+            run_movs(WIN0, env as u64, rows, w, passes, ticks, [bench_movs_direct_nocc as MovsFn, bench_stos_direct, bench_lods_direct])
+        };
+        let (a1, a2) = f(t[0]); let (b1, b2) = f(t[1]); let (c1, c2) = f(t[2]);
+        prln!("movs: {:>7} diag  direct-no-cc {}.{:02}  stores-only {}.{:02}  loads-only {}.{:02}", name, a1, a2, b1, b2, c1, c2);
+        let (t, _) = unsafe {
+            run_movs(WIN0, env as u64, rows, w, passes, ticks, [bench_diag_stenv as MovsFn, bench_diag_stenv_far, bench_diag_ldst_env, bench_diag_ststack, bench_diag_stwin_ldline])
+        };
+        let (a1, a2) = f(t[0]); let (b1, b2) = f(t[1]); let (c1, c2) = f(t[2]); let (d1, d2) = f(t[3]); let (e1, e2) = f(t[4]);
+        for (bn, b) in [("window", WIN0), ("identity", x86ram())] {
+            let (t, _) = unsafe {
+                run_movs(b, env as u64, rows, w, passes, ticks, [bench_diag_stenv_ldbase as MovsFn, bench_diag_stenv_stbase, bench_diag_stenv_ldstbase])
+            };
+            let (a1, a2) = f(t[0]); let (b1, b2) = f(t[1]); let (c1, c2) = f(t[2]);
+            prln!("movs: {:>7} diag3 via {}: st-env+ld {}.{:02}  st-env+st {}.{:02}  st-env+ld+st {}.{:02}", name, bn, a1, a2, b1, b2, c1, c2);
+        }
+        prln!("movs: {:>7} diag2 st-env {}.{:02}  st-env-far {}.{:02}  ld+st-env {}.{:02}  st-stack {}.{:02}  st+ld-window-line {}.{:02}", name, a1, a2, b1, b2, c1, c2, d1, d2, e1, e2);
+    }
+}
+
 fn exp_loads(c: &Ctx) {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     bench_set(c, "64 KiB", 16, &mut rng);
@@ -707,6 +795,7 @@ pub extern "C" fn rust_main() {
     exp_pf(&c);
     exp_dirty(&mut c);
     exp_loads(&c);
+    exp_movs(&c);
     exp_jit(&c);
     exp_asid(&mut c);
     exp_irq(&c);

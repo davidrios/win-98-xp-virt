@@ -64,15 +64,17 @@ pub fn tlb_entries_for(pages: usize) -> usize {
 }
 
 /// A softmmu TLB that always hits for linear pages [0, pages): entry
-/// layout as CPUTLBEntry (addr_read @0, addend @24, 32 bytes), env layout
-/// as CPUTLBDescFast (mask @0, table @8).
+/// layout as CPUTLBEntry (addr_read @0, addr_write @8, addend @24, 32 bytes),
+/// env layout as CPUTLBDescFast (mask @0, table @8; @16 is the movs kernels'
+/// cc_op slot).
 pub unsafe fn build_tlb(env: *mut u64, table: *mut u64, entries: usize, pages: usize, addend: u64) {
     for i in 0..entries * 4 {
         *table.add(i) = 0;
     }
     for p in 0..pages {
         let i = p & (entries - 1);
-        *table.add(i * 4) = (p as u64) << 12;
+        *table.add(i * 4) = (p as u64) << 12;       // addr_read
+        *table.add(i * 4 + 1) = (p as u64) << 12;   // addr_write
         *table.add(i * 4 + 3) = addend;
     }
     *env = ((entries as u64) - 1) << 5;
@@ -86,4 +88,40 @@ pub fn ps_per(ticks: u64, freq: u64, n: u64) -> u64 {
 /// picoseconds -> (ns, hundredths)
 pub fn ns(ps: u64) -> (u64, u64) {
     (ps / 1000, (ps % 1000) / 10)
+}
+
+/// The `rep movsd` kernels of bench.S: `rows` rows of `w` dwords copied from
+/// guest offset 0 to offset rows*w*4 (both inside the TLB's linear pages),
+/// `passes` times each kernel; per kernel the ticks and a hash of the
+/// destination (u64::MAX = its probe refused).  `base` is the window (VM)
+/// or the arena (native); `env` the fake CPUTLBDescFast (mask @0, table @8;
+/// [env + 0x10, env + 0x130) belongs to the kernels).  Copying kernels must
+/// agree on the hash; the load-only / store-only diagnostics do not.
+pub type MovsFn = unsafe extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64;
+pub unsafe fn run_movs<const N: usize>(
+    base: u64, env: u64, rows: u64, w: u64, passes: u64, ticks: fn() -> u64, fns: [MovsFn; N],
+) -> ([u64; N], [u64; N]) {
+    let dst = rows * w * 4;
+    let mut t = [0u64; N];
+    let mut check = [0u64; N];
+    for (k, f) in fns.iter().enumerate() {
+        for i in 0..(dst / 8) {
+            *((base + dst) as *mut u64).add(i as usize) = 0;
+        }
+        if f(base, 0, dst, rows, w, env) != 0 {
+            check[k] = u64::MAX;
+            continue;
+        }
+        let t0 = ticks();
+        for _ in 0..passes {
+            f(base, 0, dst, rows, w, env);
+        }
+        t[k] = ticks() - t0;
+        let mut x = 0u64;
+        for i in 0..(dst / 8) {
+            x = x.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(*((base + dst) as *const u64).add(i as usize));
+        }
+        check[k] = x;
+    }
+    (t, check)
 }

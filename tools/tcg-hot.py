@@ -30,7 +30,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tcg_profile_lib import parse_sample, load_map, map_lookup, vcpu_thread, walk  # noqa: E402
+from tcg_profile_lib import parse_sample, load_map_for, map_lookup, vcpu_thread, walk  # noqa: E402
 
 try:
     import capstone
@@ -194,11 +194,13 @@ def main():
             print('   ' + ' '.join(f'{host_class(w)}:{w:08x}' for w in info['host']))
         return 0
     _, threads = parse_sample(os.path.join(d, 'sample.txt'))
-    mp = load_map(os.path.join(d, 'perf.map'))
+    mp, map_note = load_map_for(d)
+    if map_note:
+        print(map_note)
     vcpu = vcpu_thread(threads)
     samples = defaultdict(int)
     host_bytes = {}
-    starts, ends, names, _, _ = mp
+    starts, ends, names = mp[:3]
     for s, e, nm in zip(starts, ends, names):
         if nm.startswith('guest-0x'):
             host_bytes[int(nm[6:], 16)] = e - s
