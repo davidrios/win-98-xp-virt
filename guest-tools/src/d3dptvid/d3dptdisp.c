@@ -61,6 +61,7 @@
 #define DDF_NO_PARSEUNKNOWN    0x800  /* bisection: refuse GUID_D3DParseUnknownCommandCallback */
 #define DDF_NO_TNL             0x1000 /* bisection: no HWTRANSFORMANDLIGHT claim (the runtime transforms) */
 #define DDF_NO_DX8             0x2000 /* bisection: refuse GetDriverInfo2 (a DirectX 7 driver to d3d8.dll) */
+#define DDF_NO_SHADERS         0x4000 /* bisection: no vertex / pixel shader versions in D3DCAPS8 */
 
 #define D3D_MAX_CTX 16
 
@@ -77,8 +78,8 @@ typedef struct _D3DCTX {
     /* the DX8 device state that persists between DrawPrimitives2 calls (the
      * runtime sends SETVERTEXSHADER / SETSTREAMSOURCE / SETINDICES only on
      * change): the vertex format, stream 0, the index buffer */
-    ULONG fvf;
-    BOOL shader;                /* a real vertex shader is current */
+    ULONG fvf;                  /* the SETVERTEXSHADER value: an FVF, or a vertex shader handle (bit 0) */
+    BOOL shader;                /* fvf is a vertex shader handle */
     BOOL vb_um;                 /* stream 0 is the call's own vertex buffer (user memory) */
     ULONG vb_handle, ib_handle; /* the bound buffers (their memory can move between calls: a
                                  * Lock with DISCARD gives a buffer new memory, CreateSurfaceEx again) */
@@ -1400,9 +1401,9 @@ static void d3d_caps_init(PPDEV p)
                                     D3DVTXPCAPS_DIRECTIONALLIGHTS | D3DVTXPCAPS_POSITIONALLIGHTS | D3DVTXPCAPS_LOCALVIEWER;
     }
 
-    /* the DX8 DDI's caps: the same device, in D3DCAPS8 form (no shaders,
-     * one stream: the driver copies each draw's vertex range into the
-     * record, see D3dDrawPrimitives2) */
+    /* the DX8 DDI's caps: the same device, in D3DCAPS8 form (vertex and
+     * pixel shaders 1.x run on the host; one stream: the driver copies each
+     * draw's vertex range into the record, see D3dDrawPrimitives2) */
     for (i = 0; i < sizeof(*c8) / 4; i++) ((ULONG *)c8)[i] = 0;
     c8->DeviceType = D3DDEVTYPE_HAL_;
     c8->Caps2 = D3DCAPS2_CANRENDERWINDOWED | D3DCAPS2_DYNAMICTEXTURES;
@@ -1442,8 +1443,19 @@ static void d3d_caps_init(PPDEV p)
     c8->MaxVertexIndex = 0xffff;
     c8->MaxStreams = 1;
     c8->MaxStreamStride = 256;
-    c8->VertexShaderVersion = D3DVS_VERSION_0;
-    c8->PixelShaderVersion = D3DPS_VERSION_0;
+    if (ddflags(p) & DDF_NO_SHADERS) {
+        c8->VertexShaderVersion = D3DVS_VERSION_0;
+        c8->PixelShaderVersion = D3DPS_VERSION_0;
+    } else {
+        /* vs 1.1 / ps 1.4 (what DXVK's d3d9 compiles of the 1.x models; the
+         * runtime validates every shader against these before the
+         * CREATE*SHADER token reaches us); 96 vertex constants as the era's
+         * hardware, ps 1.x values clamped to +-8 */
+        c8->VertexShaderVersion = D3DVS_VERSION_(1, 1);
+        c8->MaxVertexShaderConst = 96;
+        c8->PixelShaderVersion = D3DPS_VERSION_(1, 4);
+        c8->MaxPixelShaderValue = 8.0f;
+    }
 
     /* its format list (DDPF_D3DFORMAT entries: the D3DFORMAT in dwFourCC,
      * the operations in the dwRBitMask slot) */
@@ -2107,10 +2119,12 @@ static DWORD APIENTRY D3dValidateTextureStageState(LPD3DNTHAL_VALIDATETEXTURESTA
  * rewritten (DX8 DDI, doc 15). The runtime's draw tokens name vertex and
  * index buffers the host cannot see, so each draw becomes a self-contained
  * D3DPT_DP2_DRAW8 token carrying its vertex range and indices; TEXBLT is a
- * copy done here (system memory -> VRAM, then VRAM_DIRTY); the rest
- * (shaders we do not claim, buffer blits, dirty rects) is dropped. Two
- * passes over the stream: the first measures the output and does the
- * blits, the second writes into the record. --- */
+ * copy done here (system memory -> VRAM, then VRAM_DIRTY); the shader
+ * tokens pass through (the host keeps the shaders per context, protocol
+ * v7, and a DRAW8 under a shader carries the handle in its fvf field); the
+ * rest (patches, buffer blits, dirty rects) is dropped. Two passes over the
+ * stream: the first measures the output and does the blits, the second
+ * writes into the record. --- */
 
 typedef struct _DP2WALK {
     PPDEV p;
@@ -2119,16 +2133,16 @@ typedef struct _DP2WALK {
     const UCHAR *vtx;           /* the DP2 vertex buffer (user memory), from dwVertexOffset on */
     ULONG vlen, vsize, vcount;  /* its bytes (dwVertexLength * dwVertexSize), stride, vertex count */
     ULONG vall;                 /* the whole buffer from vtx on (a dxg buffer's linear size) */
-    ULONG fvf;                  /* the current vertex format (SETVERTEXSHADER) */
+    ULONG fvf;                  /* the current vertex format (SETVERTEXSHADER): an FVF, or a vertex shader handle (bit 0) */
     DP2STREAM vb, ib;           /* stream 0 and the index buffer */
     ULONG vb_handle, ib_handle;
     BOOL vb_um;                 /* stream 0 is the DP2 vertex buffer */
-    BOOL shader;                /* a real vertex shader is current: its draws are skipped */
+    BOOL shader;                /* fvf is a vertex shader handle: the host reads the vertices through its declaration */
     BOOL needs_vb;              /* a DX7 draw token references the DP2 vertex buffer */
     UCHAR *out;                 /* pass 2: the record's command area (NULL in pass 1) */
     ULONG outlen;
-    ULONG skipped;              /* draws skipped (bad ranges, shaders, unknown buffers) */
-    ULONG skip_why;             /* bits: 1 shader, 2 no fvf, 4 no stream, 8 stride < fvf, 16 vertex range, 32 index range, 64 prim */
+    ULONG skipped;              /* draws skipped (bad ranges, unknown buffers) */
+    ULONG skip_why;             /* bits: 2 no fvf, 4 no stream, 8 stride < fvf, 16 vertex range, 32 index range, 64 prim */
     ULONG skip_info[6];         /* the first skipped draw: prim, count, voff, nverts, ioff, nindices */
     DWORD *rstates;
 } DP2WALK;
@@ -2200,13 +2214,14 @@ static void walk_draw(DP2WALK *w, ULONG prim, ULONG count, const DP2STREAM *vs, 
     ULONG stride = vs->stride, vbytes;
 
     /* a stride wider than the FVF is legal (the runtime passes the
-     * application's stride for user-memory draws) */
-    if (w->shader) w->skip_why |= 1;
-    else if (!w->fvf) w->skip_why |= 2;
+     * application's stride for user-memory draws); under a vertex shader
+     * the declaration decides what the stride must cover (checked on the
+     * host, which has the declaration) */
+    if (!w->fvf) w->skip_why |= 2;
     else if (!stride || !vs->mem) w->skip_why |= 4;
-    else if (fvf_stride(w->fvf) > stride) w->skip_why |= 8;
+    else if (!w->shader && fvf_stride(w->fvf) > stride) w->skip_why |= 8;
     else if (!prim_verts(prim, count)) w->skip_why |= 64;
-    if (w->shader || !w->fvf || !stride || !vs->mem || fvf_stride(w->fvf) > stride || !prim_verts(prim, count)) {
+    if (!w->fvf || !stride || !vs->mem || (!w->shader && fvf_stride(w->fvf) > stride) || !prim_verts(prim, count)) {
         if (!w->skipped) {
             w->skip_info[0] = prim; w->skip_info[1] = count; w->skip_info[2] = voff;
             w->skip_info[3] = w->fvf; w->skip_info[4] = stride; w->skip_info[5] = nindices;
@@ -2462,15 +2477,11 @@ static BOOL walk(DP2WALK *w)
                 for (i = 0; i < count; i++) walk_texblt(w, (const ULONG *)(q + i * 36));
             }
             break;
-        case 47:                                                /* SETVERTEXSHADER: an FVF, or a shader (bit 0) */
+        case 47:                                                /* SETVERTEXSHADER: an FVF, or a shader handle (bit 0) */
             for (i = 0; i < count; i++) {
                 ULONG h = ((const ULONG *)q)[i];
-                if (h & 1) {
-                    w->shader = TRUE;
-                } else {
-                    w->shader = FALSE;
-                    w->fvf = h;
-                }
+                w->fvf = h;
+                w->shader = (h & 1) != 0;
             }
             walk_put(w, c, 4 + size);
             break;
@@ -2543,10 +2554,9 @@ static BOOL walk(DP2WALK *w)
                 walk_draw(w, 6, e[2], &w->vb, e[0], 0, 0, 0, 0);
             }
             break;
-        case 45: case 46: case 48: case 54: case 55: case 56: case 57:   /* shaders: not claimed */
         case 61: case 62: case 63: case 64: case 66: case 67:            /* patches, volume / buffer blits, dirty rects */
             break;
-        default:
+        default:                                                /* the DX7 state tokens and the shader tokens (45, 46, 48, 54..57) */
             walk_put(w, c, 4 + size);
             break;
         }

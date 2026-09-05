@@ -30,7 +30,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   6u
+#define D3DPT_PROTO_VERSION   7u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -324,11 +324,21 @@ typedef struct d3dpt_dp2 {
  * the vertices (nverts * stride bytes, padded to 4), then the 16-bit
  * indices (nindices * 2 bytes, padded to 4; none for a plain draw). The
  * indices are the runtime's, relative to min_index (its MinIndex): vertex
- * 0 of the copied range is index min_index. */
+ * 0 of the copied range is index min_index.
+ *
+ * fvf is the current SETVERTEXSHADER value: an FVF code (bit 0 clear; the
+ * host computes its size, which stride must cover), or since v7 a DX8
+ * vertex shader handle (bit 0 set): the runtime's CREATEVERTEXSHADER /
+ * DELETEVERTEXSHADER / SETVERTEXSHADER(CONST) and CREATEPIXELSHADER /
+ * DELETEPIXELSHADER / SETPIXELSHADER(CONST) tokens travel in the DP2
+ * stream unchanged, the host keeps the shaders per context (a
+ * declaration-only shader is the fixed function on that declaration) and
+ * reads the copied vertices through the shader's declaration at the
+ * stream's stride (stream 0 only). */
 #define D3DPT_DP2_DRAW8 200u
 typedef struct d3dpt_dp2_draw8 {
     uint32_t prim_type, prim_count;     /* D3DPRIMITIVETYPE, primitives */
-    uint32_t fvf, stride;               /* the copied vertices' format */
+    uint32_t fvf, stride;               /* the copied vertices' format (an FVF or a vertex shader handle), stride */
     uint32_t nverts, nindices;          /* copied vertices; copied indices (0 = not indexed) */
     uint32_t min_index, pad;
 } d3dpt_dp2_draw8;

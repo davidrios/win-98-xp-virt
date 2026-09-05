@@ -539,6 +539,8 @@ typedef struct _D3DCAPS8_ {
 #define D3DPRESENT_INTERVAL_IMMEDIATE 0x80000000
 #define D3DVS_VERSION_0               0xFFFE0000
 #define D3DPS_VERSION_0               0xFFFF0000
+#define D3DVS_VERSION_(major, minor)  (0xFFFE0000 | ((major) << 8) | (minor))
+#define D3DPS_VERSION_(major, minor)  (0xFFFF0000 | ((major) << 8) | (minor))
 #define D3DDEVTYPE_HAL_               1
 
 /* the DX8 DP2 tokens the driver rewrites or drops (D3DHAL_DP2OPERATION) */

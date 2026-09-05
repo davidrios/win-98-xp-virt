@@ -111,7 +111,7 @@ picture and the track rules, then this file, then doc 15.
   (`D3DCAPS8`, the DX8 format list), hardware T&L claimed (DX7 and DX8
   caps; `ddflags=0x1000` withdraws it, `0x2000` keeps the DX7 face), the
   DX8 token stream rewritten by the driver into self-contained draws
-  (`D3DPT_DP2_DRAW8`, protocol v6: the runtime's buffers are guest memory),
+  (`D3DPT_DP2_DRAW8`, protocol v6, v7 since the shaders: the runtime's buffers are guest memory),
   TEXBLT in the driver, per-context DX8 state, state sets as d3d9 state
   blocks, render-to-texture, MULTIPLYTRANSFORM, DXT pitches. D3DGAME8
   through XP's own d3d8.dll with hardware vertex processing at ~575 fps
@@ -131,9 +131,9 @@ picture and the track rules, then this file, then doc 15.
   2026-09-04 evening; the 8 bpp work continues on it). New work: branch
   `track/m7-<topic>` off main.
 - **Resuming here (2026-09-05, after the DX8 DDI session):** pull main,
-  then prepare → configure → ninja (protocol v6 is checked by the
+  then prepare → configure → ninja (protocol v7 is checked by the
   device), `scripts/build-d3dpt-exec.sh`, `guest-tools/build-driver.sh`,
-  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v6),
+  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v7),
   `cargo build --release`. `winxp-m7g` carries the last driver build
   (`install` it again after any driver change). State of the DX8 DDI:
   1. **Works:** D3DGAME8 through XP's own d3d8.dll with hardware vertex
@@ -156,7 +156,24 @@ picture and the track rules, then this file, then doc 15.
      `DRIVER\DXTTEST.EXE` (new) is the probe and the check: every format
      × pool, readback of a textured quad. D3DGAME8's particles now use
      the DXT1 disc like the native oracle.
-  4. Then shaders 1.x (the track's next item), and the small things the
+  4. **Done (2026-09-05 night, protocol v7): vertex and pixel shaders
+     1.x.** The caps claim vs 1.1 / ps 1.4, the driver forwards the seven
+     shader tokens and a DRAW8 under a shader carries the handle, the
+     executor keeps the shaders per context (DX8 declaration → d3d9
+     declaration + prepended `dcl`s, declaration-only = fixed function,
+     `D3DVSD_CONST`, the constants) and validates every function against
+     a vs 1.x / ps 1.x opcode table first — DXVK *asserts* on an unknown
+     opcode (an abort, QEMU dies), found by the host test's hostile case
+     (doc 15 "Vertex and pixel shaders 1.x"). `tools/d3dpt-dp2-test.cpp`
+     covers the whole set; `DRIVER\SHTEST.EXE` + `xp-driver-test.sh
+     <image> shtest` is the guest check through XP's own d3d8.dll
+     (9 cases, 0 failed on `winxp-m7g` under KVM; one finding on the
+     way: d3d8.dll refuses a declaration-only shader whose registers are
+     not in FVF order with `D3DERR_INVALIDCALL` before the driver sees
+     it). A protocol bump: QEMU (prepare → ninja), the
+     executor, the driver ISO and the guest-tools ISO all rebuilt;
+     `winxp-m7g` has the v7 driver installed.
+  5. Then the small things the
      runs showed: D3DGAME8's frame still differs from the native oracle
      along the checker texture's texel edges only (2026-09-05 night:
      8.7 k pixels beyond tolerance 8, channel difference ≤ 43, the
@@ -191,6 +208,8 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 ddtest    # DirectDraw: caps, flip
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 modes     # SETMODE switches + the mode list
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL scene, diffed against build/d3dpt-dp2-test's frame
 tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 d3dgame8  # D3DGAME8 through XP's own d3d8.dll on the DX8 DDI, diffed against build/test/g9-native.bmp
+OUT=build/xp-driver-test/sh tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 shtest   # SHTEST: shaders 1.x through d3d8.dll, "0 failed" in shtest.log is the pass
+# (OUT= relative under build/: the QMP socket path must stay under 108 characters, and the worktree path is long)
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
 # a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
 GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat
@@ -237,15 +256,18 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    user's setup, then decide whether the merge belongs in a system-wide
    place). Max Payne runs through XP's d3d8.dll on the DX7-level DDI
    (tutorial level clean, now on the DX8 DDI with hardware T&L); play it
-   by hand, ZBIAS → DEPTHBIAS when a title needs it. Then what the next
-   title asks for first among: **vertex / pixel shaders 1.x on the DX8
-   DDI** (CREATE/SET/DELETE*SHADER + constants tokens; the DX8
-   declaration → d3d9 declaration translation is in the M4 track's
-   `d3d8.c`, to be ported into the executor; claim `D3DVS_VERSION(1,1)`
-   / `D3DPS_VERSION(1,4)`), more than one stream, colour keying (key →
+   by hand, ZBIAS → DEPTHBIAS when a title needs it. Shaders 1.x landed
+   2026-09-05 (protocol v7; a title that uses them is the next check —
+   a DX8 game with vs 1.1 / ps 1.1 paths). Then what the next title asks
+   for first among: **more than one stream** (the driver copies stream 0
+   only; a multi-stream declaration's draws are skipped with a log line —
+   the DRAW8 token would carry one blob per stream), colour keying (key →
    alpha at upload + alpha test), cube / volume textures, presenting the
    host frame through the player's 3D path instead of the per-frame
-   readback copy.
+   readback copy. A validator for SM2/3 bytecode on the d3d9 half (the
+   M4 track's `d3dpt_exec.cpp` hands guest bytecode straight to DXVK,
+   which asserts on garbage — see doc 15's shader section) is worth the
+   same treatment.
 2. Add a `driver` stage to `scripts/test.sh` (boot on `d3dpt-vga`, `modes`
    + `ddtest` with expected numbers) once the M4 track's suite structure
    is stable; until then `tools/xp-driver-test.sh` is the check.
@@ -299,5 +321,6 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 - The executor must never let DXVK throw: its exceptions abort QEMU
   (DXVK's own static unwinder vs the system personality routine), a
   `try` in the executor does not help. Validate every index / count
-  before the call. `pgrep -f '<image>'` matches the shell loop that
+  before the call — and every shader's bytecode (`sm1_valid`): DXVK's
+  compiler asserts on an unknown opcode instead of failing the create. `pgrep -f '<image>'` matches the shell loop that
   contains the pattern — use `pgrep -a qemu-system` to see guests.

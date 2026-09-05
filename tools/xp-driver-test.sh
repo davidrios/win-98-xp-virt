@@ -10,6 +10,8 @@
 #   tools/xp-driver-test.sh <image.qcow2> d3d7         # D3D7TEST: the DX7 HAL scene, diffed against the host test's frame
 #   tools/xp-driver-test.sh <image.qcow2> d3dgame8     # D3DGAME8 through XP's own d3d8.dll on the DX8 DDI (no wrapper DLL),
 #                                                       # its frame diffed against the native d3d9 oracle of scripts/test.sh
+#   tools/xp-driver-test.sh <image.qcow2> shtest       # SHTEST: vertex / pixel shaders 1.x through d3d8.dll on the DX8 DDI,
+#                                                       # every draw read back in the guest; PASS = "0 failed" in shtest.log
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
 #   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
@@ -27,7 +29,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|cmd|bat}"; shift 2
+IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|shtest|cmd|bat}"; shift 2
 OUT="${OUT:-$ROOT/build/xp-driver-test}"; mkdir -p "$OUT"
 ISO="$ROOT/guest-tools/out/d3dpt-driver.iso"
 [ -f "$ISO" ] || { echo "no $ISO: run guest-tools/build-driver.sh"; exit 1; }
@@ -129,6 +131,13 @@ case "$MODE" in
       python3 "$ROOT/tools/bmpdiff.py" "$ROOT/build/test/g9-native.bmp" "$OUT/G8.BMP" --mask 0,368,270,112 --tolerance 8 --max-over 1200 -o "$OUT/g8-diff.bmp" \
         && echo "-- d3dgame8: frame within budget of the native d3d9 frame" || echo "-- d3dgame8: FRAME DIFFERS ($OUT/g8-diff.bmp)"
     else echo "-- d3dgame8: no frame ($OUT/G8.BMP) or no native oracle (build/test/g9-native.bmp: run scripts/test.sh host)"; fi ;;
+  shtest)
+    run 'cd /d %TEMP% & D:\DRIVER\SHTEST.EXE & copy shtest.log E:\'
+    sleep 8; Q screendump "$OUT/shtest-window.png" || true
+    sleep 17
+    finish
+    pull shtest.log
+    if grep -q 'shtest: .* cases, 0 failed' "$OUT/shtest.log" 2>/dev/null; then echo "-- shtest: PASS"; else echo "-- shtest: FAIL (see $OUT/shtest.log and the device log)"; fi ;;
   cmd|bat)
     if [ "$MODE" = bat ]; then run 'E:\RUN.BAT'; else run "${1:?guest command line}"; fi
     if [ -n "${SHOTS:-}" ]; then

@@ -92,6 +92,21 @@ struct Dp2Buf {
         while (b.size() % 4) b.push_back(0xcc);
     }
     void stateset(uint32_t op, uint32_t handle, uint32_t type = 0) { cmd(39, 1); u32(op); u32(handle); u32(type); }
+    /* the DX8 shader tokens as the runtime lays them out (protocol v7: the
+     * driver forwards them; the host keeps the shaders per context) */
+    void create_vs(uint32_t handle, const std::vector<uint32_t> &decl, const std::vector<uint32_t> &code, uint32_t decl_lie = 0) {
+        cmd(45, 1); u32(handle); u32(decl_lie ? decl_lie : (uint32_t)decl.size() * 4); u32((uint32_t)code.size() * 4);
+        for (uint32_t t : decl) u32(t);
+        for (uint32_t t : code) u32(t);
+    }
+    void create_ps(uint32_t handle, const std::vector<uint32_t> &code) { cmd(54, 1); u32(handle); u32((uint32_t)code.size() * 4); for (uint32_t t : code) u32(t); }
+    void set_vs(uint32_t h) { cmd(47, 1); u32(h); }
+    void set_ps(uint32_t h) { cmd(56, 1); u32(h); }
+    void delete_vs(uint32_t h) { cmd(46, 1); u32(h); }
+    void delete_ps(uint32_t h) { cmd(55, 1); u32(h); }
+    void vs_const(uint32_t reg, float a, float b, float c, float d) { cmd(48, 1); u32(reg); u32(1); f32(a); f32(b); f32(c); f32(d); }
+    void ps_const(uint32_t reg, float a, float b, float c, float d) { cmd(57, 1); u32(reg); u32(1); f32(a); f32(b); f32(c); f32(d); }
+    void transform(uint32_t t, const float *m) { cmd(36, 1); u32(t); for (int i = 0; i < 16; i++) f32(m[i]); }
     /* TRIANGLEFAN_IMM as the runtime lays it out: the 4-byte header (which
      * may sit at offset 2 mod 4), padding to a DWORD boundary, the edge
      * flags, the vertices inline, padding so the next token starts at a
@@ -312,6 +327,158 @@ int main(int argc, char **argv) {
         lie8.draw8(4, 2, FVF_TLVERTEX, quad, {}, 0, 20);                        /* a stride that is not the FVF's */
         hr = send_dp2(&enc, lie8, vtx, 0, &err_off);
         CHECK(hr == 0x88760BB8u, "DRAW8 lying about its stride -> D3DERR_COMMAND_UNPARSED (0x%08x)", hr);
+    }
+
+    /* --- the DX8 DDI: vertex and pixel shaders 1.x (protocol v7) --- */
+    {
+        /* hand-assembled shader models 1.x: a version token, instruction
+         * tokens (opcode), parameter tokens (bit 31, register type in bits
+         * 28..30, write mask / swizzle in 16..23, the register number) */
+        const uint32_t VS11 = 0xFFFE0101u, PS11 = 0xFFFF0101u, END = 0x0000FFFFu, MOV = 1, MUL = 5, TEX = 66;
+        auto dst = [](uint32_t type, uint32_t n) { return 0x80000000u | (type << 28) | (0xFu << 16) | n; };
+        auto src = [](uint32_t type, uint32_t n) { return 0x80000000u | (type << 28) | (0xE4u << 16) | n; };
+        enum { R_TEMP = 0, R_INPUT = 1, R_CONST = 2, R_TEXTURE = 3, R_RASTOUT = 4, R_ATTROUT = 5 };
+        /* D3DVSD_* declaration tokens: STREAM(n) = 1 << 29 | n, REG(reg, type) = 2 << 29 | type << 16 | reg,
+         * CONST(reg, count) = 4 << 29 | count << 25 | reg (+ count float4s), END = 0xFFFFFFFF */
+        auto STREAM = [](uint32_t n) { return (1u << 29) | n; };
+        auto REG = [](uint32_t reg, uint32_t type) { return (2u << 29) | (type << 16) | reg; };
+        auto VSCONST = [](uint32_t reg, uint32_t count) { return (4u << 29) | (count << 25) | reg; };
+        const uint32_t T_FLOAT3 = 2, T_FLOAT4 = 3, T_D3DCOLOR = 4;
+        auto F = [](float f) { uint32_t v; memcpy(&v, &f, 4); return v; };
+        /* vs 1.1: oPos = v0 (clip space as given), oD0 = v5 * c0 */
+        std::vector<uint32_t> vs_code = { VS11, MOV, dst(R_RASTOUT, 0), src(R_INPUT, 0), MUL, dst(R_ATTROUT, 0), src(R_INPUT, 5), src(R_CONST, 0), END };
+        std::vector<uint32_t> decl_pc = { STREAM(0), REG(0, T_FLOAT4), REG(5, T_D3DCOLOR), 0xFFFFFFFFu };
+        /* ps 1.1: r0 = c0; and r0 = t0 * v0 (the texture times the diffuse) */
+        std::vector<uint32_t> ps_const = { PS11, MOV, dst(R_TEMP, 0), src(R_CONST, 0), END };
+        std::vector<uint32_t> ps_tex = { PS11, TEX, dst(R_TEXTURE, 0), MUL, dst(R_TEMP, 0), src(R_TEXTURE, 0), src(R_INPUT, 0), END };
+        struct svtx { float x, y, z, w; uint32_t color; };                     /* 20 bytes: the declaration above */
+        /* a white quad over the top-left quadrant in clip space */
+        std::vector<svtx> sq = { { -1, 1, 0.5f, 1, 0xffffffffu }, { 0, 1, 0.5f, 1, 0xffffffffu }, { -1, 0, 0.5f, 1, 0xffffffffu },
+                                 { -1, 0, 0.5f, 1, 0xffffffffu }, { 0, 1, 0.5f, 1, 0xffffffffu }, { 0, 0, 0.5f, 1, 0xffffffffu } };
+        const uint32_t H_VS = 0x101, H_VS_FF = 0x103, H_VS_CONST = 0x105, H_PS = 0x201, H_PS_TEX = 0x203;
+        std::vector<tlv> quad(vtx.begin(), vtx.begin() + 6), fan(vtx.begin() + 6, vtx.begin() + 12);
+        Dp2Buf s;
+        s.create_vs(H_VS, decl_pc, vs_code);
+        s.vs_const(0, 1, 0, 0, 1);                                             /* c0 = red */
+        s.set_vs(H_VS);
+        s.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        s.tss(0, 0, 0); s.tss(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2); s.tss(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+        s.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2); s.tss(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+        s.draw8(4, 2, H_VS, sq);
+        hr = send_dp2(&enc, s, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(100, 100), 0xff0000, 2) && px(500, 400) == (CLEAR_COLOR & 0xffffff),
+              "vs 1.1 through its declaration, c0 red: quad 0x%06x, outside 0x%06x", px(100, 100), px(500, 400));
+        Dp2Buf s2;
+        s2.vs_const(0, 0, 1, 0, 1);                                            /* c0 = green: the constant alone changes the frame */
+        s2.draw8(4, 2, H_VS, sq);
+        hr = send_dp2(&enc, s2, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(100, 100), 0x00ff00, 2), "vertex shader constant c0 green: 0x%06x", px(100, 100));
+        /* a declaration-only shader: the fixed function on a layout that is
+         * no FVF (the colour before the position), identity transforms */
+        struct ffvtx { uint32_t color; float x, y, z; };
+        std::vector<ffvtx> fq;
+        for (const svtx &v : sq) fq.push_back({ 0xff00ffffu, v.x, v.y, v.z });
+        static const float ident[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+        Dp2Buf s3;
+        s3.create_vs(H_VS_FF, { STREAM(0), REG(5, T_D3DCOLOR), REG(0, T_FLOAT3), 0xFFFFFFFFu }, {});
+        s3.transform(256, ident); s3.transform(2, ident); s3.transform(3, ident);
+        s3.rs(D3DRS_LIGHTING, 0);
+        s3.set_vs(H_VS_FF);
+        s3.draw8(4, 2, H_VS_FF, fq);
+        hr = send_dp2(&enc, s3, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(100, 100), 0x00ffff, 2), "declaration-only shader (fixed function, colour first): 0x%06x", px(100, 100));
+        /* D3DVSD_CONST in the declaration: loaded when the shader is set */
+        Dp2Buf s4;
+        s4.create_vs(H_VS_CONST, { STREAM(0), REG(0, T_FLOAT4), REG(5, T_D3DCOLOR), VSCONST(0, 1), F(0), F(0), F(1), F(1), 0xFFFFFFFFu }, vs_code);
+        s4.set_vs(H_VS_CONST);
+        s4.draw8(4, 2, H_VS_CONST, sq);
+        hr = send_dp2(&enc, s4, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(100, 100), 0x0000ff, 2), "declaration constant c0 blue: 0x%06x", px(100, 100));
+        /* a pixel shader over it: r0 = c0 (yellow); then off again */
+        Dp2Buf s5;
+        s5.create_ps(H_PS, ps_const);
+        s5.ps_const(0, 1, 1, 0, 1);
+        s5.set_ps(H_PS);
+        s5.draw8(4, 2, H_VS_CONST, sq);
+        hr = send_dp2(&enc, s5, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(100, 100), 0xffff00, 2), "ps 1.1 r0 = c0 yellow: 0x%06x", px(100, 100));
+        Dp2Buf s6;
+        s6.set_ps(0);
+        s6.draw8(4, 2, H_VS_CONST, sq);
+        hr = send_dp2(&enc, s6, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(100, 100), 0x0000ff, 2), "pixel shader off: the vertex colour again 0x%06x", px(100, 100));
+        /* a texturing pixel shader on fixed-function (XYZRHW) vertices: the
+         * texture is the grey of the re-read case by now */
+        Dp2Buf s7;
+        s7.create_ps(H_PS_TEX, ps_tex);
+        s7.set_ps(H_PS_TEX);
+        s7.tss(0, 0, H_TEX);
+        s7.set_vs(FVF_TLVERTEX);
+        s7.draw8(4, 2, FVF_TLVERTEX, quad, { 10, 11, 12, 13, 14, 15 }, 10);
+        s7.set_ps(0); s7.tss(0, 0, 0);
+        hr = send_dp2(&enc, s7, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x404040, 2) && near_(px(300, 200), 0x404040, 2), "ps 1.1 tex t0 * v0 on FVF vertices: 0x%06x 0x%06x", px(104, 84), px(300, 200));
+        /* hostile: a function with no END and garbage tokens (refused, the
+         * draw with it skipped), a declaration reading stream 1 (skipped), a
+         * declaration wider than the stride (skipped), constants off the
+         * scale (dropped), a CREATEVERTEXSHADER lying about its sizes
+         * (COMMAND_UNPARSED); then the FVF path still draws */
+        Dp2Buf s8;
+        s8.create_vs(0x107, decl_pc, { VS11, 0xDEADBEEFu, 0xDEADBEEFu, 0xDEADBEEFu });
+        s8.set_vs(0x107);
+        s8.draw8(4, 2, 0x107, sq);
+        /* garbage with a proper END: an unknown opcode, an instruction without
+         * its operands, a register off the file (DXVK's compiler asserts on
+         * the first two — the process would die — so the executor's own
+         * validator must refuse them first) */
+        s8.create_vs(0x10f, decl_pc, { VS11, 0xDEADBEEFu, 0xDEADBEEFu, 0xDEADBEEFu, END });
+        s8.create_ps(0x20f, { PS11, 0xDEADBEEFu, 0xDEADBEEFu, END });
+        s8.set_vs(0x10f); s8.set_ps(0x20f);
+        s8.draw8(4, 2, 0x10f, sq);
+        s8.create_vs(0x111, decl_pc, { VS11, MOV, END });
+        s8.create_ps(0x211, { PS11, MOV, dst(R_TEMP, 0), src(R_RASTOUT, 0), END });
+        s8.set_vs(0x111); s8.set_ps(0x211);
+        s8.draw8(4, 2, 0x111, sq);
+        s8.create_vs(0x113, decl_pc, { VS11, MOV, dst(R_RASTOUT, 0), src(R_INPUT, 0), MUL, dst(R_CONST, 0), src(R_INPUT, 5), src(R_CONST, 0), END });
+        s8.set_vs(0x113);
+        s8.draw8(4, 2, 0x113, sq);
+        s8.set_ps(0);
+        s8.create_vs(0x109, { STREAM(1), REG(0, T_FLOAT4), REG(5, T_D3DCOLOR), 0xFFFFFFFFu }, vs_code);
+        s8.set_vs(0x109);
+        s8.draw8(4, 2, 0x109, sq);
+        s8.create_vs(0x10b, { STREAM(0), REG(0, T_FLOAT4), REG(5, T_D3DCOLOR), REG(7, T_FLOAT4), 0xFFFFFFFFu }, vs_code);
+        s8.set_vs(0x10b);
+        s8.draw8(4, 2, 0x10b, sq);
+        s8.vs_const(300, 1, 1, 1, 1);
+        s8.ps_const(250, 1, 1, 1, 1);
+        s8.set_vs(0x1ff);                                                     /* never created */
+        s8.draw8(4, 2, 0x1ff, sq);
+        s8.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        s8.set_vs(FVF_TLVERTEX);
+        s8.draw8(6, 4, FVF_TLVERTEX, fan);
+        hr = send_dp2(&enc, s8, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && px(100, 100) == (CLEAR_COLOR & 0xffffff) && near_(px(480, 240), 0xffffff, 2),
+              "garbage function / stream 1 / wide declaration / unknown handle / wild constants: skipped, not fatal; the fan still draws (0x%06x 0x%06x)", px(100, 100), px(480, 240));
+        Dp2Buf s9;
+        s9.create_vs(0x10d, decl_pc, vs_code, 4096);                          /* the declaration size lies */
+        hr = send_dp2(&enc, s9, vtx, 0, &err_off);
+        CHECK(hr == 0x88760BB8u && err_off == 0, "CREATEVERTEXSHADER lying about its declaration size -> D3DERR_COMMAND_UNPARSED at %u (0x%08x)", err_off, hr);
+        Dp2Buf s10;
+        s10.delete_vs(H_VS); s10.delete_vs(H_VS_FF); s10.delete_vs(H_VS_CONST); s10.delete_vs(0x109); s10.delete_vs(0x10b);
+        s10.delete_ps(H_PS); s10.delete_ps(H_PS_TEX); s10.delete_ps(0x2ff);
+        s10.set_vs(FVF_TLVERTEX);
+        s10.draw8(6, 4, FVF_TLVERTEX, fan);
+        hr = send_dp2(&enc, s10, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(480, 240), 0xffffff, 2), "shaders deleted, the fan still draws (0x%06x)", px(480, 240));
     }
 
     /* --- hostile records --- */

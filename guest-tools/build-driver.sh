@@ -62,6 +62,9 @@ echo "==> ditest.exe (DirectInput keyboard under load)"
 echo "==> dxttest.exe (which texture formats d3d8.dll creates, per pool)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/dxttest.exe" "$SRC/dxttest.c" -ld3d8 -lgdi32 -luser32
+echo "==> shtest.exe (vertex / pixel shaders 1.x through d3d8.dll on the DX8 DDI)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/shtest.exe" "$SRC/shtest.c" -ld3d8 -lgdi32 -luser32
 cp "$SRC/d3dptvid.inf" "$OUT/d3dptvid.inf"
 
 # sanity: the kernel modules import only from their port driver, and nothing
@@ -105,7 +108,13 @@ DITEST.EXE (DirectInput keyboard under load: DITEST [seconds] [busy-ms]
 each see of the keys, log in ditest.log),
 DXTTEST.EXE (Direct3D 8 texture formats: CheckDeviceFormat, CreateTexture,
 Lock, a textured quad for every format x pool, CreateImageSurface; every
-HRESULT in dxttest.log, the driver's surface lines in the QEMU log).
+HRESULT in dxttest.log, the driver's surface lines in the QEMU log),
+SHTEST.EXE (vertex / pixel shaders 1.x through d3d8.dll with hardware
+vertex processing: vs 1.1 through a declaration and its constants, from
+user memory and from a vertex + index buffer, a declaration-only shader,
+D3DVSD_CONST, ps 1.1 with a constant and with a texture, the FVF path
+again; every draw read back and compared, shtest.log ends with
+"shtest: N cases, M failed").
 TXT
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 

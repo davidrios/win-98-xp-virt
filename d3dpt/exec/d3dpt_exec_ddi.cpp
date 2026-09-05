@@ -21,6 +21,11 @@
  * TEXTURESTAGESTATE, VIEWPORTINFO, ZRANGE, SETRENDERTARGET, CLEAR and the
  * primitive tokens. The T&L tokens (SETTRANSFORM / SETLIGHT / SETMATERIAL)
  * are mapped 1:1 onto d3d9 already so claiming T&L is a caps change.
+ * The DX8 DDI adds the driver's self-contained D3DPT_DP2_DRAW8 draws and,
+ * with protocol v7, the shader tokens: CREATEVERTEXSHADER becomes a d3d9
+ * vertex declaration (+ a vertex shader with dcl instructions in front),
+ * CREATEPIXELSHADER a d3d9 pixel shader, the constants go straight
+ * through; a DRAW8 under a shader carries the handle in its fvf field.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -72,9 +77,36 @@ struct VramSurf {
     }
 };
 
+/* a DX8 vertex shader (CREATEVERTEXSHADER, protocol v7): the D3DVSD_*
+ * declaration as a d3d9 vertex declaration, the function (if any) as a
+ * d3d9 vertex shader with the dcl instructions d3d9 wants in front, the
+ * declaration's D3DVSD_CONST runs (loaded when the shader is set). A
+ * declaration without a function is the fixed function on that layout. */
+struct VShader8 {
+    IDirect3DVertexDeclaration9 *decl = nullptr;
+    IDirect3DVertexShader9 *vs = nullptr;
+    struct ConstRun { uint32_t reg; std::vector<float> v; };
+    std::vector<ConstRun> consts;
+    uint32_t vertex_bytes = 0;          /* what the declaration reads of a stream-0 vertex */
+    uint32_t streams = 0;               /* bitmask of the streams it reads */
+    void release() {
+        if (decl) decl->Release();
+        if (vs) vs->Release();
+        decl = nullptr; vs = nullptr;
+    }
+};
+
 struct Ctx {
     uint32_t rt = 0, z = 0;
     D3DVIEWPORT9 vp = { 0, 0, 0, 0, 0.0f, 1.0f };
+    /* the DX8 shaders by the runtime's handle (per device = per context) */
+    std::unordered_map<uint32_t, VShader8> vshaders;
+    std::unordered_map<uint32_t, IDirect3DPixelShader9 *> pshaders;
+    void release_shaders() {
+        for (auto &kv : vshaders) kv.second.release();
+        for (auto &kv : pshaders) if (kv.second) kv.second->Release();
+        vshaders.clear(); pshaders.clear();
+    }
 };
 
 } // namespace
@@ -352,11 +384,199 @@ static uint32_t stride_of_fvf(uint32_t fvf) {
     return n;
 }
 
+/* --- DX8 vertex shader declarations (D3DVSD_* tokens) -> d3d9 elements.
+ * The register number of a D3DVSD_REG is the shader's input register and,
+ * by the DX8 convention the fixed function relies on, names the usage
+ * (0 position, 3 normal, 5 diffuse, 7.. texcoords); the d3d9 declaration
+ * and the dcl instructions prepended to the function use the same table,
+ * so a shader reading v5 finds the element declared as COLOR0. Data types
+ * 0..7 are numbered as D3DDECLTYPE_*. --- */
+static const struct { uint8_t usage, index; } vsde_usage[17] = {
+    { D3DDECLUSAGE_POSITION, 0 }, { D3DDECLUSAGE_BLENDWEIGHT, 0 }, { D3DDECLUSAGE_BLENDINDICES, 0 }, { D3DDECLUSAGE_NORMAL, 0 },
+    { D3DDECLUSAGE_PSIZE, 0 }, { D3DDECLUSAGE_COLOR, 0 }, { D3DDECLUSAGE_COLOR, 1 }, { D3DDECLUSAGE_TEXCOORD, 0 },
+    { D3DDECLUSAGE_TEXCOORD, 1 }, { D3DDECLUSAGE_TEXCOORD, 2 }, { D3DDECLUSAGE_TEXCOORD, 3 }, { D3DDECLUSAGE_TEXCOORD, 4 },
+    { D3DDECLUSAGE_TEXCOORD, 5 }, { D3DDECLUSAGE_TEXCOORD, 6 }, { D3DDECLUSAGE_TEXCOORD, 7 }, { D3DDECLUSAGE_POSITION, 1 }, { D3DDECLUSAGE_NORMAL, 1 },
+};
+static const uint8_t vsdt_size[8] = { 4, 8, 12, 16, 4, 4, 4, 8 };
+
+/* ntokens DWORDs of declaration; false = malformed (no END, a bad register
+ * or type, too many elements). regs: bitmask of the input registers fed */
+static bool vsd_convert(const uint32_t *d, uint32_t ntokens, std::vector<D3DVERTEXELEMENT9> &el, uint32_t &regs, VShader8 &s) {
+    uint32_t i = 0, stream = 0, offset = 0;
+    regs = 0; s.vertex_bytes = 0; s.streams = 0;
+    while (i < ntokens) {
+        uint32_t t = d[i], type = (t >> 29) & 7;
+        if (t == 0xFFFFFFFFu) {                                             /* D3DVSD_END */
+            D3DVERTEXELEMENT9 end = D3DDECL_END();
+            el.push_back(end);
+            return true;
+        }
+        switch (type) {
+        case 0: i++; break;                                                 /* NOP */
+        case 1: stream = t & 0xF; offset = 0; i++; break;                  /* STREAM (the tessellator bit ignored) */
+        case 2:
+            if (t & (1u << 28)) { offset += 4 * ((t >> 16) & 0xF); i++; break; }   /* SKIP */
+            {
+                uint32_t reg = t & 0x1F, dt = (t >> 16) & 0xF;
+                if (reg > 16 || dt > 7 || el.size() >= 64) return false;
+                D3DVERTEXELEMENT9 e = { (WORD)stream, (WORD)offset, (BYTE)dt, D3DDECLMETHOD_DEFAULT, vsde_usage[reg].usage, vsde_usage[reg].index };
+                el.push_back(e);
+                regs |= 1u << reg;
+                s.streams |= 1u << stream;
+                offset += vsdt_size[dt];
+                if (stream == 0 && offset > s.vertex_bytes) s.vertex_bytes = offset;
+                i++;
+            }
+            break;
+        case 3: i++; break;                                                 /* TESSELLATOR: patches are not supported */
+        case 4: {                                                           /* CONST: count float4s at register */
+            uint32_t cnt = (t >> 25) & 0xF, reg = t & 0x7F;
+            if (i + 1 + cnt * 4 > ntokens || reg + cnt > 256) return false;
+            VShader8::ConstRun run; run.reg = reg;
+            for (uint32_t j = 0; j < cnt * 4; j++) { float f; memcpy(&f, &d[i + 1 + j], 4); run.v.push_back(f); }
+            if (cnt) s.consts.push_back(run);
+            i += 1 + cnt * 4;
+            break;
+        }
+        case 5: i += 1 + ((t >> 24) & 0x1F); break;                         /* EXT: skipped with its DWORDs */
+        default: return false;
+        }
+    }
+    return false;                                                           /* no END */
+}
+
+/* --- shader model 1.x bytecode validation. DXVK's compiler asserts on an
+ * unknown opcode or a missing operand (an abort, uncatchable: QEMU dies),
+ * so only a vs_1_x / ps_1_x stream of known instructions with the right
+ * operand counts and registers in range reaches CreateVertexShader /
+ * CreatePixelShader. The DX8 runtime validates every shader before its
+ * CREATE token, so a real guest never trips this. Tokens: bit 31 set =
+ * a parameter (register type in bits 28..30, number in 0..10), clear =
+ * an instruction (opcode in bits 0..15); DEF carries four raw floats,
+ * COMMENT its length. --- */
+struct Sm1Op { uint16_t op; uint8_t vs, ps, min, max; };     /* stage allowed; operands including the destination */
+static const Sm1Op sm1_ops[] = {
+    { 0, 1, 1, 0, 0 },      /* NOP */
+    { 1, 1, 1, 2, 2 },      /* MOV */
+    { 2, 1, 1, 3, 3 },      /* ADD */
+    { 3, 1, 1, 3, 3 },      /* SUB */
+    { 4, 1, 1, 4, 4 },      /* MAD */
+    { 5, 1, 1, 3, 3 },      /* MUL */
+    { 6, 1, 0, 2, 2 },      /* RCP */
+    { 7, 1, 0, 2, 2 },      /* RSQ */
+    { 8, 1, 1, 3, 3 },      /* DP3 */
+    { 9, 1, 1, 3, 3 },      /* DP4 */
+    { 10, 1, 0, 3, 3 },     /* MIN */
+    { 11, 1, 0, 3, 3 },     /* MAX */
+    { 12, 1, 0, 3, 3 },     /* SLT */
+    { 13, 1, 0, 3, 3 },     /* SGE */
+    { 14, 1, 0, 2, 2 },     /* EXP */
+    { 15, 1, 0, 2, 2 },     /* LOG */
+    { 16, 1, 0, 2, 2 },     /* LIT */
+    { 17, 1, 0, 3, 3 },     /* DST */
+    { 18, 0, 1, 4, 4 },     /* LRP */
+    { 19, 1, 0, 2, 2 },     /* FRC */
+    { 20, 1, 0, 3, 3 },     /* M4x4 */
+    { 21, 1, 0, 3, 3 },     /* M4x3 */
+    { 22, 1, 0, 3, 3 },     /* M3x4 */
+    { 23, 1, 0, 3, 3 },     /* M3x3 */
+    { 24, 1, 0, 3, 3 },     /* M3x2 */
+    { 64, 0, 1, 1, 2 },     /* TEXCOORD (ps 1.4 texcrd: + source) */
+    { 65, 0, 1, 1, 1 },     /* TEXKILL */
+    { 66, 0, 1, 1, 2 },     /* TEX (ps 1.4 texld: + source) */
+    { 67, 0, 1, 2, 2 },     /* TEXBEM */
+    { 68, 0, 1, 2, 2 },     /* TEXBEML */
+    { 69, 0, 1, 2, 2 },     /* TEXREG2AR */
+    { 70, 0, 1, 2, 2 },     /* TEXREG2GB */
+    { 71, 0, 1, 2, 2 },     /* TEXM3x2PAD */
+    { 72, 0, 1, 2, 2 },     /* TEXM3x2TEX */
+    { 73, 0, 1, 2, 2 },     /* TEXM3x3PAD */
+    { 74, 0, 1, 2, 2 },     /* TEXM3x3TEX */
+    { 76, 0, 1, 3, 3 },     /* TEXM3x3SPEC */
+    { 77, 0, 1, 2, 2 },     /* TEXM3x3VSPEC */
+    { 78, 1, 0, 2, 2 },     /* EXPP */
+    { 79, 1, 0, 2, 2 },     /* LOGP */
+    { 80, 0, 1, 4, 4 },     /* CND */
+    { 81, 1, 1, 5, 5 },     /* DEF: destination + four floats */
+    { 82, 0, 1, 2, 2 },     /* TEXREG2RGB */
+    { 83, 0, 1, 2, 2 },     /* TEXDP3TEX */
+    { 84, 0, 1, 2, 2 },     /* TEXM3x2DEPTH */
+    { 85, 0, 1, 2, 2 },     /* TEXDP3 */
+    { 86, 0, 1, 2, 2 },     /* TEXM3x3 */
+    { 87, 0, 1, 1, 1 },     /* TEXDEPTH */
+    { 88, 0, 1, 4, 4 },     /* CMP */
+    { 89, 0, 1, 3, 3 },     /* BEM */
+};
+
+/* a parameter token's register within the stage's file sizes */
+static bool sm1_reg_ok(uint32_t t, bool vs, uint32_t minor) {
+    uint32_t type = (t >> 28) & 7, num = t & 0x7ff;
+    if (t & 0x1800) return false;                                   /* SM2 register type bits */
+    if (vs) {
+        switch (type) {
+        case 0: return num < 12;                                    /* r */
+        case 1: return num < 16;                                    /* v */
+        case 2: return num < 256;                                   /* c (the runtime caps it at the driver's count) */
+        case 3: return num < 1;                                     /* a0 */
+        case 4: return num < 3;                                     /* oPos, oFog, oPts */
+        case 5: return num < 2;                                     /* oD0, oD1 */
+        case 6: return num < 8;                                     /* oT0..7 */
+        default: return false;
+        }
+    }
+    switch (type) {
+    case 0: return num < (minor >= 4 ? 6u : 2u);                    /* r */
+    case 1: return num < 2;                                         /* v */
+    case 2: return num < 8;                                         /* c */
+    case 3: return num < (minor >= 4 ? 6u : 4u);                    /* t */
+    default: return false;
+    }
+}
+
+static bool sm1_valid(const uint32_t *t, size_t n, bool vs) {
+    if (n < 2 || (t[0] >> 16) != (vs ? 0xfffeu : 0xffffu) || ((t[0] >> 8) & 0xff) != 1 || t[n - 1] != 0x0000ffffu) return false;
+    uint32_t minor = t[0] & 0xff;
+    if (vs ? minor > 1 : minor > 4) return false;
+    size_t i = 1, end = n - 1;
+    while (i < end) {
+        uint32_t ins = t[i];
+        if (ins & 0x80000000u) return false;                        /* a parameter where an instruction should be */
+        uint32_t op = ins & 0xffff;
+        if (op == 0xfffe) {                                         /* COMMENT: its length in DWORDs */
+            i += 1 + ((ins >> 16) & 0x7fff);
+            if (i > end) return false;
+            continue;
+        }
+        if (op == 0xfffd) {                                         /* PHASE: ps 1.4 */
+            if (vs || minor != 4) return false;
+            i++;
+            continue;
+        }
+        const Sm1Op *o = nullptr;
+        for (const Sm1Op &e : sm1_ops) if (e.op == op) { o = &e; break; }
+        if (!o || !(vs ? o->vs : o->ps)) return false;
+        i++;
+        if (op == 81) {                                             /* DEF: a constant register, then raw floats */
+            if (i + 5 > end || !(t[i] & 0x80000000u) || ((t[i] >> 28) & 7) != 2 || !sm1_reg_ok(t[i], vs, minor)) return false;
+            i += 5;
+            continue;
+        }
+        uint32_t got = 0;
+        while (i < end && (t[i] & 0x80000000u)) {
+            if (!sm1_reg_ok(t[i], vs, minor)) return false;
+            got++; i++;
+        }
+        if (got < o->min || got > o->max) return false;
+        if (got && ((t[i - got] >> 28) & 7) == (vs ? 2u : 2u) && op != 0) return false;   /* a constant as the destination */
+    }
+    return i == end;
+}
+
 struct Dp2 {
     Exec &x; Ddi &d; Ctx &c; Batch &b;
     const uint8_t *cmd, *cmd_end, *vtx;
     uint32_t stride, nverts, fvf_;
-    uint32_t cur_fvf = 0;       /* what SetFVF was last given */
+    uint32_t cur_vs = ~0u;      /* the SETVERTEXSHADER value last applied (FVF or shader handle); ~0 = unknown */
     uint32_t pos = 0;           /* offset of the current token, for dwErrorOffset */
     HRESULT hr = S_OK;
 
@@ -442,8 +662,124 @@ struct Dp2 {
                 tr("    v%u %.3f,%.3f,%.3f n %.2f,%.2f,%.2f diffuse %08x specular %08x uv0 %.3f,%.3f uv1 %.3f,%.3f", i, f[0], f[1], f[2], nrm[0], nrm[1], nrm[2], col, spec, uv[0], uv[1], uv[2], uv[3]);
         }
     }
-    void set_fvf(uint32_t fvf) {
-        if (fvf != cur_fvf) { x.dev->SetFVF(fvf); cur_fvf = fvf; }
+    /* SETVERTEXSHADER: an FVF (the fixed function on it), or a shader
+     * handle (bit 0): its declaration, its function or none (the fixed
+     * function on the declaration), its declaration constants */
+    void apply_vs(uint32_t h) {
+        if (h == cur_vs) return;
+        auto it = c.vshaders.find(h);
+        if (it != c.vshaders.end()) {
+            VShader8 &s = it->second;
+            x.dev->SetVertexDeclaration(s.decl);
+            x.dev->SetVertexShader(s.vs);
+            for (const auto &r : s.consts) x.dev->SetVertexShaderConstantF(r.reg, r.v.data(), (UINT)(r.v.size() / 4));
+        } else if (!(h & 1)) {
+            x.dev->SetVertexShader(nullptr);
+            x.dev->SetFVF(h);
+        } else {
+            if (d.warn_once(0xc0000)) x.log("ddi: dp2: vertex shader handle 0x%x unknown (draws with it are skipped)", h);
+            return;
+        }
+        cur_vs = h;
+    }
+    /* CREATEVERTEXSHADER: handle, the declaration tokens, the function (may be empty) */
+    void create_vshader(uint32_t handle, const uint8_t *decl, uint32_t declbytes, const uint8_t *code, uint32_t codebytes) {
+        auto old = c.vshaders.find(handle);
+        if (old != c.vshaders.end()) { old->second.release(); c.vshaders.erase(old); }
+        if (handle == cur_vs) cur_vs = ~0u;
+        if (!handle || declbytes < 4 || declbytes % 4 || declbytes > (64u << 10) || codebytes % 4 || codebytes > (256u << 10) ||
+            (codebytes && (codebytes < 8 || u32(code) >> 16 != 0xfffe || u32(code + codebytes - 4) != 0x0000ffffu))) {
+            if (d.warn_once(0xc1000)) x.log("ddi: dp2: vertex shader 0x%x refused: declaration %u bytes, function %u bytes", handle, declbytes, codebytes);
+            return;
+        }
+        std::vector<uint32_t> dt(declbytes / 4);
+        memcpy(dt.data(), decl, declbytes);
+        VShader8 s;
+        std::vector<D3DVERTEXELEMENT9> el;
+        uint32_t regs = 0;
+        if (!vsd_convert(dt.data(), (uint32_t)dt.size(), el, regs, s)) {
+            if (d.warn_once(0xc1001)) x.log("ddi: dp2: vertex shader 0x%x: malformed declaration (%u tokens)", handle, declbytes / 4);
+            return;
+        }
+        HRESULT hr = x.dev->CreateVertexDeclaration(el.data(), &s.decl);
+        if (FAILED(hr) || !s.decl) {
+            if (d.warn_once(0xc1002)) x.log("ddi: dp2: vertex shader 0x%x: CreateVertexDeclaration 0x%08x (%zu elements)", handle, (unsigned)hr, el.size() - 1);
+            return;
+        }
+        if (codebytes) {
+            std::vector<uint32_t> g(codebytes / 4);
+            memcpy(g.data(), code, codebytes);
+            if (!sm1_valid(g.data(), g.size(), true)) {
+                if (d.warn_once(0xc1008)) x.log("ddi: dp2: vertex shader 0x%x: the function is not valid vs 1.x (version 0x%08x, %u bytes), refused", handle, u32(code), codebytes);
+                s.release();
+                return;
+            }
+            /* a dcl per input register the declaration feeds, in front of the
+             * function (d3d9 wants them; DX8 shaders have none) */
+            std::vector<uint32_t> f;
+            f.push_back(u32(code));
+            for (uint32_t r = 0; r <= 16; r++) if (regs & (1u << r)) {
+                f.push_back(0x0000001Fu);
+                f.push_back(0x80000000u | vsde_usage[r].usage | ((uint32_t)vsde_usage[r].index << 16));
+                f.push_back(0x900F0000u | r);
+            }
+            for (uint32_t i = 4; i < codebytes; i += 4) f.push_back(u32(code + i));
+            hr = x.dev->CreateVertexShader((const DWORD *)f.data(), &s.vs);
+            if (FAILED(hr) || !s.vs) {
+                if (d.warn_once(0xc1003)) x.log("ddi: dp2: vertex shader 0x%x: CreateVertexShader 0x%08x (version 0x%08x, %u bytes)", handle, (unsigned)hr, u32(code), codebytes);
+                s.release();
+                return;
+            }
+        }
+        tr("vertex shader 0x%x created: %zu elements, %u bytes on stream 0, streams 0x%x, %s function, %zu constant runs",
+           handle, el.size() - 1, s.vertex_bytes, s.streams, codebytes ? "a" : "no", s.consts.size());
+        c.vshaders[handle] = s;
+    }
+    void create_pshader(uint32_t handle, const uint8_t *code, uint32_t codebytes) {
+        auto old = c.pshaders.find(handle);
+        if (old != c.pshaders.end()) { if (old->second) old->second->Release(); c.pshaders.erase(old); }
+        if (!handle || codebytes < 8 || codebytes % 4 || codebytes > (256u << 10) || u32(code) >> 16 != 0xffff || u32(code + codebytes - 4) != 0x0000ffffu) {
+            if (d.warn_once(0xc1004)) x.log("ddi: dp2: pixel shader 0x%x refused: %u bytes", handle, codebytes);
+            return;
+        }
+        std::vector<uint32_t> f(codebytes / 4);
+        memcpy(f.data(), code, codebytes);
+        if (!sm1_valid(f.data(), f.size(), false)) {
+            if (d.warn_once(0xc1009)) x.log("ddi: dp2: pixel shader 0x%x is not valid ps 1.x (version 0x%08x, %u bytes), refused", handle, u32(code), codebytes);
+            return;
+        }
+        IDirect3DPixelShader9 *ps = nullptr;
+        HRESULT hr = x.dev->CreatePixelShader((const DWORD *)f.data(), &ps);
+        if (FAILED(hr) || !ps) {
+            if (d.warn_once(0xc1005)) x.log("ddi: dp2: pixel shader 0x%x: CreatePixelShader 0x%08x (version 0x%08x, %u bytes)", handle, (unsigned)hr, u32(code), codebytes);
+            return;
+        }
+        tr("pixel shader 0x%x created: version 0x%08x, %u bytes", handle, u32(code), codebytes);
+        c.pshaders[handle] = ps;
+    }
+    void set_pshader(uint32_t h) {
+        IDirect3DPixelShader9 *ps = nullptr;
+        if (h) {
+            auto it = c.pshaders.find(h);
+            if (it != c.pshaders.end()) ps = it->second;
+            else if (d.warn_once(0xc1006)) x.log("ddi: dp2: pixel shader handle 0x%x unknown (fixed function instead)", h);
+        }
+        tr("pixel shader 0x%x%s", h, h && !ps ? " (unknown)" : "");
+        x.dev->SetPixelShader(ps);
+    }
+    void delete_vshader(uint32_t h) {
+        auto it = c.vshaders.find(h);
+        if (it == c.vshaders.end()) return;
+        if (h == cur_vs) { x.dev->SetVertexShader(nullptr); cur_vs = ~0u; }
+        it->second.release();
+        c.vshaders.erase(it);
+    }
+    void delete_pshader(uint32_t h) {
+        auto it = c.pshaders.find(h);
+        if (it == c.pshaders.end()) return;
+        x.dev->SetPixelShader(nullptr);         /* it may be the current one; the runtime sets another before drawing */
+        if (it->second) it->second->Release();
+        c.pshaders.erase(it);
     }
     static uint32_t prim_verts(uint32_t t, uint32_t count) {
         switch (t) {
@@ -463,15 +799,24 @@ struct Dp2 {
         size_t vb = ((size_t)h.nverts * h.stride + 3) & ~(size_t)3, ib = ((size_t)h.nindices * 2 + 3) & ~(size_t)3;
         need = sizeof h + vb + ib;
         if (need > left) return fail("truncated DRAW8 data");
-        uint32_t st = stride_of_fvf(h.fvf);
-        if (!st || st > h.stride || h.stride > 1024 || h.nverts > 0x10000 || h.nindices > 0x100000 || h.prim_type < 1 || h.prim_type > 6)
+        bool shader = (h.fvf & 1) != 0;
+        uint32_t st = shader ? 0 : stride_of_fvf(h.fvf);
+        if ((!shader && (!st || st > h.stride)) || h.stride > 1024 || h.nverts > 0x10000 || h.nindices > 0x100000 || h.prim_type < 1 || h.prim_type > 6)
             return fail("bad DRAW8");
         const uint8_t *vd = q + sizeof h, *id = vd + vb;
         D3DPRIMITIVETYPE t = (D3DPRIMITIVETYPE)h.prim_type;
         uint32_t nv = prim_verts(t, h.prim_count);
-        set_fvf(h.fvf);
-        tr("draw8 type %u prims %u fvf 0x%x stride %u vertices %u indices %u (min %u)", h.prim_type, h.prim_count, h.fvf, h.stride, h.nverts, h.nindices, h.min_index);
-        if (d.trace) trv(vd, h.nverts, h.stride, h.fvf);
+        tr("draw8 type %u prims %u %s 0x%x stride %u vertices %u indices %u (min %u)", h.prim_type, h.prim_count, shader ? "shader" : "fvf", h.fvf, h.stride, h.nverts, h.nindices, h.min_index);
+        if (shader) {
+            /* the vertices are read through the shader's declaration: it
+             * must be known, read stream 0 only (the driver copies one
+             * stream) and fit the stride (the copied vertex) */
+            auto it = c.vshaders.find(h.fvf);
+            if (it == c.vshaders.end()) { if (d.warn_once(0xc0000)) x.log("ddi: dp2: vertex shader handle 0x%x unknown (draws with it are skipped)", h.fvf); return true; }
+            if (it->second.streams & ~1u) { if (d.warn_once(0xc0001)) x.log("ddi: dp2: vertex shader 0x%x reads streams 0x%x: one stream only, draw skipped", h.fvf, it->second.streams); return true; }
+            if (it->second.vertex_bytes > h.stride) { if (d.warn_once(0xc0002)) x.log("ddi: dp2: vertex shader 0x%x reads %u bytes of a %u-byte vertex, draw skipped", h.fvf, it->second.vertex_bytes, h.stride); return true; }
+        } else if (d.trace) trv(vd, h.nverts, h.stride, h.fvf);
+        apply_vs(h.fvf);
         if (!h.prim_count) return true;
         if (!h.nindices) {
             if (nv > h.nverts) { if (d.warn_once(0xa0000 | t)) x.log("ddi: dp2: draw8 primitive %u: %u vertices of %u", t, nv, h.nverts); return true; }
@@ -939,14 +1284,13 @@ struct Dp2 {
             case D3DPT_DP2_DRAW8:
                 if (!draw8(q, left, need)) return false;
                 break;
-            case DP2_SETVERTEXSHADER:                            /* an FVF, or a shader handle (bit 0) we do not claim */
+            case DP2_SETVERTEXSHADER:                            /* an FVF, or a shader handle (bit 0) */
                 need = count * 4u;
                 if (need > left) return fail("truncated SETVERTEXSHADER");
                 for (uint32_t i = 0; i < count; i++) {
                     uint32_t h = u32(q + 4 * i);
                     tr("vertex shader 0x%x", h);
-                    if (!(h & 1)) set_fvf(h);
-                    else if (d.warn_once(0xc0000)) x.log("ddi: dp2: a vertex shader handle (0x%x) with no shader support", h);
+                    apply_vs(h);
                 }
                 break;
             case DP2_CREATEVERTEXSHADER: case DP2_CREATEPIXELSHADER: case DP2_SETVERTEXSHADERCONST: case DP2_SETPIXELSHADERCONST: {
@@ -954,18 +1298,43 @@ struct Dp2 {
                 need = 0;
                 for (uint32_t i = 0; i < count; i++) {
                     if (left < need + 8) return fail("truncated shader token");
-                    if (op == DP2_CREATEVERTEXSHADER) { if (left < need + 12) return fail("truncated CREATEVERTEXSHADER"); need += 12 + (size_t)u32(q + need + 4) + u32(q + need + 8); }
-                    else if (op == DP2_CREATEPIXELSHADER) need += 8 + (size_t)u32(q + need + 4);
-                    else need += 8 + (size_t)u32(q + need + 4) * 16;
-                    if (need > left) return fail("truncated shader token");
+                    const uint8_t *e = q + need;
+                    if (op == DP2_CREATEVERTEXSHADER) {
+                        if (left < need + 12) return fail("truncated CREATEVERTEXSHADER");
+                        size_t ds = u32(e + 4), cs = u32(e + 8);
+                        need += 12 + ds + cs;
+                        if (need > left) return fail("truncated CREATEVERTEXSHADER data");
+                        create_vshader(u32(e), e + 12, (uint32_t)ds, e + 12 + ds, (uint32_t)cs);
+                    } else if (op == DP2_CREATEPIXELSHADER) {
+                        size_t cs = u32(e + 4);
+                        need += 8 + cs;
+                        if (need > left) return fail("truncated CREATEPIXELSHADER data");
+                        create_pshader(u32(e), e + 8, (uint32_t)cs);
+                    } else {
+                        uint32_t reg = u32(e), cnt = u32(e + 4);
+                        need += 8 + (size_t)cnt * 16;
+                        if (need > left) return fail("truncated shader constants");
+                        /* DXVK indexes its constant arrays with these: keep them inside d3d9's */
+                        bool ok = cnt && (uint64_t)reg + cnt <= (op == DP2_SETVERTEXSHADERCONST ? 256u : 224u);
+                        tr("%s constants c%u.. x%u%s", op == DP2_SETVERTEXSHADERCONST ? "vertex shader" : "pixel shader", reg, cnt, ok ? "" : " (dropped)");
+                        if (!ok) { if (cnt && d.warn_once(0xc1007 | (op << 16))) x.log("ddi: dp2: shader constants c%u x%u out of range, dropped", reg, cnt); continue; }
+                        std::vector<float> f(cnt * 4);
+                        memcpy(f.data(), e + 8, (size_t)cnt * 16);
+                        if (op == DP2_SETVERTEXSHADERCONST) x.dev->SetVertexShaderConstantF(reg, f.data(), cnt);
+                        else x.dev->SetPixelShaderConstantF(reg, f.data(), cnt);
+                    }
                 }
-                if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: token %u (shaders) is not supported: dropped", op);
                 break;
             }
             case DP2_DELETEVERTEXSHADER: case DP2_DELETEPIXELSHADER: case DP2_SETPIXELSHADER:
                 need = count * 4u;
                 if (need > left) return fail("truncated shader handle token");
-                if (op == DP2_SETPIXELSHADER && count && u32(q) && d.warn_once(0xc0000 | op)) x.log("ddi: dp2: a pixel shader handle with no shader support");
+                for (uint32_t i = 0; i < count; i++) {
+                    uint32_t h = u32(q + 4 * i);
+                    if (op == DP2_SETPIXELSHADER) set_pshader(h);
+                    else if (op == DP2_DELETEVERTEXSHADER) { tr("delete vertex shader 0x%x", h); delete_vshader(h); }
+                    else { tr("delete pixel shader 0x%x", h); delete_pshader(h); }
+                }
                 break;
             case DP2_SETSTREAMSOURCE: case DP2_DRAWPRIMITIVE: case DP2_DRAWPRIMITIVE2: case DP2_CLIPPEDTRIANGLEFAN:
                 need = count * 12u;
@@ -1024,6 +1393,7 @@ void exec_ddi_release(Exec &x)
 {
     if (!x.ddi) return;
     for (auto &kv : x.ddi->surfs) kv.second.release();
+    for (auto &kv : x.ddi->ctxs) kv.second.release_shaders();
     for (auto &kv : x.ddi->sblocks) if (kv.second) kv.second->Release();
     x.ddi->sblocks.clear();
     x.ddi->drop_stage();
@@ -1107,7 +1477,14 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
     }
     case D3DPT_OP_CTX_DESTROY: {
         auto *a = body<d3dpt_handle>(c, 0, b); if (!a) return true;
-        if (x.ddi) x.ddi->ctxs.erase(a->handle);
+        if (x.ddi) {
+            auto it = x.ddi->ctxs.find(a->handle);
+            if (it != x.ddi->ctxs.end()) {
+                if (x.dev && (!it->second.vshaders.empty() || !it->second.pshaders.empty())) { x.dev->SetVertexShader(nullptr); x.dev->SetPixelShader(nullptr); }
+                it->second.release_shaders();
+                x.ddi->ctxs.erase(it);
+            }
+        }
         break;
     }
     case D3DPT_OP_CTX_SET_RT: {
@@ -1154,7 +1531,7 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
             x.log("ddi: trace: armed at dp2 call %u", x.ddi->dp2_calls);
         }
         if (x.ddi->trace) x.log("ddi: trace: dp2 call %u: ctx %u flags 0x%x fvf 0x%x stride %u, %u vertices, %u command bytes", x.ddi->dp2_calls, a->ctx, a->flags, a->fvf, stride, stride ? a->vertex_bytes / stride : 0, a->command_bytes);
-        if (stride) { x.dev->SetFVF(a->fvf); p.cur_fvf = a->fvf; }
+        if (stride) { x.dev->SetVertexShader(nullptr); x.dev->SetFVF(a->fvf); p.cur_vs = a->fvf; }   /* a DX7 record: its vertices, the fixed function */
         bool ok = p.run();
         r->hr = b.err ? (uint32_t)E_FAIL : ok ? (uint32_t)S_OK : (uint32_t)p.hr;
         r->bytes = ok ? 0 : p.pos;

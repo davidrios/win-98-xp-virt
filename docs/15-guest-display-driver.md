@@ -784,11 +784,87 @@ working; Max Payne renders on it except its clipped fans (the
   `tools/xp-driver-test.sh <image> d3dgame8` boots the guest-tools ISO,
   copies `D3DGAME8.EXE` out alone and diffs its frame against the native
   d3d9 oracle of `scripts/test.sh` (HUD masked).
-- Not there: vertex / pixel shaders (the DX8 declaration → d3d9
-  declaration translation exists in the M4 track's `d3d8.c`; on this side
-  it would go into the executor with `CreateVertexShader` /
-  `CreatePixelShader` on the bytecode), more than one stream, video-memory
+- Not there: more than one stream, video-memory
   buffers (`D3DDEVCAPS_HWVERTEXBUFFER`), cube and volume textures, N-
   and RT-patches, ZBIAS → DEPTHBIAS, palettized textures. DXT textures on this path were fixed
-  on 2026-09-05 (the compressed-textures bullet above).
+  on 2026-09-05 (the compressed-textures bullet above); vertex and pixel
+  shaders 1.x the same night (the section below).
+
+### Vertex and pixel shaders 1.x on the DX8 DDI (2026-09-05, protocol v7)
+
+The caps say `D3DVS_VERSION(1,1)` / `D3DPS_VERSION(1,4)` now (96 vertex
+constants, `MaxPixelShaderValue` 8; `ddflags=0x4000` withdraws both), so
+d3d8.dll creates every shader through the driver: with hardware vertex
+processing the runtime validates the declaration and the function against
+the caps and emits `CREATEVERTEXSHADER` (handle, declaration bytes,
+function bytes, then both), `SETVERTEXSHADER` with that handle (an FVF has
+bit 0 clear, a handle bit 0 set), `SETVERTEXSHADERCONST` (register, count,
+float4s), `DELETEVERTEXSHADER`, and the pixel-shader four
+(`CREATEPIXELSHADER` is handle + function). The design keeps the driver
+out of it:
+
+- **Driver.** The seven shader tokens pass through the DP2 walk unchanged
+  (they were dropped by size before). A `SETVERTEXSHADER` value is kept as
+  the context's vertex format whatever it is, and a `D3DPT_DP2_DRAW8`
+  under a shader carries the handle in its `fvf` field with the stream's
+  stride: the driver copies `nverts × stride` bytes as before and only
+  the host, which has the declaration, knows what a vertex is (the
+  `fvf_stride > stride` check is skipped under a shader; the "1 shader"
+  skip reason is gone).
+- **Executor** (`d3dpt_exec_ddi.cpp`). Shaders live per context (the
+  runtime's handles are per device), by handle. `CREATEVERTEXSHADER`
+  converts the `D3DVSD_*` declaration to `D3DVERTEXELEMENT9`s (`STREAM`,
+  `REG` with its register number naming the usage by the DX8 convention
+  — 0 position, 3 normal, 5 diffuse, 7.. texcoords — and its type
+  numbered as `D3DDECLTYPE_*`, `SKIP`, `CONST` runs remembered, tessellator
+  and `EXT` tokens skipped) into a d3d9 vertex declaration, remembers the
+  bytes it reads of a stream-0 vertex and the streams it touches, and,
+  when there is a function, validates it and puts one `dcl_usage vN` per
+  input register in front (d3d9 wants them; DX8 shaders have none) before
+  `CreateVertexShader`. A declaration without a function is the fixed
+  function on that layout (`SetVertexDeclaration` + `SetVertexShader(NULL)`
+  — a `D3DVSD_REG(D3DVSDE_DIFFUSE, …)` before the position, which no FVF
+  can express, works). `SETVERTEXSHADER` applies the declaration, the
+  function and the `D3DVSD_CONST` runs (DX8 loads them when the shader is
+  set); an FVF restores `SetVertexShader(NULL)` + `SetFVF`. The constants
+  go to `Set*ShaderConstantF` with the register range checked (DXVK
+  indexes arrays with them). A DRAW8 under a shader is skipped, with one
+  log line, when the handle is unknown, the declaration reads a stream
+  other than 0 (one stream is claimed), or it reads more than the stride
+  carries; otherwise it is the same `DrawPrimitiveUP` /
+  `DrawIndexedPrimitiveUP` with the declaration bound.
+- **The bytecode is validated before DXVK sees it.** The d3d9 half hands
+  guest bytecode straight to DXVK, and the hostile case of the host test
+  showed why that is not enough here: on a stream with an unknown opcode
+  DXVK's compiler logs `No layout known for opcode` and then *asserts*
+  (`sm3_parser.h: getDst … m_operands[0u].getInfo().kind == eDstReg`) — an
+  abort, not an exception, QEMU dies with it. `sm1_valid` walks the
+  tokens (bit 31 = a parameter, else an instruction; `DEF` carries four
+  raw floats, `COMMENT` its length, `PHASE` only in ps 1.4) against a
+  table of the vs 1.x / ps 1.x opcodes with their operand counts, and
+  checks every register against the stage's file sizes. Anything else is
+  refused with a log line and the handle stays unknown (its draws are
+  skipped). The DX8 runtime validates every shader itself before the
+  token, so a real guest never gets there.
+- Tests: `tools/d3dpt-dp2-test.cpp` — vs 1.1 through a declaration
+  (`oD0 = v5 * c0`: red, then green by the constant alone), a
+  declaration-only shader with the colour before the position, a
+  `D3DVSD_CONST` in the declaration, ps 1.1 `r0 = c0` and off again,
+  ps 1.1 `tex t0` / `mul r0, t0, v0` on XYZRHW vertices, then the
+  hostile set (a function without END, one with unknown opcodes, one
+  missing its operands, a register off the file, a constant as the
+  destination, a declaration reading stream 1, one wider than the
+  stride, an unknown handle, constants at c300 / c250, a
+  `CREATEVERTEXSHADER` lying about its declaration size →
+  `D3DERR_COMMAND_UNPARSED`), and the FVF path after all that.
+  `DRIVER\SHTEST.EXE` (`guest-tools/src/d3dptvid/shtest.c`) is the same
+  through XP's own d3d8.dll — hand-assembled shaders (no D3DX in mingw),
+  every draw read back through `CopyRects` and compared; also the vertex +
+  index buffer path (`DrawIndexedPrimitive` under a shader); `tools/xp-driver-test.sh
+  <image> shtest` runs it and greps `shtest.log` for "0 failed" (9 cases
+  pass on `winxp-m7g`, 2026-09-05). One thing the guest run taught: a
+  declaration-only shader must list its registers in FVF order —
+  d3d8.dll answers `D3DERR_INVALIDCALL` to the colour-before-position
+  layout itself, so the driver never sees such a declaration (the host
+  test keeps the case because the executor handles it anyway).
 
