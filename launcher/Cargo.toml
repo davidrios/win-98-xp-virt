@@ -20,3 +20,7 @@ egui = "0.36.1"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.5"
+# Preset/parameter introspection only (no runtime backend) — the profile
+# manager lists a `.slangp`'s parameters to draw sliders; building an
+# actual filter chain is the player's job (`player/Cargo.toml`).
+librashader = { version = "0.12", default-features = false, features = ["presets", "preprocess"] }

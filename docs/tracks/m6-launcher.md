@@ -297,6 +297,54 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   (screenshotted), and no argument still falls back to the OS default
   (also screenshotted, unchanged from before this fix).
 
+- **Shader profile manager** (user request, 2026-09-05): named, reusable
+  shader presets + parameter overrides, independent of any one machine.
+  `launcher/src/shader_profile.rs` (`ShaderProfile`: name, `.slangp`
+  path, a sparse `params: BTreeMap<String, f32>` — only overrides are
+  stored, so a profile survives the preset gaining new parameters) and
+  `shader_library.rs` (flat `<slug>.toml` files under a new
+  `shader-profiles` platform-data-dir library, `LAUNCHER_SHADER_PROFILES_DIR`
+  override — mirrors `library.rs`'s scan/create/slug shape, one file per
+  profile instead of a bundle subdirectory). `shader_manager.rs` is the
+  manager window: a New/Edit/Delete list, and an editor that parses the
+  chosen preset via `librashader::presets::{ShaderPreset,
+  get_parameter_meta}` (a new introspection-only `librashader` dep in
+  `launcher/Cargo.toml`, `presets`+`preprocess` features, no runtime
+  backend) and draws a checkbox+slider per declared parameter (min/max/
+  step/description straight from the shader source's `#pragma
+  parameter`). `bundle::Machine` gained `shader_profile: Option<String>`
+  (a profile id, takes precedence) alongside the existing raw `shader`
+  override (now the advanced/hand-written-bundle escape hatch); the
+  wizard gained a "Shader profile" combo box for new and edited
+  machines. `player.rs::resolve_shader`/`shader_args` resolve a
+  machine's profile into `player`'s own `--shader`/`--shader-params` at
+  spawn time.
+
+  Player side: `player/src/shader.rs::Chain::load` takes `params: &[(String,
+  f32)]`, applied via `librashader::runtime::FilterChainParameters`
+  (`RuntimeParameters::update_parameters`) after the chain loads; an
+  unknown parameter name is skipped with a stderr line rather than
+  failing the machine. `main.rs` parses a new `--shader-params
+  <name=value,...>` flag / `PLAYER_SHADER_PARAMS` env var, comma-separated
+  like `PLAYER_KEYS`; documented in README.md and `shaders/README.md`.
+
+  Verified for real: the launcher pipeline end to end through new debug
+  verbs (`--new-shader-profile`, `--set-shader-param`,
+  `--list-shader-params`, `--assign-shader`, `--print-shader-args`) —
+  listed the real 13 parameters of
+  `third_party/slang-shaders/crt/crt-lottes.slangp`, created a profile,
+  overrode `brightBoost`, assigned it to a machine, and
+  `--print-shader-args` resolved to the exact `--shader … --shader-params
+  brightBoost=1.8` `spawn()` would pass. Player side, built via the same
+  sibling-worktree `QEMU_EMBED_LIB_DIR` trick as step 3: dumped the test
+  pattern with `PLAYER_DUMP_OUT` with and without the override — the two
+  PNGs differ from the first bytes, proving the override reaches the
+  actual rendered pixels; a bogus parameter name alongside a real one
+  warned and didn't crash, and the real one still applied.
+  `cargo build --workspace` clean. **Not click-tested** — same Wayland
+  gap as the rest of this track — a human should click through "Shader
+  profiles…" and the wizard's new combo box once.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -318,7 +366,9 @@ No wired-in test tool exists yet for this track; CLAUDE.md's
 integration/e2e policy still applies once there's a real boundary worth
 guarding against regressions — don't add `#[cfg(test)]` modules.
 `launcher`'s debug verbs (`--new`, `--print-args`, `--play`,
-`--wizard-new`, `--wizard-edit`, `--pick-file`) were exercised by hand
+`--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
+`--set-shader-param`, `--list-shader-params`, `--assign-shader`,
+`--print-shader-args`) were exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`
 needs a `build/qemu` in whichever worktree runs it — this one doesn't

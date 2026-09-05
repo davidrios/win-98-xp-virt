@@ -37,6 +37,10 @@ pub struct Wizard {
     disk_path: String,
     disk_size_gb: u32,
     install_media: String,
+    /// A shader profile id (`shader_library`), or `None` for the app
+    /// default. Doesn't touch `EditTarget::shader` — the two overrides
+    /// are independent (see `bundle::Machine`).
+    shader_profile: Option<String>,
     advanced: bool,
     advanced_toml: String,
     error: Option<String>,
@@ -53,6 +57,7 @@ impl Default for Wizard {
             disk_path: String::new(),
             disk_size_gb: 2,
             install_media: String::new(),
+            shader_profile: None,
             advanced: false,
             advanced_toml: String::new(),
             error: None,
@@ -78,6 +83,7 @@ impl Wizard {
             existing_disk: true,
             disk_path: machine.disk.display().to_string(),
             install_media: machine.discs.first().map(|d| d.display().to_string()).unwrap_or_default(),
+            shader_profile: machine.shader_profile.clone(),
             editing: Some(EditTarget {
                 bundle_path,
                 ram_mb: machine.ram_mb,
@@ -104,10 +110,17 @@ impl Wizard {
         Wizard { family, name, disk_size_gb, ..Default::default() }
     }
 
-    /// Renders the wizard window if open. Returns the bundle's path once
-    /// a machine has actually been created or saved, so the caller can
-    /// rescan the library.
-    pub fn show(&mut self, ctx: &egui::Context, library_dir: &Path) -> Option<PathBuf> {
+    /// Renders the wizard window if open. `shader_profiles` is the
+    /// current shader-profile library (`shader_library::scan`), for the
+    /// "Shader profile" picker. Returns the bundle's path once a machine
+    /// has actually been created or saved, so the caller can rescan the
+    /// library.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        library_dir: &Path,
+        shader_profiles: &[crate::shader_library::ProfileEntry],
+    ) -> Option<PathBuf> {
         if !self.open {
             return None;
         }
@@ -147,6 +160,22 @@ impl Wizard {
                     }
                 }
                 filepicker::path_field(ui, "Install media (optional)", &mut self.install_media, Some(DISC_FILTER));
+                ui.separator();
+                egui::ComboBox::from_label("Shader profile")
+                    .selected_text(
+                        self.shader_profile
+                            .as_deref()
+                            .and_then(|id| shader_profiles.iter().find(|e| crate::shader_library::id_of(&e.path) == id))
+                            .map(|e| e.profile.name.as_str())
+                            .unwrap_or("(default)"),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.shader_profile, None, "(default)");
+                        for entry in shader_profiles {
+                            let id = crate::shader_library::id_of(&entry.path);
+                            ui.selectable_value(&mut self.shader_profile, Some(id), &entry.profile.name);
+                        }
+                    });
                 ui.separator();
                 ui.checkbox(&mut self.advanced, "Advanced: edit machine.toml directly");
                 if self.advanced {
@@ -190,10 +219,12 @@ impl Wizard {
                 ram_mb: edit.ram_mb,
                 disk,
                 discs: Vec::new(),
+                shader_profile: None,
                 shader: edit.shader.clone(),
             },
             None => Machine::reference(self.family, self.name.clone(), disk),
         };
+        machine.shader_profile = self.shader_profile.clone();
         if !self.install_media.trim().is_empty() {
             machine.discs.push(self.install_media.clone().into());
         }

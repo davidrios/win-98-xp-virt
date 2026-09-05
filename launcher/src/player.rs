@@ -6,6 +6,8 @@
 //! guest-side shutdown, or the player's own window, should end a run).
 
 use crate::bundle::Machine;
+use crate::shader_library;
+use crate::shader_profile::ShaderProfile;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
@@ -35,12 +37,44 @@ pub fn pc_bios_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../qemu/pc-bios")))
 }
 
+/// Resolve `machine`'s shader setting into the preset+overrides the
+/// player actually runs with: a named `shader_profile` (looked up in the
+/// profile library) takes precedence, then the raw `shader` override,
+/// then no shader at all. A `shader_profile` naming a deleted profile
+/// silently falls through to `shader`/none rather than failing the
+/// machine (see `shader_library::find`).
+fn resolve_shader(machine: &Machine) -> Option<ShaderProfile> {
+    if let Some(id) = &machine.shader_profile {
+        if let Some(profile) = shader_library::find(&shader_library::default_dir(), id) {
+            return Some(profile);
+        }
+    }
+    machine.shader.clone().map(|preset| ShaderProfile::new(String::new(), preset))
+}
+
+/// The `--shader [path] [--shader-params k=v,...]` arguments `spawn`
+/// passes to `player`, given `machine`'s resolved shader setting. Split
+/// out so `main.rs`'s `--print-shader-args` debug verb can show exactly
+/// what a bundle resolves to without spawning anything.
+pub fn shader_args(machine: &Machine) -> Vec<String> {
+    let Some(profile) = resolve_shader(machine) else {
+        return Vec::new();
+    };
+    let mut args = vec!["--shader".to_string(), profile.preset.display().to_string()];
+    if let Some(params) = profile.params_arg() {
+        args.push("--shader-params".to_string());
+        args.push(params);
+    }
+    args
+}
+
 /// Spawn `player` on `machine`. Inherits the launcher's stdout/stderr for
 /// now (dev convenience); a real log file is a packaging-time concern.
 pub fn spawn(machine: &Machine) -> std::io::Result<Child> {
     let args = machine.qemu_args(&pc_bios_dir());
     let bin = player_binary();
     Command::new(&bin)
+        .args(shader_args(machine))
         .arg("--")
         .args(args)
         .spawn()

@@ -27,7 +27,13 @@ pub struct Machine {
     /// feature (QMP media-change) that doesn't exist yet.
     #[serde(default)]
     pub discs: Vec<PathBuf>,
-    /// Per-machine shader preset override (doc 07 settings taxonomy);
+    /// A named shader profile (`shader_library`) to run this machine
+    /// with, by id; `None` uses the app default. Takes precedence over
+    /// `shader` when both are set.
+    #[serde(default)]
+    pub shader_profile: Option<String>,
+    /// Raw shader preset override, bypassing the profile manager (doc 07
+    /// settings taxonomy: the advanced/hand-written-bundle escape hatch).
     /// `None` uses the app default.
     #[serde(default)]
     pub shader: Option<PathBuf>,
@@ -40,7 +46,7 @@ impl Machine {
             Family::Win98 => 256, // doc 06: 256 MB default, ≤512 MB hard cap
             Family::Xp => 512,    // doc 06: 512 MB-1 GB default
         };
-        Machine { name, family, ram_mb, disk, discs: Vec::new(), shader: None }
+        Machine { name, family, ram_mb, disk, discs: Vec::new(), shader_profile: None, shader: None }
     }
 
     pub fn load(path: &Path) -> std::io::Result<Machine> {

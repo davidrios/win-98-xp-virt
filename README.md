@@ -61,6 +61,9 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 # PLAYER_DUMP=frame.png PLAYER_DUMP_SEQ=150 dumps guest frame #150 and exits (headless check)
 # --shader <preset.slangp> (or PLAYER_SHADER=) runs a libretro slang preset, e.g.
 #   target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- ...
+# --shader-params <name=value,...> (or PLAYER_SHADER_PARAMS=) overrides the preset's own
+#   parameter defaults by name, e.g. --shader-params BRIGHTBOOST=1.4,GAMMA_INPUT=2.4 — this is
+#   what a launcher shader profile (launcher/src/shader_profile.rs) resolves to
 # PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
 # PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test);
 #   each press is held PLAYER_KEYS_HOLD frames (default 6 ≈ 100 ms) — a down+up in one flush is a

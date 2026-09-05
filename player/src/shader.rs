@@ -6,7 +6,7 @@
 
 use librashader::presets::ShaderFeatures;
 use librashader::runtime::wgpu::{FilterChain, FilterChainOptions, WgpuOutputView};
-use librashader::runtime::{Size, Viewport};
+use librashader::runtime::{FilterChainParameters, Size, Viewport};
 use std::path::Path;
 
 pub struct Chain {
@@ -17,12 +17,18 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// `params` overrides the preset's own parameter defaults by name
+    /// (the launcher's shader profiles, doc 07); a name the preset
+    /// doesn't declare is silently ignored — a profile saved against an
+    /// older version of a preset shouldn't fail the whole machine over a
+    /// parameter that no longer exists.
     pub fn load(
         path: &Path,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         adapter_info: wgpu::AdapterInfo,
         format: wgpu::TextureFormat,
+        params: &[(String, f32)],
     ) -> Result<Chain, String> {
         let opts = FilterChainOptions {
             force_no_mipmaps: false,
@@ -32,6 +38,17 @@ impl Chain {
         let chain =
             FilterChain::load_from_path(path, ShaderFeatures::NONE, device, queue, Some(&opts))
                 .map_err(|e| format!("{e}"))?;
+        if !params.is_empty() {
+            chain.parameters().update_parameters(|map| {
+                for (name, value) in params {
+                    if let Some(slot) = map.get_mut::<str>(name.as_ref()) {
+                        *slot = *value;
+                    } else {
+                        eprintln!("[shader] preset has no parameter named {name:?}, ignoring override");
+                    }
+                }
+            });
+        }
         Ok(Chain {
             chain,
             frame_count: 0,

@@ -174,13 +174,14 @@ impl Gpu {
         }
     }
 
-    fn load_shader(&mut self, path: &std::path::Path) {
+    fn load_shader(&mut self, path: &std::path::Path, params: &[(String, f32)]) {
         match shader::Chain::load(
             path,
             &self.device,
             &self.queue,
             self.adapter_info.clone(),
             self.config.format,
+            params,
         ) {
             Ok(c) => {
                 eprintln!("[shader] loaded {}", path.display());
@@ -485,6 +486,7 @@ enum Source {
 struct App {
     qemu_args: Vec<String>,
     shader: Option<std::path::PathBuf>,
+    shader_params: Vec<(String, f32)>,
     gpu: Option<Gpu>,
     source: Option<Source>,
     audio: Option<audio::Output>,
@@ -629,7 +631,7 @@ impl ApplicationHandler for App {
         let mut gpu = Gpu::new(window);
 
         if let Some(p) = &self.shader {
-            gpu.load_shader(p);
+            gpu.load_shader(p, &self.shader_params);
         }
 
         self.gpu = Some(gpu);
@@ -934,13 +936,41 @@ pub fn maybe_dump(pixels: &[u32], w: usize, h: usize, seq: u64) {
     hard_exit(0);
 }
 
+/// Parse a `--shader-params`/`PLAYER_SHADER_PARAMS` value: comma-separated
+/// `name=value` pairs (the launcher's shader-profile overrides), e.g.
+/// `BRIGHTBOOST=1.2,GAMMA_INPUT=2.4`. A malformed entry is skipped with a
+/// stderr line rather than failing the whole player over one typo.
+fn parse_shader_params(s: &str) -> Vec<(String, f32)> {
+    s.split(',')
+        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(|entry| {
+            let (name, value) = entry.split_once('=')?;
+            match value.trim().parse::<f32>() {
+                Ok(v) => Some((name.trim().to_string(), v)),
+                Err(e) => {
+                    eprintln!("[shader] bad --shader-params entry {entry:?}: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 fn main() {
-    // player [--shader <preset.slangp>] [--] <qemu-system-i386 args...>   (no args: test pattern)
+    // player [--shader <preset.slangp>] [--shader-params <k=v,...>] [--] <qemu-system-i386 args...>   (no args: test pattern)
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut shader: Option<std::path::PathBuf> =
         std::env::var("PLAYER_SHADER").ok().map(Into::into);
+    let mut shader_params = std::env::var("PLAYER_SHADER_PARAMS")
+        .ok()
+        .map(|s| parse_shader_params(&s))
+        .unwrap_or_default();
     if args.first().map(String::as_str) == Some("--shader") && args.len() >= 2 {
         shader = Some(args[1].clone().into());
+        args.drain(0..2);
+    }
+    if args.first().map(String::as_str) == Some("--shader-params") && args.len() >= 2 {
+        shader_params = parse_shader_params(&args[1]);
         args.drain(0..2);
     }
     if args.first().map(String::as_str) == Some("--") {
@@ -951,6 +981,7 @@ fn main() {
     let mut app = App {
         qemu_args: args,
         shader,
+        shader_params,
         proxy: Some(event_loop.create_proxy()),
         ..Default::default()
     };

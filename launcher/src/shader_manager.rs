@@ -1,0 +1,258 @@
+//! The shader profile manager window: list existing profiles (New / Edit /
+//! Delete), and an editor that picks a `.slangp` preset and exposes its
+//! parameters (`shader_profile::parameter_meta`) as sliders — each one
+//! optionally overridden, the rest left at the preset's own default.
+//! Mirrors `wizard.rs`'s shape (an `open` flag, a `show` that returns
+//! `Some` once something changed so the caller rescans).
+
+use crate::filepicker;
+use crate::shader_library;
+use crate::shader_profile::{self, ParamMeta, ShaderProfile};
+use std::path::{Path, PathBuf};
+
+const PRESET_FILTER: filepicker::Filter = ("Shader presets", &["slangp"]);
+
+struct Editor {
+    /// `None` for a new profile; `Some(path)` to save back in place.
+    path: Option<PathBuf>,
+    name: String,
+    preset_path: String,
+    /// The last preset path successfully parsed, so parameters are only
+    /// re-read (and slider state re-derived) when it actually changes —
+    /// not on every frame the field is drawn.
+    parsed_preset: Option<PathBuf>,
+    params: Vec<ParamMeta>,
+    parse_error: Option<String>,
+    /// One entry per `params`, in the same order: `Some(value)` when
+    /// overridden. Indexed in lockstep with `params` rather than keyed by
+    /// name so a slider drag doesn't need a map lookup per frame.
+    overrides: Vec<Option<f32>>,
+    error: Option<String>,
+}
+
+impl Editor {
+    fn fresh() -> Editor {
+        Editor {
+            path: None,
+            name: String::new(),
+            preset_path: String::new(),
+            parsed_preset: None,
+            params: Vec::new(),
+            parse_error: None,
+            overrides: Vec::new(),
+            error: None,
+        }
+    }
+
+    fn from_profile(path: PathBuf, profile: &ShaderProfile) -> Editor {
+        let mut e = Editor {
+            path: Some(path),
+            name: profile.name.clone(),
+            preset_path: profile.preset.display().to_string(),
+            ..Editor::fresh()
+        };
+        e.reparse();
+        // Line up `overrides` with the freshly parsed `params`, seeded
+        // from the saved profile — after `reparse` so a preset that
+        // dropped a parameter since the profile was saved doesn't leave
+        // a dangling override.
+        if let Some(saved) = Some(&profile.params) {
+            for (meta, over) in e.params.iter().zip(e.overrides.iter_mut()) {
+                if let Some(&v) = saved.get(&meta.id) {
+                    *over = Some(v);
+                }
+            }
+        }
+        e
+    }
+
+    fn reparse(&mut self) {
+        let path = Path::new(self.preset_path.trim());
+        if self.preset_path.trim().is_empty() {
+            self.params.clear();
+            self.overrides.clear();
+            self.parsed_preset = None;
+            self.parse_error = None;
+            return;
+        }
+        if self.parsed_preset.as_deref() == Some(path) {
+            return;
+        }
+        match shader_profile::parameter_meta(path) {
+            Ok(params) => {
+                self.overrides = vec![None; params.len()];
+                self.params = params;
+                self.parse_error = None;
+            }
+            Err(e) => {
+                self.params.clear();
+                self.overrides.clear();
+                self.parse_error = Some(e);
+            }
+        }
+        self.parsed_preset = Some(path.to_path_buf());
+    }
+
+    fn build(&self) -> ShaderProfile {
+        let mut profile = ShaderProfile::new(self.name.clone(), self.preset_path.clone().into());
+        for (meta, over) in self.params.iter().zip(self.overrides.iter()) {
+            if let Some(v) = over {
+                profile.params.insert(meta.id.clone(), *v);
+            }
+        }
+        profile
+    }
+}
+
+#[derive(Default)]
+pub struct ShaderManager {
+    pub open: bool,
+    editor: Option<Editor>,
+}
+
+impl ShaderManager {
+    pub fn open_list(&mut self) {
+        self.open = true;
+        self.editor = None;
+    }
+
+    /// Renders the manager if open. Returns `Some(())` once a profile was
+    /// created, saved, or deleted, so the caller rescans the library.
+    pub fn show(&mut self, ctx: &egui::Context, profiles_dir: &Path) -> Option<()> {
+        if !self.open {
+            return None;
+        }
+        let mut changed = None;
+        let mut still_open = true;
+        egui::Window::new("Shader profiles")
+            .open(&mut still_open)
+            .collapsible(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                if let Some(editor) = &mut self.editor {
+                    editor.reparse();
+                    match editor_ui(ui, editor, profiles_dir) {
+                        EditorAction::None => {}
+                        EditorAction::Saved => {
+                            changed = Some(());
+                            self.editor = None;
+                        }
+                        EditorAction::Cancelled => self.editor = None,
+                    }
+                    return;
+                }
+                let entries = shader_library::scan(profiles_dir);
+                if entries.is_empty() {
+                    ui.label("No shader profiles yet.");
+                } else {
+                    egui::Grid::new("shader-profiles").striped(true).show(ui, |ui| {
+                        ui.strong("Name");
+                        ui.strong("Preset");
+                        ui.strong("");
+                        ui.end_row();
+                        for entry in &entries {
+                            ui.label(&entry.profile.name);
+                            ui.label(entry.profile.preset.display().to_string());
+                            ui.horizontal(|ui| {
+                                if ui.button("Edit…").clicked() {
+                                    self.editor = Some(Editor::from_profile(entry.path.clone(), &entry.profile));
+                                }
+                                if ui.button("Delete").clicked() {
+                                    if let Err(e) = shader_library::delete(&entry.path) {
+                                        eprintln!("[shader-manager] deleting {}: {e}", entry.path.display());
+                                    }
+                                    changed = Some(());
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+                }
+                ui.add_space(8.0);
+                if ui.button("New profile…").clicked() {
+                    self.editor = Some(Editor::fresh());
+                }
+            });
+        if changed.is_some() {
+            return changed;
+        }
+        self.open = still_open;
+        None
+    }
+}
+
+enum EditorAction {
+    None,
+    Saved,
+    Cancelled,
+}
+
+/// The profile editor form. `Saved` once "Save" wrote the profile,
+/// `Cancelled` once "Cancel" was clicked — either closes the editor, but
+/// only `Saved` should make the caller rescan the library.
+fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path) -> EditorAction {
+    let mut action = EditorAction::None;
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        ui.text_edit_singleline(&mut editor.name);
+    });
+    filepicker::path_field(ui, "Preset (.slangp)", &mut editor.preset_path, Some(PRESET_FILTER));
+    ui.separator();
+    if let Some(err) = &editor.parse_error {
+        ui.colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
+    } else if editor.params.is_empty() {
+        ui.label("Pick a preset to see its parameters.");
+    } else {
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
+                ui.horizontal(|ui| {
+                    let mut enabled = over.is_some();
+                    if ui.checkbox(&mut enabled, "").changed() {
+                        *over = if enabled { Some(meta.default) } else { None };
+                    }
+                    ui.add_enabled_ui(enabled, |ui| {
+                        let mut value = over.unwrap_or(meta.default);
+                        let resp = ui.add(
+                            egui::Slider::new(&mut value, meta.minimum..=meta.maximum)
+                                .step_by(if meta.step > 0.0 { meta.step as f64 } else { 0.0 })
+                                .text(&meta.id),
+                        );
+                        if resp.changed() {
+                            *over = Some(value);
+                        }
+                    });
+                });
+                if !meta.description.is_empty() && meta.description != meta.id {
+                    ui.label(egui::RichText::new(&meta.description).weak().small());
+                }
+            }
+        });
+    }
+    ui.separator();
+    if let Some(err) = &editor.error {
+        ui.colored_label(egui::Color32::RED, err);
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Save").clicked() {
+            if editor.name.trim().is_empty() {
+                editor.error = Some("a name is required".into());
+            } else if editor.preset_path.trim().is_empty() {
+                editor.error = Some("a preset is required".into());
+            } else {
+                let profile = editor.build();
+                let result = match &editor.path {
+                    Some(path) => profile.save(path),
+                    None => shader_library::create(profiles_dir, profile.name.clone(), profile.preset.clone()).map(|_| ()),
+                };
+                match result {
+                    Ok(()) => action = EditorAction::Saved,
+                    Err(e) => editor.error = Some(e.to_string()),
+                }
+            }
+        }
+        if ui.button("Cancel").clicked() {
+            action = EditorAction::Cancelled;
+        }
+    });
+    action
+}

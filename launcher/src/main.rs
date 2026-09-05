@@ -8,6 +8,9 @@ mod bundle;
 mod filepicker;
 mod library;
 mod player;
+mod shader_library;
+mod shader_manager;
+mod shader_profile;
 mod wizard;
 
 use std::collections::HashMap;
@@ -17,11 +20,14 @@ use std::process::Child;
 struct LauncherApp {
     library_dir: PathBuf,
     entries: Vec<library::LibraryEntry>,
+    shader_profiles_dir: PathBuf,
+    shader_profiles: Vec<shader_library::ProfileEntry>,
     /// Bundle directory -> its player process, while running. A bundle's
     /// absence here means "not running" (never tracked as ended-but-kept:
     /// `try_wait` removes it below the moment it exits).
     running: HashMap<PathBuf, Child>,
     wizard: wizard::Wizard,
+    shader_manager: shader_manager::ShaderManager,
 }
 
 impl eframe::App for LauncherApp {
@@ -51,6 +57,7 @@ impl eframe::App for LauncherApp {
                 egui::Grid::new("library").striped(true).show(ui, |ui| {
                     ui.strong("Name");
                     ui.strong("Family");
+                    ui.strong("Shader");
                     ui.strong("Location");
                     ui.strong("");
                     ui.end_row();
@@ -60,6 +67,15 @@ impl eframe::App for LauncherApp {
                             bundle::Family::Win98 => "Win98",
                             bundle::Family::Xp => "XP",
                         });
+                        let shader_label = entry
+                            .machine
+                            .shader_profile
+                            .as_deref()
+                            .and_then(|id| self.shader_profiles.iter().find(|e| shader_library::id_of(&e.path) == id))
+                            .map(|e| e.profile.name.clone())
+                            .or_else(|| entry.machine.shader.as_ref().map(|p| p.display().to_string()))
+                            .unwrap_or_else(|| "(default)".to_string());
+                        ui.label(shader_label);
                         ui.label(entry.dir.display().to_string());
                         ui.horizontal(|ui| {
                             if self.running.contains_key(&entry.dir) {
@@ -83,13 +99,21 @@ impl eframe::App for LauncherApp {
                 });
             }
             ui.add_space(8.0);
-            if ui.button("New machine…").clicked() {
-                self.wizard.open_fresh();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("New machine…").clicked() {
+                    self.wizard.open_fresh();
+                }
+                if ui.button("Shader profiles…").clicked() {
+                    self.shader_manager.open_list();
+                }
+            });
         });
 
-        if let Some(_bundle_path) = self.wizard.show(&ctx, &self.library_dir) {
+        if let Some(_bundle_path) = self.wizard.show(&ctx, &self.library_dir, &self.shader_profiles) {
             self.entries = library::scan(&self.library_dir);
+        }
+        if self.shader_manager.show(&ctx, &self.shader_profiles_dir).is_some() {
+            self.shader_profiles = shader_library::scan(&self.shader_profiles_dir);
         }
     }
 }
@@ -173,11 +197,55 @@ fn main() -> eframe::Result {
             println!("{}", path.display());
             return Ok(());
         }
+        Some("--new-shader-profile") => {
+            let usage = "usage: launcher --new-shader-profile <name> <preset.slangp>";
+            let name = args.next().expect(usage);
+            let preset = args.next().expect(usage).into();
+            let path = shader_library::create(&shader_library::default_dir(), name, preset).expect("create profile");
+            println!("{}", path.display());
+            return Ok(());
+        }
+        Some("--set-shader-param") => {
+            let usage = "usage: launcher --set-shader-param <profile.toml> <param> <value>";
+            let path: PathBuf = args.next().expect(usage).into();
+            let param = args.next().expect(usage);
+            let value: f32 = args.next().expect(usage).parse().expect("value must be a number");
+            let mut profile = shader_profile::ShaderProfile::load(&path).expect("load profile");
+            profile.params.insert(param, value);
+            profile.save(&path).expect("save profile");
+            println!("{}", profile.params_arg().unwrap_or_default());
+            return Ok(());
+        }
+        Some("--list-shader-params") => {
+            let preset = args.next().expect("usage: launcher --list-shader-params <preset.slangp>");
+            let params = shader_profile::parameter_meta(std::path::Path::new(&preset)).expect("parse preset");
+            for p in params {
+                println!("{} [{}..{}] step {} = {} — {}", p.id, p.minimum, p.maximum, p.step, p.default, p.description);
+            }
+            return Ok(());
+        }
+        Some("--assign-shader") => {
+            let usage = "usage: launcher --assign-shader <machine.toml> <profile-id-or-(none)>";
+            let path: PathBuf = args.next().expect(usage).into();
+            let id = args.next().expect(usage);
+            let mut machine = bundle::Machine::load(&path).expect("load bundle");
+            machine.shader_profile = if id == "(none)" { None } else { Some(id) };
+            machine.save(&path).expect("save bundle");
+            return Ok(());
+        }
+        Some("--print-shader-args") => {
+            let path = args.next().expect("usage: launcher --print-shader-args <machine.toml>");
+            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
+            println!("{}", player::shader_args(&machine).join(" "));
+            return Ok(());
+        }
         _ => {}
     }
 
     let library_dir = library::default_dir();
     let entries = library::scan(&library_dir);
+    let shader_profiles_dir = shader_library::default_dir();
+    let shader_profiles = shader_library::scan(&shader_profiles_dir);
     eframe::run_native(
         "win98-xp-virt launcher",
         eframe::NativeOptions::default(),
@@ -185,8 +253,11 @@ fn main() -> eframe::Result {
             Ok(Box::new(LauncherApp {
                 library_dir,
                 entries,
+                shader_profiles_dir,
+                shader_profiles,
                 running: HashMap::new(),
                 wizard: wizard::Wizard::default(),
+                shader_manager: shader_manager::ShaderManager::default(),
             }))
         }),
     )
