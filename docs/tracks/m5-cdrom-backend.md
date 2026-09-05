@@ -72,9 +72,19 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   without QEMU's default empty CD drive (`-nodefaults` changed nothing; that
   drive was answering 263 medium-not-present). The player passes with the same
   disc, so the difference is the player's path versus bare QEMU, not the bytes.
-  **Next: trace a passing launch in the player and diff the command streams** —
-  we finally have a working and a failing configuration side by side, which is
-  worth more than any further disc variation.
+  **The passing launch is traced (player, FIFA 2002 reaching its intro).** It
+  does 13 anchor-and-probe pairs, then loads content: 281 multi-sector reads
+  out to LBA 250230, 9069 sectors, where every failing run stops at 13272 with
+  only single-sector reads. **And it still reads 0 of the 584 corrupt sectors,
+  out of 781 reads.** So the finding holds from the inside: SafeDisc 2's
+  authentication completes here without ever looking at the band, and the
+  `repair` control was telling the truth.
+  **Harness gotcha found with it:** the check rejects when the CD shares the
+  boot disk's IDE channel (a bare `-drive media=cdrom` lands at index 1 = ide0
+  slave) and passes on `ide.1`, where the player puts it. Same disc, same
+  display, one variable. A timing measurement perturbed by channel sharing is
+  the obvious guess for an anchor-then-probe pattern, but only the correlation
+  is measured. Put a protected title's disc on its own channel.
   **Defect found on the way, not yet fixed:** `GET CONFIGURATION` RT=10b
   answers `ILLEGAL REQUEST / INVALID FIELD IN CDB` for unimplemented features
   including **0x1e (CD Read)**, where MMC wants a valid header with an empty

@@ -409,9 +409,37 @@ the negative control we could not get from the disc contents arrived from the
 harness instead. The player passes with the same disc, so the difference is
 the player's path versus bare QEMU, not the bytes on the medium.
 
-**Next:** trace a *passing* launch in the player and diff the two command
-streams. That is the one comparison that says what our drive gets wrong,
-since we now have a working and a failing configuration side by side.
+**The passing launch, traced in the player** (`-trace ide_atapi_cmd_packet`
+works through the player's QEMU args; FIFA 2002 reached its intro, `d3dpt-vga`
+logging page flips, screendump confirms). Four runs on one image and one disc:
+
+| Run | CD on | Display | Outcome | Reads | Multi-sector | Max LBA | Band sectors read |
+|---|---|---|---|---|---|---|---|
+| bare QEMU | ide0 slave | cirrus | *"insira o CD"* | 488 | 1 | 13272 | **0** |
+| bare QEMU `-nodefaults` | ide0 slave | cirrus | *"insira o CD"* | 506 | 1 | 13272 | **0** |
+| bare QEMU | **ide.1** | cirrus | no dialog, then crash | 505 | — | — | **0** |
+| **player** | **ide.1** | d3dpt-vga | **runs** | 781 | **281** | **250230** | **0** |
+
+The passing run is unmistakable in the trace: 281 multi-sector reads out to LBA
+250230, 9069 sectors in all — the game loading its content after the check let
+it through, where every failing run stops at 13272 with essentially only
+single-sector reads. It does 13 anchor-and-probe pairs on the way.
+
+**And it still never reads a corrupt sector: 0 of 781.** So the conclusion
+holds from the inside, not merely by inference from a repaired disc passing.
+FIFA 2002's SafeDisc 2 authentication completes without once looking at the
+584-sector band. The band is not what this title's check reads, and the
+`repair` control was reporting the truth.
+
+**A harness finding worth its own line:** the check *rejects* when the CD
+shares the boot disk's IDE channel (`-drive media=cdrom` lands at index 1 =
+ide0 slave) and passes when the CD is on `ide.1`, which is where the player
+puts it. One variable between runs 2 and 3, same display, same disc. An
+anchor-then-probe pattern is consistent with a timing measurement, and sharing
+a channel with the boot disk is exactly what would perturb one — but that is a
+hypothesis, not a measurement. What is established is the correlation, and
+that `tools/xp-game-test.sh`'s default CD placement makes a protected title
+fail for reasons that have nothing to do with the disc image.
 
 **A real defect found on the way** (not yet fixed): `GET CONFIGURATION` with
 RT=10b (request one feature) answers `ILLEGAL REQUEST / INVALID FIELD IN CDB`
