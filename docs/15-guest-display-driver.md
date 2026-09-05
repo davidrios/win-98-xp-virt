@@ -536,6 +536,54 @@ KVM) and working under KVM. What the investigation established
   takes 100 ms taps (F2 camera, Esc pause, F12 exit) under KVM and TCG
   alike. The user-facing recipe: copy `D3DPT\DINPUT.DLL` next to
   `fifa2000.exe`; `tools/xp-fifa2000.bat` does it from `E:\DINPUT.DLL`.
+  **Confirmed by the user 2026-09-05, both directions:** on a TCG run on
+  this Linux box the match takes keys with `DINPUT.DLL` next to the EXE, and
+  moving the DLL away brings the dead keyboard straight back. That is the
+  causal check the headless harness alone could not give — the shim is the
+  variable, not the driver, the CPU model or the run.
+- **How much this matters, from the same day:** the user's everyday setup is
+  the Linux host run natively (KVM) with `-vga none -device d3dpt-vga`, and
+  there they have **no input issues and no custom DLLs anywhere** — no
+  WineD3D set renamed out of a game folder, no shim next to any EXE, a stock
+  XP on the driver. So the unpumped-hook symptom is a **TCG-only** one, as
+  the KVM/TCG split above already suggested: the game's match loop does pump,
+  rarely, and only a guest slow enough to stretch the gaps lets the hook fall
+  behind. `DINPUT.DLL` is therefore medicine for the Apple Silicon path (TCG
+  is the only x86 accelerator there) and for `xp-fifa-match.sh tcg` — not
+  something in the normal path on a KVM host, which is one more reason for
+  the per-game placement decided below.
+
+**Where the merge lives: next to the game, never system-wide** (decided
+2026-09-05, after the confirmation). The tempting alternatives are both
+wrong here:
+
+- Replacing `system32\dinput.dll` fights Windows File Protection on XP SP3
+  (SFC restores it from `dllcache`), and a forwarding shim cannot carry the
+  same name as the DLL it forwards to in the same directory — the original
+  would have to be renamed, which breaks SFC and any repair install.
+- `AppInit_DLLs` loads the shim into every GUI process on the system,
+  including explorer and every installer, to fix one game's match loop.
+
+And the merge is not a neutral improvement: `GetAsyncKeyState` is
+system-wide, so a `DISCL_FOREGROUND` device that has correctly gone quiet
+(the game is not in front, or is not acquired) would start reporting keys
+again, and an application that reads buffered data alongside `GetDeviceState`
+would see the two disagree. That is a lie we are happy to tell FIFA's match
+loop, having watched it, and not one to tell every process on the guest.
+So the shim stays a per-game, side-by-side DLL — the era-correct mechanism,
+reversible by deleting one file — and *deploying* it becomes the launcher's
+job (M6): a per-game compat list in the machine bundle that stages shim DLLs
+next to the EXE, the same shape `D3DPT\DDRAW.DLL` already needs.
+
+Making it shippable (same day): the shim now has two modes. The default is
+the fix and nothing else — silent, no `dinput_log.txt`, no sampler thread.
+`D3DPT_DINPUT_LOG=1` in the environment restores the full diagnostic build
+described above. The observation was the expensive half: the sampler polls
+248 virtual keys every 5 ms and every log line is flushed, which is real
+money under TCG and not something to leave running in a game folder for a
+fix that is 20 lines of merge. `tools/xp-fifa2000.bat` turns the log on when
+it finds an `E:\DILOG` marker, which `tools/xp-fifa-match.sh` stages because
+it greps the log for its regression check.
 - FIFA's own quirks met on the way: its front-end menus need a mouse
   button held ≈1 s (a 100 ms click is ignored; the QMP `click` in
   `qmpc.py` is too short, hold the button by hand in `input-send-event`);
