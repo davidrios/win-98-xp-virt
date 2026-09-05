@@ -5,6 +5,7 @@
 //! thumbnails yet.
 
 mod bundle;
+mod control;
 mod discshelf;
 mod filepicker;
 mod library;
@@ -91,7 +92,12 @@ impl eframe::App for LauncherApp {
                             if self.running.contains_key(&entry.dir) {
                                 ui.label("Running");
                             } else if ui.button("Play").clicked() {
-                                match player::spawn(&entry.machine) {
+                                // The monitor socket is derived from the
+                                // bundle directory, so every window that
+                                // wants live control can find it again
+                                // without the app carrying it around.
+                                let socket = control::socket_path(&entry.dir);
+                                match player::spawn(&entry.machine, Some(&socket)) {
                                     Ok(child) => {
                                         self.running.insert(entry.dir.clone(), child);
                                     }
@@ -108,7 +114,8 @@ impl eframe::App for LauncherApp {
                                 self.disc_shelf.open_for(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
                             }
                             if ui.button("Snapshots…").clicked() {
-                                self.snapshots.open_for(&entry.machine, entry.dir.clone());
+                                let running = self.running.contains_key(&entry.dir);
+                                self.snapshots.open_for(&entry.machine, entry.dir.clone(), running);
                             }
                         });
                         ui.end_row();
@@ -341,10 +348,14 @@ fn main() -> eframe::Result {
             return Ok(());
         }
         Some("--play") => {
-            let path = args.next().expect("usage: launcher --play <machine.toml>");
-            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
-            let child = player::spawn(&machine).expect("spawn player");
-            println!("pid {}", child.id());
+            let path = PathBuf::from(args.next().expect("usage: launcher --play <machine.toml>"));
+            let machine = bundle::Machine::load(&path).expect("load bundle");
+            // Same monitor socket the grid's "Play" opens, so the live
+            // half of `--disc-shelf`/`--snapshots` can be scripted
+            // against a player started this way.
+            let socket = control::socket_path(path.parent().unwrap_or(std::path::Path::new(".")));
+            let child = player::spawn(&machine, Some(&socket)).expect("spawn player");
+            println!("pid {} qmp {}", child.id(), socket.display());
             return Ok(());
         }
         Some("--pick-file") => {
@@ -537,22 +548,72 @@ fn main() -> eframe::Result {
             dump_egui_frame(&render_state, &ctx, full_output, [800, 600], &out);
             return Ok(());
         }
+        Some("--qmp-socket") => {
+            // Where a bundle's live-control monitor socket lives, so a
+            // script (or a hand-run QEMU standing in for the player) can
+            // put one there.
+            let path = PathBuf::from(args.next().expect("usage: launcher --qmp-socket <machine.toml>"));
+            println!("{}", control::socket_path(path.parent().unwrap_or(std::path::Path::new("."))).display());
+            return Ok(());
+        }
+        Some("--insert-disc") => {
+            // Headless equivalent of the disc shelf's live "Insert" /
+            // "Eject" buttons: the same `DiscShelf` calls, against the
+            // machine's running monitor.
+            let usage = "usage: launcher --insert-disc <machine.toml> <disc|eject>";
+            let path: PathBuf = args.next().expect(usage).into();
+            let machine = bundle::Machine::load(&path).expect("load bundle");
+            let what = args.next().expect(usage);
+            let mut shelf = discshelf::DiscShelf::default();
+            shelf.open_for(&machine, path);
+            if what == "eject" {
+                shelf.eject_live();
+            } else {
+                shelf.insert_live(std::path::Path::new(&what));
+            }
+            match shelf.last_result() {
+                Ok(status) => println!("{}", status.unwrap_or("(nothing happened)")),
+                Err(e) => {
+                    eprintln!("[disc-shelf] {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
         Some("--snapshots") => {
             // Headless equivalent of the "Snapshots…" window: the same
             // `SnapshotWindow` operations its buttons run, over a
             // bundle's disk, without a GUI click.
-            let usage = "usage: launcher --snapshots <machine.toml> [take|delete|restore <name>]";
-            let path: PathBuf = args.next().expect(usage).into();
+            let usage = "usage: launcher --snapshots [--live] <machine.toml> [take|delete|restore <name>]";
+            let mut next = args.next();
+            // `--live` drives a *running* machine's monitor instead of
+            // qemu-img, the way the window does when its player is up.
+            let live = next.as_deref() == Some("--live");
+            if live {
+                next = args.next();
+            }
+            let path: PathBuf = next.expect(usage).into();
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
             let mut window = snapshots::SnapshotWindow::default();
-            window.open_for(&machine, dir);
+            window.open_for(&machine, dir, live);
             match (args.next().as_deref(), args.next()) {
                 (Some("take"), Some(name)) => window.take(&name),
                 (Some("delete"), Some(name)) => window.drop_snapshot(&name),
                 (Some("restore"), Some(name)) => window.revert(&name),
                 (None, _) => {}
                 _ => panic!("{usage}"),
+            }
+            // A live operation is a QMP *job*: it returns as soon as the
+            // job exists and finishes later, so wait for it here the way
+            // the window's repaint tick does.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            while window.job_pending() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                window.poll_job_now();
+            }
+            if let Some(status) = window.status() {
+                println!("[snapshots] {status}");
             }
             if let Some(err) = window.error() {
                 eprintln!("[snapshots] {err}");
@@ -582,9 +643,23 @@ fn main() -> eframe::Result {
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
             let mut window = snapshots::SnapshotWindow::default();
-            window.open_for(&machine, dir);
+            window.open_for(&machine, dir, running);
             let render_state = headless_render_state();
             diag_window_frames(&render_state, screen, &script, &out, |ctx| window.show(ctx, running));
+            // A click that started a live snapshot job leaves it in
+            // flight: the frames here run back to back, where the real
+            // window would poll it over its repaint tick.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            while window.job_pending() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                window.poll_job_now();
+            }
+            if let Some(status) = window.status() {
+                println!("[snapshots] {status}");
+            }
+            if let Some(err) = window.error() {
+                eprintln!("[snapshots] {err}");
+            }
             for snap in window.snapshots() {
                 println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
             }

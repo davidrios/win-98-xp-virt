@@ -54,6 +54,8 @@ pub struct DiscShelf {
     discs: Vec<PathBuf>,
     /// The "add a disc by typing a path" field, paired with "Browse…".
     add_path: String,
+    /// The result of the last live (monitor) operation, if any.
+    status: Option<String>,
     error: Option<String>,
 }
 
@@ -103,13 +105,18 @@ impl DiscShelf {
             .max_width(760.0)
             .show(ctx, |ui| {
                 if running {
-                    ui.label("This machine is running: shelf edits apply to its next boot.");
+                    ui.horizontal(|ui| {
+                        ui.label("Running: “Insert” swaps the disc in the guest now; other edits apply at its next boot.");
+                        if ui.button("Eject").clicked() {
+                            self.eject_live();
+                        }
+                    });
                     ui.separator();
                 }
                 if self.discs.is_empty() {
                     ui.label("No discs on the shelf.");
                 } else {
-                    self.list_ui(ui);
+                    self.list_ui(ui, running);
                 }
                 ui.separator();
                 filepicker::path_field(ui, "Add disc", &mut self.add_path, Some(DISC_FILTER));
@@ -134,6 +141,9 @@ impl DiscShelf {
                         }
                     }
                 });
+                if let Some(status) = &self.status {
+                    ui.label(status.clone());
+                }
                 if let Some(err) = &self.error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
@@ -162,16 +172,21 @@ impl DiscShelf {
     /// name is the half that identifies a disc — truncating the whole
     /// path leaves every row reading `/home/…/…/…` identically. The full
     /// path is on hover either way.
-    fn list_ui(&mut self, ui: &mut egui::Ui) {
+    fn list_ui(&mut self, ui: &mut egui::Ui, running: bool) {
         let mut swap = None;
         let mut remove = None;
+        let mut insert = None;
+        let discs = &self.discs;
         egui::Grid::new("disc-shelf-grid").striped(true).num_columns(4).show(ui, |ui| {
-            for (i, disc) in self.discs.iter().enumerate() {
+            for (i, disc) in discs.iter().enumerate() {
                 ui.horizontal(|ui| {
+                    if running && ui.button("Insert").clicked() {
+                        insert = Some(disc.clone());
+                    }
                     if ui.add_enabled(i > 0, egui::Button::new("Up")).clicked() {
                         swap = Some((i - 1, i));
                     }
-                    if ui.add_enabled(i + 1 < self.discs.len(), egui::Button::new("Down")).clicked() {
+                    if ui.add_enabled(i + 1 < discs.len(), egui::Button::new("Down")).clicked() {
                         swap = Some((i, i + 1));
                     }
                     if ui.button("Remove").clicked() {
@@ -194,6 +209,53 @@ impl DiscShelf {
         }
         if let Some(i) = remove {
             self.discs.remove(i);
+        }
+        if let Some(disc) = insert {
+            self.insert_live(&disc);
+        }
+    }
+
+    /// Swap `disc` into the running machine's drive. Public so
+    /// `main.rs`'s `--insert-disc` debug verb runs the same call the
+    /// "Insert" button does.
+    pub fn insert_live(&mut self, disc: &std::path::Path) {
+        let name = disc.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let disc = disc.to_path_buf();
+        self.live(|c| c.insert_disc(&disc), &format!("inserted {name}"));
+    }
+
+    pub fn eject_live(&mut self) {
+        self.live(|c| c.eject_disc(), "ejected");
+    }
+
+    /// The last live operation's result: the status line, or the error.
+    pub fn last_result(&self) -> Result<Option<&str>, &str> {
+        match &self.error {
+            Some(e) => Err(e),
+            None => Ok(self.status.as_deref()),
+        }
+    }
+
+    /// Run one operation on the running machine's monitor. A fresh
+    /// connection each time (see `snapshots::SnapshotWindow::control`);
+    /// failures land in the window's error line rather than a panic —
+    /// the guest may have shut down between the repaint that drew the
+    /// button and the click on it.
+    fn live(&mut self, op: impl FnOnce(&mut crate::control::Control) -> Result<(), String>, done: &str) {
+        let Some(dir) = self.bundle_dir() else {
+            self.error = Some("no bundle open".into());
+            return;
+        };
+        let result = crate::control::Control::connect(&crate::control::socket_path(dir)).and_then(|mut c| op(&mut c));
+        match result {
+            Ok(()) => {
+                self.status = Some(done.to_string());
+                self.error = None;
+            }
+            Err(e) => {
+                self.status = None;
+                self.error = Some(e);
+            }
         }
     }
 

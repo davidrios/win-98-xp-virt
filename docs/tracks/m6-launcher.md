@@ -662,6 +662,87 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   there, and a bundle pointing at a disk that doesn't exist, both
   surface `qemu-img`'s message.
 
+- **Step 5c — live control landed** (2026-09-05), and with it **step 5 is
+  done**. `launcher/src/control.rs`: the launcher adds
+  `-qmp unix:<runtime dir>/<bundle>-<hash>.qmp,server,nowait` to the
+  arguments it spawns the player with and speaks QMP to that socket
+  itself. **No new protocol, no player change, no IPC surface on either
+  binary** — QEMU allows several monitors, so the player's own
+  in-process one (`player/src/qmp.rs`, on a socketpair with no
+  filesystem path) is untouched, and this is the same shape
+  `tools/qmpc.py` already uses to drive a guest. A bundle run straight
+  through `player` by hand simply has no launcher socket, which is doc
+  07's "the launcher is optional" path. The socket path is derived from
+  the bundle directory, so any window can find it again without the app
+  carrying it around; the directory is forced to 0700 (a QMP monitor is
+  complete control of the machine) and a stale socket left by a *killed*
+  player is removed before spawn, since QEMU refuses to bind over one.
+
+  What it drives:
+  - **Disc shelf:** each row gets "Insert" while the machine runs, plus
+    an "Eject" — `blockdev-change-medium` / `eject`, which do
+    open/eject/insert/close as one command, what a guest expects of a
+    disc swap. No `format` argument, so a `.cue`/`.ccd` still probes to
+    the `cdimage` driver (doc 17) exactly as on the command line.
+  - **Snapshots:** the same window, now listing from
+    `query-named-block-nodes` (whose `image.snapshots` is the same shape
+    `qemu-img info --output=json` returns, so one kind of row either
+    way) and running `snapshot-save`/`-load`/`-delete`. Those are QMP
+    *jobs*, so the window starts one and polls `query-jobs` on its
+    repaint tick rather than blocking the UI thread while QEMU writes a
+    guest's RAM; buttons grey out while a job is in flight. A restore
+    stops the VM first (QEMU requires it) and resumes it after **only if
+    it was running** — a machine the user had paused stays paused.
+
+  Two bundle-format consequences, both deliberate: `qemu_args` now gives
+  the CD-ROM device an id (`control::CDROM_ID` = `ide1-cd0`, the same id
+  `tools/xp-cdimage-test.sh` uses) so a medium change can name it, and
+  **always attaches the drive, empty tray and all** — a drive that only
+  existed when the bundle happened to ship a disc could never be loaded
+  later, and a PC of the era has one regardless.
+
+  Unix sockets only, so live control is Linux/macOS; on Windows the
+  socket is never created and every live operation says so rather than
+  the window pretending otherwise (a named pipe or a loopback port is a
+  packaging-time, step 6, question). Snapshot *node names* are looked up
+  at runtime rather than pinned in `qemu_args` — QEMU generates them
+  (`#block136`) and putting one in the bundle format would freeze a
+  command-line implementation detail.
+
+  **Verified against real QEMU, then against the real player.** First a
+  stand-in: `qemu-system-i386` on the *exact* `--print-args` command line
+  plus the socket the launcher would have added. Through it, all of
+  live listing (identical rows to the offline path), `take` (a real 2.8
+  MB VM-state snapshot), `restore` and `delete`; then the same take
+  driven entirely through the real window's widgets
+  (`--diag-snapshots-frame` with a `+text` typing step: click the field,
+  type, click "Take snapshot" → a 3.6 MB snapshot); live "Insert" both
+  from `--insert-disc` and from a synthetic click on the row's button,
+  each confirmed by `query-block` showing the medium actually changed,
+  and "Eject" leaving `tray_open: true` on the `ide1-cd0` qdev. Then the
+  **real `player` binary** (built here with `QEMU_EMBED_LIB_DIR` pointed
+  at the main checkout's `build/qemu`): it took the extra `-qmp` without
+  complaint, ran both monitors at once (`[qmp] connected: QEMU 9.2.4`
+  from its own, ours serving the launcher), and a disc swap and a live
+  snapshot both worked against it; a stale socket file planted
+  beforehand was correctly replaced. Error paths: nothing running gives
+  "No such file or directory" on the socket instead of a hang, and the
+  offline path still lists every snapshot the live path made.
+
+  Two bugs were found and fixed by this verification. `disk_node` matched
+  a block node by filename alone — but a qcow2 shows up as *two* nodes,
+  the qcow2 format node and the `file` protocol node under it, both
+  reporting the same filename, and only the former can hold a snapshot;
+  the match now requires `drv == "qcow2"`. And a failed live restore
+  reported success: the post-operation `reload()` cleared `error` on its
+  way to re-reading the list, so `Snapshot 'nope' does not exist` was
+  wiped before anything showed it. `reload()` no longer touches `error`
+  at all; only its callers decide. (Not a bug: `snapshot-delete` for a
+  tag that isn't there concludes *without* an error — checked by hand
+  against QEMU — because deleting a nonexistent internal snapshot is a
+  no-op at the qcow2 level. A genuinely failing job does carry `error`,
+  confirmed with a bad `snapshot-load`.)
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -670,20 +751,12 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
 4. ~~**Guided creation wizard**~~ — done above, including editing an
    existing machine and a native file picker (needs a human
    click-through, see the caveats above).
-5. **Snapshots UI + disc-shelf editing**, split by what needs IPC:
-   - ~~5a **disc-shelf editing**~~ — done above (a bundle edit; no IPC).
-   - ~~5b **snapshots, offline**~~ — done above (`qemu-img snapshot`,
-     refused while the machine is running).
-   - 5c **live control** (media swap and snapshots on a *running*
-     machine). Design decided 2026-09-05: **no new protocol and no
-     player change** — the launcher adds `-qmp unix:<path>,server,nowait`
-     to the args it spawns the player with and talks QMP to that socket
-     itself, exactly the way `tools/qmpc.py` already drives a guest over
-     an extra monitor. QEMU allows several monitors, so the player's own
-     in-process one (`player/src/qmp.rs`, on a socketpair with no
-     filesystem path) is untouched. Unix-socket-only, so live control is
-     Linux/macOS for now; Windows needs a named pipe or a loopback port,
-     a packaging-time (step 6) question.
+5. ~~**Snapshots UI + disc-shelf editing**~~ — done above: 5a disc-shelf
+   editing (a bundle edit, no IPC), 5b snapshots offline (`qemu-img`),
+   5c live media swap and snapshots over the launcher's own `-qmp unix:`
+   socket (no protocol, no player change). Windows live control and the
+   player's *own* overlay controls (doc 07 puts pause/snapshot/disc swap
+   in the player too) are still open.
 6. **Packaging** (last, per doc 08 M6): signed macOS .app + notarization,
    Windows installer + portable zip, Linux Flatpak — the M6 exit
    criterion ("stranger installs → plays a disc dump with a CRT shader
@@ -697,7 +770,8 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
 `--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`,
-`--snapshots`, `--diag-snapshots-frame`) were
+`--snapshots` (`--live` for a running machine), `--diag-snapshots-frame`,
+`--qmp-socket`, `--insert-disc`) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`

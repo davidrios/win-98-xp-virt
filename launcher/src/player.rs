@@ -70,8 +70,17 @@ pub fn shader_args(machine: &Machine) -> Vec<String> {
 
 /// Spawn `player` on `machine`. Inherits the launcher's stdout/stderr for
 /// now (dev convenience); a real log file is a packaging-time concern.
-pub fn spawn(machine: &Machine) -> std::io::Result<Child> {
-    let args = machine.qemu_args(&pc_bios_dir());
+///
+/// `qmp_socket`, when given, makes QEMU listen on that path for a second
+/// monitor the launcher drives for live media/snapshot control
+/// (`control.rs`) — the player's own in-process monitor is untouched and
+/// the player itself needs no change, since everything after `--` is
+/// passed through to QEMU.
+pub fn spawn(machine: &Machine, qmp_socket: Option<&std::path::Path>) -> std::io::Result<Child> {
+    let mut args = machine.qemu_args(&pc_bios_dir());
+    if let Some(extra) = qmp_socket.and_then(crate::control::qmp_args) {
+        args.extend(extra);
+    }
     let bin = player_binary();
     Command::new(&bin)
         .args(shader_args(machine))

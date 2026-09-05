@@ -96,14 +96,22 @@ impl Machine {
                 args.extend(["-device".into(), "AC97,audiodev=embed0".into()]);
             }
         }
+        // The CD-ROM drive is always attached, empty tray and all: a
+        // real machine of the era has one, and the launcher's live disc
+        // swap (`control.rs`) needs a device to put a disc *into* — a
+        // drive that only exists when the bundle happened to ship a disc
+        // couldn't be loaded later. The id is what a medium change
+        // addresses (`control::CDROM_ID`).
+        let mut drive = "if=none,id=cd0,media=cdrom".to_string();
         if let Some(disc) = self.discs.first() {
-            args.extend([
-                "-drive".into(),
-                format!("if=none,id=cd0,media=cdrom,file={}", disc.display()),
-                "-device".into(),
-                "ide-cd,bus=ide.1,drive=cd0,audiodev=embed0".into(),
-            ]);
+            drive.push_str(&format!(",file={}", disc.display()));
         }
+        args.extend([
+            "-drive".into(),
+            drive,
+            "-device".into(),
+            format!("ide-cd,bus=ide.1,id={},drive=cd0,audiodev=embed0", crate::control::CDROM_ID),
+        ]);
         args
     }
 }
