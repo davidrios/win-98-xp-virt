@@ -576,7 +576,10 @@ bike under its spotlights, and the Speed Bay race — track, kerbs, the
 bike and rider, the palms and buildings cut out by colour key, the HUD —
 at 120 frames/s under KVM (`ddi: 120.0 frames/s (600 readbacks, 2400 dp2
 calls, 106573 draws in 5.0 s)`: four DP2 calls and ~175 draws per frame).
-Not played by hand yet.
+Played by hand by the user the same evening (the player on `winxp-m7g`,
+after the untracked-writes fix below): works great, and fast under TCG
+as well — a DirectX 3 title's guest side is only execute-buffer
+building, the rasterization is the host GPU's.
 
 **The one-triangle draws cannot be batched (2026-09-05, later).** A traced
 race frame (`D3DPT_DP2_TRACE`, the attract demo on the canyon track) has

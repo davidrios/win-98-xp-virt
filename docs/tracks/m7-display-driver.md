@@ -194,8 +194,11 @@ picture and the track rules, then this file, then doc 15.
   **Moto Racer plays** (`tools/xp-motoracer.sh install|play`, `moto4/`:
   name screen, showroom bike, the Speed Bay race with the palms keyed
   out, 120 frames/s under KVM, ~175 draws a frame one triangle each — a
-  batching follow-up). Not played by hand yet; the user's `winxp-m7`
-  needs the driver reinstalled from the ISO.
+  batching follow-up). **Played by hand by the user (2026-09-05 evening,
+  the player on `winxp-m7g`, the shadow executor): "works great", and
+  fast under TCG too** — the frame is the host GPU's, the guest only
+  builds execute buffers. The user's `winxp-m7` still needs the driver
+  reinstalled from the ISO.
 - **Untracked writes: the showroom's 2D panels (2026-09-05, evening).**
   The bike-selection screen's header, arrows, features panel and
   Start / Back were missing in *every* run, not one: the game draws them
@@ -314,8 +317,9 @@ picture and the track rules, then this file, then doc 15.
      showroom's 2D panels were GDI writes through `GetDC` the driver
      never sees (the executor's target shadow catches them now, doc 15
      "Untracked writes"), and the one-triangle draws are one texture
-     switch each in painter's order — nothing to batch. Open: a
-     hand-played check. (The attract demo's Esc menu looked like "EXT
+     switch each in painter's order — nothing to batch. Played by hand
+     by the user the same evening: works great, fast under TCG as well.
+     (The attract demo's Esc menu looked like "EXT
      DEMO / UIT DEMO / C NTINUE DEMO" in the screendumps: at 3× the
      letters are there, drawn in a darker red as the hotkeys — the
      game's own style, not a rendering fault.)
@@ -412,9 +416,10 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    textures and colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`); both
    landed the same night (protocol v8), and the DirectX 3 execute-buffer
    path the next afternoon — **Moto Racer races on the HAL headless**
-   (`tools/xp-motoracer.sh play`); the user's box needs the driver
-   reinstalled from the ISO, then a hand-played check (the showroom's 2D
-   panels, the sound of the CD tracks through the cdimage drive).
+   (`tools/xp-motoracer.sh play`), and **played by hand by the user the
+   same evening on `winxp-m7g`: works great, fast even without KVM** (the
+   showroom's 2D panels fixed first, doc 15 "Untracked writes"); the
+   user's own `winxp-m7` still needs the driver reinstalled from the ISO.
    Then what the next title asks
    for first among: **more than one stream** (the driver copies stream 0
    only; a multi-stream declaration's draws are skipped with a log line —
