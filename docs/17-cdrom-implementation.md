@@ -338,13 +338,22 @@ but no measured behaviour depends on it so far. A scheme that reads Q (early
 SecuROM is the candidate) would be the first, and until one turns up this is
 the honest state.
 
-**Caveat, and the experiment that removes it: we have never seen a check
-fail.** Three schemes pass; none has been shown to reject a disc that should
-be rejected, so a pass could in principle mean the check never ran. The
-negative control is to serve a title its data track with the band reading
-clean — an `.iso` of it, or a `convert`ed cue — where the check *must* fail.
-Until that has been seen, "the protection is satisfied" is inference from a
-game that started, not a measurement. The lesson meanwhile is that anything
+**Caveat: we have never seen a check fail.** Three schemes pass; none has
+been shown to reject a disc that should be rejected, so a pass could in
+principle mean the check never ran. Until that has been seen, "the protection
+is satisfied" is inference from a game that started, not a measurement.
+
+**The control discs exist** (`discx repair`, 2026-09-05, not in the repo):
+`clean/fifa2002/FIFA2002.mds` — 584 sectors repaired, the disc now scans with
+0 L-EC failures — and `clean/settlers3/CD01.cue` — 547 repaired, leaving only
+the 150 sync-less run-out sectors a real drive fails too. Both were diffed
+against their originals byte for byte: the difference is confined to offsets
+2064–2351 of exactly those sectors, which is the EDC, the reserved gap and the
+ECC of a Mode 1 sector. Sync, header and all 2048 user bytes are identical, so
+each pair differs in one variable. Run each title from its clean copy and
+SafeDisc 2.x and ProtectCD must now *refuse*; if either still starts, its
+earlier pass proved much less than it appeared to. The lesson meanwhile is
+that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
 MDS 2448), where `read_sub` replays the bytes verbatim and none of this
 applies.
@@ -796,6 +805,18 @@ Subcommands:
 - `discx dump <image> <what> [args]` — prints hex of a responder's
   bytes (`toc 0 1`, `subq 1000`, `readcd 16 0 0xf8 1`): the oracle the
   guest test compares against.
+- `discx repair <image> <outdir>` — a copy of the image in which every
+  sector whose L-EC fails now verifies: **the negative control** (§2.6). It
+  copies each payload and the descriptor by basename, so the copy opens under
+  the same name in `<outdir>`, and rewrites nothing but the EDC, the reserved
+  gap and the ECC of the failing sectors. The user data is left exactly as
+  dumped — SafeDisc's `0x55` fill stays `0x55` — because the disc has to
+  differ from the original in the *one* signal a protection reads and in
+  nothing else. Sectors with no sync pattern are left alone: those are
+  run-out, a real drive fails them too, and repairing them would add a second
+  variable. Checked by selftest's `repair`, which corrupts a sector, repairs
+  the image and requires that the sector read cleanly, that its user data is
+  still the corrupted data, and that no byte outside the parity fields moved.
 - `discx convert <in.iso> <out.cue>` — cooked ISO → MODE1/2352 cue/bin
   with synthesized EDC/ECC and, with `--audio tone.wav …`, appended audio
   tracks: the way to make guest test discs from the guest-tools ISO.

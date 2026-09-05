@@ -62,10 +62,19 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   dump carrying both") is wrong for this scheme.
   **The gap this leaves is a negative control:** three schemes now pass and we
   have never watched a check *fail*, so a pass is inference from a game that
-  started. Serving the same title its data track with the band reading clean
-  (an `.iso`, or a `convert`ed cue) must be refused; until that is seen, none
-  of the three passes is fully nailed down. It is the cheapest high-value run
-  left on this track.
+  started. Until one is seen to refuse a disc it should refuse, none of the
+  three passes is fully nailed down.
+  **The control discs are built** (`discx repair`, new, 2026-09-05; outside
+  the repo at `oldstuff/clean/`): `fifa2002/FIFA2002.mds` (584 sectors
+  repaired, scans with 0 failures) and `settlers3/CD01.cue` (547 repaired,
+  only the 150 sync-less run-out sectors left, which a real drive fails too).
+  Each was diffed against its original byte for byte — the difference is
+  confined to offsets 2064–2351 of exactly those sectors, i.e. the EDC, the
+  reserved gap and the ECC; sync, header and all 2048 user bytes identical, so
+  the pair differs in one variable and the 0x55 fill is still 0x55. **Run each
+  title from its clean copy: both must now refuse.** For Settlers the launch
+  check is on CD1, so only CD01 is repaired — the campaign's CD2 has no band
+  at all and the original is used for it.
   Scans, for the record: CD01 has 697 L-EC failures — the 538-sector band at
   195539–196076, **nine scattered singles past it** (196654, 196823, 197060,
   197160, 197219, 197424, 197584, 198370, 198977, EDC wrong as well), and 150

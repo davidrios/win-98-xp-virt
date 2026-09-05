@@ -8,6 +8,8 @@
 //!   discx dump <image> <what> [args]   hex of one answer: readraw <lba> | readcooked <lba> | sub <lba> | info <lba>
 //!                                      | toc <format> [msf] [start] | subq <lba> [format] [msf] [track] | discinfo
 //!                                      | readcd <lba> <type> <byte9> <byte10>
+//!   discx repair <image> <outdir>      a copy whose failing sectors verify: the negative control for a
+//!                                      protection check (user data untouched, only EDC/ECC regenerated)
 //!   discx convert <in.iso> <out.cue> [--audio a.wav ...]   cooked ISO → MODE1/2352 cue/bin (+ audio tracks)
 //!
 //! Every check prints PASS/FAIL with a name; the exit code is 1 on any FAIL.
@@ -422,6 +424,50 @@ fn check_lec(dir: &Path) -> Result<(), String> {
         expect(&format!("{name} mismatch"), d.read_cooked(1500).err(), Some(capi::LIBDISC_EMEDIUM))?;
     }
     fs::write(dir.join("lec.bin"), &bin).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `repair` builds the negative control for a protection check, so what it
+/// must never do is *restore* anything: a repaired sector has to read cleanly
+/// while still carrying the bytes the dump had. Corrupt a sector, repair the
+/// image, and check both halves of that — the sector now verifies, its user
+/// data is still the corrupted data, and no other byte of the file moved.
+fn check_repair(dir: &Path) -> Result<(), String> {
+    let mut bin = fs::read(dir.join("mixed.bin")).map_err(|e| e.to_string())?;
+    let at = 1000 * 2352 + 500;
+    bin[at] ^= 0x5A;
+    fs::write(dir.join("rep.bin"), &bin).map_err(|e| e.to_string())?;
+    let cue = fs::read_to_string(dir.join("mixed.cue")).map_err(|e| e.to_string())?.replace("mixed.bin", "rep.bin");
+    fs::write(dir.join("rep.cue"), cue).map_err(|e| e.to_string())?;
+
+    let src = dir.join("rep.cue");
+    let disc = Disc::open(&src).map_err(|e| e.to_string())?;
+    let out = dir.join("repaired");
+    let r = repair(&disc, &src, &out)?;
+    expect("sectors repaired", (r.sectors, r.no_sync, r.unstored), (1, 0, 0))?;
+
+    let d = CDisc::open(&out.join("rep.cue"))?;
+    d.read_cooked(1000).map_err(|e| format!("repaired sector still unreadable: {e}"))?;
+    expect("repaired sector lec", d.sector_info(1000).map(|i| i.lec), Ok(1))?;
+    let raw = d.read_raw(1000).map_err(|e| e.to_string())?;
+    expect("user data kept as dumped", raw[500], bin[at])?;
+
+    let after = fs::read(out.join("rep.bin")).map_err(|e| e.to_string())?;
+    expect("file length", after.len(), bin.len())?;
+    for (i, (a, b)) in bin.iter().zip(after.iter()).enumerate() {
+        if a == b {
+            continue;
+        }
+        let (sec, off) = (i / 2352, i % 2352);
+        // Mode 1 parity: EDC 2064..2068, reserved 2068..2076, ECC 2076..2352.
+        if sec != 1000 || off < 2064 {
+            return Err(format!("byte {i} changed (sector {sec} offset {off}): repair touched more than parity"));
+        }
+    }
+    // The sectors either side are untouched and still verify.
+    for lba in [999, 1001] {
+        expect(&format!("neighbour {lba}"), d.sector_info(lba).map(|i| i.lec), Ok(1))?;
+    }
     Ok(())
 }
 
@@ -842,6 +888,7 @@ fn selftest(dir: &Path) -> i32 {
     ck.report("msf", check_msf());
     ck.report("raw-synth", check_raw_synth(dir, &raw1));
     ck.report("lec", check_lec(dir));
+    ck.report("repair", check_repair(dir));
     ck.report("edges", check_edges(dir));
     ck.report("subq-synth", check_subq(dir));
     ck.report("toc", check_toc(dir));
@@ -967,6 +1014,123 @@ fn scan(disc: &Disc, first: i32, count: Option<i32>) -> Result<(), String> {
 /// concentrated in one track / one ADR). The second half checks the opposite
 /// direction — how often `subq::synthesize` reproduces what the disc itself
 /// carries, which is the only real-disc test our synthesizer gets.
+/// Write a copy of an image in which every sector whose L-EC fails now
+/// verifies — **the negative control for a protection check** (doc 17 §2.6).
+///
+/// A protected title passing on the real dump only proves the check was
+/// satisfied if the same check *rejects* a disc it should reject; otherwise a
+/// pass could mean the check never ran. This builds that disc. The user data
+/// of every failing sector is left exactly as dumped (SafeDisc's 0x55 fill
+/// stays 0x55) and only EDC and ECC are regenerated over it, so the copy
+/// differs from the original in nothing but the one signal the protection
+/// reads. Sectors with no sync pattern are left alone: they are run-out, not
+/// a protection band, and there is no sector there to rebuild.
+struct Repaired {
+    /// Sectors whose EDC/ECC was regenerated.
+    sectors: u64,
+    /// Failing sectors left alone for want of a sync pattern (run-out).
+    no_sync: u64,
+    /// Failing sectors stored in a layout that keeps no parity of its own.
+    unstored: u64,
+    out_image: PathBuf,
+}
+
+fn repair(disc: &Disc, image: &Path, outdir: &Path) -> Result<Repaired, String> {
+    let n = disc.sector_count() as i32;
+    let mut raw = [0u8; 2352];
+    // (file index, offset in that file, lba, kind) for every repairable sector.
+    let mut work: Vec<(usize, u64, i32, libdisc::SectorKind)> = Vec::new();
+    let mut no_sync = 0u64;
+    let mut unstored = 0u64;
+
+    for lba in 0..n {
+        let (kind, _, _) = disc.classify(lba).map_err(|e| format!("{lba}: {e}"))?;
+        if !kind.is_data() {
+            continue;
+        }
+        disc.read_raw(lba, &mut raw).map_err(|e| format!("{lba}: {e}"))?;
+        match sector::verify(&raw, kind) {
+            libdisc::ecc::Lec::Ok => continue,
+            libdisc::ecc::Lec::NoSync => {
+                no_sync += 1;
+                continue;
+            }
+            libdisc::ecc::Lec::EdcMismatch | libdisc::ecc::Lec::EccMismatch => {}
+        }
+        // Where the sector is stored. Only a raw layout keeps parity of its
+        // own; a cooked one has none to be wrong, so it can never fail here.
+        let Some((_, t, _)) = disc.locate(lba) else { continue };
+        let Some(e) = t.extents.iter().find(|e| lba >= e.lba && lba < e.end()) else {
+            return Err(format!("{lba}: no extent"));
+        };
+        match e.source {
+            libdisc::Source::File { file, offset, layout, swap } => {
+                if swap {
+                    return Err(format!("{lba}: byte-swapped data track, refusing"));
+                }
+                match layout {
+                    libdisc::Layout::Raw2352 | libdisc::Layout::Raw2352Sub96 => {
+                        let off = offset + (lba - e.lba) as u64 * layout.stride() as u64;
+                        work.push((file, off, lba, kind));
+                    }
+                    _ => unstored += 1,
+                }
+            }
+            _ => unstored += 1,
+        }
+    }
+
+    fs::create_dir_all(outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
+    let copy_in = |src: &Path| -> Result<PathBuf, String> {
+        let name = src.file_name().ok_or_else(|| format!("{}: no file name", src.display()))?;
+        let dst = outdir.join(name);
+        if dst == src {
+            return Err(format!("{}: refusing to write over the source", dst.display()));
+        }
+        fs::copy(src, &dst).map_err(|e| format!("{} -> {}: {e}", src.display(), dst.display()))?;
+        Ok(dst)
+    };
+
+    // Every payload the descriptor names, then the descriptor itself, so the
+    // copy opens by the same name in the new directory.
+    let mut copies: Vec<PathBuf> = Vec::new();
+    for i in 0..disc.file_count() {
+        copies.push(copy_in(&disc.file(i).path)?);
+    }
+    let out_image = copy_in(image)?;
+
+    let mut handles: BTreeMap<usize, fs::File> = BTreeMap::new();
+    let mut done = 0u64;
+    for &(file, off, lba, kind) in &work {
+        disc.read_raw(lba, &mut raw).map_err(|e| format!("{lba}: {e}"))?;
+        match kind {
+            libdisc::SectorKind::Mode1 => libdisc::ecc::generate_mode1(&mut raw),
+            libdisc::SectorKind::Mode2Form1 => libdisc::ecc::generate_mode2_form1(&mut raw),
+            libdisc::SectorKind::Mode2Form2 => libdisc::ecc::generate_mode2_form2(&mut raw),
+            // Formless mode 2 carries no parity, so nothing here can be wrong.
+            _ => continue,
+        }
+        let h = match handles.get_mut(&file) {
+            Some(h) => h,
+            None => {
+                let f = fs::OpenOptions::new()
+                    .write(true)
+                    .open(&copies[file])
+                    .map_err(|e| format!("{}: {e}", copies[file].display()))?;
+                handles.entry(file).or_insert(f)
+            }
+        };
+        use std::os::unix::fs::FileExt;
+        h.write_all_at(&raw, off).map_err(|e| format!("{}: at {off}: {e}", copies[file].display()))?;
+        done += 1;
+    }
+    for (_, h) in handles.iter_mut() {
+        h.sync_all().map_err(|e| format!("sync: {e}"))?;
+    }
+
+    Ok(Repaired { sectors: done, no_sync, unstored, out_image })
+}
+
 fn subscan(disc: &Disc, first: i32, count: Option<i32>) -> Result<(), String> {
     let n = disc.sector_count() as i32;
     let end = count.map(|c| (first + c).min(n)).unwrap_or(n);
@@ -1227,7 +1391,7 @@ fn convert(input: &Path, out_cue: &Path, wavs: &[PathBuf]) -> Result<(), String>
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: discx selftest <outdir> | info <image> | scan <image> [first] [count] | subscan <image> [first] [count] | dump <image> <what> [args] | convert <in.iso> <out.cue> [--audio a.wav ...]");
+    eprintln!("usage: discx selftest <outdir> | info <image> | scan <image> [first] [count] | subscan <image> [first] [count] | repair <image> <outdir> | dump <image> <what> [args] | convert <in.iso> <out.cue> [--audio a.wav ...]");
     2
 }
 
@@ -1255,6 +1419,36 @@ fn main() {
                 1
             }
         },
+        "repair" => {
+            if args.len() < 4 {
+                std::process::exit(usage());
+            }
+            let image = Path::new(&args[2]);
+            match Disc::open(image) {
+                Ok(d) => match repair(&d, image, Path::new(&args[3])) {
+                    Ok(r) => {
+                        outln!("{} -> {}", image.display(), r.out_image.display());
+                        outln!("  sectors repaired  {} (EDC and ECC regenerated, user data untouched)", r.sectors);
+                        if r.no_sync > 0 {
+                            outln!("  left alone        {} without a sync pattern (run-out, not a band)", r.no_sync);
+                        }
+                        if r.unstored > 0 {
+                            outln!("  left alone        {} failing in a layout that stores no parity", r.unstored);
+                        }
+                        outln!("  the copy is the negative control: a check that reads the band must now refuse it");
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            }
+        }
         "subscan" => match Disc::open(Path::new(&args[2])) {
             Ok(d) => {
                 let first = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);

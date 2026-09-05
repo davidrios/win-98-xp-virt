@@ -337,6 +337,12 @@ impl Disc {
         &self.files[index]
     }
 
+    /// Number of payload files the descriptor names (`file` indices are
+    /// `0..file_count()`).
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
     /// Open an image: `.cue`, `.ccd`, `.iso`, dispatching on the
     /// extension first and on the content when the extension says nothing.
     pub fn open(path: &Path) -> Result<Disc> {
