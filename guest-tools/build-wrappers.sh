@@ -200,6 +200,14 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/ssebench.exe" "$ROOT/guest-tools/src/ssebench.c"
 # CDTEST.EXE: CD audio through MCI (doc 17 §6.3), the CD-ROM backend's in-guest check
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/cdtest.exe" "$ROOT/guest-tools/src/cdtest.c" -lwinmm
+# CDSHELF: the host's disc shelf from inside the machine (doc 07, patch 52;
+# protocol cdshelf/cdshelf_proto.h). One EXE for both Windows families — SPTI
+# on XP, WNASPI32 loaded at run time on Win98 — plus a DOS .COM that drives
+# the drive by PIO, for a DOS box that has neither.
+mkdir -p "$OUT/iso/CDSHELF"
+i686-w64-mingw32-gcc -O2 -Wall -o "$OUT/iso/CDSHELF/cdshelf.exe" "$ROOT/guest-tools/src/cdshelf.c" \
+  -I"$ROOT/cdshelf"
+nasm -f bin -o "$OUT/iso/CDSHELF/cdshelf.com" "$ROOT/guest-tools/src/cdshelf.asm"
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
@@ -253,6 +261,16 @@ D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
             -cpu ...,sse-fast=off / x87-fast=off, to compare the paths.
 WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
             system-wide switcher DLLs; see WINE9X.TXT before touching system32.
+CDSHELF\ -> the host's disc shelf, from inside the machine (the launcher's
+            shelf, doc 07). CDSHELF.EXE on Windows 98 / 2000 / XP,
+            CDSHELF.COM in a DOS box; copy either one anywhere and run it.
+              CDSHELF        list the discs on the host's shelf
+              CDSHELF 3      put slot 3 in the drive
+              CDSHELF E      empty the drive
+            Nothing to install: it talks to the machine's own CD-ROM drive,
+            which answers a vendor command with the shelf. A machine started
+            without a shelf (plain qemu-system, no -device ide-cd,shelf=...)
+            says so instead of listing.
 DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with
             -vga none -device d3dpt-vga): DRVINST.EXE -reboot installs it;
             see DRIVER\README.TXT. Not for Win9x.
@@ -260,7 +278,7 @@ DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with
 Not included: GLIDE2X.OVL (DOS Glide games; needs Open Watcom to build).
 TXT
 # 8.3-safe upper-case names for Win9x
-( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/* D3DPT/* DRIVER/*; do
+( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/* D3DPT/* DRIVER/* CDSHELF/*; do
     u="$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; [ "$f" = "$u" ] || mv "$f" "$u"; done )
 
 ISO="$OUT/guest-tools-3dfx-$REV.iso"

@@ -834,17 +834,108 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   real player boots with the shelf attached, and
   `tools/atapi-guest-test.py` still passes (164 replies identical to
   `discx`) — so patch 51's behaviour is unregressed in a real DOS guest.
-  **The vendor command itself is not yet exercised by any guest**: that
-  needs the program below.
+  The vendor command itself was still unexercised at that point; the
+  guest programs below are what exercise it (and they changed the device
+  side twice in the process).
 
-  **Next, in order:** (1) `guest-tools/src/cdshelf.c` for Win98/XP —
-  SPTI on XP, ASPI on Win98, one EXE; (2) the DOS build, as NASM against
-  the ports `tools/atapi-guest-test.py` already drives; (3) extend
-  `tools/atapi-guest-test.py` with a CDSHELF case so the opcode is
-  guarded like every other one. Win98's ASPI availability on a clean
-  SE install is the one unknown — if `wnaspi32.dll` isn't there, the
-  fallback is the same direct PIO the DOS build uses, which Win9x
-  permits from ring 3.
+- **The guest programs landed** (2026-09-05, the other half of the
+  feature above). Both speak `cdshelf/cdshelf_proto.h` to the machine's
+  own CD-ROM drive; neither installs anything in the guest.
+
+  - `guest-tools/src/cdshelf.c` → `CDSHELF\CDSHELF.EXE`, **one binary for
+    Win98 and XP**. The transport is chosen by the OS, not by a build
+    flag: SPTI (`IOCTL_SCSI_PASS_THROUGH_DIRECT` on `\\.\<letter>:`) on
+    NT, and on 9x `WNASPI32.DLL` loaded with `LoadLibrary` at run time —
+    linking it would make the EXE unloadable on XP, where the DLL does
+    not exist. Drive selection is the shelf command itself: every CD-ROM
+    drive (or every ASPI CD-ROM device) is asked, and the one that
+    answers is used, so a machine with two drives needs no argument.
+    `-d E:` overrides on NT, `-v` prints every CDB, and the run is
+    mirrored into `cdshelf.log`.
+  - `guest-tools/src/cdshelf.asm` → `CDSHELF\CDSHELF.COM`, the DOS
+    build: PACKET commands by PIO, the same way
+    `tools/atapi-guest-test.py` drives the drive (there is no DOS C
+    toolchain in this build — `build-wrappers.sh` is a mingw cross build
+    and the Open Watcom / DJGPP pieces are skipped). Output through DOS
+    function 02h, so `CDSHELF > COM1` and `> FILE` work, which is how the
+    test reads it back.
+  - Both take `CDSHELF` / `CDSHELF <n>` / `CDSHELF E` and print the same
+    listing, with `[in the drive]` and `[missing on the host]` markers.
+
+  **Three things this found, all fixed:**
+  - **Patch 52's opcode had to become `CONDDATA`.** Only LIST transfers
+    data; LOAD and EJECT do not, and a guest sending them through SPTI or
+    ASPI legitimately leaves the byte count limit at zero — which
+    `ide_atapi_cmd()`'s generic check aborts at the *ATA* level, before
+    the handler runs. LIST now calls `validate_bcl()` itself. Nothing in
+    the PIO test could have caught this: it always sets a byte count.
+  - **A LOAD of a disc the host cannot open now fails with 02/3A** rather
+    than returning GOOD and failing silently in the bottom half, where
+    the only trace was a warning on the host's stderr while the guest
+    believed the swap had happened. Found by running `CDSHELF 3` against
+    the deliberately-missing shelf entry and watching it report success.
+  - **The ATAPI signature is not a way to find the drive.** The DOS
+    build first looked for 14h/EBh in the cylinder registers; by the time
+    a DOS program runs, the BIOS has detected the drive long ago and left
+    them at 00/00 (measured under SeaBIOS: status 50h, cylinders 00/00).
+    It now asks IDENTIFY PACKET DEVICE, which is the question itself.
+    Also: **every CHECK CONDITION must be followed by REQUEST SENSE** —
+    the drive reports the same condition to every later command until
+    something clears it, so the medium-change poll spun for ever the
+    first time. That is exactly what a real driver does, and SPTI/ASPI do
+    it for the Windows build.
+
+  **Verified for real, on three guests:**
+  - `tools/atapi-guest-test.py` now covers the opcode (19 commands per
+    byte-count limit: LIST at five allocation lengths — header-only, all
+    four entries, one entry, a partial entry, below the header — with a
+    64-byte-truncated label and the MISSING flag checked byte for byte, a
+    bad subcommand, a slot past the end, a slot the host cannot open,
+    then LOAD/EJECT with **the sectors read before and after**: the shelf
+    holds `lec.cue` at slot 0 and `mixed.cue` at slot 1, which differ
+    only in that sector 1000 is corrupt on the first, so "the tray really
+    changed" is proven by the guest's own reads and not by a status byte.
+    206 replies identical to `discx`, up from 164.
+  - A **second boot in the same run** puts the real `CDSHELF.COM` on the
+    FreeDOS floppy and drives it: list, load 1, list, eject, list, load
+    0, list, output captured over COM1, checked for the labels, the
+    truncation, the markers and the loads. Error paths (`CDSHELF x`,
+    `CDSHELF 99`, a missing disc, a drive with no `shelf=`) were run by
+    hand.
+  - **Real XP** (`~/vms/winxp.qcow2` through a qcow2 overlay — the user's
+    image is never written), booted with an *empty* tray and a shelf
+    whose slot 0 is a real ISO: `CDSHELF` listed it over SPTI, `CDSHELF
+    0` loaded it, and then `dir D:\` and `type D:\HELLO.TXT` in the same
+    guest read the files off it — the whole loop, host shelf to Windows
+    reading the disc. Then slot 1, then back to slot 0, each confirmed by
+    the `[in the drive]` marker moving and by the files reappearing. A
+    load of the missing entry printed "the host cannot reach that disc
+    image", and eject left an empty drive that still listed the shelf.
+
+  `tools/cdshelf-guest-test.sh <image> [xp|win98]` is that XP run, kept:
+  it generates the ISO and the shelf, builds the EXE, boots the image
+  through a qcow2 overlay with an empty tray, drives the guest over QMP
+  and prints PASS/FAIL per check. Local only, like the other guest
+  scripts — it needs an image, so `scripts/test.sh` will never run it.
+
+  **Win98 (ASPI) — attempted, blocked by the image, not by the code.**
+  The path did get real exercise: on `~/vms/win98.qcow2`, `WNASPI32.DLL`
+  loads and reports one host adapter (so a stock 98 install does have the
+  ASPI layer — the open question in the previous entry is answered), and
+  the first run **crashed inside the first `SendASPI32Command`**, which
+  found a real bug: ASPI32 is `__cdecl`, not stdcall, and its exports
+  carry no `@n` decoration to give that away. Declaring it `WINAPI` puts
+  the caller's stack four bytes out on the first call and Windows kills
+  the program a moment later. Fixed, but **the fix is not yet confirmed on
+  a guest**: every boot of that image since ends with Explorer dying
+  before anything of ours runs — the screendump
+  (`build/cdshelf-test/win98-run1.png`) shows *"The SHELL32.DLL file is
+  linked to missing export SHLWAPI.DLL:…FileAttributesA"*, i.e. that
+  install's shell DLLs are mismatched, so there is no Start menu to type
+  a command into. Nothing was written to the image (the run is an
+  overlay), and repairing someone's Windows install is not this track's
+  business. Re-run `tools/cdshelf-guest-test.sh ~/vms/win98.qcow2 win98`
+  once that image's shell works, or against a fresh 98 install.
 
 ## Next steps, in order
 
@@ -860,6 +951,15 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
    socket (no protocol, no player change). Windows live control and the
    player's *own* overlay controls (doc 07 puts pause/snapshot/disc swap
    in the player too) are still open.
+5b. ~~**The shelf from inside the guest**~~ — done above: the host half
+   (patch 52 + the launcher publishing the shelf file) and both guest
+   programs, `CDSHELF.EXE` (Win98/XP) and `CDSHELF.COM` (DOS), guarded by
+   `tools/atapi-guest-test.py` and, for Windows,
+   `tools/cdshelf-guest-test.sh`. Open: **the Win98 (ASPI) run**, blocked
+   on `~/vms/win98.qcow2`'s broken shell rather than on the code — see
+   the entry above. `tools/cdshelf-guest-test.sh ~/vms/win98.qcow2
+   win98` is the command; it needs no changes, only a 98 install whose
+   Explorer starts.
 6. **Packaging** (last, per doc 08 M6): signed macOS .app + notarization,
    Windows installer + portable zip, Linux Flatpak — the M6 exit
    criterion ("stranger installs → plays a disc dump with a CRT shader

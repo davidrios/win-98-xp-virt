@@ -28,6 +28,17 @@ behaves: the command returns, the tray moves after, and the guest picks
 the change up as the UNIT ATTENTION blockdev-change-medium raises on its
 next command.
 
+The opcode is CONDDATA, not a plain data command: only LIST transfers
+anything, and a guest sending LOAD or EJECT through SPTI or ASPI
+(guest-tools/src/cdshelf.c) legitimately leaves the byte count limit at
+zero, which the generic check aborts at the ATA level. LIST validates it
+itself.
+
+A LOAD of a disc the host cannot open is refused with 02/3A rather than
+accepted and then dropped in the bottom half, where the only trace would
+be a warning on the host's stderr while the guest believes the swap
+happened.
+
 The new IDEState fields are not migrated, like patch 51's.
 
 --- a/hw/ide/atapi.c
@@ -44,7 +55,7 @@ The new IDEState fields are not migrated, like patch 51's.
  #ifdef CONFIG_CDIMAGE
  /* win98-xp-virt (patch 51, doc 17 §5.3): the disc model behind a cdimage medium */
  #include "block/cdimage.h"
-@@ -2127,6 +2132,196 @@
+@@ -2127,6 +2132,216 @@
      CONDDATA = 0x08,
  };
  
@@ -188,6 +199,13 @@ The new IDEState fields are not migrated, like patch 51's.
 +            n = 0;   /* header only: how the guest learns `total` first */
 +        }
 +        size = CDSHELF_LIST_HEADER_SIZE + n * CDSHELF_ENTRY_SIZE;
++        if (max_len == 0) {
++            ide_atapi_cmd_ok(s);   /* asked for nothing; no byte count needed */
++            break;
++        }
++        if (!validate_bcl(s)) {
++            break;   /* this one really does transfer data (see CONDDATA below) */
++        }
 +        memset(buf, 0, size);
 +        stw_le_p(buf + 0, CDSHELF_PROTO_VERSION);
 +        stw_le_p(buf + 2, CDSHELF_ENTRY_SIZE);
@@ -217,6 +235,19 @@ The new IDEState fields are not migrated, like patch 51's.
 +            ide_atapi_cmd_error(s, ILLEGAL_REQUEST, ASC_INV_FIELD_IN_CMD_PACKET);
 +            break;
 +        }
++        /*
++         * A disc the host cannot open (moved, unplugged drive, a typo in a
++         * hand-edited shelf — the same entries LIST flags MISSING) is
++         * refused here rather than in the bottom half. The medium change
++         * would fail there with nothing but a warning on the host's stderr,
++         * and the guest would be told the load succeeded while the old disc
++         * stayed in the tray. "No medium" is the truth from the drive's
++         * side and is what the guest program prints.
++         */
++        if (access(g_array_index(ents, CdshelfEnt, slot).path, R_OK) != 0) {
++            ide_atapi_cmd_error(s, NOT_READY, ASC_MEDIUM_NOT_PRESENT);
++            break;
++        }
 +        g_free(s->shelf_load);
 +        s->shelf_load = g_strdup(g_array_index(ents, CdshelfEnt, slot).path);
 +        s->shelf_loaded = slot;
@@ -241,15 +272,19 @@ The new IDEState fields are not migrated, like patch 51's.
  static const struct AtapiCmd {
      void (*handler)(IDEState *s, uint8_t *buf);
      int flags;
-@@ -2158,6 +2353,11 @@
+@@ -2158,6 +2373,15 @@
      [ 0xbd ] = { cmd_mechanism_status,              0 },
      [ 0xb9 ] = { cmd_read_cd_msf,                   CHECK_READY | CONDDATA },
      [ 0xbe ] = { cmd_read_cd,                       CHECK_READY | CONDDATA },
 +    /* win98-xp-virt (patch 52): the disc shelf. No CHECK_READY — listing
 +     * the shelf and loading from it are exactly what you want to do with
 +     * an empty tray — and ALLOW_UA so a program can run right after a
-+     * medium change without a REQUEST SENSE dance first. */
-+    [ 0xd0 ] = { cmd_cdshelf,                       ALLOW_UA },
++     * medium change without a REQUEST SENSE dance first. CONDDATA because
++     * only LIST transfers anything: LOAD and EJECT carry no data, and a
++     * guest that sends them through SPTI or ASPI (guest-tools/src/cdshelf.c)
++     * legitimately leaves the byte count limit at zero, which the generic
++     * check would abort at the ATA level. LIST calls validate_bcl itself. */
++    [ 0xd0 ] = { cmd_cdshelf,                       ALLOW_UA | CONDDATA },
      /* [1] handler detects and reports not ready condition itself */
  };
  

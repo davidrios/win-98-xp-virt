@@ -109,6 +109,18 @@ typedef struct CdshelfEntry {
 #define CDSHELF_ENTRY_SIZE       68
 
 /*
+ * The same fields as offsets. A guest must stride by the *reply's*
+ * `entry_size`, not by its own sizeof(CdshelfEntry), or it would walk a
+ * newer device's reply wrongly — and once it is doing that, it reads the
+ * fields by offset too. The DOS build (guest-tools/src/cdshelf.asm)
+ * spells the same numbers out.
+ */
+#define CDSHELF_ENTRY_SLOT_OFF      0
+#define CDSHELF_ENTRY_FLAGS_OFF     2
+#define CDSHELF_ENTRY_LABEL_LEN_OFF 3
+#define CDSHELF_ENTRY_LABEL_OFF     4
+
+/*
  * The shelf file the QEMU device reads (`-device ide-cd,shelf=<path>`).
  * Deliberately not the launcher's own `discs.toml`: QEMU's side of this
  * is C, and a tab-separated line file is a parser you can read in one

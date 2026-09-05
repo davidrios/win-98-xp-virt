@@ -36,7 +36,9 @@
 #   sse-guest      tools/sse-guest-test.py: the SSE battery, sse-fast on/off identical (doc 16)
 #   atapi-guest    tools/atapi-guest-test.py: a DOS program drives the ATAPI drive
 #                  on the selftest's flipped-sector cue by PIO (patch 51); every
-#                  reply identical to discx's at byte-count limits 512 and 65534
+#                  reply identical to discx's at byte-count limits 512 and 65534,
+#                  then the disc shelf (patch 52) and a second boot running the
+#                  real CDSHELF.COM against it
 #   x87-guest      tools/x87-guest-test.py: a DOS x87 battery under TCG,
 #                  identical with the fast path on and off (needs nasm,
 #                  mtools and the FreeDOS floppy the tool fetches on first use)

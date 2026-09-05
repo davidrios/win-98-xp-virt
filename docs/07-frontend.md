@@ -35,6 +35,18 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   property of the person, not of the machine that installed it first. A
   machine keeps only which disc is in its drive at boot; the rest are
   swapped in while it runs. One-click guest-tools ISO attach.
+- **The shelf from inside the guest** (`CDSHELF`, guest-tools ISO): the
+  same shelf, listed and swapped from a program running in the guest — a
+  disc-2 prompt in a game is answered without leaving it. The channel is a
+  vendor ATAPI command on the machine's own CD-ROM drive (opcode 0xD0,
+  patch 52, protocol `cdshelf/cdshelf_proto.h`), because that drive is the
+  one thing DOS, Win98 and XP can all send a raw command to — PIO, ASPI
+  and SPTI respectively — and its firmware is ours. No new device, no
+  guest driver, and a machine started without a shelf answers ILLEGAL
+  REQUEST, which the program reports as "this drive has no shelf". The
+  launcher publishes the shelf to a flat file beside the machine's monitor
+  socket at spawn and on every edit, so a disc added while the guest runs
+  appears in its next listing.
 - Snapshots UI, bundle import/export.
 - UI toolkit: **egui/eframe** (decided at M6, 2026-09-04 — see
   `docs/tracks/m6-launcher.md`). MIT/Apache-2.0 fits the project's
