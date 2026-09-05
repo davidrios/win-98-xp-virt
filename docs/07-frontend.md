@@ -38,10 +38,15 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   bundle as `accel`: *Automatic* becomes QEMU's own `accel=kvm:tcg`
   fallback rather than anything the launcher probes, so it cannot be
   wrong at spawn time; the form says separately whether this host has
-  KVM, since "Automatic" otherwise means something invisible. Emulation
-  stays a first-class choice — it is the era-CPU behaviour docs 13 and
-  16's fast paths are tuned for, and the honest setting for Win98, which
-  KVM runs at host speed straight into Win9x's own fast-CPU bugs.
+  KVM, since "Automatic" otherwise means something invisible.
+  **The default is per family: Win98 is emulated, XP is automatic.** KVM
+  runs a guest at host speed, and doc 06's `pentium3` model does not
+  protect Win9x from its own fast-CPU bugs — it is the speed that trips
+  them — while emulation is also the path docs 13 and 16's x87/SSE fast
+  paths exist for, i.e. the configuration Win98 is actually tuned and
+  tested on here. A bundle with no `accel` field follows its family
+  rather than a fixed default, so nothing written before the field
+  existed silently changes how it runs.
 - **Disc shelf:** the user's disc images, labelled, shared by every machine
   (`discs.toml` beside the machine and shader-profile libraries) — a rip is a
   property of the person, not of the machine that installed it first. A

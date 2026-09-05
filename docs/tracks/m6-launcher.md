@@ -952,8 +952,17 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   someone has set a number*, after which it is left alone
   (`Wizard::ram_chosen`).
 
-  **Acceleration** is new: `Machine::accel` = `auto` (default) | `kvm` |
-  `tcg`, and `qemu_args` turns it into `-machine pc,accel=…`.
+  **Acceleration** is new: `Machine::accel` = `auto` | `kvm` | `tcg`, and
+  `qemu_args` turns it into `-machine pc,accel=…`. **The default is per
+  family** (`bundle::default_accel`, user request the same day): **Win98
+  is emulated, XP is automatic.** KVM runs the guest at host speed, and
+  the `pentium3` model does not protect Win9x from its own fast-CPU bugs
+  — it is the speed that trips them — while TCG is also the path docs 13
+  and 16's fast paths exist for, so it is what Win98 is actually tuned
+  and tested on here. The field is `Option<Accel>` and absent means "this
+  family's default" rather than a fixed value, so a bundle written before
+  it existed keeps running the way it always did instead of silently
+  acquiring KVM; anything the form saves carries an explicit value.
   - `auto` becomes **QEMU's own `kvm:tcg` fallback list**, not a
     `/dev/kvm` probe on our side. A probe's answer can be stale by the
     time the player spawns (permissions, a module unloaded), and QEMU's
@@ -978,11 +987,17 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   read back from the TOML and through `--print-args`
   (`-machine pc,accel=kvm:tcg` / `accel=kvm` / `accel=tcg`, `-m 1536`); a
   Win98 machine asked for 4096 MB came back clamped to 512. **The
-  accelerator actually engaging:** the real `player` binary spawned on
-  each of the three settings and asked over the launcher's own QMP
-  socket — `query-kvm` returns `enabled: true` for `auto` and `kvm`, and
+  defaults:** `--wizard-new win98` writes `accel = "tcg"` / 256 MB and
+  `--wizard-new xp` writes `accel = "auto"` / 512 MB, translating to
+  `accel=tcg` and `accel=kvm:tcg`; a bundle with the `accel` line
+  *deleted* translates the same way for each family. **The accelerator
+  actually engaging:** the real `player` binary spawned on each of the
+  three settings and asked over the launcher's own QMP socket —
+  `query-kvm` returns `enabled: true` for `auto` and `kvm`, and
   `enabled: false` for `tcg`. That is QEMU's own answer from inside the
-  in-process embed library, not an inference from the argument list.
+  in-process embed library, not an inference from the argument list. A
+  default Win98 bundle, and a Win98 bundle with no `accel` field at all,
+  both boot with `enabled: false` without anyone choosing emulation.
   **The widgets:** a new `--diag-wizard-frame new <family> | edit
   <machine.toml>` verb runs the real form through `egui::Context::run_ui`
   with synthetic clicks (the track's standing practice) — the dumps show
@@ -991,7 +1006,12 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   disappearing with it), a typed 384 enabling the "Default" button and
   that button putting 256 back, a family switch moving an untouched value
   and leaving a chosen one at 384, and the edit form opening on the
-  stored 1536 MB / "KVM (required)".
+  stored 1536 MB / "KVM (required)". After the per-family default landed:
+  the Win98 form opens on "Emulation" (with no fast-CPU warning, since it
+  no longer applies), switching that form to XP moves *both* untouched
+  defaults at once (256→512 MB, Emulation→Automatic), and a deliberately
+  chosen "KVM (required)" survives the same switch — with its own
+  "Default" button now offered next to the picker.
 
   One bug found by this and fixed: `Wizard::with_new_disk` (the headless
   constructor behind `--wizard-new`) sets the family directly, so it

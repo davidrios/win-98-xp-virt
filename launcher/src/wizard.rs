@@ -38,6 +38,10 @@ pub struct Wizard {
     /// it away.
     ram_chosen: bool,
     accel: Accel,
+    /// Same as `ram_chosen`, for the accelerator: until someone picks
+    /// one, the family's own default follows the family (Win98 is
+    /// emulated, XP is automatic — `bundle::default_accel`).
+    accel_chosen: bool,
     existing_disk: bool,
     disk_path: String,
     disk_size_gb: u32,
@@ -60,7 +64,8 @@ impl Default for Wizard {
             name: String::new(),
             ram_mb: bundle::default_ram_mb(Family::Win98),
             ram_chosen: false,
-            accel: Accel::default(),
+            accel: bundle::default_accel(Family::Win98),
+            accel_chosen: false,
             existing_disk: false,
             disk_path: String::new(),
             disk_size_gb: 2,
@@ -86,6 +91,7 @@ impl Wizard {
         self.open_fresh();
         self.family = family;
         self.ram_mb = bundle::default_ram_mb(family);
+        self.accel = bundle::default_accel(family);
     }
 
     /// Open the form pre-filled from an existing bundle, to edit it in
@@ -100,7 +106,8 @@ impl Wizard {
             // an existing machine's RAM is a chosen value, whatever it
             // came from: changing family must not rewrite it
             ram_chosen: true,
-            accel: machine.accel,
+            accel: machine.effective_accel(),
+            accel_chosen: true,
             existing_disk: true,
             disk_path: machine.disk.display().to_string(),
             install_media: machine.boot_disc().map(|d| d.display().to_string()).unwrap_or_default(),
@@ -127,6 +134,7 @@ impl Wizard {
 
     pub fn set_accel(&mut self, accel: Accel) {
         self.accel = accel;
+        self.accel_chosen = true;
     }
 
     /// Headless construction (a debug verb; see `main.rs`'s `--wizard-new`)
@@ -139,6 +147,7 @@ impl Wizard {
             name,
             disk_size_gb,
             ram_mb: bundle::default_ram_mb(family),
+            accel: bundle::default_accel(family),
             ..Default::default()
         }
     }
@@ -175,8 +184,14 @@ impl Wizard {
                         ui.selectable_value(&mut self.family, Family::Win98, "Win98");
                         ui.selectable_value(&mut self.family, Family::Xp, "XP");
                     });
-                if self.family != was && !self.ram_chosen {
-                    self.ram_mb = bundle::default_ram_mb(self.family);
+                if self.family != was {
+                    // whatever nobody has chosen follows the family
+                    if !self.ram_chosen {
+                        self.ram_mb = bundle::default_ram_mb(self.family);
+                    }
+                    if !self.accel_chosen {
+                        self.accel = bundle::default_accel(self.family);
+                    }
                 }
                 ui.horizontal(|ui| {
                     ui.label("Name");
@@ -279,7 +294,9 @@ impl Wizard {
     /// picker alone would leave "Automatic" meaning something invisible.
     fn accel_ui(&mut self, ui: &mut egui::Ui) {
         let have_kvm = crate::player::kvm_available();
+        let default = bundle::default_accel(self.family);
         ui.horizontal(|ui| {
+            let was = self.accel;
             egui::ComboBox::from_label("Acceleration")
                 .selected_text(match self.accel {
                     Accel::Auto => "Automatic",
@@ -291,6 +308,13 @@ impl Wizard {
                     ui.selectable_value(&mut self.accel, Accel::Kvm, "KVM (required)");
                     ui.selectable_value(&mut self.accel, Accel::Tcg, "Emulation");
                 });
+            if self.accel != was {
+                self.accel_chosen = true;
+            }
+            if ui.add_enabled(self.accel != default, egui::Button::new("Default")).clicked() {
+                self.accel = default;
+                self.accel_chosen = false;
+            }
         });
         match (self.accel, have_kvm) {
             (Accel::Auto, true) => ui.small("KVM is available on this host and will be used."),
@@ -319,7 +343,7 @@ impl Wizard {
                 name: self.name.clone(),
                 family: self.family,
                 ram_mb: self.ram_mb,
-                accel: self.accel,
+                accel: Some(self.accel),
                 disk,
                 disc: None,
                 discs: Vec::new(),
@@ -337,7 +361,10 @@ impl Wizard {
         // machine is exactly the bug that produced.
         machine.ram_mb =
             if self.ram_chosen { self.ram_mb } else { bundle::default_ram_mb(self.family) };
-        machine.accel = self.accel;
+        // Written out explicitly either way: what the form showed is what
+        // the machine gets, even when it is the family's own default.
+        machine.accel =
+            Some(if self.accel_chosen { self.accel } else { bundle::default_accel(self.family) });
         machine.shader_profile = self.shader_profile.clone();
         // The single slot this form has is the machine's *boot* disc;
         // everything else lives on the shared shelf (`disc_library.rs`),

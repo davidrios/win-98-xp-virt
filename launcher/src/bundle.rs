@@ -43,10 +43,14 @@ pub struct Machine {
     pub name: String,
     pub family: Family,
     pub ram_mb: u32,
-    /// How to execute the guest. Defaults to `Auto` so bundles written
-    /// before this field existed keep working (and pick up KVM).
-    #[serde(default)]
-    pub accel: Accel,
+    /// How to execute the guest, or `None` for "whatever this family
+    /// runs as" (`default_accel`). Absent rather than defaulted, so a
+    /// bundle written before this field existed follows its family
+    /// instead of silently acquiring KVM — which for a Win98 machine
+    /// would be a *change* to how it had been running. Anything this
+    /// launcher saves carries an explicit value: the form always has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accel: Option<Accel>,
     /// Primary IDE hard disk (qcow2).
     pub disk: PathBuf,
     /// The disc in the CD-ROM drive when the machine boots, if any. Just
@@ -71,6 +75,21 @@ pub struct Machine {
     /// `None` uses the app default.
     #[serde(default)]
     pub shader: Option<PathBuf>,
+}
+
+/// How a family runs unless the machine says otherwise.
+///
+/// **Win98 is emulated by default.** KVM runs the guest at host speed,
+/// and doc 06's `pentium3` model does not protect against Win9x's
+/// fast-CPU bugs — it is the *speed* that trips them, not the CPUID. TCG
+/// is also the path this project's own x87/SSE fast paths (docs 13, 16)
+/// exist for, so it is the configuration Win98 is actually tuned and
+/// tested on here. XP has none of those problems and wants the speed.
+pub fn default_accel(family: Family) -> Accel {
+    match family {
+        Family::Win98 => Accel::Tcg,
+        Family::Xp => Accel::Auto,
+    }
 }
 
 /// doc 06's RAM default for a family.
@@ -100,7 +119,7 @@ impl Machine {
             name,
             family,
             ram_mb: default_ram_mb(family),
-            accel: Accel::default(),
+            accel: Some(default_accel(family)),
             disk,
             disc: None,
             discs: Vec::new(),
@@ -149,11 +168,17 @@ impl Machine {
     /// accelerator, and listing it there would print a warning on every
     /// boot for nothing.
     fn accel_list(&self) -> &'static str {
-        match self.accel {
+        match self.effective_accel() {
             Accel::Auto if cfg!(target_os = "linux") => "kvm:tcg",
             Accel::Auto | Accel::Tcg => "tcg",
             Accel::Kvm => "kvm",
         }
+    }
+
+    /// What this machine actually runs as: its own setting, or its
+    /// family's (`default_accel`) when the bundle doesn't say.
+    pub fn effective_accel(&self) -> Accel {
+        self.accel.unwrap_or_else(|| default_accel(self.family))
     }
 
     pub fn qemu_args(&self, pc_bios_dir: &Path, shelf: Option<&Path>) -> Vec<String> {
