@@ -280,7 +280,8 @@ picture and the track rules, then this file, then doc 15.
   text); **the driver must be reinstalled from the ISO in the user's
   image**. Enter during the Bink intro movie crashes the game on XP's
   inbox cirrus driver just the same (`VGA=cirrus` control): the game's,
-  not ours (doc 15). Not yet: played past the menu.
+  not ours (doc 15). **User-confirmed the same night: GTA 2 works on
+  `winxp-m7g` with the reinstalled driver.**
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
