@@ -2,7 +2,12 @@
 name = "launcher"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# Deliberately NOT the workspace's `GPL-2.0-only` (ADR-009): this binary
+# links no QEMU code — it spawns the player as a separate process — and
+# it does link Apache-2.0 crates (egui's `ab_glyph`, winit's `dpi`,
+# `ring` under `ureq`'s rustls), which GPLv2 cannot take and GPLv3 can.
+# "or-later" lets the combined binary be distributed under v3.
+license = "GPL-2.0-or-later"
 description = "Companion launcher: machine library, guided creation, disc shelf (doc 07). M6: egui skeleton."
 
 [dependencies]

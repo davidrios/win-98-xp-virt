@@ -1131,30 +1131,37 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   modal and needs a human, so the verb checks the decision, not the
   dialog (`--pick-file` covers that).
 
-  **Open licence question for packaging (step 6), raised by this
-  change.** `ureq`'s TLS is `rustls`, whose crypto provider here is
-  `ring` — declared **`Apache-2.0 AND ISC`**, and Apache-2.0 is
-  incompatible with **GPLv2** (the patent-termination clause; it is
-  compatible with GPLv3). This workspace is `GPL-2.0-only`, so a
-  distributed launcher binary would carry a conflict. Nothing else new
-  here is a problem (`ureq`/`tar`/`flate2` are MIT OR Apache-2.0,
-  `rustls` is Apache OR ISC OR MIT, `rustls-webpki` and `untrusted` are
-  ISC, `webpki-roots` is CDLA-Permissive-2.0 root-certificate *data*),
-  and the alternatives are no better: `aws-lc-rs` brings the OpenSSL
-  licence in, and `native-tls` on Linux is OpenSSL 3, also Apache-2.0.
-  Three ways out, for the copyright holder to pick:
-  1. **License the `launcher` crate `GPL-2.0-or-later`** (or something
-     permissive) instead of inheriting the workspace's `GPL-2.0-only`.
-     It is a standalone binary that links *no* QEMU code — it spawns the
-     player as a separate process — so the GPL-2.0-only pin exists for
-     the player and `qemu-embed`, not for it.
-  2. **Move the download out of process** (`curl`, or the user's `git`),
-     which removes the linking question entirely at the cost of a
-     runtime dependency on a binary that is present but not guaranteed.
-  3. Ship without the button on platforms where that matters and treat
-     the presets as a packaging payload instead.
-  Nothing is blocked today — the code works and this repo distributes no
-  binaries yet — but step 6 cannot ship a launcher without answering it.
+- **The launcher is `GPL-2.0-or-later`** (user decision, 2026-09-05,
+  **ADR-009**), taken because the preset downloader put a licence
+  question on the table. `ureq`'s rustls uses `ring`
+  (`Apache-2.0 AND ISC`), and Apache-2.0 is incompatible with GPLv2 —
+  fine with GPLv3 — while the workspace was `GPL-2.0-only` throughout.
+
+  Looking properly showed the download was not the cause. The launcher's
+  tree already carried Apache-2.0-with-no-alternative crates from the
+  day it became an egui app: `ab_glyph`, `ab_glyph_rasterizer`,
+  `accesskit_winit`, `glutin` (egui/eframe) and `dpi` (winit,
+  `Apache-2.0 AND MIT`). `ring` only made someone look. Everything else
+  new here is permissive or dual-licensed (`ureq`/`tar`/`flate2` MIT OR
+  Apache-2.0, `rustls` Apache OR ISC OR MIT, `rustls-webpki` and
+  `untrusted` ISC, `webpki-roots` CDLA-Permissive-2.0 root-certificate
+  *data*).
+
+  `launcher` and **`shader-chain`** now declare `GPL-2.0-or-later`;
+  everything that links QEMU (`player`, `qemu-embed`) and `libdisc`,
+  compiled into QEMU itself, stay `GPL-2.0-only`. The launcher may do
+  this because it links no QEMU code — it spawns the player as a
+  separate process (doc 07's "the launcher is optional"), so the
+  v2-only pin was never about it. `shader-chain` had to move with it:
+  it is linked into both binaries, and relicensing the launcher is worth
+  nothing if a v2-only crate rides along into the same one; "or later"
+  still combines into the player's v2-only whole exactly as before.
+
+  **Not settled by this, and worth its own pass:** the *player* has the
+  same Apache-2.0 exposure (`ab_glyph` via its egui overlay, `cpal`,
+  `codespan-reporting` via naga) and cannot take "or later" because it
+  links QEMU. There is also no `COPYING` in the tree — only Cargo
+  metadata and the README section.
 
 - **CDSHELF grew a face, and always ejects first** (user, 2026-09-05,
   after running it in Win98: *"it worked, but can't you make a gui

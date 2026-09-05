@@ -249,3 +249,47 @@ chosen, resources are host objects, nothing in it knows about COM). The
 executor grows the DDI-shaped operations M7b/c need (blits between
 surfaces, DP2 semantics such as per-primitive vertex buffers) when those
 stages start, not before.
+
+## ADR-009: The launcher (and `shader-chain`) are GPL-2.0-or-later (2026-09-05)
+
+**Decision.** `launcher` and `shader-chain` declare `GPL-2.0-or-later`
+instead of the workspace's `GPL-2.0-only`. Everything that links QEMU —
+`player`, `qemu-embed` — and `libdisc`, which is compiled into QEMU
+itself, stay `GPL-2.0-only`.
+
+**Why.** The launcher's dependency tree contains crates licensed
+**Apache-2.0 with no alternative**, and Apache-2.0 is incompatible with
+GPLv2 (the patent-termination clause) while being fine with GPLv3. It is
+not one stray crate and it did not arrive with the preset downloader:
+egui/eframe brings `ab_glyph`, `ab_glyph_rasterizer`, `accesskit_winit`
+and `glutin`; winit brings `dpi` (`Apache-2.0 AND MIT` — an *and*); the
+download added `ring` (`Apache-2.0 AND ISC`) under `ureq`'s rustls. The
+conflict was there from the day the launcher was an egui app; the
+downloader is what made someone look. `GPL-2.0-or-later` resolves it,
+because a recipient may take the combined binary under v3.
+
+The launcher can do this and the player cannot: **the launcher links no
+QEMU code.** It writes bundles, spawns `player` as a separate process
+and talks to it over a QMP socket (doc 07 — the launcher is optional by
+design). The `GPL-2.0-only` pin exists for the in-process QEMU library,
+which the launcher never touches. `shader-chain` moves with it because
+it is linked into *both* binaries: relicensing the launcher would be
+worth nothing if a v2-only crate rode along into the same binary, and
+"or later" still combines into the player's v2-only whole exactly as
+before.
+
+**What this does not settle.** The *player* has the same Apache-2.0
+exposure — `ab_glyph` (egui overlay), `cpal` (audio), `codespan-
+reporting` (via naga) — and it links QEMU, so "or later" is not
+available to it. That is a real open question for anyone distributing
+player binaries, not something this ADR fixes; it needs its own pass
+over which of those crates are replaceable. There is also no `COPYING`
+or per-crate licence file in the tree yet, only the Cargo metadata and
+the README section.
+
+**Alternatives rejected.** Moving the preset download out of process
+(`curl`/`git`) removes one instance and leaves the egui/winit ones
+standing. `aws-lc-rs` in place of `ring` brings the OpenSSL licence in;
+`native-tls` on Linux *is* OpenSSL 3, also Apache-2.0. Shipping the
+presets as a packaging payload was rejected on its merits anyway: the
+collection is 80 MB unpacked and is upstream's to update.

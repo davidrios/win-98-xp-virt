@@ -2,7 +2,12 @@
 name = "shader-chain"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# `GPL-2.0-or-later`, not the workspace's `GPL-2.0-only` (ADR-009), because
+# this crate is linked into the *launcher* as well as the player, and the
+# launcher's relicensing is worth nothing if a v2-only crate rides along
+# into the same binary. Nothing is lost on the player's side: "or later"
+# combines into its GPL-2.0-only whole exactly as before.
+license = "GPL-2.0-or-later"
 description = "librashader (RetroArch slang) filter chain on wgpu, shared by the player (doc 03's CRT pass) and the launcher's shader profile preview (doc 07)."
 
 [dependencies]

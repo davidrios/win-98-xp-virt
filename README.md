@@ -102,7 +102,16 @@ Actions tab (`workflow_dispatch`).
 
 ## License
 
-GPL-2.0. Non-negotiable in practice: the core links QEMU (GPL-2.0)
-in-process. Original code is Rust wherever possible (see ADR-004 in
+GPL-2.0, non-negotiable in practice for everything that links QEMU
+(GPL-2.0) in-process: the `player`, `qemu-embed`, and `libdisc`, which is
+compiled into QEMU itself.
+
+The **launcher** and the `shader-chain` crate it shares with the player are
+**GPL-2.0-or-later** (ADR-009). The launcher links no QEMU code — it spawns
+the player as a separate process — and it does link Apache-2.0 crates
+(egui's `ab_glyph`, winit's `dpi`, `ring` under `ureq`'s rustls) that GPLv2
+cannot take and GPLv3 can.
+
+Original code is Rust wherever possible (see ADR-004 in
 [decision records](docs/10-decisions.md)); C only inside QEMU/qemu-3dfx and
 in guest-side era code.

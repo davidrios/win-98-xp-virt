@@ -5,6 +5,9 @@ members = ["player", "libdisc", "launcher", "qemu-embed", "shader-chain"]
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
+# The default for crates that link QEMU (`player`, `qemu-embed`) or its
+# device model (`libdisc`). `launcher` and `shader-chain` opt out with
+# `GPL-2.0-or-later` — see ADR-009 in docs/10-decisions.md.
 license = "GPL-2.0-only"
 repository = "https://example.invalid/win98-xp-virt"
 
