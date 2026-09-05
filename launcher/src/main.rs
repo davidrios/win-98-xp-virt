@@ -1,18 +1,41 @@
 //! Companion launcher (doc 07): machine library, guided creation, disc
-//! shelf. M6 skeleton: the library grid (`library.rs`) over the
-//! `machine.toml` bundle format (`bundle.rs`); no guided creation,
-//! spawning a player, or thumbnails yet.
+//! shelf. M6 skeleton: the library grid (`library.rs`) can now spawn a
+//! player (`player.rs`) on the `machine.toml` bundle format (`bundle.rs`);
+//! no guided creation or thumbnails yet.
 
 mod bundle;
 mod library;
+mod player;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Child;
 
 struct LauncherApp {
-    library_dir: std::path::PathBuf,
+    library_dir: PathBuf,
     entries: Vec<library::LibraryEntry>,
+    /// Bundle directory -> its player process, while running. A bundle's
+    /// absence here means "not running" (never tracked as ended-but-kept:
+    /// `try_wait` removes it below the moment it exits).
+    running: HashMap<PathBuf, Child>,
 }
 
 impl eframe::App for LauncherApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // No push notification from a child exiting: poll for it instead.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        self.running.retain(|dir, child| match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                eprintln!("[launcher] {} exited: {status}", dir.display());
+                false
+            }
+            Err(e) => {
+                eprintln!("[launcher] {}: {e}", dir.display());
+                false
+            }
+        });
+
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("win98-xp-virt");
             ui.add_space(8.0);
@@ -24,6 +47,7 @@ impl eframe::App for LauncherApp {
                     ui.strong("Name");
                     ui.strong("Family");
                     ui.strong("Location");
+                    ui.strong("");
                     ui.end_row();
                     for entry in &self.entries {
                         ui.label(&entry.machine.name);
@@ -32,6 +56,16 @@ impl eframe::App for LauncherApp {
                             bundle::Family::Xp => "XP",
                         });
                         ui.label(entry.dir.display().to_string());
+                        if self.running.contains_key(&entry.dir) {
+                            ui.label("Running");
+                        } else if ui.button("Play").clicked() {
+                            match player::spawn(&entry.machine) {
+                                Ok(child) => {
+                                    self.running.insert(entry.dir.clone(), child);
+                                }
+                                Err(e) => eprintln!("[launcher] spawning player for {}: {e}", entry.dir.display()),
+                            }
+                        }
                         ui.end_row();
                     }
                 });
@@ -52,8 +86,14 @@ fn main() -> eframe::Result {
         Some("--print-args") => {
             let path = args.next().expect("usage: launcher --print-args <machine.toml>");
             let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
-            let pc_bios = std::path::Path::new("qemu/pc-bios");
-            println!("{}", machine.qemu_args(pc_bios).join(" "));
+            println!("{}", machine.qemu_args(&player::pc_bios_dir()).join(" "));
+            return Ok(());
+        }
+        Some("--play") => {
+            let path = args.next().expect("usage: launcher --play <machine.toml>");
+            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
+            let child = player::spawn(&machine).expect("spawn player");
+            println!("pid {}", child.id());
             return Ok(());
         }
         Some("--new") => {
@@ -77,6 +117,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "win98-xp-virt launcher",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(LauncherApp { library_dir, entries }))),
+        Box::new(|_cc| Ok(Box::new(LauncherApp { library_dir, entries, running: HashMap::new() }))),
     )
 }

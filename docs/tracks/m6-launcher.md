@@ -91,13 +91,59 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   Running-state and thumbnails are not modeled yet (need step 3's process
   spawning; adding a fake/always-stopped field now would be the kind of
   half-built abstraction CLAUDE.md warns against).
+- **Step 3 (spawn a player) landed:** `launcher/src/player.rs` —
+  `player_binary()` (alongside the launcher's own executable via
+  `current_exe()`; `LAUNCHER_PLAYER_BIN` overrides), `pc_bios_dir()`
+  (`qemu/pc-bios`; `LAUNCHER_PC_BIOS_DIR` overrides — bundling it is a
+  packaging, step 6, concern), `spawn(&Machine)` (builds `qemu_args`,
+  `Command::new(player_binary()).arg("--").args(args).spawn()`).
+  `LauncherApp` gained `running: HashMap<PathBuf, Child>` keyed by
+  bundle dir; each grid row shows a "Play" button or a "Running" label,
+  and `ui()` calls `ctx().request_repaint_after(500ms)` and
+  `try_wait()`s every running child so exited ones drop out of the map
+  without needing a click. **No stop/kill control was added** —
+  CLAUDE.md: a killed VM leaves a dirty FAT, only a guest-side or
+  player-window shutdown should end a run; the launcher only observes.
+  Rust's `Child::drop` neither waits nor kills, which is exactly the
+  independence a spawned player needs.
+
+  Verified end to end for real, not just compiled: built `player` in
+  this worktree by pointing `QEMU_EMBED_LIB_DIR` at the **main
+  checkout's** already-built `build/qemu` (no fresh QEMU build needed —
+  the embed API version matched, both checkouts at 6); created a
+  throwaway empty qcow2 with `qemu-img`; added a `--play <machine.toml>`
+  debug verb that calls the exact same `player::spawn` the "Play"
+  button does. Ran it against a `win98` bundle pointed at the empty
+  disk with `LAUNCHER_PC_BIOS_DIR` aimed at the main checkout's
+  `qemu/pc-bios` (this worktree has no `qemu` submodule checked out —
+  `git submodule status` shows it uninitialized here). The launcher
+  process printed the child pid and exited immediately; the player
+  process reparented to init (`ps` showed `PPID 1`) and kept running —
+  confirmed the independence property, not just asserted it. Screenshot
+  (`grim`) of the real window: SeaBIOS → "No bootable device" → the
+  pcnet NIC's iPXE ROM starting and DHCP-configuring over the bundle's
+  `-netdev user,id=n0 -device pcnet,netdev=n0` — proof the translated
+  args are honored beyond just the disk line. Killed the throwaway
+  process afterward (an empty test disk, no real guest, no dirty-FAT
+  concern).
+
+  **Caveat for the next session:** a plain workspace-wide `cargo build`
+  from this worktree fails on `player` (`unable to find library
+  -lqemu-embed-i386`) because there's no `build/qemu` here — this is
+  pre-existing (CLAUDE.md's build order: prepare/configure/ninja before
+  `cargo build`), not something this session broke. `cargo build -p
+  launcher` (or `cd launcher && cargo build`) succeeds standalone since
+  `launcher` only shells out to `player` at runtime, never links
+  against `qemu-embed`. Testing `player.rs`'s spawn path again needs
+  either `QEMU_EMBED_LIB_DIR=<main checkout>/build/qemu` (fast, reuses
+  what's already built there) or a real `scripts/prepare-qemu.sh &&
+  scripts/configure-qemu.sh && ninja` in this worktree.
 
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
 2. ~~**Library grid**~~ — done above.
-3. **Spawn a player**: launch `player` as a child process pointed at a
-   bundle; surface its running/exited state back in the grid.
+3. ~~**Spawn a player**~~ — done above.
 4. **Guided creation wizard**: family → name → disk size → install media
    → bundle written from doc 06's reference definitions; an advanced
    drawer that edits the raw TOML (never a QEMU command line, per doc 07).
@@ -112,13 +158,19 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
 
 No wired-in test tool exists yet for this track; CLAUDE.md's
 integration/e2e policy still applies once there's a real boundary worth
-guarding against regressions — don't add `#[cfg(test)]` modules. The
-bundle format's `--new`/`--print-args` pair was exercised by hand this
-session (see above) rather than wired into `scripts/test.sh`, since the
-real end-to-end boundary — a bundle actually booting a guest to the
-BIOS/POST screen — needs `build/qemu` prepared in this worktree, which
-step 3 (spawning a player) will need anyway. Do that build then, and add
-a check at that point (e.g. `launcher --new` a bundle against a fresh
-empty qcow2, spawn `player -- $(launcher --print-args …)`, confirm a
-frame via `PLAYER_DUMP_OUT` — no OS install required, just a BIOS
-splash) rather than before.
+guarding against regressions — don't add `#[cfg(test)]` modules.
+`launcher`'s three debug verbs (`--new`, `--print-args`, `--play`) were
+exercised by hand this session (see the state notes above) rather than
+wired into `scripts/test.sh`, because doing that from `scripts/test.sh`
+needs a `build/qemu` in whichever worktree runs it — this one doesn't
+have one (the shared-checkout `QEMU_EMBED_LIB_DIR` trick used above is a
+manual convenience, not something a checked-in script should depend on
+across worktrees). Once this track's worktree does a real
+`prepare-qemu.sh && configure-qemu.sh && ninja`, add a `launcher` check
+to `scripts/test.sh`: `--new` a bundle against a fresh empty qcow2,
+`--play` it, confirm a frame via `PLAYER_DUMP_OUT` (needs `--shader` per
+the player's source — plain `PLAYER_DUMP` or a screendump-equivalent may
+be simpler for a bundle-only check) — no OS install required, just a
+BIOS/iPXE splash — then kill the spawned process (synthetic disk, no
+guest, no dirty-FAT concern) and add the row to `CLAUDE.md`'s testing
+table too.
