@@ -1,11 +1,12 @@
 //! Companion launcher (doc 07): machine library, guided creation, disc
-//! shelf. M6 skeleton: the library grid (`library.rs`) can now spawn a
-//! player (`player.rs`) on the `machine.toml` bundle format (`bundle.rs`);
-//! no guided creation or thumbnails yet.
+//! shelf. M6 skeleton: the library grid (`library.rs`) can spawn a player
+//! (`player.rs`) and create new machines through a wizard (`wizard.rs`)
+//! over the `machine.toml` bundle format (`bundle.rs`); no thumbnails yet.
 
 mod bundle;
 mod library;
 mod player;
+mod wizard;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,12 +19,14 @@ struct LauncherApp {
     /// absence here means "not running" (never tracked as ended-but-kept:
     /// `try_wait` removes it below the moment it exits).
     running: HashMap<PathBuf, Child>,
+    wizard: wizard::Wizard,
 }
 
 impl eframe::App for LauncherApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         // No push notification from a child exiting: poll for it instead.
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
         self.running.retain(|dir, child| match child.try_wait() {
             Ok(None) => true,
             Ok(Some(status)) => {
@@ -71,8 +74,14 @@ impl eframe::App for LauncherApp {
                 });
             }
             ui.add_space(8.0);
-            ui.add_enabled(false, egui::Button::new("New machine…"));
+            if ui.button("New machine…").clicked() {
+                self.wizard.open_fresh();
+            }
         });
+
+        if let Some(_bundle_path) = self.wizard.show(&ctx, &self.library_dir) {
+            self.entries = library::scan(&self.library_dir);
+        }
     }
 }
 
@@ -96,6 +105,23 @@ fn main() -> eframe::Result {
             println!("pid {}", child.id());
             return Ok(());
         }
+        Some("--wizard-new") => {
+            // Headless equivalent of the "New machine" window, for
+            // scripted testing of the wizard's actual create() logic
+            // (disk creation via qemu-img included) without a GUI click.
+            let usage = "usage: launcher --wizard-new <win98|xp> <name> <disk-size-gb>";
+            let family = match args.next().as_deref() {
+                Some("win98") => bundle::Family::Win98,
+                Some("xp") => bundle::Family::Xp,
+                _ => panic!("{usage}"),
+            };
+            let name = args.next().expect(usage);
+            let size_gb: u32 = args.next().expect(usage).parse().expect("disk size must be a number");
+            let w = wizard::Wizard::with_new_disk(family, name, size_gb);
+            let path = w.create(&library::default_dir()).expect("create bundle");
+            println!("{}", path.display());
+            return Ok(());
+        }
         Some("--new") => {
             let usage = "usage: launcher --new <win98|xp> <name> <disk.qcow2>";
             let family = match args.next().as_deref() {
@@ -117,6 +143,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "win98-xp-virt launcher",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(LauncherApp { library_dir, entries, running: HashMap::new() }))),
+        Box::new(|_cc| {
+            Ok(Box::new(LauncherApp {
+                library_dir,
+                entries,
+                running: HashMap::new(),
+                wizard: wizard::Wizard::default(),
+            }))
+        }),
     )
 }

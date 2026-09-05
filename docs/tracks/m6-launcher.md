@@ -138,15 +138,57 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   either `QEMU_EMBED_LIB_DIR=<main checkout>/build/qemu` (fast, reuses
   what's already built there) or a real `scripts/prepare-qemu.sh &&
   scripts/configure-qemu.sh && ninja` in this worktree.
+- **Step 4 (guided creation wizard) landed:** `launcher/src/wizard.rs` —
+  `Wizard` holds the form fields (family, name, existing-disk toggle +
+  path or new-disk size in GB, optional install media, an "advanced"
+  toggle + raw TOML text box). "New machine…" opens it
+  (`egui::Window`); "Create" either builds a `Machine` from
+  `Machine::reference` + the disc-shelf entry and (for a new disk) calls
+  `player::create_disk` first, or — in advanced mode — validates the
+  hand-edited TOML with `toml::from_str::<Machine>` *before* writing it
+  (a bad edit must not silently corrupt the library with an unreadable
+  bundle). Either way it goes through the new `library::reserve_dir`
+  (factored out of `library::create`, which still backs `--new`): the
+  bundle directory is made first so a new disk can be created inside it
+  (`<dir>/disk.qcow2`) before the bundle that references it is written.
+  On success `main.rs` rescans the library so the grid updates
+  immediately, no restart needed.
+
+  A `player::qemu_img_binary()` was added alongside `player_binary()`
+  and `pc_bios_dir()` — `qemu-img` is a QEMU build product, not a
+  workspace binary, so it's found the way test scripts already do
+  (`build/qemu/qemu-img` relative to a checkout, `LAUNCHER_QEMU_IMG_BIN`
+  overrides).
+
+  Verified for real: a `--wizard-new <win98|xp> <name> <disk-size-gb>`
+  debug verb calls the exact same `Wizard::create` the window's button
+  does (`Wizard::with_new_disk` sets the same fields the widgets would).
+  Ran it against `LAUNCHER_QEMU_IMG_BIN` pointed at the main checkout's
+  `build/qemu/qemu-img`: created a real 4 GiB qcow2 *inside* the new
+  bundle's own directory, wrote a `machine.toml` referencing it by
+  absolute path — confirmed by reading both files back. The empty-name
+  validation path was checked too (returns an `Err`, doesn't panic
+  internally — the GUI's `Create` handler catches it into `self.error`).
+  The resulting bundle showed up correctly in the real windowed grid
+  (screenshotted with `grim`): name, family, directory, and a working
+  "Play" button, exactly like a bundle made any other way — `scan()`
+  doesn't care how a `machine.toml` got there. **Not verified by an
+  actual click through the form** — no working mouse-click automation on
+  this Wayland session (`xdotool` doesn't see native Wayland windows, no
+  `ydotool`/`wlrctl` installed) — so the widget wiring itself (checkbox
+  toggling which fields show, the advanced text box, the "Create" button
+  reading current field values) is reviewed but not click-tested; a
+  human should click through it once. The advanced-TOML branch reuses
+  `toml::from_str::<Machine>`, already exercised elsewhere (`scan()`,
+  `Machine::load`), so it wasn't re-tested in isolation.
 
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
 2. ~~**Library grid**~~ — done above.
 3. ~~**Spawn a player**~~ — done above.
-4. **Guided creation wizard**: family → name → disk size → install media
-   → bundle written from doc 06's reference definitions; an advanced
-   drawer that edits the raw TOML (never a QEMU command line, per doc 07).
+4. ~~**Guided creation wizard**~~ — done above (needs a human click-through,
+   see the caveat above).
 5. **Snapshots UI + disc-shelf editing**: once the player exposes QMP
    snapshot/media-change operations for the launcher to drive (may need
    a small IPC surface between the two binaries — design it when this

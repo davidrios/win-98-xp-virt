@@ -36,3 +36,28 @@ pub fn spawn(machine: &Machine) -> std::io::Result<Child> {
     let args = machine.qemu_args(&pc_bios_dir());
     Command::new(player_binary()).arg("--").args(args).spawn()
 }
+
+/// `qemu-img`, a QEMU build product rather than a workspace binary, so it
+/// doesn't sit next to the launcher/player like `player_binary` does;
+/// found the same way test scripts already do (`build/qemu/qemu-img`
+/// relative to a workspace checkout). `LAUNCHER_QEMU_IMG_BIN` overrides
+/// it. Bundling a copy is a packaging (M6 step 6) concern.
+pub fn qemu_img_binary() -> PathBuf {
+    std::env::var("LAUNCHER_QEMU_IMG_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("build/qemu/qemu-img"))
+}
+
+/// Create a new qcow2 disk image for the wizard's "new disk" path.
+pub fn create_disk(path: &std::path::Path, size_gb: u32) -> std::io::Result<()> {
+    let status = Command::new(qemu_img_binary())
+        .args(["create", "-f", "qcow2"])
+        .arg(path)
+        .arg(format!("{size_gb}G"))
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("qemu-img create exited with {status}")))
+    }
+}

@@ -48,12 +48,21 @@ fn slug(dir: &Path, name: &str) -> String {
     candidate
 }
 
+/// Reserve a fresh bundle subdirectory for `name` under `dir` (creating
+/// both), without writing a `machine.toml` yet — for a caller (the
+/// wizard) that needs the directory first, e.g. to create a disk image
+/// inside it before the bundle referencing that disk can be written.
+pub fn reserve_dir(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let machine_dir = dir.join(slug(dir, name));
+    std::fs::create_dir_all(&machine_dir)?;
+    Ok(machine_dir)
+}
+
 /// Create a new bundle under `dir` from doc 06's reference defaults,
 /// returning the path to its `machine.toml`.
 pub fn create(dir: &Path, family: Family, name: String, disk: PathBuf) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let machine_dir = dir.join(slug(dir, &name));
-    std::fs::create_dir_all(&machine_dir)?;
+    let machine_dir = reserve_dir(dir, &name)?;
     let bundle_path = machine_dir.join(BUNDLE_FILE);
     Machine::reference(family, name, disk).save(&bundle_path)?;
     Ok(bundle_path)
