@@ -293,3 +293,88 @@ standing. `aws-lc-rs` in place of `ring` brings the OpenSSL licence in;
 `native-tls` on Linux *is* OpenSSL 3, also Apache-2.0. Shipping the
 presets as a packaging payload was rejected on its merits anyway: the
 collection is 80 MB unpacked and is upstream's to update.
+
+## ADR-010: The player ships as a binary despite the GPLv2/Apache-2.0 conflict (2026-09-05)
+
+**Decision.** The player's dependency tree contains Apache-2.0-only code
+and the player links GPL-2.0-only QEMU. The two are, on the FSF's reading,
+incompatible in one binary. **We ship player binaries anyway** (M6 step 6:
+signed macOS .app, Windows installer, Linux Flatpak), state the position
+in the README and in `THIRD-PARTY-NOTICES.md`, and distribute the complete
+source and build scripts as we always have. This ADR records why that is a
+considered position rather than an oversight.
+
+**The conflict, precisely.** Apache-2.0's patent-termination clause is an
+additional restriction GPLv2 does not permit (it is fine with GPLv3, which
+is why ADR-009 could move the launcher). The player cannot follow the
+launcher, for two independent reasons:
+
+1. *QEMU pins it to v2.* QEMU's LICENSE is encouraging at first read —
+   files with no header are GPLv2-**or-later**, and it says v2-only
+   contributions are accepted only for `bsd-user/`, `linux-user/`,
+   `hw/vfio/`, `hw/xen/xen_pt*`, none of which we link. Scanning the
+   headers of what an i386 softmmu build actually compiles: 411 v2-or-later,
+   605 with no licence header, and **35 genuinely v2-only** — among them
+   `util/bitmap.c` (taken from Linux), `util/qemu-sockets.c`,
+   `migration/migration.h`, `system/runstate-action.c`, and
+   `hw/audio/ac97.c`, which is the XP machine's own sound card. Re-check
+   with `tools/gpl-scan.py` after a QEMU bump; one v2-only file is enough.
+2. *The crates are not swappable.* `winit` and `cpal` could go (SDL2 is
+   Zlib and covers both), but `codespan-reporting` comes with naga and
+   `rspirv`/`spirv` with librashader-reflect, so being clean means dropping
+   **wgpu and librashader** — ADR-005's whole stack, and the CRT chain is
+   the product. Partial removal changes the legal position not at all, so
+   it is not worth doing for licence reasons.
+
+**Why shipping anyway is defensible.** Every GPLv2 program built on the
+modern Rust GUI stack is in this position — `winit` alone settles it — so
+this is a property of the ecosystem, not a careless dependency choice. The
+obligation attaches to distributing the combined binary; the source we
+distribute is complete, buildable and unencumbered, which is the thing GPL
+enforcement actually exists to protect. The residual risk is a strict
+distribution (Debian, Fedora legal) declining to package the player, and a
+QEMU copyright holder objecting — remote, and neither is silenced by any
+alternative short of the process split below.
+
+**Rejected: `dlopen` instead of linking.** `qemu-embed/build.rs` already
+links `libqemu-embed-<target>` as a shared library, and resolving symbols
+later changes nothing: the FSF treats static and dynamic linking alike, and
+our coupling is at the far end of the scale it describes — one address
+space, C structs and function pointers both ways, display callbacks on
+QEMU's own vCPU threads with the BQL held, a lock-free audio ring both
+sides write. The contrary reading (dynamic linking creates no derivative
+work) is held in good faith by competent people and settled nowhere; a
+project whose stance is "everything open source" should not lean on it.
+
+**Rejected for now, and kept on the table: QEMU in its own process.** This
+is the one structurally clean answer — separate address spaces, a versioned
+protocol, each side independently implementable, which is the FSF's own
+"arm's length" description and the shape `d3dpt_proto.h` and
+`cdshelf_proto.h` already have here. **ADR-002 put QEMU in-process for
+latency, and that premise was measured rather than assumed**
+(`tools/ipc-latency-spike.c`, on the x86-64 rig, 16 cores):
+
+| | idle | all cores busy |
+|---|---|---|
+| frame notify round trip, hot loop | p50 8 µs, p99 11 µs | p50 11 µs, p99 15 µs |
+| frame notify @60 Hz, cold receiver | p50 18 µs, p99 226 µs, max 459 µs | p50 17 µs, p99 35 µs, max 2.0 ms |
+| buffer fd over `SCM_RIGHTS`, once per ring slot | 12–43 µs | 17–2800 µs |
+| in-process callback (today) | 0.02 µs | 0.02 µs |
+
+Against a 16.7 ms frame that is 0.1 % typical and ~1.4 % at p99, and with a
+three-slot ring the VM side never blocks on a release. **Latency is not
+what stops this.** What stops it today is the work: the VGA surface would
+have to reach the frontend through shared memory (a patch so QEMU allocates
+its `DisplaySurface` from our mapping, or a dirty-rect copy), macOS would
+need IOSurface handles over a mach port rather than `SCM_RIGHTS`, and the
+lifecycle rules, headless dumps and `tools/xp-game-test.sh` all assume one
+process. The seam is good — `player/src/qemu_vm.rs` is already the only
+module that touches the embed API — so this is a track, not a rewrite.
+Re-run the spike on the M1 Air before committing to it; the answer could
+differ there.
+
+**Consequences.** `COPYING` (GPLv2) and `THIRD-PARTY-NOTICES.md` are now in
+the tree, and the README says the position in plain language so a packager
+meets it up front. If a distribution refuses the player on these grounds,
+that is the signal to open the process-split track, with the numbers above
+already in hand rather than re-derived under pressure.

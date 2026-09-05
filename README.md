@@ -114,4 +114,20 @@ cannot take and GPLv3 can.
 
 Original code is Rust wherever possible (see ADR-004 in
 [decision records](docs/10-decisions.md)); C only inside QEMU/qemu-3dfx and
-in guest-side era code.
+in guest-side era code. The GPLv2 text is in [COPYING](COPYING), and every
+third-party component is listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+**If you package or redistribute the player, read this.** Its dependency
+tree contains **Apache-2.0-only** crates — `winit`, `cpal`, `ab_glyph`,
+`codespan-reporting` and `rspirv` among them — and Apache-2.0 is
+incompatible with GPLv2, which the player is pinned to because it links
+QEMU. This is a property of the modern Rust GUI stack rather than a
+dependency we chose carelessly (`winit` alone settles it), and removing the
+crates individually would change nothing: being clean means dropping wgpu
+and librashader, i.e. the CRT shader chain the project exists for. **We
+ship player binaries anyway**, with complete source and build scripts, and
+the reasoning — including the alternatives measured and rejected — is
+ADR-010. If your distribution's policy can't accept that, please open an
+issue rather than patching around it; the clean fix (QEMU in its own
+process) is designed and costed, not hypothetical.
