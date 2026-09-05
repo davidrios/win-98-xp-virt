@@ -22,10 +22,17 @@ pub struct Machine {
     pub ram_mb: u32,
     /// Primary IDE hard disk (qcow2).
     pub disk: PathBuf,
-    /// The disc shelf, in insertion order. Only the first is attached as
-    /// the boot-time CD-ROM; swapping the rest in at runtime is a player
-    /// feature (QMP media-change) that doesn't exist yet.
+    /// The disc in the CD-ROM drive when the machine boots, if any. Just
+    /// one: the *collection* of discs is the shared shelf
+    /// (`disc_library.rs`), not a per-machine list, and any other disc is
+    /// swapped in at runtime through the monitor (`control.rs`).
     #[serde(default)]
+    pub disc: Option<PathBuf>,
+    /// Superseded by `disc` + the shared shelf. Read so bundles written
+    /// before the shelf became shared still boot the disc they named
+    /// (see `boot_disc`), and so their other entries can be imported
+    /// (`DiscLibrary::import_legacy`); `save` drops it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discs: Vec<PathBuf>,
     /// A named shader profile (`shader_library`) to run this machine
     /// with, by id; `None` uses the app default. Takes precedence over
@@ -46,7 +53,14 @@ impl Machine {
             Family::Win98 => 256, // doc 06: 256 MB default, ≤512 MB hard cap
             Family::Xp => 512,    // doc 06: 512 MB-1 GB default
         };
-        Machine { name, family, ram_mb, disk, discs: Vec::new(), shader_profile: None, shader: None }
+        Machine { name, family, ram_mb, disk, disc: None, discs: Vec::new(), shader_profile: None, shader: None }
+    }
+
+    /// The disc in the drive at boot: `disc`, or the first entry of a
+    /// pre-shared-shelf bundle's `discs` (which is exactly what the old
+    /// `qemu_args` attached).
+    pub fn boot_disc(&self) -> Option<&PathBuf> {
+        self.disc.as_ref().or_else(|| self.discs.first())
     }
 
     pub fn load(path: &Path) -> std::io::Result<Machine> {
@@ -54,8 +68,17 @@ impl Machine {
         toml::from_str(&text).map_err(std::io::Error::other)
     }
 
+    /// Writes the bundle in the current format, which also migrates a
+    /// legacy one: the boot disc moves to `disc` and the old per-machine
+    /// `discs` list is dropped. Its entries aren't lost — the library
+    /// scan imports them onto the shared shelf
+    /// (`DiscLibrary::import_legacy`) before anything here can rewrite a
+    /// bundle.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let mut out = self.clone();
+        out.disc = self.boot_disc().cloned();
+        out.discs.clear();
+        let text = toml::to_string_pretty(&out).map_err(std::io::Error::other)?;
         std::fs::write(path, text)
     }
 
@@ -103,7 +126,7 @@ impl Machine {
         // couldn't be loaded later. The id is what a medium change
         // addresses (`control::CDROM_ID`).
         let mut drive = "if=none,id=cd0,media=cdrom".to_string();
-        if let Some(disc) = self.discs.first() {
+        if let Some(disc) = self.boot_disc() {
             drive.push_str(&format!(",file={}", disc.display()));
         }
         args.extend([

@@ -743,6 +743,50 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   no-op at the qcow2 level. A genuinely failing job does carry `error`,
   confirmed with a bad `snapshot-load`.)
 
+- **The disc shelf became shared** (user request, 2026-09-05): "having
+  one per machine doesn't make much sense". Right — a rip of Blood disc
+  2 is a property of the person, not of the XP box that installed it
+  first; two machines wanting the same disc had to list it twice, and a
+  disc added while setting one machine up was invisible to the next.
+
+  `launcher/src/disc_library.rs` is now the shelf: one flat `discs.toml`
+  beside `machines/` and `shader-profiles/` in the platform data dir
+  (`LAUNCHER_DISC_LIBRARY` overrides), entries being `{label, path}` —
+  **labelled**, because a shelf of `d1.cue`, `disc2.cue`, `cd1.iso` is
+  not a library; the label defaults to the file stem and is editable in
+  place. All a machine keeps is `Machine::disc`, the single disc in its
+  drive at boot; `Machine::discs` survives only to read pre-existing
+  bundles (`boot_disc()` falls back to its first entry) and `save()`
+  drops it, so a bundle migrates the first time anything writes it.
+  Nothing is lost in between: `DiscLibrary::import_legacy` folds every
+  legacy `discs` entry onto the shared shelf at startup, deduplicated by
+  path so it can just run every time.
+
+  `discshelf.rs` is one window with two modes. From the bottom button row
+  ("Disc shelf…") it manages the collection — add, label, remove. From a
+  machine's row ("Discs…") it shows the same shelf plus that machine's
+  two disc decisions: a per-row **Boot** toggle (a bundle edit) and,
+  while the machine runs, a per-row **Insert** (a monitor command). The
+  shelf is deliberately *not* filtered per machine — any disc can go in
+  any drive. Library edits save as they're made; there's no Save button,
+  because a shelf is a list of things you own, not a document being
+  drafted.
+
+  Verified through the widgets again (`--diag-shelf-frame` now takes
+  `shelf` in place of a bundle for the library-only mode): the migration
+  moved four discs off a legacy bundle and was idempotent on a second
+  run; a click on row 2's "Boot" wrote `disc = …/disc1.iso` to the
+  bundle, highlighted that row only and updated both the header and the
+  status line; `--print-args` attaches the chosen disc, and "Boot with an
+  empty tray" leaves `if=none,id=cd0,media=cdrom` with no `file=`; a
+  label typed into a row persisted to `discs.toml`; the bundle's
+  `ram_mb`/`shader`/`shader_profile` survived every write. The headless
+  verbs are now `--discs [add <disc>|+tools|remove <disc>]` and
+  `--boot-disc <machine.toml> <disc|none>` (replacing `--disc-shelf`).
+  One layout bug found by the dumps: a bare `TextEdit` in a grid cell
+  claims almost no width, so the label column collapsed to five
+  characters — `add_sized`, not `desired_width`.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.

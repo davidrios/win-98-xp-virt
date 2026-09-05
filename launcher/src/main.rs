@@ -6,6 +6,7 @@
 
 mod bundle;
 mod control;
+mod disc_library;
 mod discshelf;
 mod filepicker;
 mod library;
@@ -24,6 +25,9 @@ use std::process::Child;
 struct LauncherApp {
     library_dir: PathBuf,
     entries: Vec<library::LibraryEntry>,
+    /// The shared disc shelf's file (`disc_library.rs`). The window
+    /// re-reads it whenever it opens, so nothing here caches the discs.
+    disc_library_path: PathBuf,
     shader_profiles_dir: PathBuf,
     shader_profiles: Vec<shader_library::ProfileEntry>,
     /// Bundle directory -> its player process, while running. A bundle's
@@ -109,9 +113,12 @@ impl eframe::App for LauncherApp {
                             if ui.button("Edit…").clicked() {
                                 self.wizard.open_edit(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
                             }
-                            let discs = entry.machine.discs.len();
-                            if ui.button(format!("Discs ({discs})…")).clicked() {
-                                self.disc_shelf.open_for(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
+                            if ui.button("Discs…").clicked() {
+                                self.disc_shelf.open_for(
+                                    &entry.machine,
+                                    entry.dir.join(library::BUNDLE_FILE),
+                                    &self.disc_library_path,
+                                );
                             }
                             if ui.button("Snapshots…").clicked() {
                                 let running = self.running.contains_key(&entry.dir);
@@ -126,6 +133,9 @@ impl eframe::App for LauncherApp {
             ui.horizontal(|ui| {
                 if ui.button("New machine…").clicked() {
                     self.wizard.open_fresh();
+                }
+                if ui.button("Disc shelf…").clicked() {
+                    self.disc_shelf.open_library(&self.disc_library_path);
                 }
                 if ui.button("Shader profiles…").clicked() {
                     self.shader_manager.open_list();
@@ -334,6 +344,27 @@ fn parse_script(spec: &str) -> Vec<DiagAction> {
         .collect()
 }
 
+/// Bundles written before the disc shelf became shared carry their own
+/// per-machine `discs` list. Fold those onto the shared shelf so nothing
+/// the user added is lost — `DiscLibrary::add` deduplicates by path, so
+/// this is idempotent and can simply run at startup. The bundles
+/// themselves migrate the next time anything saves them
+/// (`Machine::save` writes `disc` and drops `discs`).
+fn import_legacy_discs(entries: &[library::LibraryEntry], library_path: &std::path::Path) {
+    match disc_library::DiscLibrary::load(library_path) {
+        Ok(mut discs) => {
+            let added = discs.import_legacy(entries);
+            if added > 0 {
+                match discs.save(library_path) {
+                    Ok(()) => eprintln!("[discs] moved {added} disc(s) from machine bundles onto the shared shelf"),
+                    Err(e) => eprintln!("[discs] {}: {e}", library_path.display()),
+                }
+            }
+        }
+        Err(e) => eprintln!("[discs] {}: {e}", library_path.display()),
+    }
+}
+
 fn main() -> eframe::Result {
     // Debug/advanced-drawer aids (doc 07), until the wizard exists:
     // `--new` bootstraps a bundle into the library from the doc 06
@@ -404,29 +435,52 @@ fn main() -> eframe::Result {
             println!("{}", saved.display());
             return Ok(());
         }
-        Some("--disc-shelf") => {
-            // Headless equivalent of the "Discs…" window: with no discs
-            // given it prints the current shelf, otherwise it sets the
-            // shelf to the given paths (in order — the first is the boot
-            // disc) and calls the same `save()` the "Save" button does.
-            // `+tools` stands for the "Add guest-tools ISO" button.
-            let usage = "usage: launcher --disc-shelf <machine.toml> [<disc>|+tools ...]";
+        Some("--discs") => {
+            // Headless equivalent of the shelf window: with no arguments
+            // it prints the shared shelf, otherwise it runs the same
+            // `add`/`remove` the buttons do. `+tools` stands for the
+            // "Add guest-tools ISO" button.
+            let library_path = disc_library::default_path();
+            import_legacy_discs(&library::scan(&library::default_dir()), &library_path);
+            let mut shelf = discshelf::DiscShelf::default();
+            shelf.open_library(&library_path);
+            let mut removing = false;
+            for arg in args {
+                match arg.as_str() {
+                    "add" => removing = false,
+                    "remove" => removing = true,
+                    "+tools" => shelf.add(disc_library::guest_tools_iso().expect("no guest-tools ISO built")),
+                    other if removing => shelf.remove(std::path::Path::new(other)),
+                    other => shelf.add(other.into()),
+                }
+            }
+            // The window saves at the end of the frame it was edited in;
+            // headlessly there is no frame, so flush explicitly.
+            shelf.flush().expect("save the shelf");
+            if let Err(e) = shelf.last_result() {
+                eprintln!("[discs] {e}");
+            }
+            for disc in shelf.discs() {
+                println!("{}\t{}", disc.label, disc.path.display());
+            }
+            return Ok(());
+        }
+        Some("--boot-disc") => {
+            // Headless equivalent of a row's "Boot" button: which disc
+            // is in the machine's drive when it starts.
+            let usage = "usage: launcher --boot-disc <machine.toml> <disc|none>";
             let path: PathBuf = args.next().expect(usage).into();
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let mut shelf = discshelf::DiscShelf::default();
-            shelf.open_for(&machine, path.clone());
-            let discs: Vec<PathBuf> = args
-                .map(|a| match a.as_str() {
-                    "+tools" => discshelf::guest_tools_iso().expect("no guest-tools ISO built"),
-                    other => other.into(),
-                })
-                .collect();
-            if !discs.is_empty() {
-                shelf.set_discs(discs);
-                shelf.save().expect("save shelf");
-            }
-            for (i, disc) in shelf.discs().iter().enumerate() {
-                println!("{}{}", if i == 0 { "boot " } else { "     " }, disc.display());
+            shelf.open_for(&machine, path, &disc_library::default_path());
+            let disc = args.next().expect(usage);
+            shelf.set_boot(if disc == "none" { None } else { Some(disc.into()) });
+            match shelf.last_result() {
+                Ok(status) => println!("{}", status.unwrap_or("(nothing happened)")),
+                Err(e) => {
+                    eprintln!("[boot-disc] {e}");
+                    std::process::exit(1);
+                }
             }
             return Ok(());
         }
@@ -565,7 +619,7 @@ fn main() -> eframe::Result {
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let what = args.next().expect(usage);
             let mut shelf = discshelf::DiscShelf::default();
-            shelf.open_for(&machine, path);
+            shelf.open_for(&machine, path, &disc_library::default_path());
             if what == "eject" {
                 shelf.eject_live();
             } else {
@@ -667,14 +721,14 @@ fn main() -> eframe::Result {
         }
         Some("--diag-shelf-frame") => {
             // Diagnostic only: runs the *real* disc-shelf window through
-            // egui headlessly, applies synthetic clicks (↑/↓/Remove/Add/
-            // Save — read their positions off a dump with no clicks
-            // first), dumps the composited frame and prints the resulting
-            // shelf. That's what proves the buttons are wired to the list
-            // they appear next to, in a session with no GUI click
-            // automation to try it by hand.
+            // egui headlessly, applies synthetic clicks (Boot/Insert/
+            // Remove/Add — read their positions off a dump with no
+            // clicks first), dumps the composited frame and prints the
+            // resulting shelf. That's what proves the buttons are wired
+            // to the row they appear next to, in a session with no GUI
+            // click automation to try it by hand.
             let usage =
-                "usage: launcher --diag-shelf-frame <machine.toml> <out.png> [<screen WxH>] [<script: x,y click; +text type>] [running]";
+                "usage: launcher --diag-shelf-frame <machine.toml|shelf> <out.png> [<screen WxH>] [<script: x,y click; +text type>] [running]";
             let path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
             let screen = args
@@ -687,17 +741,23 @@ fn main() -> eframe::Result {
             let script = parse_script(&args.next().unwrap_or_default());
             let running = args.next().as_deref() == Some("running");
 
-            let machine = bundle::Machine::load(&path).expect("load bundle");
             let mut shelf = discshelf::DiscShelf::default();
-            shelf.open_for(&machine, path);
+            // `shelf` in place of a bundle opens the window on the
+            // shared shelf alone, the way the bottom row's button does.
+            if path == std::path::Path::new("shelf") {
+                shelf.open_library(&disc_library::default_path());
+            } else {
+                let machine = bundle::Machine::load(&path).expect("load bundle");
+                shelf.open_for(&machine, path, &disc_library::default_path());
+            }
             let render_state = headless_render_state();
             diag_window_frames(&render_state, screen, &script, &out, |ctx| {
                 if let Some(saved) = shelf.show(ctx, running) {
                     println!("saved {}", saved.display());
                 }
             });
-            for (i, disc) in shelf.discs().iter().enumerate() {
-                println!("{}{}", if i == 0 { "boot " } else { "     " }, disc.display());
+            for disc in shelf.discs() {
+                println!("{}\t{}", disc.label, disc.path.display());
             }
             return Ok(());
         }
@@ -798,6 +858,8 @@ fn main() -> eframe::Result {
 
     let library_dir = library::default_dir();
     let entries = library::scan(&library_dir);
+    let disc_library_path = disc_library::default_path();
+    import_legacy_discs(&entries, &disc_library_path);
     let shader_profiles_dir = shader_library::default_dir();
     let shader_profiles = shader_library::scan(&shader_profiles_dir);
     // Debug hook: screenshot the real windowed editor (bypassing the
@@ -819,6 +881,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(LauncherApp {
                 library_dir,
                 entries,
+                disc_library_path,
                 shader_profiles_dir,
                 shader_profiles,
                 running: HashMap::new(),

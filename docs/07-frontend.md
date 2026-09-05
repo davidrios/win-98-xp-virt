@@ -30,8 +30,12 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
 - **Guided creation:** family (Win98/XP) → name → disk size → install media →
   bundle from the reference definitions (doc 06). Advanced drawer edits the
   TOML. Never a QEMU command line.
-- Snapshots UI, disc shelf editing, one-click guest-tools ISO attach, bundle
-  import/export.
+- **Disc shelf:** the user's disc images, labelled, shared by every machine
+  (`discs.toml` beside the machine and shader-profile libraries) — a rip is a
+  property of the person, not of the machine that installed it first. A
+  machine keeps only which disc is in its drive at boot; the rest are
+  swapped in while it runs. One-click guest-tools ISO attach.
+- Snapshots UI, bundle import/export.
 - UI toolkit: **egui/eframe** (decided at M6, 2026-09-04 — see
   `docs/tracks/m6-launcher.md`). MIT/Apache-2.0 fits the project's
   GPL-2.0-only + open-source stance better than Slint's non-GPLv3 tiers;
@@ -63,7 +67,8 @@ QEMU has open corrupts it.
 
 ## Settings taxonomy
 
-- **Per-app:** shader preset library, default hotkeys, telemetry = none.
+- **Per-app:** shader preset library, the disc shelf, default hotkeys,
+  telemetry = none.
 - **Per-machine:** everything in the bundle (hardware, RAM, media, preset
   override, grab behavior).
 - Bundles live in a plain, documented directory layout the user can back up.

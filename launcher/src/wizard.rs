@@ -15,9 +15,8 @@ const DISK_FILTER: filepicker::Filter = ("Disk images", &["qcow2", "img", "raw"]
 const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
 
 /// What editing an existing bundle needs to preserve: fields this form
-/// doesn't expose (RAM, the shader override) and any disc-shelf entries
-/// beyond the first (the form only edits the "install media" slot), so a
-/// quick edit can't silently discard them. `original_toml` is the file's
+/// doesn't expose (RAM, the shader override), so a quick edit can't
+/// silently discard them. `original_toml` is the file's
 /// exact current text, used as the advanced box's starting point instead
 /// of a reconstruction — no information loss even for a field this form
 /// (or a future one) doesn't model.
@@ -25,7 +24,6 @@ struct EditTarget {
     bundle_path: PathBuf,
     ram_mb: u32,
     shader: Option<PathBuf>,
-    extra_discs: Vec<PathBuf>,
     original_toml: String,
 }
 
@@ -82,13 +80,12 @@ impl Wizard {
             name: machine.name.clone(),
             existing_disk: true,
             disk_path: machine.disk.display().to_string(),
-            install_media: machine.discs.first().map(|d| d.display().to_string()).unwrap_or_default(),
+            install_media: machine.boot_disc().map(|d| d.display().to_string()).unwrap_or_default(),
             shader_profile: machine.shader_profile.clone(),
             editing: Some(EditTarget {
                 bundle_path,
                 ram_mb: machine.ram_mb,
                 shader: machine.shader.clone(),
-                extra_discs: machine.discs.iter().skip(1).cloned().collect(),
                 original_toml,
             }),
             ..Default::default()
@@ -218,6 +215,7 @@ impl Wizard {
                 family: self.family,
                 ram_mb: edit.ram_mb,
                 disk,
+                disc: None,
                 discs: Vec::new(),
                 shader_profile: None,
                 shader: edit.shader.clone(),
@@ -225,12 +223,12 @@ impl Wizard {
             None => Machine::reference(self.family, self.name.clone(), disk),
         };
         machine.shader_profile = self.shader_profile.clone();
-        if !self.install_media.trim().is_empty() {
-            machine.discs.push(self.install_media.clone().into());
-        }
-        if let Some(edit) = &self.editing {
-            machine.discs.extend(edit.extra_discs.iter().cloned());
-        }
+        // The single slot this form has is the machine's *boot* disc;
+        // everything else lives on the shared shelf (`disc_library.rs`),
+        // which `submit` also adds this one to.
+        machine.disc = Some(self.install_media.trim())
+            .filter(|m| !m.is_empty())
+            .map(PathBuf::from);
         machine
     }
 
