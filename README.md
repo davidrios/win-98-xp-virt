@@ -66,6 +66,10 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   each press is held PLAYER_KEYS_HOLD frames (default 6 ≈ 100 ms) — a down+up in one flush is a
 #   zero-length press that a game polling the keyboard state never sees
 # PLAYER_AUDIO_NULL=1 keeps the audio ring without a device and logs QEMU's writes
+# PLAYER_AUDIO_MS=60 (default) is the audio cushion QEMU keeps ahead of the host audio
+#   thread: the output latency, and how late QEMU's main loop may run (TCG, the D3D
+#   executor) before a gap is heard. `qemu-embed: audio:` lines on stderr count gaps
+#   and dropped audio when they happen; raise it if they do, lower it under KVM.
 # PLAYER_LATENCY=1 prints publish→present latency percentiles every 240 guest frames
 # PLAYER_REFRESH_MS=16 (default) is the guest frame pull interval (QEMU's own default is 30)
 # QMP: the player always attaches a control monitor over a socketpair (no socket file).
