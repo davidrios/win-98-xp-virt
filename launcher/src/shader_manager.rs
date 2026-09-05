@@ -125,6 +125,19 @@ impl ShaderManager {
         self.editor = None;
     }
 
+    /// Opens the editor directly, pre-filled with a preset and preview
+    /// image — a debug hook (`LAUNCHER_DEBUG_SHADER_PREVIEW=preset;image`
+    /// in `main.rs`) to screenshot the *real* windowed editor without a
+    /// GUI click, since this session has no click automation.
+    pub fn debug_open_editor(&mut self, preset_path: String, preview_image_path: String) {
+        let mut editor = Editor::fresh();
+        editor.preset_path = preset_path;
+        editor.preview_image_path = preview_image_path;
+        editor.reparse();
+        self.editor = Some(editor);
+        self.open = true;
+    }
+
     /// Renders the manager if open. `render_state` is eframe's wgpu
     /// context (`None` on a non-wgpu backend, e.g. web/glow — the editor
     /// then shows the sliders without a live preview rather than

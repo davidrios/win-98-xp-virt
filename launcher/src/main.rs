@@ -281,6 +281,93 @@ fn main() -> eframe::Result {
             shader_chain::dump_texture(&render_state.device, &render_state.queue, tex, &out);
             return Ok(());
         }
+        Some("--diag-preview-frame") => {
+            // Diagnostic only (not a documented debug verb): renders one
+            // full egui frame containing just `ui.image()` on the
+            // preview's texture, the same way eframe's own paint step
+            // would, and dumps the *composited* result — unlike
+            // `--preview-shader`, which reads the shader's own output
+            // texture directly and so can't see a bug in how that
+            // texture is displayed through egui (exactly what a report
+            // of "the preview shows solid black" needs to rule in or out).
+            let usage = "usage: launcher --diag-preview-frame <preset.slangp> <image> <out.png>";
+            let preset: PathBuf = args.next().expect(usage).into();
+            let image_path: PathBuf = args.next().expect(usage).into();
+            let out = args.next().expect(usage);
+            let instance = eframe::wgpu::Instance::new(
+                eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let render_state = pollster::block_on(eframe::egui_wgpu::RenderState::create(
+                &eframe::egui_wgpu::WgpuConfiguration::default(),
+                &instance,
+                None,
+                eframe::egui_wgpu::RendererOptions::default(),
+            ))
+            .expect("create a headless wgpu render state");
+            let mut preview = shader_preview::Preview::new(render_state.clone());
+            preview.update(&preset, &[], &image_path);
+            if let Some(err) = preview.error() {
+                eprintln!("[preview] {err}");
+            }
+            let tex_id = preview.texture_id().expect("preview never registered a texture");
+            let size = preview.display_size();
+
+            let ctx = egui::Context::default();
+            let mut full_output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.image((tex_id, size));
+            });
+            let clipped = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            let screen_descriptor =
+                eframe::egui_wgpu::ScreenDescriptor { size_in_pixels: [800, 600], pixels_per_point: full_output.pixels_per_point };
+
+            let target = render_state.device.create_texture(&eframe::wgpu::TextureDescriptor {
+                label: Some("diag frame"),
+                size: eframe::wgpu::Extent3d { width: 800, height: 600, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: eframe::wgpu::TextureDimension::D2,
+                format: eframe::wgpu::TextureFormat::Rgba8Unorm,
+                usage: eframe::wgpu::TextureUsages::RENDER_ATTACHMENT | eframe::wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let target_view = target.create_view(&eframe::wgpu::TextureViewDescriptor::default());
+            let mut encoder = render_state
+                .device
+                .create_command_encoder(&eframe::wgpu::CommandEncoderDescriptor { label: Some("diag") });
+            let user_cmd_bufs = {
+                let mut renderer = render_state.renderer.write();
+                for (id, deltas) in &full_output.textures_delta.set {
+                    for delta in deltas {
+                        renderer.update_texture(&render_state.device, &render_state.queue, *id, delta);
+                    }
+                }
+                renderer.update_buffers(&render_state.device, &render_state.queue, &mut encoder, &clipped, &screen_descriptor)
+            };
+            full_output.textures_delta.clear(); // applied above; avoids the debug-only "unapplied deltas" assert on drop
+            {
+                let renderer = render_state.renderer.read();
+                let render_pass = encoder.begin_render_pass(&eframe::wgpu::RenderPassDescriptor {
+                    label: Some("diag"),
+                    color_attachments: &[Some(eframe::wgpu::RenderPassColorAttachment {
+                        view: &target_view,
+                        resolve_target: None,
+                        ops: eframe::wgpu::Operations {
+                            load: eframe::wgpu::LoadOp::Clear(eframe::wgpu::Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 }),
+                            store: eframe::wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                renderer.render(&mut render_pass.forget_lifetime(), &clipped, &screen_descriptor);
+            }
+            render_state.queue.submit(user_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
+            shader_chain::dump_texture(&render_state.device, &render_state.queue, &target, &out);
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -288,10 +375,20 @@ fn main() -> eframe::Result {
     let entries = library::scan(&library_dir);
     let shader_profiles_dir = shader_library::default_dir();
     let shader_profiles = shader_library::scan(&shader_profiles_dir);
+    // Debug hook: screenshot the real windowed editor (bypassing the
+    // GUI click this session has no automation for) pre-filled from
+    // `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset.slangp>;<image>`.
+    let debug_shader_preview = std::env::var("LAUNCHER_DEBUG_SHADER_PREVIEW").ok();
     eframe::run_native(
         "win98-xp-virt launcher",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
+            let mut shader_manager = shader_manager::ShaderManager::default();
+            if let Some(spec) = debug_shader_preview {
+                if let Some((preset, image)) = spec.split_once(';') {
+                    shader_manager.debug_open_editor(preset.to_string(), image.to_string());
+                }
+            }
             Ok(Box::new(LauncherApp {
                 library_dir,
                 entries,
@@ -299,7 +396,7 @@ fn main() -> eframe::Result {
                 shader_profiles,
                 running: HashMap::new(),
                 wizard: wizard::Wizard::default(),
-                shader_manager: shader_manager::ShaderManager::default(),
+                shader_manager,
                 wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
         }),

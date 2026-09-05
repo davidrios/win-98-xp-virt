@@ -401,6 +401,30 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   `shader.rs` → `shader-chain/` move. **Not click-tested through the
   actual editor window** — same Wayland gap as the rest of this track.
 
+- **Open issue (user-reported, 2026-09-05): "preview shows just a black
+  image-sized shape."** Investigated the same day without reproducing it:
+  confirmed the chain's output alpha is 1.0 (not a premultiplied-alpha
+  compositing artifact); a new `--diag-preview-frame <preset> <image>
+  <out.png>` debug verb renders one *full* egui frame the way eframe's
+  own paint step would (tessellate → `update_texture`/`update_buffers` →
+  a real render pass) and dumps the composited result — correct, not
+  black, for `crt-lottes.slangp` and `crt-royale.slangp` against a PNG
+  (RGB and RGBA) and a converted JPEG. Went a step further: a new
+  `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset>;<image>` env var
+  (`ShaderManager::debug_open_editor`) opens the editor pre-filled at
+  startup, screenshotted on the **real windowed app** (this session's
+  actual Wayland compositor, `grim`) — also correct. Three independent
+  levels of verification (headless texture readback, full manual
+  compositing, the real running window) all show the shader working, so
+  the bug is most likely specific to the exact preset or image the user
+  tried (not yet identified) or to a platform this session can't test
+  (e.g. macOS/Metal — this box is Linux/RADV). Next session: get the
+  user's exact preset + image (or reproduce with more of the ~150
+  `third_party/slang-shaders` CRT-family presets — bezel/mega-bezel
+  presets that composite external border images are an untried,
+  plausible suspect) and, if on Linux, try
+  `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset>;<image> launcher` directly.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -424,7 +448,8 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `launcher`'s debug verbs (`--new`, `--print-args`, `--play`,
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
-`--print-shader-args`, `--preview-shader`) were exercised by hand
+`--print-shader-args`, `--preview-shader`, `--diag-preview-frame`) were
+exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`
 needs a `build/qemu` in whichever worktree runs it — this one doesn't
