@@ -378,3 +378,31 @@ the tree, and the README says the position in plain language so a packager
 meets it up front. If a distribution refuses the player on these grounds,
 that is the signal to open the process-split track, with the numbers above
 already in hand rather than re-derived under pressure.
+
+### ADR-009 addendum: permissive dual-licensing considered and rejected (2026-09-05)
+
+Dual `MIT OR Apache-2.0` for our own code — the Rust ecosystem norm, and a
+way to make `libdisc`, the protocol headers and the guest-side programs
+reusable outside a GPL project — was tried (25 SPDX headers flipped) and
+**reverted the same day. Everything of ours stays GPL.** Three reasons, in
+the order they decided it:
+
+- **It fixes nothing.** The player binary is GPLv2 because QEMU is, so the
+  Apache-2.0 crate conflict of ADR-010 is untouched by our own terms.
+- **The player side is GPL by design.** Its source is barely usable without
+  linking a GPL library, so a permissive label there would be true and
+  meaningless, and would invite the misreading that the binary is permissive.
+- **The piece with the clearest reuse value is transient.** The guest D3D
+  serializer DLLs are the obvious thing another project would want, and
+  ADR-008 already demotes them: once M7c lands, the XP path is the display
+  driver's own DDI and the DLLs are the 9x fallback.
+
+Weighed against that, copyleft keeps derivatives of the novel work (the
+paravirtual D3D protocol, the XP display driver, the CD-ROM model) open, and
+the GPL projects most likely to reuse any of it — 86Box, DOSBox-X — are
+GPL-compatible already. Permissive release is a one-way door; this side of it
+stays open.
+
+"Everything GPL" includes ADR-009's `GPL-2.0-or-later` for `launcher` and
+`shader-chain`, which is what keeps the launcher's Apache-2.0 dependencies
+permissible; only the QEMU-linking crates need `GPL-2.0-only`.
