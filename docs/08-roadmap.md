@@ -142,6 +142,11 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 - Then the optimization the data picks (candidates: flags in NZCV in the
   aarch64 backend, barrier elision on one vCPU, cheaper TLB lookups),
   with M8's on/off-oracle methodology.
+- The structural option — TCG's output inside a Hypervisor.framework VM
+  with the x86 page tables mirrored in stage 1 — measured by
+  `tools/hvf-el1/` (2026-09-05): feasible, ~45 KLOC of the vCPU core
+  built freestanding + cputlb rewritten as a fault-driven mirror, 4–8
+  weeks; decided after the working-set measurement (track doc).
 - **Exit:** a measured, reproducible gain on the game workload with both
   guest batteries identical and `scripts/test.sh all` green.
 

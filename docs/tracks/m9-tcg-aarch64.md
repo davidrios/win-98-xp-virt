@@ -22,7 +22,9 @@ question about helper calls needing VM exits; not started).
 
 - Tools: `tools/tcg-profile.sh` (the runner), `tools/tcg-profile.py` (the
   report), `tools/tcg-hot.py` (the second pass: host code of the hot
-  guest instructions), `tools/tcg_profile_lib.py` (shared parser).
+  guest instructions), `tools/tcg_profile_lib.py` (shared parser);
+  `tools/hvf-el1/` (the Hypervisor.framework EL1 probe: a bare-metal
+  Rust guest + host, `build.sh`, README there).
 - QEMU patches: `patches/qemu/13-perfmap-darwin.patch` — `-perfmap` on
   every host (upstream gates the option and `tcg/perf.c` on Linux; the
   map writer is plain stdio); `14-jit-wx-state.patch` — the macOS JIT
@@ -198,10 +200,144 @@ block exits). Against it: generated code calls C helpers constantly
 every TLB miss and interrupt), and inside a VM each is an exit of about
 a microsecond — more than the TLB lookup costs today — unless the
 helpers, i.e. most of QEMU, run inside the VM at EL1 with no macOS
-underneath (months, uncertain). Pinned registers can also hold the
-per-mode TLB mask/table pair, shortening the chain by one dependent load
-with no hypervisor. Revisit HVF only if, after items 1–3 above, the TLB
-chain is still the ceiling.
+underneath. That was the open question; the probe below (same day)
+measured every primitive of that design on the Air.
+
+## The HVF EL1 probe (2026-09-05): what the VM design would cost
+
+`tools/hvf-el1/` (README there) is a 37 KiB bare-metal Rust guest that
+runs at EL1 under Hypervisor.framework with its own MMU, vectors and a
+fault-driven mirror of an x86-style page table, plus the host that maps
+a 64 MiB arena into it **at the same address in the host process, as IPA
+and as guest VA** (pointers are shared, so `env`, the TB cache and guest
+RAM could stay where QEMU has them), services its exits and runs the
+same load kernels natively. M1 Air, macOS 26.6.2, two runs, the arena at
+0x6_0000_0000 and 0xb_0000_0000; ~2 s. The hardware facts first: the VM
+exposes a 4 KiB granule (`TGran4=0`; the x86 pages need it), 8-bit ASIDs,
+36-bit IPA, no hardware A/D flag updates, `CTR_EL0.DIC/IDC=0` (cache
+maintenance needed after JIT writes).
+
+**Exits vs in-VM work** (the question the paragraph above left open):
+
+| Primitive | ns |
+|---|---|
+| VM exit, `hvc` round trip (guest → host → guest) | 845–870 |
+| VM exit, MMIO load (stage-2 miss → host emulates → retry) | 830 |
+| in-VM exception (`svc` → EL1 vector → full frame incl. q0–q31 → `eret`) | 40 |
+| in-VM helper call (`bl`) | 0.9 |
+| host thread kick → `hv_vcpus_exit` → guest IRQ handler | 1.9–2.2 µs median (1.0–1.2 of it until `hv_vcpu_run` returns) |
+
+An exit is ~900 helper calls or ~21 in-VM exceptions. On 7-Zip a
+helper runs every ~20 ns of guest work (4.5 % of the hot instructions
+at ~0.9 ns per guest instruction), so a design that exits for helpers
+would be ~40× slower than today: **helpers must run inside the VM**,
+which is settled. What the probe adds is that the runtime this needs is
+small and works: exception vectors, page tables, a walker, an allocator,
+`core::fmt` — the whole guest is 37 KiB and boots in a page of assembly.
+
+**The memory model** (the x86 page tables mirrored in stage 1, one root
+per CR3 with an ASID, pages mirrored read-only until the x86 D bit is
+set — `tlb_set_page`'s rule):
+
+| Event | ns |
+|---|---|
+| HVF populating stage 2 on the guest's first touch of a RAM page (once per page, in the kernel, no exit) | 745 / 4 KiB |
+| first touch through the window: abort → x86 walk → PTE → `eret` (the softmmu refill) | 110–160 |
+| hardware TLB miss with the tables warm (nested stage-1+2 walk) | 6–6.5 |
+| x86 #PF delivered to the resume point (the in-VM `cpu_loop_exit`) | 67 |
+| first write to a clean page: permission fault → D → remap RW → `tlbi` | ~495 (`vae1` non-broadcast is no cheaper) |
+| CR3 switch, tables kept (`msr ttbr0_el1` + ASID) | 19 |
+| the flush model instead (drop the mirror, refault 1024 pages) | 112 / page |
+| JIT: patch + `dc cvau`/`ic ivau`/`isb` + call, in the VM | 134 (native, with the W^X toggle pair: 173) |
+
+Correctness checks pass: A and D bits are set by the walk as x86 would,
+a read-only page's write yields error code 3, an unmapped page's read
+yields 0, two CR3s see their own pages through one window, code written
+by the host process executes in the VM after cache maintenance.
+
+**The loads**, ns per load, the kernels of `bench.S`: `direct` is one
+`ldr w, [x_win, w_addr, uxtw]` (what translated code would emit with the
+mirror), `softmmu` the exact `prepare_host_addr` sequence tcg/aarch64
+emits today (`ldp` mask/table, index, comparator, addend, compare,
+branch, load) against a TLB sized as QEMU's dynamic one and always
+hitting, `pinned` the same with mask/table already in registers (next
+step 3). "native" is the host process on macOS's 16 KiB pages — QEMU's
+situation today; "VM" is 4 KiB guest pages under stage 2.
+
+| set | chase VM direct | VM softmmu | native softmmu | native direct | indep VM direct | VM softmmu | native softmmu | native direct |
+|---|---|---|---|---|---|---|---|---|
+| 64 KiB | 1.24 | 3.22 | 3.23 | 1.25 | 0.31 | 0.64 | 0.64 | 0.31 |
+| 4 MiB | 3.50 | 5.80 | 4.76 | 2.37 | 0.80 | 1.12 | 1.14 | 0.71 |
+| 8 MiB | 5.55 | 10.4 | 10.2 | 5.10 | 0.89 | 1.37 | 1.45 | 0.86 |
+| 16 MiB | 28.1 | 33.1 | 12.3 | 7.3 | 2.57 | 4.82 | 4.11 | 2.52 |
+| 32 MiB | 29.0 | 35.1 | 14.3 | 7.7 | 3.27 | 6.02 | 5.44 | 2.81 |
+
+Reading it: while the working set fits the L2 TLB (3072 entries → 12 MiB
+at 4 KiB), the mirror removes the whole chain — a dependent guest load
+costs 1.2–5.5 ns instead of 3.2–10.4, independent ones 0.3–0.9 instead
+of 0.6–1.4: **1.4–2.6× per load, against native softmmu**, which is the
+43 %-of-samples chain the profile found. `pinned` (the mask/table pair
+in registers) buys nothing on dependent loads and 10–20 % on
+independent ones, so next step 3 is worth less than hoped. Beyond
+the TLB reach the picture inverts on random dependent access: a 4 KiB
+page miss under stage 2 costs ~21 ns (16 and 32 MiB chase: 28–29 ns vs
+native softmmu's 12–14 on 16 KiB pages), while independent loads still
+win (2.6–3.3 vs 4.1–5.4) because the core overlaps the walks. This is
+the one real performance risk of the design and it is measurable
+before building anything: the vCPU's distinct-page working set per
+second on 7-Zip / FIFA / D3DGAME9 (a counter in `tlb_fill`). Mitigations
+exist — XP's large pages (PSE) become 2 MiB stage-1 blocks, contiguous
+x86 physical runs can take the Contiguous hint (64 KiB entries) — but
+they are workload-dependent.
+
+**What "most of QEMU inside the VM" actually is** (inventory of the
+tree, 2026-09-05). The code that must run in the VM is the vCPU core,
+~45 KLOC of C that is already self-contained: `tcg/` (tcg.c 6.6 K, the
+optimizer 3 K, the aarch64 backend 3.5 K, region.c), `accel/tcg/`
+(cpu-exec, translate-all, translator, tb-maint: 3.5 K), `target/i386/tcg/`
+(translate + decoder + emitter 11.8 K, the helpers 8 K incl. fpu 3.5 K
+and seg 2.5 K, `sysemu/excp_helper.c` = `mmu_translate`), `fpu/softfloat.c`
+5.3 K, `util/qht.c`. Its outside surface, by grep of those files:
+glib = `g_malloc/g_free/g_new` (≈35 sites), `g_hash_table` (a handful,
+tb-maint/region), `g_assert`; `qemu_log*` (~60); `qemu_mutex/spin` (page
+and TB locks, ~30) and `bql_lock/unlock` (20: interrupt delivery and
+device access — the host handshake); `rcu` reads (10); `sigsetjmp/
+siglongjmp` (4); `mmap/mprotect` (region.c, the code buffer);
+`qemu_thread_jit_write/execute` (the W^X toggles — gone); the memory
+API only in the page walker (`address_space_ld*`, 6 sites → loads through
+the identity map); `cpu_get_apic_*`, `cpu_get_pic_interrupt`,
+`cpu_get_tsc`, `qemu_clock_get_ns` (device and clock access → the
+mailbox, `cntvct` with a host-provided scale). The one deep change is
+**`cputlb.c` (2.9 K) replaced by the fault-driven mirror** — this probe's
+`mmu.rs` is 230 lines of the idea — which re-expresses every `TLB_*`
+flag as a stage-1 permission: `TLB_NOTDIRTY` for pages holding TBs
+(write-protect, fault → `tb_invalidate`), dirty logging for the
+framebuffer (write-protect, fault → dirty bit), `TLB_MMIO` (not mapped
+→ fault → exit to the device model, 0.83 µs — the same slow path as
+today's `io_readx`, and qemu-3dfx's / d3dpt's FIFOs are RAM, only their
+doorbells are MMIO). The ~70 `cpu_ld*/st*` sites in the helpers become
+window accesses under the same fault rule. Devices, the memory API,
+block, display, audio, QMP, the main loop stay in the player process;
+the player binary carries the hypervisor entitlement (ad-hoc signed, as
+QEMU's own build does).
+
+**Verdict.** The "months, uncertain" of the paragraph above is now
+"weeks, with one known risk": every primitive of the design works on
+the Air and is cheap (the whole probe took a day), the in-VM runtime is
+tiny, the shared-address arena lets the vCPU core and the device model
+keep sharing QEMU's data structures by pointer, and the port is a
+mechanical freestanding build of ~45 KLOC plus a rewrite of cputlb's
+2.9 K and a mailbox protocol (I/O, interrupts = kick + a pending word,
+TB invalidation for DMA, clocks). A first XP boot inside the VM is a
+4–8 week effort for a focused session series; the gain ceiling on
+TLB-resident code is the 33 % of the vCPU the profile attributes to the
+chain (1.4–2.6× per load), and the CR3 switch cost (today: TLB flush +
+the 64 KiB jump-cache memset + refills; 19 ns with ASIDs) comes on top —
+XP idle spends 3.9 % there. The risk is the nested-TLB penalty on
+random working sets beyond 12 MiB, to be measured on the real workloads
+before deciding. Steps 1 and 2 of the list below (inline TB lookup,
+pinned registers) are orthogonal and carry over into the VM unchanged;
+step 3 (pinned mask/table) is not worth a patch by itself.
 
 ## Build / test loop
 
@@ -215,6 +351,7 @@ CDROM=~/vms/FIFA2000.ISO VGA=d3dpt BOOT_WAIT=120 WARM=150 SECS=40 \
     tools/tcg-profile.sh ~/vms/winxp-m7.qcow2 fifa 'cmd /k cd /d C:\Arquiv~1\EASPOR~1\FIFA20~1 & ... & fifa2000.exe'
 python3 tools/tcg-profile.py build/tcg-profile/7zip --hot            # the -dfilter line
 DFILTER=... tools/tcg-profile.sh ... ; venv/bin/python tools/tcg-hot.py build/tcg-profile/7zip
+tools/hvf-el1/build.sh && build/hvf-el1/hvf-el1 build/hvf-el1/payload.bin   # the HVF probe, ~2 s
 scripts/test.sh all                                                  # before every commit
 ```
 
@@ -248,7 +385,18 @@ above):
    every block end. Property `pinned-regs=off` as the oracle. Patch 16.
 3. **Shorter TLB chain**: the per-mmu-index mask/table pair loaded once
    per TB (or pinned) instead of per access — one dependent load less
-   per guest memory access.
+   per guest memory access. The probe's `pinned` kernels say this is
+   worth 0 % on dependent loads and 10–20 % on independent ones; fold it
+   into 2 if it comes for free, don't make it a patch of its own.
+   - **The VM design's risk number** (can go first, it is a day): a
+     counter of distinct guest pages touched per second and the
+     `tlb_fill` rate on 7-Zip / FIFA 2000 / D3DGAME9 (a `-d` line or a
+     QMP query, temporary), to predict the nested-TLB penalty the probe
+     measured (~21 ns per 4 KiB miss beyond 12 MiB of random working
+     set). With that number the "TCG inside an HVF VM" port (the probe
+     section above: ~45 KLOC freestanding + cputlb rewritten as the
+     fault-driven mirror + a mailbox protocol, 4–8 weeks) becomes a
+     decision instead of a bet; design doc 18 either way.
 4. **Carry at TB entry**: inline the ADC/SBB/shift cases of
    `gen_prepare_eflags_c`, or carry the static cc_op into the TB lookup
    key (the high half of `cs_base` is free in 32-bit mode) so a TB knows
