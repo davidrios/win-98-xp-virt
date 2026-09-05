@@ -51,14 +51,21 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   campaign from CD2, which it asks for and accepts (user, 2026-09-05). Every
   earlier guest pass was an `.mds`; this is the `.sub`-carrying CCD path
   (`read_sub` replaying bytes verbatim) under a real protection.
-  **What it does not prove:** which of the two anomalies ProtectCD looks at.
-  The band is corrupt in the data *and* in the Q relative timing, so a pass
-  says the drive model delivered what the check wanted, not which signal it
-  read. `CD01.cue` sits next to the `.ccd` and carries **no** `.sub`, so the
-  same disc through the cue synthesizes Q instead of replaying it — running
-  the game from `CD01.cue` is a one-run A/B that isolates it. Worth doing:
-  it is the only direct evidence we can get about what a protection actually
-  reads, and it costs one boot.
+  **And the A/B came back the same day: it reads the data, not Q.** The game
+  also plays from `CD01.cue` / `CD02.cue`, which carry no `.sub` (user).
+  `discx scan` gives both images the same 697 failing LBAs, so the data
+  anomaly is delivered identically; they differ only in subchannel, replayed
+  verbatim from the CCD and synthesized — regular, CRC-correct, anomaly-free —
+  from the cue. **VOB ProtectCD's check therefore reads the data anomaly and
+  is satisfied by synthesized subchannel**, which also means a dump without
+  `.sub` is a good source for a ProtectCD title. Doc 05's row premise ("a
+  dump carrying both") is wrong for this scheme.
+  **The gap this leaves is a negative control:** three schemes now pass and we
+  have never watched a check *fail*, so a pass is inference from a game that
+  started. Serving the same title its data track with the band reading clean
+  (an `.iso`, or a `convert`ed cue) must be refused; until that is seen, none
+  of the three passes is fully nailed down. It is the cheapest high-value run
+  left on this track.
   Scans, for the record: CD01 has 697 L-EC failures — the 538-sector band at
   195539–196076, **nine scattered singles past it** (196654, 196823, 197060,
   197160, 197219, 197424, 197584, 198370, 198977, EDC wrong as well), and 150

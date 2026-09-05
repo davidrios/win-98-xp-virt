@@ -319,16 +319,32 @@ frames we synthesize wrongly on a Moto-Racer-shaped disc is below what a
 title's own audio code looks at. That is what makes the guess safe to keep,
 not merely cheapest to keep.
 
-**The one A/B that would isolate what a protection reads.** Settlers 3 CD01
-is dumped as both a `.ccd` (with `.sub`) and a `.cue` (without), and its
-ProtectCD band is corrupt in the data *and* in the Q relative timing. The
-game passes its check from the `.ccd` (user, 2026-09-05). Running the same
-disc from the `.cue` — identical sectors, Q synthesized instead of replayed —
-separates the two: still passing means the check reads the data anomaly and
-synthesis is good enough for it; failing means it reads Q, and pins how
-faithful replay has to be. One boot, and it is the only direct evidence
-available about what these checks actually look at. The lesson meanwhile is
-that anything
+**What a protection actually reads: measured, not assumed** (2026-09-05).
+Settlers 3 CD01 is dumped as both a `.ccd` (with `.sub`) and a `.cue`
+(without), and its ProtectCD band is corrupt in the data *and* in the Q
+relative timing. The game plays from **both**, on both discs (user). The two
+images deliver an identical data anomaly — `discx scan` gives the same 697
+failing LBAs for each — and differ only in subchannel: the `.ccd` replays the
+disc's own Q, the `.cue` synthesizes regular, CRC-correct Q that has no
+anomaly in it at all. **So VOB ProtectCD's check reads the data anomaly, not
+the Q timing, and synthesized subchannel is sufficient for it.**
+
+That is worth more than one acceptance row. It means the L-EC-verified-
+never-corrected design (§2.5) is the part doing the work for this scheme,
+that a dump without subchannel is a perfectly good source for a ProtectCD
+title, and — with the pregap result above — that nothing we have yet met
+actually reads Q. Verbatim replay stays right for the dumps that carry it,
+but no measured behaviour depends on it so far. A scheme that reads Q (early
+SecuROM is the candidate) would be the first, and until one turns up this is
+the honest state.
+
+**Caveat, and the experiment that removes it: we have never seen a check
+fail.** Three schemes pass; none has been shown to reject a disc that should
+be rejected, so a pass could in principle mean the check never ran. The
+negative control is to serve a title its data track with the band reading
+clean — an `.iso` of it, or a `convert`ed cue — where the check *must* fail.
+Until that has been seen, "the protection is satisfied" is inference from a
+game that started, not a measurement. The lesson meanwhile is that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
 MDS 2448), where `read_sub` replays the bytes verbatim and none of this
 applies.
