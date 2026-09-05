@@ -3,7 +3,8 @@
 //! CD addressing: 75 frames per second, 60 seconds per minute, and a 150
 //! frame (2 second) offset between the start of the program area (MSF
 //! 00:02:00) and LBA 0. MMC commands use both; protection code cares that we
-//! get the edges right.
+//! get the edges right. Checked by `discx selftest`'s `msf` check (no unit
+//! tests: CLAUDE.md policy).
 
 /// Frames (sectors) per second on CD.
 pub const FRAMES_PER_SECOND: u32 = 75;
@@ -39,31 +40,5 @@ impl Msf {
             s: s as u8,
             f: f as u8,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn program_area_start() {
-        assert_eq!(Msf { m: 0, s: 2, f: 0 }.to_lba(), 0);
-        assert_eq!(Msf::from_lba(0), Msf { m: 0, s: 2, f: 0 });
-    }
-
-    #[test]
-    fn round_trips() {
-        for lba in [-150, -1, 0, 1, 74, 75, 4500, 333_000, 449_849] {
-            assert_eq!(Msf::from_lba(lba).to_lba(), lba);
-        }
-    }
-
-    #[test]
-    fn known_points() {
-        // 74-minute disc capacity boundary: MSF 74:00:00
-        assert_eq!(Msf { m: 74, s: 0, f: 0 }.to_lba(), 332_850);
-        // one frame before lead-in offset
-        assert_eq!(Msf { m: 0, s: 0, f: 0 }.to_lba(), -150);
     }
 }

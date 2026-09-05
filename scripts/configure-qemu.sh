@@ -17,6 +17,12 @@ uv python install "$PYVER" --quiet
 PYTHON="$(uv python find "$PYVER")"
 echo "==> python: $PYTHON"
 
+# libdisc (the CD-ROM image model, libdisc/): a Rust staticlib linked into
+# qemu-system-* and libqemu-embed-* for block/cdimage.c (patch 50). The crate
+# has no QEMU dependency, so no cycle with the player.
+echo "==> cargo build --release -p libdisc"
+(cd "$ROOT" && cargo build --release -p libdisc)
+
 mkdir -p "$BUILD"
 cd "$BUILD"
 # --disable-werror: pinned 9.2.x trips new-toolchain warnings (glibc const strstr)
@@ -43,6 +49,7 @@ fi
   --extra-cflags="$EXTRA_CFLAGS" \
   -Db_staticpic=true \
   --target-list=i386-softmmu,x86_64-softmmu \
+  -Dlibdisc_dir="$ROOT/target/release" \
   "$@"
 
 # QEMU's configure writes `werror = true` into its native file for git
