@@ -37,6 +37,26 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   `-drive`/`-device ide-cd,audiodev=` lines in M5b), `CLAUDE.md` (the
   testing-tools table), `docs/00-status.md` outside the M5 row.
 
+## State (2026-09-05: the protected dumps arrived, and one passed)
+
+- **Step 8, first title: PASS.** FIFA 2002 installed from `FIFA2002.mds`,
+  launched and navigated its menus in XP (user, 2026-09-05). SafeDisc 2.x's
+  check runs at launch, so reaching the menus means the wrapped EXE and
+  `secdrv.sys` read the 584-sector band through `cdimage` → patch 51 →
+  libdisc and got the errors they expect. Doc 05's SafeDisc 2.x row is green
+  on real protected media. A match was not reached; suspected display path,
+  not the disc — diagnose with `tools/xp-game-test.sh` (`SHOTS=`, `DRW_AFTER=`)
+  before assuming, since an invisible message box is the documented
+  failure shape.
+  **Use the `.mds`, not the `.cue`:** the DIC bin carries 64 undescrambled
+  sectors *outside* the band (LBA 135084–135086, 161089, 223875, 224045)
+  which the driver correctly answers `-EIO`, breaking an install for reasons
+  unrelated to the protection. The Alcohol dump read those sectors cleanly
+  (real bytes, valid EDC) and carries the identical 584-sector band. Keep
+  the `.cue` as the verification fixture — it is the one whose bad-sector
+  list provably equals the dumper's own log — and the `.mds` as the image to
+  run.
+
 ## State (2026-09-05: the protected dumps arrived)
 
 - **Step 7 has its material.** Real dumps in
