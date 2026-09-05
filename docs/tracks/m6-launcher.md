@@ -625,6 +625,43 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   "Discs (n)…" button is the one part not covered headlessly (the grid
   lives inside `eframe::App::ui`, which needs a real window).
 
+- **Step 5b — snapshots (offline) landed** (2026-09-05):
+  `launcher/src/snapshots.rs` — a per-machine "Snapshots…" window off the
+  library grid listing the qcow2's internal snapshots (name, when, VM
+  state size), with Take / Restore / Delete. A machine that isn't running
+  has no monitor to ask, so this goes at the image with `qemu-img`, which
+  is exactly what `savevm`/`loadvm` write into; live snapshots are 5c.
+  Listing is `qemu-img info --output=json`, not `snapshot -l`: the JSON
+  is a stable interface and the table is formatted for humans with no
+  escaping for a tag containing a space (which the UI happily produces).
+  `qemu-img`'s own stderr becomes the window's error text — "Could not
+  find snapshot 'x'" says more than an exit code.
+
+  Two safety rules are baked in. Every operation is refused while the
+  machine is running, with a note saying to shut the guest down:
+  `qemu-img` writing to an image QEMU has open corrupts it, and even the
+  listing wants an image lock QEMU already holds. And "Restore" arms a
+  second button ("Discard current state?") before it runs — rolling the
+  disk back has no undo, and it sits one row away from "Delete".
+
+  Verified against real QEMU output, through the real widgets: a new
+  `--diag-snapshots-frame` (same shape as `--diag-shelf-frame`) plus a
+  headless `--snapshots <machine.toml> [take|delete|restore <name>]`.
+  Against a real 256 MB qcow2 made with the checkout's own `qemu-img`:
+  took two snapshots with spaces in their names and listed them; a
+  widget-driven click on "Restore" armed the confirmation on *that* row
+  only (screenshotted) and the second click ran it, leaving `restored
+  "after drivers"` in the status line; a widget-driven "Delete" dropped
+  a row; and — this needed `diag_window_frames` to learn to type, a
+  `+text` step in its input script — clicking the "New snapshot" field,
+  typing a name and clicking "Take snapshot" created snapshot 3. Then a
+  **real `savevm`** (a live `qemu-system-i386` driven over QMP
+  `human-monitor-command`) against the same image: the window lists it
+  with `1.2 MB` of VM state, where the `qemu-img`-made ones correctly
+  show `—`. Error paths checked too: deleting a snapshot that isn't
+  there, and a bundle pointing at a disk that doesn't exist, both
+  surface `qemu-img`'s message.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -635,9 +672,8 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
    click-through, see the caveats above).
 5. **Snapshots UI + disc-shelf editing**, split by what needs IPC:
    - ~~5a **disc-shelf editing**~~ — done above (a bundle edit; no IPC).
-   - 5b **snapshots, offline**: a machine that isn't running has no
-     monitor to ask, so go at the qcow2 with `qemu-img snapshot`, which
-     is what `savevm`/`loadvm` write into anyway.
+   - ~~5b **snapshots, offline**~~ — done above (`qemu-img snapshot`,
+     refused while the machine is running).
    - 5c **live control** (media swap and snapshots on a *running*
      machine). Design decided 2026-09-05: **no new protocol and no
      player change** — the launcher adds `-qmp unix:<path>,server,nowait`
@@ -660,7 +696,8 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
-`--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`) were
+`--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`,
+`--snapshots`, `--diag-snapshots-frame`) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`

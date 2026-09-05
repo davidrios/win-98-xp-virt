@@ -13,6 +13,7 @@ mod shader_library;
 mod shader_manager;
 mod shader_preview;
 mod shader_profile;
+mod snapshots;
 mod wizard;
 
 use std::collections::HashMap;
@@ -30,6 +31,7 @@ struct LauncherApp {
     running: HashMap<PathBuf, Child>,
     wizard: wizard::Wizard,
     disc_shelf: discshelf::DiscShelf,
+    snapshots: snapshots::SnapshotWindow,
     shader_manager: shader_manager::ShaderManager,
     /// `None` on a non-wgpu eframe backend (not expected in practice —
     /// `wgpu` is a default feature, see `docs/tracks/m6-launcher.md` —
@@ -105,6 +107,9 @@ impl eframe::App for LauncherApp {
                             if ui.button(format!("Discs ({discs})…")).clicked() {
                                 self.disc_shelf.open_for(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
                             }
+                            if ui.button("Snapshots…").clicked() {
+                                self.snapshots.open_for(&entry.machine, entry.dir.clone());
+                            }
                         });
                         ui.end_row();
                     }
@@ -135,6 +140,9 @@ impl eframe::App for LauncherApp {
         if self.disc_shelf.show(&ctx, shelf_running).is_some() {
             self.entries = library::scan(&self.library_dir);
         }
+        let snapshots_running =
+            self.snapshots.bundle_dir().map(|dir| self.running.contains_key(dir)).unwrap_or(false);
+        self.snapshots.show(&ctx, snapshots_running);
         if self
             .shader_manager
             .show(&ctx, &self.shader_profiles_dir, self.wgpu_render_state.as_ref())
@@ -245,17 +253,25 @@ fn dump_egui_frame(
     shader_chain::dump_texture(&render_state.device, &render_state.queue, &target, out);
 }
 
+/// One step of a diagnostic verb's synthetic input script.
+enum DiagAction {
+    /// A primary-button click at a screen position.
+    Click(egui::Pos2),
+    /// Text typed into whatever a preceding click focused.
+    Type(String),
+}
+
 /// Drives one of the app's windows through egui headlessly with
-/// synthetic pointer clicks and dumps the composited frame — the same
-/// trick `--diag-editor-frame` uses, generalized so a window whose whole
-/// content is buttons (the disc shelf, the snapshot list) can have its
-/// wiring exercised in a session with no GUI click automation. Each
-/// click gets its own move/press/release/settle frames, because egui
-/// needs a frame to notice a widget was pressed and another to react.
+/// synthetic input and dumps the composited frame — the same trick
+/// `--diag-editor-frame` uses, generalized so a window whose whole
+/// content is buttons and fields (the disc shelf, the snapshot list) can
+/// have its wiring exercised in a session with no GUI click automation.
+/// Each action gets its own frames, because egui needs a frame to notice
+/// a widget was pressed and another to react.
 fn diag_window_frames(
     render_state: &eframe::egui_wgpu::RenderState,
     screen: egui::Vec2,
-    clicks: &[egui::Pos2],
+    script: &[DiagAction],
     out: &str,
     mut window: impl FnMut(&egui::Context),
 ) {
@@ -278,23 +294,35 @@ fn diag_window_frames(
     };
     run(Vec::new(), false);
     run(Vec::new(), false); // settle: egui needs a frame to lay a new window out
-    for pos in clicks {
-        println!("click at {:.0},{:.0}", pos.x, pos.y);
-        run(vec![egui::Event::PointerMoved(*pos)], false);
-        run(vec![button(*pos, true)], false);
-        run(vec![button(*pos, false)], false);
-        run(vec![egui::Event::PointerGone], false);
+    for action in script {
+        match action {
+            DiagAction::Click(pos) => {
+                println!("click at {:.0},{:.0}", pos.x, pos.y);
+                run(vec![egui::Event::PointerMoved(*pos)], false);
+                run(vec![button(*pos, true)], false);
+                run(vec![button(*pos, false)], false);
+                run(vec![egui::Event::PointerGone], false);
+            }
+            DiagAction::Type(text) => {
+                println!("type {text:?}");
+                run(vec![egui::Event::Text(text.clone())], false);
+            }
+        }
         run(Vec::new(), false);
     }
     run(Vec::new(), true);
 }
 
-/// `<x,y;x,y;…>` click positions for the diagnostic verbs.
-fn parse_clicks(spec: &str) -> Vec<egui::Pos2> {
+/// A `;`-separated input script for the diagnostic verbs: `x,y` clicks,
+/// `+text` types into whatever the preceding click focused.
+fn parse_script(spec: &str) -> Vec<DiagAction> {
     spec.split(';')
         .filter_map(|s| {
+            if let Some(text) = s.strip_prefix('+') {
+                return Some(DiagAction::Type(text.to_string()));
+            }
             let (x, y) = s.split_once(',')?;
-            Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+            Some(DiagAction::Click(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?)))
         })
         .collect()
 }
@@ -509,16 +537,36 @@ fn main() -> eframe::Result {
             dump_egui_frame(&render_state, &ctx, full_output, [800, 600], &out);
             return Ok(());
         }
-        Some("--diag-shelf-frame") => {
-            // Diagnostic only: runs the *real* disc-shelf window through
-            // egui headlessly, applies synthetic clicks (↑/↓/Remove/Add/
-            // Save — read their positions off a dump with no clicks
-            // first), dumps the composited frame and prints the resulting
-            // shelf. That's what proves the buttons are wired to the list
-            // they appear next to, in a session with no GUI click
-            // automation to try it by hand.
+        Some("--snapshots") => {
+            // Headless equivalent of the "Snapshots…" window: the same
+            // `SnapshotWindow` operations its buttons run, over a
+            // bundle's disk, without a GUI click.
+            let usage = "usage: launcher --snapshots <machine.toml> [take|delete|restore <name>]";
+            let path: PathBuf = args.next().expect(usage).into();
+            let machine = bundle::Machine::load(&path).expect("load bundle");
+            let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+            let mut window = snapshots::SnapshotWindow::default();
+            window.open_for(&machine, dir);
+            match (args.next().as_deref(), args.next()) {
+                (Some("take"), Some(name)) => window.take(&name),
+                (Some("delete"), Some(name)) => window.drop_snapshot(&name),
+                (Some("restore"), Some(name)) => window.revert(&name),
+                (None, _) => {}
+                _ => panic!("{usage}"),
+            }
+            if let Some(err) = window.error() {
+                eprintln!("[snapshots] {err}");
+            }
+            for snap in window.snapshots() {
+                println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
+            }
+            return Ok(());
+        }
+        Some("--diag-snapshots-frame") => {
+            // Diagnostic only: the real snapshot window through egui
+            // headlessly with synthetic clicks, like --diag-shelf-frame.
             let usage =
-                "usage: launcher --diag-shelf-frame <machine.toml> <out.png> [<screen WxH>] [<x,y;x,y clicks>] [running]";
+                "usage: launcher --diag-snapshots-frame <machine.toml> <out.png> [<screen WxH>] [<script: x,y click; +text type>] [running]";
             let path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
             let screen = args
@@ -528,14 +576,47 @@ fn main() -> eframe::Result {
                     Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
                 })
                 .unwrap_or(egui::vec2(900.0, 600.0));
-            let clicks = parse_clicks(&args.next().unwrap_or_default());
+            let script = parse_script(&args.next().unwrap_or_default());
+            let running = args.next().as_deref() == Some("running");
+
+            let machine = bundle::Machine::load(&path).expect("load bundle");
+            let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+            let mut window = snapshots::SnapshotWindow::default();
+            window.open_for(&machine, dir);
+            let render_state = headless_render_state();
+            diag_window_frames(&render_state, screen, &script, &out, |ctx| window.show(ctx, running));
+            for snap in window.snapshots() {
+                println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
+            }
+            return Ok(());
+        }
+        Some("--diag-shelf-frame") => {
+            // Diagnostic only: runs the *real* disc-shelf window through
+            // egui headlessly, applies synthetic clicks (↑/↓/Remove/Add/
+            // Save — read their positions off a dump with no clicks
+            // first), dumps the composited frame and prints the resulting
+            // shelf. That's what proves the buttons are wired to the list
+            // they appear next to, in a session with no GUI click
+            // automation to try it by hand.
+            let usage =
+                "usage: launcher --diag-shelf-frame <machine.toml> <out.png> [<screen WxH>] [<script: x,y click; +text type>] [running]";
+            let path: PathBuf = args.next().expect(usage).into();
+            let out = args.next().expect(usage);
+            let screen = args
+                .next()
+                .and_then(|s| {
+                    let (w, h) = s.split_once('x')?;
+                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+                })
+                .unwrap_or(egui::vec2(900.0, 600.0));
+            let script = parse_script(&args.next().unwrap_or_default());
             let running = args.next().as_deref() == Some("running");
 
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let mut shelf = discshelf::DiscShelf::default();
             shelf.open_for(&machine, path);
             let render_state = headless_render_state();
-            diag_window_frames(&render_state, screen, &clicks, &out, |ctx| {
+            diag_window_frames(&render_state, screen, &script, &out, |ctx| {
                 if let Some(saved) = shelf.show(ctx, running) {
                     println!("saved {}", saved.display());
                 }
@@ -567,7 +648,16 @@ fn main() -> eframe::Result {
                 })
                 .unwrap_or(egui::vec2(1400.0, 900.0));
             let drag_dy: f32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let clicks = parse_clicks(&args.next().unwrap_or_default());
+            // This one drives its own frames (it also drags the window's
+            // bottom edge and prints the rect per frame), so it takes
+            // just the click positions out of the shared script parser.
+            let clicks: Vec<egui::Pos2> = parse_script(&args.next().unwrap_or_default())
+                .into_iter()
+                .filter_map(|a| match a {
+                    DiagAction::Click(pos) => Some(pos),
+                    DiagAction::Type(_) => None,
+                })
+                .collect();
 
             let render_state = headless_render_state();
             let profiles_dir = shader_library::default_dir();
@@ -659,6 +749,7 @@ fn main() -> eframe::Result {
                 running: HashMap::new(),
                 wizard: wizard::Wizard::default(),
                 disc_shelf: discshelf::DiscShelf::default(),
+                snapshots: snapshots::SnapshotWindow::default(),
                 shader_manager,
                 wgpu_render_state: cc.wgpu_render_state.clone(),
             }))

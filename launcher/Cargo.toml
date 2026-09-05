@@ -19,6 +19,10 @@ egui = "0.36.1"
 # desktops.
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1.0.229", features = ["derive"] }
+# `qemu-img info --output=json` for the snapshot list (a stable interface;
+# `qemu-img snapshot -l`'s table is formatted for humans and doesn't
+# escape a tag with a space in it). Same crate the player uses for QMP.
+serde_json = "1"
 toml = "1.1.5"
 # Preset/parameter introspection only (no runtime backend) — the profile
 # manager lists a `.slangp`'s parameters to draw sliders. Actually
