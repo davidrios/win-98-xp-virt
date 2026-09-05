@@ -34,7 +34,9 @@ question about helper calls needing VM exits; not started).
   softmmu TLB; `17-rep-fast.patch` — REP MOVS / STOS as a host
   `memcpy`/`memset` per page run (below); `18-smc-same-value.patch` — a
   store that leaves a code page's bytes unchanged invalidates no TB
-  (below). Later patches of the track: 19+.
+  (below); `19-tls-hot-paths.patch` — the store slow path's nested RCU
+  locks and the translator's `tcg_ctx` reads off macOS's TLS thunk
+  (below). Later patches of the track: 20+.
 - `tools/rep-guest-test.py` (the patch 17 oracle: a DOS battery of
   `rep movs`/`stos` cases, `rep-fast` on/off identical and equal to a
   Python model; `rep-guest` in the guest stage of `scripts/test.sh`);
@@ -730,10 +732,89 @@ sample is of whatever runs at WARM, the race needs `RACE_SAMPLE=`.
 What remains of the SMC cost after patch 18: the 6 % of patches that do
 change a value still invalidate and retranslate (~4,000 TBs/s), and every
 code-page store still takes the slow path with the compare; `_tlv_get_addr`
-(macOS TLS for `tcg_ctx`, 8.8 % in the race before the patch) and
+(macOS TLS for `tcg_ctx`, 8.8 % in the race before the patch) (patch 19: 8.8 → 2.5 %) and
 `sys_icache_invalidate` per translation are the next translation-side
 items; the "soft immediates" translator feature (item 6 below) is no
 longer worth its days for this game.
+
+## Patch 19: thread-local reads off the hot paths (2026-09-05, afternoon)
+
+The race after patch 18 still had 8.8 % of its vCPU in `_tlv_get_addr`,
+dyld's TLS thunk (every `__thread` access on macOS is an indirect call
+into it: two dependent loads to find the thunk, then the key, `mrs
+TPIDRRO_EL0`, the slot, the offset). Its callers, summed from the sample's
+tree (`build/tcg-profile/moto-smc18-prof/race/sample.txt`):
+
+| caller of `_tlv_get_addr`, in the race | share |
+|---|---|
+| `get_ptr_rcu_reader` — `rcu_read_lock()`/`unlock()` inside `cpu_physical_memory_get_dirty_flag`, `set_dirty_range`, `is_clean` (three flags), i.e. **five nested lock pairs per store into a page holding code**, all from `notdirty_write` | 39 % (+ 24 % attributed to `thread_start`, the same frames with the unwind lost) |
+| `init_ts_info` — the optimizer's `temp_idx(ts)` = `ts - tcg_ctx->temps`, once per operand of every op | 11 % |
+| `tcg_op_alloc` + `tcg_emit_op` — two reads per emitted op | 12 % |
+| `cpu_tb_exec` — patch 14's per-thread JIT state, once per main-loop TB | 4 % |
+| `tcg_gen_*` argument conversion, `tcg_constant_*`, `tcg_temp_new_*` | ~8 % |
+
+A microbenchmark (`scratchpad`, not kept) put the thunk at 1.6 ns per call
+back-to-back and showed no pipeline drain on the `mrs`; the cost is the
+count: `cpu_exec` holds the RCU read lock for the whole run
+(`RCU_READ_LOCK_GUARD()` in `cpu_exec`), so the nested pairs were pure
+depth++/-- through TLS, ten thunk calls per code-page store at ~2 million
+such stores a second after patch 18 (the game runs 3× faster, so 3× the
+stores of the patch-18 count).
+
+**The fix** (`patches/qemu/19-tls-hot-paths.patch`): `include/exec/ram_addr.h`
+gets `_rcu_locked` variants of `cpu_physical_memory_get_dirty`,
+`get_dirty_flag`, `is_clean` and `set_dirty_range` (the bodies; the
+existing names wrap them in the guard), `notdirty_write` uses them, and
+`cpu_exec_step_atomic` — the one path that ran translation and the store
+slow path *outside* an RCU read section (an upstream hole: `tb_gen_code`
+and `tlb_fill` there read RCU-protected memory topology too) — gets a
+`RCU_READ_LOCK_GUARD()` declared before its `sigsetjmp`, so the invariant
+"the TLB slow paths run inside a read section" holds for every caller.
+In `tcg/tcg.c`, `tcg_op_alloc` takes the context, `tcg_emit_op` /
+`tcg_gen_callN` / the `tcg_temp_new_*` and `tcg_constant_*` wrappers read
+`tcg_ctx` once and pass it down (`tcg_temp_new_ctx`, `tcg_constant_ctx`,
+`temp_tcgv_ctx`); `optimize.c`'s `init_ts_info` uses `ctx->tcg->temps`. No
+behaviour change, so no property switch: the DOS batteries and the XP
+guest stage are the regression guard. Left on purpose: the `tcgv_*_arg`
+read in each `tcg_gen_op*_i32/i64` wrapper (one per op, CSE'd; removing
+it means a context-taking twin of every `tcg_gen_opN`), `cpu_tb_exec`'s
+per-thread JIT state (the per-CPU alternative is wrong under round-robin
+with several vCPUs), and `tcg-op-ldst.c`.
+
+**Result**, same settings as `moto-smc18-prof` (perf map on, `RACE_SAMPLE=15`
+then the 25-dumps/s probe; `build/tcg-profile/moto-p19-prof/race/`):
+
+| vCPU, in the race | patch 18 | patch 19 |
+|---|---|---|
+| `_tlv_get_addr` | 8.8 % | 2.5 % |
+| `get_ptr_rcu_reader` (self) | 1.6 % | — |
+| other (the category the thunk sat in) | 24.4 % | 18.3 % |
+| generated code | 25.6 % | 28.3 % |
+| translation + lookup | 29.3 % | 31.3 % |
+| mid-race fps (25 dumps/s, not saturated) | 19.0 (21.5 in a re-run) | 20.3 |
+
+Standing start, 60 dumps/s, no perf map, both binaries the same afternoon
+(`moto-p18-r60` / `moto-p19-r60`): **37.9 → 40.4 fps** (+6.6 %; the
+probe delivered 713 dumps in 15 s on the faster run against 791, so it is
+near its ceiling again and the number is a lower bound). The remaining thunk calls are
+the `tcg_gen_*` wrappers (26+15+12 samples), `tcg_emit_op` (67 — the one
+read it still makes), `cpu_tb_exec` (44), `init_ts_info` (30, the
+`ctx->tcg` path still pays one for `tcg_malloc`), and an unattributed
+122 under `thread_start`.
+
+**Mid-race numbers are not an A/B.** The patch-18 binary was run a second
+time with the same settings (`moto-p18-prof`): 21.5 fps where its first
+run had 19.0 and patch 19's 20.3 — the 15 s window lands on a different
+track section each time (the screendumps show it; the x87 helpers are
+5.8 % of the vCPU in two of the runs and 1.0 % in the third, and the
+`info jit` deltas over the window differ 4×: 155 k / 419 k / 654 k TB
+invalidations). What is robust across all three: the thunk's share
+(8.8 % and 9.7 % before, 2.5 % after) and `get_ptr_rcu_reader` (1.6–1.8 %
+before, gone). The fps A/B is the standing start (`RACE_DELAY` 0, both
+binaries back to back, `PERFMAP=0 FPS_RATE=60`), and at 40 fps the probe
+is at its ceiling — the next fps oracle for this game needs a faster
+probe (a frame counter in the guest, or the display driver's flip count
+in the QEMU log).
 
 ## Next steps, in order
 
@@ -806,5 +887,5 @@ above):
    was the whole story: 94 % of the writes were same-value). Left: the
    changed-value 6 % (a per-page interval structure for the walk, or
    "soft immediates" if a game shows up whose patches do change), and
-   `_tlv_get_addr` 8.8 % in the race: macOS TLS for `tcg_ctx` in the
-   translator (cache it in a local in the hot paths).
+   ~~`_tlv_get_addr` 8.8 % in the race~~ — patch 19 (it was mostly the
+   store slow path's nested RCU locks, not the translator): 2.5 % left.

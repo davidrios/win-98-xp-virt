@@ -1,0 +1,543 @@
+Thread-local reads off the TCG hot paths (M9 track,
+docs/tracks/m9-tcg-aarch64.md). On macOS every __thread access is a call into
+dyld's TLS thunk (_tlv_get_addr), and a translation-bound guest (Moto Racer
+1997's self-patching rasterizer, after patch 18) spent 8.8 % of its vCPU
+thread there: 63 % of it the five nested rcu_read_lock()/unlock() pairs the
+store slow path took per store into a page holding code (the dirty-bitmap
+helpers each take the lock; the vCPU already holds it for the whole of
+cpu_exec), the rest the translator reading tcg_ctx once per operand in the
+optimizer (temp_idx) and two to three times per emitted op / temp / constant.
+Now: notdirty_write uses _rcu_locked variants of the dirty-bitmap helpers
+(cpu_exec_step_atomic gets the RCU read section it did not have, so every
+caller holds one), and the tcg.c allocators read tcg_ctx once and pass it
+down. No behaviour change; the DOS batteries and the XP guest stage are the
+regression guard.
+
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -574,6 +574,15 @@
+     uint32_t flags, cflags;
+     int tb_exit;
+ 
++    /*
++     * Like cpu_exec(): the translation and the store slow path read
++     * RCU-protected structures (the dirty bitmaps, without a lock of their
++     * own since patch 19), so the whole step is one read section.  The
++     * guard is declared before the sigsetjmp so a longjmp out of the
++     * translation or the execution lands inside its scope.
++     */
++    RCU_READ_LOCK_GUARD();
++
+     if (sigsetjmp(cpu->jmp_env, 0) == 0) {
+         start_exclusive();
+         g_assert(cpu == current_cpu);
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -1341,8 +1341,19 @@
+ 
+     trace_memory_notdirty_write_access(mem_vaddr, ram_addr, size);
+ 
++    /*
++     * The dirty bitmaps are read and set without their own RCU read lock:
++     * this path runs inside the vCPU's read section (cpu_exec and
++     * cpu_exec_step_atomic hold it around the whole run), and the five
++     * nested lock/unlock pairs the guarded helpers would take are each a
++     * thread-local access — on macOS a call into dyld's TLS thunk — paid
++     * per store into a page that holds code (M9 track, patch 19: Moto
++     * Racer 1997 makes ~2 million such stores a second after patch 18 and
++     * spent 8 % of its vCPU thread in that thunk).
++     */
+     if (changed &&
+-        !cpu_physical_memory_get_dirty_flag(ram_addr, DIRTY_MEMORY_CODE)) {
++        !cpu_physical_memory_get_dirty_flag_rcu_locked(ram_addr,
++                                                       DIRTY_MEMORY_CODE)) {
+         tb_invalidate_phys_range_fast(ram_addr, size, retaddr);
+     }
+ 
+@@ -1350,10 +1361,11 @@
+      * Set both VGA and migration bits for simplicity and to remove
+      * the notdirty callback faster.
+      */
+-    cpu_physical_memory_set_dirty_range(ram_addr, size, DIRTY_CLIENTS_NOCODE);
++    cpu_physical_memory_set_dirty_range_rcu_locked(ram_addr, size,
++                                                   DIRTY_CLIENTS_NOCODE);
+ 
+     /* We remove the notdirty callback only if the code has been flushed. */
+-    if (!cpu_physical_memory_is_clean(ram_addr)) {
++    if (!cpu_physical_memory_is_clean_rcu_locked(ram_addr)) {
+         trace_memory_notdirty_set_dirty(mem_vaddr);
+         tlb_set_dirty(cpu, mem_vaddr);
+     }
+--- a/include/exec/ram_addr.h
++++ b/include/exec/ram_addr.h
+@@ -151,9 +151,18 @@
+ #define DIRTY_CLIENTS_ALL     ((1 << DIRTY_MEMORY_NUM) - 1)
+ #define DIRTY_CLIENTS_NOCODE  (DIRTY_CLIENTS_ALL & ~(1 << DIRTY_MEMORY_CODE))
+ 
+-static inline bool cpu_physical_memory_get_dirty(ram_addr_t start,
+-                                                 ram_addr_t length,
+-                                                 unsigned client)
++/*
++ * The _rcu_locked variants below read the dirty bitmaps without taking the
++ * RCU read lock: the caller must already hold it.  The TCG store slow path
++ * (notdirty_write) runs inside the vCPU's read section (cpu_exec,
++ * cpu_exec_step_atomic) and used to take five nested lock/unlock pairs per
++ * store into a page that holds code, each a thread-local access; on macOS
++ * that is a call into dyld's TLS thunk, and a guest that patches its own
++ * rasterizer spent 8 % of its vCPU thread there (M9 track, patch 19).
++ */
++static inline bool cpu_physical_memory_get_dirty_rcu_locked(ram_addr_t start,
++                                                            ram_addr_t length,
++                                                            unsigned client)
+ {
+     DirtyMemoryBlocks *blocks;
+     unsigned long end, page;
+@@ -165,32 +174,43 @@
+     end = TARGET_PAGE_ALIGN(start + length) >> TARGET_PAGE_BITS;
+     page = start >> TARGET_PAGE_BITS;
+ 
+-    WITH_RCU_READ_LOCK_GUARD() {
+-        blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
++    blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
+ 
+-        idx = page / DIRTY_MEMORY_BLOCK_SIZE;
+-        offset = page % DIRTY_MEMORY_BLOCK_SIZE;
+-        base = page - offset;
+-        while (page < end) {
+-            unsigned long next = MIN(end, base + DIRTY_MEMORY_BLOCK_SIZE);
+-            unsigned long num = next - base;
+-            unsigned long found = find_next_bit(blocks->blocks[idx],
+-                                                num, offset);
+-            if (found < num) {
+-                dirty = true;
+-                break;
+-            }
+-
+-            page = next;
+-            idx++;
+-            offset = 0;
+-            base += DIRTY_MEMORY_BLOCK_SIZE;
++    idx = page / DIRTY_MEMORY_BLOCK_SIZE;
++    offset = page % DIRTY_MEMORY_BLOCK_SIZE;
++    base = page - offset;
++    while (page < end) {
++        unsigned long next = MIN(end, base + DIRTY_MEMORY_BLOCK_SIZE);
++        unsigned long num = next - base;
++        unsigned long found = find_next_bit(blocks->blocks[idx],
++                                            num, offset);
++        if (found < num) {
++            dirty = true;
++            break;
+         }
++
++        page = next;
++        idx++;
++        offset = 0;
++        base += DIRTY_MEMORY_BLOCK_SIZE;
+     }
+ 
+     return dirty;
+ }
+ 
++static inline bool cpu_physical_memory_get_dirty(ram_addr_t start,
++                                                 ram_addr_t length,
++                                                 unsigned client)
++{
++    bool dirty;
++
++    WITH_RCU_READ_LOCK_GUARD() {
++        dirty = cpu_physical_memory_get_dirty_rcu_locked(start, length,
++                                                         client);
++    }
++    return dirty;
++}
++
+ static inline bool cpu_physical_memory_all_dirty(ram_addr_t start,
+                                                  ram_addr_t length,
+                                                  unsigned client)
+@@ -236,6 +256,13 @@
+     return cpu_physical_memory_get_dirty(addr, 1, client);
+ }
+ 
++static inline bool
++cpu_physical_memory_get_dirty_flag_rcu_locked(ram_addr_t addr,
++                                              unsigned client)
++{
++    return cpu_physical_memory_get_dirty_rcu_locked(addr, 1, client);
++}
++
+ static inline bool cpu_physical_memory_is_clean(ram_addr_t addr)
+ {
+     bool vga = cpu_physical_memory_get_dirty_flag(addr, DIRTY_MEMORY_VGA);
+@@ -245,6 +272,18 @@
+     return !(vga && code && migration);
+ }
+ 
++static inline bool cpu_physical_memory_is_clean_rcu_locked(ram_addr_t addr)
++{
++    bool vga = cpu_physical_memory_get_dirty_flag_rcu_locked(addr,
++                                                             DIRTY_MEMORY_VGA);
++    bool code = cpu_physical_memory_get_dirty_flag_rcu_locked(addr,
++                                                             DIRTY_MEMORY_CODE);
++    bool migration =
++        cpu_physical_memory_get_dirty_flag_rcu_locked(addr,
++                                                      DIRTY_MEMORY_MIGRATION);
++    return !(vga && code && migration);
++}
++
+ static inline uint8_t cpu_physical_memory_range_includes_clean(ram_addr_t start,
+                                                                ram_addr_t length,
+                                                                uint8_t mask)
+@@ -285,9 +324,10 @@
+     set_bit_atomic(offset, blocks->blocks[idx]);
+ }
+ 
+-static inline void cpu_physical_memory_set_dirty_range(ram_addr_t start,
+-                                                       ram_addr_t length,
+-                                                       uint8_t mask)
++static inline void
++cpu_physical_memory_set_dirty_range_rcu_locked(ram_addr_t start,
++                                               ram_addr_t length,
++                                               uint8_t mask)
+ {
+     DirtyMemoryBlocks *blocks[DIRTY_MEMORY_NUM];
+     unsigned long end, page;
+@@ -301,38 +341,45 @@
+     end = TARGET_PAGE_ALIGN(start + length) >> TARGET_PAGE_BITS;
+     page = start >> TARGET_PAGE_BITS;
+ 
+-    WITH_RCU_READ_LOCK_GUARD() {
+-        for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
+-            blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
+-        }
++    for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
++        blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
++    }
+ 
+-        idx = page / DIRTY_MEMORY_BLOCK_SIZE;
+-        offset = page % DIRTY_MEMORY_BLOCK_SIZE;
+-        base = page - offset;
+-        while (page < end) {
+-            unsigned long next = MIN(end, base + DIRTY_MEMORY_BLOCK_SIZE);
++    idx = page / DIRTY_MEMORY_BLOCK_SIZE;
++    offset = page % DIRTY_MEMORY_BLOCK_SIZE;
++    base = page - offset;
++    while (page < end) {
++        unsigned long next = MIN(end, base + DIRTY_MEMORY_BLOCK_SIZE);
+ 
+-            if (likely(mask & (1 << DIRTY_MEMORY_MIGRATION))) {
+-                bitmap_set_atomic(blocks[DIRTY_MEMORY_MIGRATION]->blocks[idx],
+-                                  offset, next - page);
+-            }
+-            if (unlikely(mask & (1 << DIRTY_MEMORY_VGA))) {
+-                bitmap_set_atomic(blocks[DIRTY_MEMORY_VGA]->blocks[idx],
+-                                  offset, next - page);
+-            }
+-            if (unlikely(mask & (1 << DIRTY_MEMORY_CODE))) {
+-                bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
+-                                  offset, next - page);
+-            }
+-
+-            page = next;
+-            idx++;
+-            offset = 0;
+-            base += DIRTY_MEMORY_BLOCK_SIZE;
++        if (likely(mask & (1 << DIRTY_MEMORY_MIGRATION))) {
++            bitmap_set_atomic(blocks[DIRTY_MEMORY_MIGRATION]->blocks[idx],
++                              offset, next - page);
+         }
++        if (unlikely(mask & (1 << DIRTY_MEMORY_VGA))) {
++            bitmap_set_atomic(blocks[DIRTY_MEMORY_VGA]->blocks[idx],
++                              offset, next - page);
++        }
++        if (unlikely(mask & (1 << DIRTY_MEMORY_CODE))) {
++            bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
++                              offset, next - page);
++        }
++
++        page = next;
++        idx++;
++        offset = 0;
++        base += DIRTY_MEMORY_BLOCK_SIZE;
+     }
+ 
+     xen_hvm_modified_memory(start, length);
++}
++
++static inline void cpu_physical_memory_set_dirty_range(ram_addr_t start,
++                                                       ram_addr_t length,
++                                                       uint8_t mask)
++{
++    WITH_RCU_READ_LOCK_GUARD() {
++        cpu_physical_memory_set_dirty_range_rcu_locked(start, length, mask);
++    }
+ }
+ 
+ #if !defined(_WIN32)
+--- a/tcg/optimize.c
++++ b/tcg/optimize.c
+@@ -153,7 +153,8 @@
+ /* Initialize and activate a temporary.  */
+ static void init_ts_info(OptContext *ctx, TCGTemp *ts)
+ {
+-    size_t idx = temp_idx(ts);
++    /* Not temp_idx(): that reads tcg_ctx, a TLS access per operand (patch 19). */
++    size_t idx = ts - ctx->tcg->temps;
+     TempOptInfo *ti;
+ 
+     if (test_bit(idx, ctx->temps_used.l)) {
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -1644,9 +1644,15 @@
+     return temp_tcgv_ptr(ts);
+ }
+ 
+-TCGTemp *tcg_temp_new_internal(TCGType type, TCGTempKind kind)
++/* One tcg_ctx read per temp / constant (see tcg_op_alloc). */
++static inline TCGv_i32 temp_tcgv_ctx(const TCGContext *s, TCGTemp *t)
+ {
+-    TCGContext *s = tcg_ctx;
++    return (TCGv_i32)((void *)t - (const void *)s);
++}
++
++static TCGTemp *tcg_temp_new_ctx(TCGContext *s, TCGType type,
++                                 TCGTempKind kind)
++{
+     TCGTemp *ts;
+     int n;
+ 
+@@ -1708,44 +1714,73 @@
+     return ts;
+ }
+ 
++TCGTemp *tcg_temp_new_internal(TCGType type, TCGTempKind kind)
++{
++    return tcg_temp_new_ctx(tcg_ctx, type, kind);
++}
++
+ TCGv_i32 tcg_temp_new_i32(void)
+ {
+-    return temp_tcgv_i32(tcg_temp_new_internal(TCG_TYPE_I32, TEMP_TB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_I32, TEMP_TB);
++
++    return (TCGv_i32)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_i32 tcg_temp_ebb_new_i32(void)
+ {
+-    return temp_tcgv_i32(tcg_temp_new_internal(TCG_TYPE_I32, TEMP_EBB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_I32, TEMP_EBB);
++
++    return (TCGv_i32)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_i64 tcg_temp_new_i64(void)
+ {
+-    return temp_tcgv_i64(tcg_temp_new_internal(TCG_TYPE_I64, TEMP_TB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_I64, TEMP_TB);
++
++    return (TCGv_i64)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_i64 tcg_temp_ebb_new_i64(void)
+ {
+-    return temp_tcgv_i64(tcg_temp_new_internal(TCG_TYPE_I64, TEMP_EBB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_I64, TEMP_EBB);
++
++    return (TCGv_i64)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_ptr tcg_temp_new_ptr(void)
+ {
+-    return temp_tcgv_ptr(tcg_temp_new_internal(TCG_TYPE_PTR, TEMP_TB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_PTR, TEMP_TB);
++
++    return (TCGv_ptr)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_ptr tcg_temp_ebb_new_ptr(void)
+ {
+-    return temp_tcgv_ptr(tcg_temp_new_internal(TCG_TYPE_PTR, TEMP_EBB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_PTR, TEMP_EBB);
++
++    return (TCGv_ptr)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_i128 tcg_temp_new_i128(void)
+ {
+-    return temp_tcgv_i128(tcg_temp_new_internal(TCG_TYPE_I128, TEMP_TB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_I128, TEMP_TB);
++
++    return (TCGv_i128)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_i128 tcg_temp_ebb_new_i128(void)
+ {
+-    return temp_tcgv_i128(tcg_temp_new_internal(TCG_TYPE_I128, TEMP_EBB));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_temp_new_ctx(s, TCG_TYPE_I128, TEMP_EBB);
++
++    return (TCGv_i128)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_vec tcg_temp_new_vec(TCGType type)
+@@ -1795,7 +1830,7 @@
+     case TEMP_EBB:
+         tcg_debug_assert(ts->temp_allocated != 0);
+         ts->temp_allocated = 0;
+-        set_bit(temp_idx(ts), s->free_temps[ts->base_type].l);
++        set_bit(ts - s->temps, s->free_temps[ts->base_type].l);
+         break;
+     default:
+         /* It never made sense to free TEMP_FIXED or TEMP_GLOBAL. */
+@@ -1828,9 +1863,8 @@
+     tcg_temp_free_internal(tcgv_vec_temp(arg));
+ }
+ 
+-TCGTemp *tcg_constant_internal(TCGType type, int64_t val)
++static TCGTemp *tcg_constant_ctx(TCGContext *s, TCGType type, int64_t val)
+ {
+-    TCGContext *s = tcg_ctx;
+     GHashTable *h = s->const_table[type];
+     TCGTemp *ts;
+ 
+@@ -1883,19 +1917,32 @@
+     return ts;
+ }
+ 
++TCGTemp *tcg_constant_internal(TCGType type, int64_t val)
++{
++    return tcg_constant_ctx(tcg_ctx, type, val);
++}
++
+ TCGv_i32 tcg_constant_i32(int32_t val)
+ {
+-    return temp_tcgv_i32(tcg_constant_internal(TCG_TYPE_I32, val));
++    TCGContext *s = tcg_ctx;
++
++    return temp_tcgv_ctx(s, tcg_constant_ctx(s, TCG_TYPE_I32, val));
+ }
+ 
+ TCGv_i64 tcg_constant_i64(int64_t val)
+ {
+-    return temp_tcgv_i64(tcg_constant_internal(TCG_TYPE_I64, val));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_constant_ctx(s, TCG_TYPE_I64, val);
++
++    return (TCGv_i64)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_ptr tcg_constant_ptr_int(intptr_t val)
+ {
+-    return temp_tcgv_ptr(tcg_constant_internal(TCG_TYPE_PTR, val));
++    TCGContext *s = tcg_ctx;
++    TCGTemp *t = tcg_constant_ctx(s, TCG_TYPE_PTR, val);
++
++    return (TCGv_ptr)temp_tcgv_ctx(s, t);
+ }
+ 
+ TCGv_vec tcg_constant_vec(TCGType type, unsigned vece, int64_t val)
+@@ -2276,11 +2323,12 @@
+     }
+ }
+ 
+-static TCGOp *tcg_op_alloc(TCGOpcode opc, unsigned nargs);
++static TCGOp *tcg_op_alloc(TCGContext *s, TCGOpcode opc, unsigned nargs);
+ 
+ static void tcg_gen_callN(void *func, TCGHelperInfo *info,
+                           TCGTemp *ret, TCGTemp **args)
+ {
++    TCGContext *s = tcg_ctx;
+     TCGv_i64 extend_free[MAX_CALL_IARGS];
+     int n_extend = 0;
+     TCGOp *op;
+@@ -2292,12 +2340,12 @@
+     }
+ 
+     total_args = info->nr_out + info->nr_in + 2;
+-    op = tcg_op_alloc(INDEX_op_call, total_args);
++    op = tcg_op_alloc(s, INDEX_op_call, total_args);
+ 
+ #ifdef CONFIG_PLUGIN
+     /* Flag helpers that may affect guest state */
+-    if (tcg_ctx->plugin_insn && !(info->flags & TCG_CALL_NO_SIDE_EFFECTS)) {
+-        tcg_ctx->plugin_insn->calls_helpers = true;
++    if (s->plugin_insn && !(info->flags & TCG_CALL_NO_SIDE_EFFECTS)) {
++        s->plugin_insn->calls_helpers = true;
+     }
+ #endif
+ 
+@@ -2359,10 +2407,10 @@
+     op->args[pi++] = (uintptr_t)info;
+     tcg_debug_assert(pi == total_args);
+ 
+-    if (tcg_ctx->emit_before_op) {
+-        QTAILQ_INSERT_BEFORE(tcg_ctx->emit_before_op, op, link);
++    if (s->emit_before_op) {
++        QTAILQ_INSERT_BEFORE(s->emit_before_op, op, link);
+     } else {
+-        QTAILQ_INSERT_TAIL(&tcg_ctx->ops, op, link);
++        QTAILQ_INSERT_TAIL(&s->ops, op, link);
+     }
+ 
+     tcg_debug_assert(n_extend < ARRAY_SIZE(extend_free));
+@@ -3241,9 +3289,14 @@
+     }
+ }
+ 
+-static TCGOp *tcg_op_alloc(TCGOpcode opc, unsigned nargs)
++/*
++ * The context is passed in rather than read from tcg_ctx here and in
++ * tcg_emit_op(): a thread-local read per emitted op is a call into dyld's
++ * TLS thunk on macOS, and a translation-bound guest (Moto Racer 1997's
++ * self-patching rasterizer) showed it in the profile (M9 track, patch 19).
++ */
++static TCGOp *tcg_op_alloc(TCGContext *s, TCGOpcode opc, unsigned nargs)
+ {
+-    TCGContext *s = tcg_ctx;
+     TCGOp *op = NULL;
+ 
+     if (unlikely(!QTAILQ_EMPTY(&s->free_ops))) {
+@@ -3274,12 +3327,13 @@
+ 
+ TCGOp *tcg_emit_op(TCGOpcode opc, unsigned nargs)
+ {
+-    TCGOp *op = tcg_op_alloc(opc, nargs);
++    TCGContext *s = tcg_ctx;
++    TCGOp *op = tcg_op_alloc(s, opc, nargs);
+ 
+-    if (tcg_ctx->emit_before_op) {
+-        QTAILQ_INSERT_BEFORE(tcg_ctx->emit_before_op, op, link);
++    if (s->emit_before_op) {
++        QTAILQ_INSERT_BEFORE(s->emit_before_op, op, link);
+     } else {
+-        QTAILQ_INSERT_TAIL(&tcg_ctx->ops, op, link);
++        QTAILQ_INSERT_TAIL(&s->ops, op, link);
+     }
+     return op;
+ }
+@@ -3287,7 +3341,7 @@
+ TCGOp *tcg_op_insert_before(TCGContext *s, TCGOp *old_op,
+                             TCGOpcode opc, unsigned nargs)
+ {
+-    TCGOp *new_op = tcg_op_alloc(opc, nargs);
++    TCGOp *new_op = tcg_op_alloc(s, opc, nargs);
+     QTAILQ_INSERT_BEFORE(old_op, new_op, link);
+     return new_op;
+ }
+@@ -3295,7 +3349,7 @@
+ TCGOp *tcg_op_insert_after(TCGContext *s, TCGOp *old_op,
+                            TCGOpcode opc, unsigned nargs)
+ {
+-    TCGOp *new_op = tcg_op_alloc(opc, nargs);
++    TCGOp *new_op = tcg_op_alloc(s, opc, nargs);
+     QTAILQ_INSERT_AFTER(&s->ops, old_op, new_op, link);
+     return new_op;
+ }
