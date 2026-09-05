@@ -186,6 +186,23 @@ enough to pin the eight GPRs plus `eip` for the life of a chained run
 of TBs and store them only before helper calls, in the memory slow-path
 stubs and in the epilogue.
 
+**Where the Hypervisor.framework "fastmem" idea stands after the profile
+(2026-09-05).** HVF cannot run x86 code on Apple Silicon; its only use is
+to run TCG's Arm output inside an Arm VM whose stage-1 tables mirror the
+guest's x86 page tables, so the software TLB lookup disappears. The data
+says that is worth at most the TLB chain's share (43 % of generated-code
+samples on 7-Zip, ~a third of the vCPU), and nothing of the other half
+(registers through memory at block boundaries, the TB-lookup helper,
+block exits). Against it: generated code calls C helpers constantly
+(4.5 % of the hot instructions on 7-Zip, 11 % on the D3D scene, plus
+every TLB miss and interrupt), and inside a VM each is an exit of about
+a microsecond — more than the TLB lookup costs today — unless the
+helpers, i.e. most of QEMU, run inside the VM at EL1 with no macOS
+underneath (months, uncertain). Pinned registers can also hold the
+per-mode TLB mask/table pair, shortening the chain by one dependent load
+with no hypervisor. Revisit HVF only if, after items 1–3 above, the TLB
+chain is still the ceiling.
+
 ## Build / test loop
 
 ```sh
