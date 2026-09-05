@@ -59,6 +59,9 @@ echo "==> ddtest.exe (DirectDraw 7 flip-chain test)"
 echo "==> ditest.exe (DirectInput keyboard under load)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/ditest.exe" "$SRC/ditest.c" -ldinput -lddraw -ldxguid -lgdi32 -luser32
+echo "==> dxttest.exe (which texture formats d3d8.dll creates, per pool)"
+"$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
+  -o "$OUT/dxttest.exe" "$SRC/dxttest.c" -ld3d8 -lgdi32 -luser32
 cp "$SRC/d3dptvid.inf" "$OUT/d3dptvid.inf"
 
 # sanity: the kernel modules import only from their port driver, and nothing
@@ -99,7 +102,10 @@ fps, at 8 bpp a palette on the primary rotated every frame; DDTEST [w h bpp]
 [frames]; log in ddtest.log),
 DITEST.EXE (DirectInput keyboard under load: DITEST [seconds] [busy-ms]
 [-window] [-nonexcl]; what DirectInput / GetAsyncKeyState / WM_KEYDOWN
-each see of the keys, log in ditest.log).
+each see of the keys, log in ditest.log),
+DXTTEST.EXE (Direct3D 8 texture formats: CheckDeviceFormat, CreateTexture,
+Lock, a textured quad for every format x pool, CreateImageSurface; every
+HRESULT in dxttest.log, the driver's surface lines in the QEMU log).
 TXT
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 

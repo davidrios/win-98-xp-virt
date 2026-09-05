@@ -672,6 +672,7 @@ static BOOL d3d_init(PPDEV p);
 static ULONG pf_format(const DDPIXELFORMAT *f);
 static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset);
 static HRESULT d3d_readback(PPDEV p, PDD_SURFACE_LOCAL s);
+static DWORD APIENTRY DdCreateSurface(PDD_CREATESURFACEDATA d);
 static DWORD APIENTRY DdCreateSurfaceEx(PDD_CREATESURFACEEXDATA d);
 static DWORD APIENTRY DdGetDriverState(PDD_GETDRIVERSTATEDATA d);
 static DWORD APIENTRY DdDestroySurface(PDD_DESTROYSURFACEDATA d);
@@ -1176,6 +1177,9 @@ BOOL APIENTRY DrvEnableDirectDraw(DHPDEV dhpdev, DD_CALLBACKS *cb, DD_SURFACECAL
             scb->Unlock = DdUnlock;
         }
     }
+    /* CreateSurface only sizes compressed textures for dxg's allocator */
+    cb->dwFlags |= DDHAL_CB32_CREATESURFACE;
+    cb->CreateSurface = DdCreateSurface;
     pcb->dwSize = sizeof(*pcb);         /* no palette callbacks: see dwPalCaps above */
     dbg_puts((PPDEV)dhpdev, "d3dptdisp: dd enabled\n");
     return TRUE;
@@ -1720,6 +1724,8 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
         dbg_hex(p, " w ", s->lpGbl->wWidth);
         dbg_hex(p, " h ", s->lpGbl->wHeight);
         dbg_hex(p, " fmt ", fmt);
+        dbg_hex(p, " pitch ", (ULONG)s->lpGbl->lPitch);
+        dbg_hex(p, " pf ", (s->dwFlags & DDRAWISURF_HASPIXELFORMAT) ? s->lpGbl->ddpfSurface.dwFlags : 0xffffffffu);
         dbg_hex(p, " at ", offset);
         if (buffer) dbg_hex(p, " buffer of ", s->lpGbl->dwLinearSize);
         if (sysmem) dbg_puts(p, " sysmem");
@@ -1810,6 +1816,45 @@ static BOOL surf_is_target(PDD_SURFACE_LOCAL s)
 
 /* dxg calls this once per surface it creates (each member of a flip chain
  * or mip chain gets its own call); with Direct3D on, every one is mirrored */
+/* dxg sizes a video-memory surface from its pixel format's bit count before
+ * it takes it from the heap; a compressed FOURCC format has none, so the
+ * request was for zero bytes and every DXT texture failed at CreateTexture
+ * with D3DERR_OUTOFVIDEOMEMORY (DXTTEST, doc 15). As the DDK samples do:
+ * hand dxg the block size (the whole compressed image as one block) and the
+ * linear size, and let it allocate. Everything else is left to dxg. */
+static DWORD APIENTRY DdCreateSurface(PDD_CREATESURFACEDATA d)
+{
+    DDSURFACEDESC *sd = d->lpDDSurfaceDesc;
+    ULONG i, f;
+
+    d->ddRVal = DD_OK;
+    if (!sd || !(sd->ddpfPixelFormat.dwFlags & DDPF_FOURCC) || !fmt_is_dxt(sd->ddpfPixelFormat.dwFourCC)) {
+        return DDHAL_DRIVER_NOTHANDLED;
+    }
+    f = sd->ddpfPixelFormat.dwFourCC;
+    for (i = 0; i < d->dwSCnt; i++) {
+        PDD_SURFACE_LOCAL s = d->lplpSList[i];
+        PDD_SURFACE_GLOBAL g = s ? s->lpGbl : NULL;
+        ULONG size;
+
+        if (!g) {
+            continue;
+        }
+        size = fmt_row_bytes(f, g->wWidth) * ((g->wHeight + 3) / 4);
+        g->dwLinearSize = size;             /* the lPitch union: the linear size, as surf_pitch expects */
+        if (!(s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
+            g->dwBlockSizeX = size;
+            g->dwBlockSizeY = 1;
+            g->fpVidMem = DDHAL_PLEASEALLOC_BLOCKSIZE;
+        }
+        if (i == 0) {
+            sd->dwFlags |= DDSD_LINEARSIZE;
+            sd->dwLinearSize = size;
+        }
+    }
+    return DDHAL_DRIVER_NOTHANDLED;
+}
+
 static DWORD APIENTRY DdCreateSurfaceEx(PDD_CREATESURFACEEXDATA d)
 {
     /* one PDEV has Direct3D (the primary display); the data's lpDDLcl is a
@@ -2214,6 +2259,22 @@ static void walk_texblt(DP2WALK *w, const ULONG *b)
     BOOL dxt;
 
     if (!dst || !src || !dst->fmt || dst->fmt != src->fmt || !src->sysmem || dst->buffer || src->buffer) {
+        if (p->dp2_errors < 8) {
+            p->dp2_errors++;
+            dbg_hex(p, "d3dptdisp: texblt refused, dst ", b[0]);
+            dbg_hex(p, " fmt ", dst ? dst->fmt : 0);
+            dbg_hex(p, " w ", dst ? dst->w : 0);
+            dbg_hex(p, " h ", dst ? dst->h : 0);
+            dbg_hex(p, " src ", b[1]);
+            dbg_hex(p, " fmt ", src ? src->fmt : 0);
+            dbg_hex(p, " w ", src ? src->w : 0);
+            dbg_hex(p, " h ", src ? src->h : 0);
+            dbg_hex(p, " pitch ", src ? src->pitch : 0);
+            dbg_hex(p, " sysmem ", src ? src->sysmem : 0);
+            dbg_hex(p, " rect ", (b[4] << 16) | (b[5] & 0xffff));
+            dbg_hex(p, "..", (b[6] << 16) | (b[7] & 0xffff));
+            dbg_puts(p, "\n");
+        }
         return;
     }
     if (sl < 0 || st < 0 || sr <= sl || sb <= st || dx < 0 || dy < 0) {

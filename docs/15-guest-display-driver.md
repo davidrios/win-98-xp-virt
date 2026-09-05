@@ -719,17 +719,35 @@ working; Max Payne renders on it except its clipped fans (the
   the target; uploads go through the staging path, readback as for any
   target. **MULTIPLYTRANSFORM** and the d3d8-only render states (153,
   164, 172, 173 dropped; the DX8 numbering of the rest is d3d9's).
-- **Compressed textures:** for DXT surfaces dxg's `lPitch` union holds
-  the linear size; the driver derives block-row pitches for the table,
-  the copies and the VRAM records. And DirectDraw creates a FOURCC
-  surface only when the code is in the driver's FOURCC list
-  (`DrvGetDirectDrawInfo`'s `pdwFourCC`, two-call protocol), whatever
-  the texture-format lists say: without DXT1/3/5 there
-  `CreateTexture(DXT1)` succeeded at the API and the texture never
-  reached the driver (D3DGAME8's particles as flat squares), and a
-  FOURCC-style entry in the GDI2 format list made the same call fail
+- **Compressed textures need a `DdCreateSurface` that sizes them.** dxg
+  sizes a video-memory surface from its pixel format's bit count before
+  it takes it from the heap; a FOURCC format has no bit count, so the
+  request was for zero bytes and its one `DDERR_OUTOFVIDEOMEMORY` site
+  answered — `CreateTexture(DXT1)` in `D3DPOOL_DEFAULT` failed with
+  `D3DERR_OUTOFVIDEOMEMORY`, while `MANAGED` / `SYSTEMMEM` succeeded (the
+  runtime's own system-memory copy: a surface with *no* pixel format,
+  the compressed bytes as a 128×16 or 256×16 "display-format" image) and
+  the video-memory copy then failed silently at the first draw, so the
+  runtime kept the previous texture bound (D3DGAME8's particles as its
+  gradient). The driver had no `CreateSurface` callback at all. It has
+  one now: for a `DDPF_FOURCC` DXT surface it sets `dwBlockSizeX` = the
+  linear size, `dwBlockSizeY` = 1, `fpVidMem = DDHAL_PLEASEALLOC_BLOCKSIZE`
+  (dxg allocates that many bytes from the linear heap), `dwLinearSize`
+  in the `lPitch` union (which is why dxg's "pitch" of a DXT surface is
+  its linear size: the driver put it there) and `DDSD_LINEARSIZE` on the
+  description; everything else returns `DDHAL_DRIVER_NOTHANDLED`
+  untouched. Managed textures are filled by the runtime through Lock /
+  Unlock (Unlock marks the VRAM dirty), not TEXBLT. Also: DirectDraw
+  creates a FOURCC surface only when the code is in the driver's FOURCC
+  list (`DrvGetDirectDrawInfo`'s `pdwFourCC`, two-call protocol) — the
+  DX8 runtime never reads the codes (it passes a null pointer in all
+  three `DdQueryDirectDrawObject` calls), the kernel does; and a
+  FOURCC-style entry in the GDI2 format list makes `CreateTexture` fail
   outright — d3d8.dll matches formats against `dwFourCC` under
-  `DDPF_D3DFORMAT` only.
+  `DDPF_D3DFORMAT` only. `DRIVER\DXTTEST.EXE` is the probe that found
+  it: every format × pool through CheckDeviceFormat, CreateTexture,
+  Lock, a textured quad read back (pure red / blue block texels are the
+  pass), CreateImageSurface; every HRESULT in `dxttest.log`.
 - **The runtime's clipped fans are stream-0 draws; the DP2 vertex buffer
   is a dummy under d3d8.dll.** With `CLIPTLVERTS` withdrawn the runtime
   clips pre-transformed triangles itself and emits them as
@@ -771,13 +789,6 @@ working; Max Payne renders on it except its clipped fans (the
   it would go into the executor with `CreateVertexShader` /
   `CreatePixelShader` on the bytecode), more than one stream, video-memory
   buffers (`D3DDEVCAPS_HWVERTEXBUFFER`), cube and volume textures, N-
-  and RT-patches, ZBIAS → DEPTHBIAS, palettized textures. **Open: DXT
-  textures on the DX8 path.** `CreateTexture(DXT1)` succeeds at the API
-  (the D3DFORMAT-coded list entry), the FOURCC codes are in the HAL
-  info's list, `DdCanCreateSurface` accepts the format, yet no DXT
-  surface ever reaches dxg and the runtime leaves the previous texture
-  bound at the draw (D3DGAME8's particles: its 64×64 gradient instead of
-  the DXT1 disc, the one region of its frame that differs from the native
-  oracle). The failure is in user-mode d3d8 / ddraw before the kernel;
-  the next step is the `CreateSurface` path in ddraw.dll's disassembly.
+  and RT-patches, ZBIAS → DEPTHBIAS, palettized textures. DXT textures on this path were fixed
+  on 2026-09-05 (the compressed-textures bullet above).
 

@@ -12,7 +12,7 @@ picture and the track rules, then this file, then doc 15.
   the shared executor loader `d3dpt/hw/d3dpt_exec_load.[ch]`.
 - Guest driver: `guest-tools/src/d3dptvid/` (miniport `d3dptvid.c`, display
   driver `d3dptdisp.c`, `kcrt.c`, INF, `drvinst.c`, `setmode.c`, `ddtest.c`,
-  `d3d7test.c`, vendored DDK headers `ddk/` incl. the self-contained
+  `d3d7test.c`, `ditest.c`, `dxttest.c`, vendored DDK headers `ddk/` incl. the self-contained
   `d3dnthal.h`), `guest-tools/build-driver.sh` (also run by
   `build-wrappers.sh`, stages `DRIVER\` on the ISO).
 - Executor, M7c's half: `d3dpt/exec/d3dpt_exec_ddi.cpp` (the display
@@ -149,12 +149,19 @@ picture and the track rules, then this file, then doc 15.
      the clipper bullet). The driver reads them from `w->vb` now; the
      tutorial alley renders complete with hardware T&L
      (`build/xp-driver-test/mp-fan/cmd-*.png`). Not played by hand yet.
-  3. **Open — DXT textures on the DX8 path** (doc 15 "M7c — the DirectX
-     8 DDI", last bullet): `CreateTexture(DXT1)` succeeds, nothing
-     reaches dxg, the runtime keeps the previous texture bound. Next
-     step: ddraw.dll's `CreateSurface` path in the disassembly.
+  3. **Done (2026-09-05): DXT textures on the DX8 path.** dxg sized the
+     video-memory surface from the (absent) bit count of a FOURCC format
+     and asked its heap for zero bytes; the new `DdCreateSurface` hands
+     it the block size (doc 15, the compressed-textures bullet).
+     `DRIVER\DXTTEST.EXE` (new) is the probe and the check: every format
+     × pool, readback of a textured quad. D3DGAME8's particles now use
+     the DXT1 disc like the native oracle.
   4. Then shaders 1.x (the track's next item), and the small things the
-     runs showed: `render target handle 3 unknown` once at start
+     runs showed: D3DGAME8's frame still differs from the native oracle
+     along the checker texture's texel edges only (2026-09-05 night:
+     8.7 k pixels beyond tolerance 8, channel difference ≤ 43, the
+     particles now identical — a mip / filter selection nuance on the DX8
+     DDI, `build/xp-driver-test/g8-dxt/g8-diff.bmp`); `render target handle 3 unknown` once at start
      (harmless), the two textures D3DGAME8 re-registers every frame
      (kept by the executor, cheap), the `dp2 vertices at` debug lines
      (first four calls only).
