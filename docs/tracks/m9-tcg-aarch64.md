@@ -36,7 +36,8 @@ question about helper calls needing VM exits; not started).
   store that leaves a code page's bytes unchanged invalidates no TB
   (below); `19-tls-hot-paths.patch` — the store slow path's nested RCU
   locks and the translator's `tcg_ctx` reads off macOS's TLS thunk
-  (below). Later patches of the track: 20+.
+  (below); `20-inline-lookup.patch` — the jump-cache probe of indirect
+  branches as TCG ops (below). Later patches of the track: 21+.
 - `tools/rep-guest-test.py` (the patch 17 oracle: a DOS battery of
   `rep movs`/`stos` cases, `rep-fast` on/off identical and equal to a
   Python model; `rep-guest` in the guest stage of `scripts/test.sh`);
@@ -816,6 +817,65 @@ is at its ceiling — the next fps oracle for this game needs a faster
 probe (a frame counter in the guest, or the display driver's flip count
 in the QEMU log).
 
+## Patch 20: the jump-cache probe inline (2026-09-05, evening)
+
+Item 1 of the list below, the user's pick after patch 19. Every `ret`,
+`call *`, `jmp *` and every jump that leaves its page ended its TB with
+`helper_lookup_tb_ptr()`: a sync of the globals, `cpu_get_tb_cpu_state`
+(in this fork with the x87 / SSE fast-mode bits, runtime state),
+`curr_cflags`, the breakpoint check, the jump-cache compare, ~70 host
+instructions plus the call — 13.9 % of the vCPU's self time on 7-Zip
+(`helper_lookup_tb_ptr` in `7zip-p20-off`), 5.8 % in Moto Racer's race.
+
+**Design** (`patches/qemu/20-inline-lookup.patch`). A generic
+`translator_lookup_and_goto_ptr(pc, cs_base, flags)` in
+`accel/tcg/translator.c`, fed by the target: i386's `gen_eob` (the
+`DISAS_JUMP` exit, after its own hflags / RF resets are stored) computes
+the three as TCG ops exactly like `cpu_get_tb_cpu_state()` — hflags, the
+eflags bits, `x87_fast_mode << 29`, the SSE inexact bit, CS base + eip —
+from `env`, so far jumps (CS and hflags changed by a helper) are as right
+as near ones. The generic part hashes the pc (`tb_jmp_cache_hash_func` as
+ops), loads the entry, and folds into one 64-bit mismatch word: the
+entry's pc ^ pc, the TB's `cs_base` ^ cs_base, `flags` ^ flags, `cflags`
+^ `cpu->tcg_cflags`, `singlestep_enabled`, the breakpoint list head, and
+the entry's nullness (a null entry is replaced by the current TB as a safe
+base for the loads — `movcond`). One `movcond` then picks the TB's
+`tc.ptr` or `tcg_code_gen_epilogue`, and `tcg_gen_goto_ptr` (new, the
+op exposed) jumps: the main loop's `tb_lookup` is the miss path, which
+fills the jump cache — exactly what the helper did when it found nothing;
+the helper's own `tb_htable_lookup` on a miss is replaced by the loop's
+(the race: `cpu_exec_loop` 1.3 → 1.5 %). **Branch-free on purpose**: a
+`brcond` ends a TCG basic block and every live TB temp is spilled to the
+stack there and reloaded after, so five compares as branches would have
+cost ~13 memory ops; the word costs xor/or. 44 TCG ops, 312 bytes of
+aarch64 for a `ret` TB (`build/test/p20-dump.log`), one indirect branch.
+
+Kept on the helper: `-accel tcg,inline-lookup=off` (the oracle),
+`CF_NO_GOTO_PTR`, exec / nochain logging at translation time (the helper
+logs every TB it chains to), `one-insn-per-tb`, 32-bit hosts, the x86-64
+target (its CS64 case: cs_base 0 and a 64-bit pc; not built here). Like a
+`goto_tb` chain, a chain of inline hits keeps its cflags until the next
+return to the main loop; `-d nochain` or `one-insn-per-tb` toggled at
+runtime apply from the next main-loop lookup (upstream's direct chains
+behave the same). Breakpoints and gdb single-step are checked at run time,
+so those are exact.
+
+**Result**, on vs off, same session, back to back:
+
+| | off (the helper) | on |
+|---|---|---|
+| 7-Zip compress rating, dict 22 / 23 (MIPS) | 1181 / 1071 | **1325 / 1201 (+12 %)** |
+| 7-Zip decompress rating, dict 22 / 23 | 1651 / 1534 | **1765 / 1638 (+7 %)** |
+| 7-Zip vCPU: `helper_lookup_tb_ptr` / generated code | 13.9 % / 79.4 % | 0 / 91.5 % |
+| the race: the helper / `cpu_exec_loop` | 5.8 % / 1.3 % | 0 / 1.5 % |
+| the race, standing start, 60 dumps/s | 39.2 | 39.3 (the probe's ceiling, no signal) |
+
+The game needs a faster fps oracle now (the item added under patch 19).
+Follow-ups if they show up in a profile: the flags computation is 12 of
+the 44 ops (the SSE term alone 8 — `(exc_flags >> 4) & sse_fast_mode`
+would be 4), and the two 64-bit constants (the current TB, the epilogue)
+are materialized per TB.
+
 ## Next steps, in order
 
 Done on the way: patch 13 (`-perfmap` on Darwin), patch 14 (the
@@ -844,13 +904,9 @@ above):
    section above (7-Zip / Super PI not re-measured: neither is
    `rep`-bound; the DOS batteries and the XP guest stage are the
    regression guard).
-1. **Inline the TB lookup for indirect branches** (`ret`, `call *`,
-   `jmp *`): the jump-cache probe (hash of pc, compare pc / cs_base /
-   flags / cflags, `goto_ptr`) emitted as TCG ops instead of
-   `helper_lookup_tb_ptr`, falling back to the helper on a miss. Portable,
-   contained (`tcg_gen_lookup_and_goto_ptr` + the i386 `cpu_get_tb_cpu_state`
-   bits as TCG ops); the 13–14 % self time of the helper on 7-Zip and 7 %
-   on D3DGAME9 is the ceiling. Patch 15.
+1. ~~**Inline the TB lookup for indirect branches**~~ — patch 20
+   (2026-09-05): 7-Zip +12 % compress / +7 % decompress, the helper gone
+   from every profile; the section above.
 2. **Pinned guest registers across chained TBs** (the big one, aarch64
    only): `eax`–`edi` and `eip` live in x20–x28 for as long as TBs chain;
    stored to `env` only before helper calls that may read them, in the
@@ -861,7 +917,7 @@ above):
    the aarch64 prologue/epilogue and slow-path stubs. Design doc 18
    first. The 41 % of generated-code samples on register traffic is the
    ceiling; expect a good part of it plus the `eip` load/add/store at
-   every block end. Property `pinned-regs=off` as the oracle. Patch 16.
+   every block end. Property `pinned-regs=off` as the oracle. Patch 21.
 3. **Shorter TLB chain**: the per-mmu-index mask/table pair loaded once
    per TB (or pinned) instead of per access — one dependent load less
    per guest memory access. The probe's `pinned` kernels say this is
