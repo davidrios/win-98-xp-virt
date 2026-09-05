@@ -287,13 +287,35 @@ bytes) all `0xFF` inside index 00 of any track and for the last 150
 sectors before a track's index 01 (that is the pause flag as real discs
 carry it), else `0x00`; Q (12 bytes) as below; R..W zero.
 
+**Synthesis of an undeclared pregap is a guess, and it must stay one**
+(measured 2026-09-05 with `discx subscan` against four real dumps). Where a
+descriptor gives a track no index 00, the disc underneath may be any of three
+things, and nothing in the descriptor tells them apart — the MDS `pregap`
+field is 0 for every such track on both Alcohol dumps we have:
+
+| Disc | P before the next track | Q there |
+|---|---|---|
+| AoE Gold | `0xFF` (pause) | previous track, **index 01**, counting up |
+| Moto Racer | `0xFF` (pause) | next track, **index 00**, counting down to 0 over 149 sectors |
+| Settlers 3 | `0x00` (no pause) | previous track, index 01, counting up |
+
+We synthesize the first of those: P pauses for the 150 sectors before a
+track's index 01, Q keeps counting up in the previous track at index 01.
+That reproduces AoE's own subchannel **exactly** — 277,626 of 277,626 ADR 1
+frames — and costs ~0.7 % of frames on a Moto-Racer-shaped disc. Changing it
+to the second convention was tried and reverted: it trades 1,633 wrong frames
+on one disc for 1,866 and 1,650 on two others. The lesson is that anything
+which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,
+MDS 2448), where `read_sub` replays the bytes verbatim and none of this
+applies.
+
 Q, ADR 1 (position), the layout every sector has:
 
 ```
 byte 0  control<<4 | adr(1)
 byte 1  TNO   BCD track number (0xAA in lead-out; not addressable here)
 byte 2  INDEX BCD (00 in pregap)
-byte 3-5  MIN SEC FRAME  BCD, track-relative; in index 00 it counts DOWN to 00:00:00 at index 01
+byte 3-5  MIN SEC FRAME  BCD, track-relative; in index 00 it counts DOWN (to 00:00:01 at the last pregap sector on both real discs measured, not to zero)
 byte 6  ZERO (0x00)
 byte 7-9  AMIN ASEC AFRAME  BCD absolute (lba + 150)
 byte 10-11 CRC-16 big-endian: CCITT polynomial 0x1021, init 0x0000, over bytes 0..10, result inverted (~crc)

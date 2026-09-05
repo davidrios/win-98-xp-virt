@@ -37,6 +37,51 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   `-drive`/`-device ide-cd,audiodev=` lines in M5b), `CLAUDE.md` (the
   testing-tools table), `docs/00-status.md` outside the M5 row.
 
+## State (2026-09-05: the protected dumps arrived)
+
+- **Step 7 has its material.** Four real dumps in
+  `/mnt/data2/david/Downloads/oldstuff` (not in the repo), checked with
+  `discx info` / `scan` / `subscan`:
+
+  | Dump | Protection, from the disc | Signal in the dump |
+  |---|---|---|
+  | `AOM_D1.ccd` | SafeDisc 2 (`00000001.TMP`, `DRVMGT.DLL`, `SECDRV.SYS`) | **intact** — 580 weak sectors, all between LBA 825 and 12000, valid sync+header, 0x55 fill, wrong EDC |
+  | `AOM_D2.ccd` | none (second disc) | clean |
+  | `the settlers 3/CD01.ccd` | VOB ProtectCD (`.ficken` section in `S3.EXE`) | **intact** — 538 sectors 195539–196076 corrupt in the data *and* in the Q relative timing, over otherwise flawless subchannel |
+  | `The Sims (PT-BR) (CCD)` | SafeDisc 1.x (`CLCD16/32.DLL`, `DPLAYERX.DLL`, `SIMS.ICD`) | **lost** — 0 L-EC failures; keep as the lossy-dump fixture |
+
+  AoM disc 1 already exercises the path end to end with no code change:
+  `qemu-img convert -f cdimage AOM_D1.ccd` fails `Input/output error`
+  because the block driver refuses the sectors whose L-EC does not verify.
+  Settlers CD01 is the better of the two — it needs the `.sub` replay path
+  as well as the L-EC one, and it is mixed-mode with 12 audio tracks.
+
+- **`discx subscan` (new)** walks every sector's stored subchannel: Q CRC
+  failures with their clustering, kind/track/ADR distribution, whether the
+  bytes would verify un-deinterleaved, and how often `subq::synthesize`
+  reproduces the disc's own frames. Verdict on the Alcohol dumps: 1.9 % and
+  0.18 % bad CRC, 99.7 % isolated single sectors, no run longer than 2, not
+  one frame valid in the raw form — **drive noise, not our layout**.
+  Subchannel is delivered with no error correction; the Settlers CloneCD
+  dump has 0 bad frames in 344,876.
+
+- **Fixed: MDS mode `0xEC` read as audio.** NFS Porsche Unleashed's v1.3
+  MDS came out as one 281,279-sector CD-DA track — no L-EC verified
+  anywhere, unmountable in a guest. It is Mode 2 XA (every sector header
+  says mode 2, the TOC control says 4); `0xEC` is Alcohol's mixed mode 2.
+  Now `mode2 form1` throughout, and an MDS whose mode byte contradicts its
+  TOC control bits is refused outright rather than silently misread.
+
+- **Not fixed, by decision: the undeclared-pregap guess** (doc 17 §2.6).
+  Synthesizing Q where the descriptor declares no index 00 is a choice
+  between three conventions real discs use, and no descriptor field
+  distinguishes them (`pregap` is 0 for every such track in both MDS
+  files). Ours reproduces AoE Gold exactly — 277,626 of 277,626 ADR 1
+  frames — and misses ~0.7 % on a Moto-Racer-shaped disc. Switching to
+  Moto's convention was implemented, measured and reverted: it fixed 1,633
+  frames on one disc and broke 1,866 and 1,650 on two others. Anything that
+  really reads subchannel wants a dump that carries it.
+
 ## State (2026-09-04, evening)
 
 - **Step 6 done** (same commit as step 5): the voice in patch 51

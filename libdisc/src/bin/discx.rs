@@ -3,6 +3,8 @@
 //!   discx selftest <outdir>            write synthetic images, check the model through them
 //!   discx info <image>                 sessions, tracks, indices, extents
 //!   discx scan <image> [first] [count] every sector classified and L-EC verified: kinds, failures, ranges
+//!   discx subscan <image> [first] [count]  every sector's stored subchannel: Q CRC failures and how they
+//!                                      cluster, and how often subq::synthesize reproduces the disc's own frames
 //!   discx dump <image> <what> [args]   hex of one answer: readraw <lba> | readcooked <lba> | sub <lba> | info <lba>
 //!                                      | toc <format> [msf] [start] | subq <lba> [format] [msf] [track] | discinfo
 //!                                      | readcd <lba> <type> <byte9> <byte10>
@@ -10,6 +12,7 @@
 //!
 //! Every check prints PASS/FAIL with a name; the exit code is 1 on any FAIL.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -956,6 +959,175 @@ fn scan(disc: &Disc, first: i32, count: Option<i32>) -> Result<(), String> {
     Ok(())
 }
 
+/// Walk every sector's stored subchannel and characterise the Q frames that
+/// fail their CRC (doc 17 §2.6). On a real dump a failure is one of two very
+/// different things, and everything printed here exists to tell them apart:
+/// the drive's own read noise (scattered singletons, subchannel is delivered
+/// with no error correction) or our frame layout (clustered, systematic, or
+/// concentrated in one track / one ADR). The second half checks the opposite
+/// direction — how often `subq::synthesize` reproduces what the disc itself
+/// carries, which is the only real-disc test our synthesizer gets.
+fn subscan(disc: &Disc, first: i32, count: Option<i32>) -> Result<(), String> {
+    let n = disc.sector_count() as i32;
+    let end = count.map(|c| (first + c).min(n)).unwrap_or(n);
+
+    let mut seen = 0u64;
+    let mut bad: Vec<i32> = Vec::new();
+    let mut seen_kind = [0u64; 2]; // 0 = audio, 1 = data
+    let mut bad_kind = [0u64; 2];
+    let mut adr_good = [0u64; 16];
+    let mut adr_bad = [0u64; 16];
+    let mut seen_track: BTreeMap<u8, u64> = BTreeMap::new();
+    let mut bad_track: BTreeMap<u8, u64> = BTreeMap::new();
+    let mut seen_pause = 0u64;
+    let mut bad_pause = 0u64;
+    let mut zero = 0u64;   // all 96 bytes zero: the drive delivered nothing
+    let mut raw_ok = 0u64; // passes CRC *without* deinterleaving = wrong layout
+    let mut pos_ok = 0u64; // a bad frame whose position still matches ours
+    let mut samples: Vec<(i32, [u8; 12])> = Vec::new();
+
+    // the other direction: does our synthesizer agree with the disc?
+    let mut syn_seen = 0u64;
+    let mut syn_match = 0u64;
+    let mut syn_diff = [0u64; 10];
+    let mut syn_bad: Vec<i32> = Vec::new();
+
+    let mut de = [0u8; 96];
+    let mut inter = [0u8; 96];
+    let mut syn = [0u8; 96];
+    let t0 = std::time::Instant::now();
+
+    for lba in first..end {
+        disc.read_sub(lba, &mut de).map_err(|e| format!("{lba}: {e}"))?;
+        seen += 1;
+
+        let (kind, _, _) = disc.classify(lba).map_err(|e| format!("{lba}: {e}"))?;
+        let k = usize::from(kind.is_data());
+        seen_kind[k] += 1;
+
+        let (track, index) = match disc.locate(lba) {
+            Some((_, t, i)) => (t.number, i),
+            None => (0, 0),
+        };
+        *seen_track.entry(track).or_default() += 1;
+        if index == 0 {
+            seen_pause += 1;
+        }
+
+        let adr = (de[12] & 0x0F) as usize;
+
+        if subq::q_crc_ok(&de[12..24]) {
+            adr_good[adr] += 1;
+            // ADR 1 is the position frame our synthesizer builds; MCN/ISRC
+            // frames (2/3) depend on data no dump has to carry, skip them.
+            if adr == 1 {
+                subq::synthesize(disc, lba, &mut syn);
+                syn_seen += 1;
+                match (0..10).find(|&i| de[12 + i] != syn[12 + i]) {
+                    None => syn_match += 1,
+                    Some(i) => {
+                        syn_diff[i] += 1;
+                        syn_bad.push(lba);
+                    }
+                }
+            }
+            continue;
+        }
+
+        bad.push(lba);
+        bad_kind[k] += 1;
+        adr_bad[adr] += 1;
+        *bad_track.entry(track).or_default() += 1;
+        if index == 0 {
+            bad_pause += 1;
+        }
+        if de.iter().all(|&b| b == 0) {
+            zero += 1;
+        }
+        // the bytes as they sit in the file, before deinterleaving: if *those*
+        // carry a valid frame then we are deinterleaving something already
+        // deinterleaved (the CloneCD-vs-Alcohol trap, doc 17 §2.6)
+        subq::interleave(&de, &mut inter);
+        if subq::q_crc_ok(&inter[12..24]) {
+            raw_ok += 1;
+        }
+        // a corrupt CRC over an otherwise correct position is drive noise in
+        // the CRC bytes themselves; a wrong position is a layout problem
+        subq::synthesize(disc, lba, &mut syn);
+        if de[19..22] == syn[19..22] {
+            pos_ok += 1;
+        }
+        if samples.len() < 8 {
+            let mut s = [0u8; 12];
+            s.copy_from_slice(&de[12..24]);
+            samples.push((lba, s));
+        }
+    }
+
+    let pct = |a: u64, b: u64| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+    outln!("subchannel {first}..{end} of {n} in {:.1} s", t0.elapsed().as_secs_f64());
+    outln!("  frames          {seen}");
+    outln!("  bad CRC         {} ({:.3} %)", bad.len(), pct(bad.len() as u64, seen));
+    outln!("    audio         {} of {} ({:.3} %)", bad_kind[0], seen_kind[0], pct(bad_kind[0], seen_kind[0]));
+    outln!("    data          {} of {} ({:.3} %)", bad_kind[1], seen_kind[1], pct(bad_kind[1], seen_kind[1]));
+    outln!("    in index 00   {} of {} ({:.3} %)", bad_pause, seen_pause, pct(bad_pause, seen_pause));
+    outln!("    all-zero      {zero}");
+    outln!("    valid if not deinterleaved  {raw_ok}");
+    outln!("    position still ours         {pos_ok}");
+
+    let adrs: Vec<String> = (0..16)
+        .filter(|&a| adr_good[a] + adr_bad[a] > 0)
+        .map(|a| format!("{a}: {}/{}", adr_bad[a], adr_good[a] + adr_bad[a]))
+        .collect();
+    outln!("  bad/total by ADR  {}", adrs.join("  "));
+
+    let tracks: Vec<String> = seen_track
+        .iter()
+        .map(|(t, s)| format!("{t:02}:{:.2}%", pct(bad_track.get(t).copied().unwrap_or(0), *s)))
+        .collect();
+    outln!("  bad rate by track {}", tracks.join(" "));
+
+    // clustering: consecutive bad LBAs are a systematic fault, singletons are noise
+    let mut runs: Vec<(i32, i32)> = Vec::new();
+    for &l in &bad {
+        match runs.last_mut() {
+            Some(r) if r.1 + 1 == l => r.1 = l,
+            _ => runs.push((l, l)),
+        }
+    }
+    let singles = runs.iter().filter(|(a, b)| a == b).count();
+    let mut longest: Vec<&(i32, i32)> = runs.iter().collect();
+    longest.sort_by_key(|(a, b)| -(b - a));
+    let shown: Vec<String> = longest
+        .iter()
+        .take(6)
+        .filter(|(a, b)| b > a)
+        .map(|(a, b)| format!("{a}-{b} ({})", b - a + 1))
+        .collect();
+    outln!("  runs            {} ({singles} single sectors), longest {}", runs.len(), if shown.is_empty() { "none".into() } else { shown.join(" ") });
+
+    outln!("  synthesizer     {syn_match} of {syn_seen} ADR 1 frames reproduced exactly ({:.3} %)", pct(syn_match, syn_seen));
+    let names = ["ctl/adr", "track", "index", "rel m", "rel s", "rel f", "zero", "abs m", "abs s", "abs f"];
+    let diffs: Vec<String> = (0..10).filter(|&i| syn_diff[i] > 0).map(|i| format!("{}: {}", names[i], syn_diff[i])).collect();
+    if !diffs.is_empty() {
+        outln!("    first mismatch  {}", diffs.join("  "));
+        let mut r: Vec<(i32, i32)> = Vec::new();
+        for &l in &syn_bad {
+            match r.last_mut() {
+                Some(x) if x.1 + 1 == l => x.1 = l,
+                _ => r.push((l, l)),
+            }
+        }
+        let shown: Vec<String> = r.iter().take(12).map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect();
+        outln!("    where           {}{}", shown.join(" "), if r.len() > 12 { format!(" … ({} ranges)", r.len()) } else { String::new() });
+    }
+    for (lba, q) in &samples {
+        let hex: Vec<String> = q.iter().map(|b| format!("{b:02x}")).collect();
+        outln!("    bad frame {lba:>8}  {}", hex.join(" "));
+    }
+    Ok(())
+}
+
 fn dump(disc: &Disc, what: &str, args: &[String]) -> Result<(), String> {
     let lba = |i: usize| -> Result<i32, String> {
         let s = args.get(i).ok_or("missing LBA")?;
@@ -1055,7 +1227,7 @@ fn convert(input: &Path, out_cue: &Path, wavs: &[PathBuf]) -> Result<(), String>
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: discx selftest <outdir> | info <image> | scan <image> [first] [count] | dump <image> <what> [args] | convert <in.iso> <out.cue> [--audio a.wav ...]");
+    eprintln!("usage: discx selftest <outdir> | info <image> | scan <image> [first] [count] | subscan <image> [first] [count] | dump <image> <what> [args] | convert <in.iso> <out.cue> [--audio a.wav ...]");
     2
 }
 
@@ -1071,6 +1243,23 @@ fn main() {
                 let first = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
                 let count = args.get(4).and_then(|v| v.parse().ok());
                 match scan(&d, first, count) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        },
+        "subscan" => match Disc::open(Path::new(&args[2])) {
+            Ok(d) => {
+                let first = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let count = args.get(4).and_then(|v| v.parse().ok());
+                match subscan(&d, first, count) {
                     Ok(()) => 0,
                     Err(e) => {
                         eprintln!("{e}");

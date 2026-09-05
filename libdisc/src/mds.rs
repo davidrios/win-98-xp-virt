@@ -143,11 +143,14 @@ pub fn parse(mds: &[u8], mds_path: &Path) -> Result<Disc> {
         track_entries.sort_by_key(|e| e.point);
         for (i, e) in track_entries.iter().enumerate() {
             let (mode, layout) = match (e.mode, e.sector_size) {
-                (0xA9, _) | (0xEC, _) => (TrackMode::Audio, Layout::Raw2352),
+                (0xA9, _) => (TrackMode::Audio, Layout::Raw2352),
                 (0xAA, 2048) => (TrackMode::Mode1, Layout::Cooked2048),
                 (0xAA, _) => (TrackMode::Mode1, Layout::Raw2352),
-                (0xAB, 2336) | (0xAC, 2336) | (0xAD, 2336) => (TrackMode::Mode2, Layout::Mode2_2336),
-                (0xAB, _) => (TrackMode::Mode2, Layout::Raw2352),
+                (0xAB, 2336) | (0xAC, 2336) | (0xAD, 2336) | (0xEC, 2336) => (TrackMode::Mode2, Layout::Mode2_2336),
+                // 0xEC is Alcohol's mixed mode 2 (form per sector, XA), not
+                // audio: read as audio until NFS Porsche Unleashed's v1.3 MDS
+                // showed control 4 and mode-2 headers in every sector.
+                (0xAB, _) | (0xEC, _) => (TrackMode::Mode2, Layout::Raw2352),
                 (0xAC, _) => (TrackMode::Mode2Form1, Layout::Raw2352),
                 (0xAD, _) => (TrackMode::Mode2Form2, Layout::Raw2352),
                 (m, sz) => return Err(bad(&format!("track {}: mode {m:#04x} with {sz}-byte sectors not supported", e.point))),
@@ -157,6 +160,20 @@ pub fn parse(mds: &[u8], mds_path: &Path) -> Result<Disc> {
                 (Layout::Raw2352, 2352) | (Layout::Cooked2048, 2048) | (Layout::Mode2_2336, 2336) => layout,
                 (_, sz) => return Err(bad(&format!("track {}: {sz}-byte sectors with mode {:#04x} not supported", e.point, e.mode))),
             };
+            // The mode byte and the TOC control bits must agree. A track read
+            // with the wrong kind is silently unusable — every sector
+            // misclassified, no L-EC verified — so a contradiction is an
+            // error, not a guess (this is what 0xEC-as-audio looked like).
+            if mode.is_data() != (e.adr_ctl & 0x04 != 0) {
+                return Err(bad(&format!(
+                    "track {}: mode {:#04x} is {} but the TOC control {:#x} says {}",
+                    e.point,
+                    e.mode,
+                    if mode.is_data() { "data" } else { "audio" },
+                    e.adr_ctl & 0x0F,
+                    if e.adr_ctl & 0x04 != 0 { "data" } else { "audio" }
+                )));
+            }
             if e.subchannel != 0 && layout != Layout::Raw2352Sub96 {
                 return Err(bad(&format!("track {}: subchannel flag {:#04x} with {}-byte sectors", e.point, e.subchannel, e.sector_size)));
             }
