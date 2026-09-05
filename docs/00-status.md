@@ -296,6 +296,17 @@ items nobody owns yet:
   frame rate; no line at all means the game blits to the primary instead of
   flipping, which nothing in the display path can pace — that one is the
   guest CPU. `DDFLAGS=32768` turns the vertical blank off for the A/B.
+- **A DirectX 6 title's flip chain reaches the display driver as its
+  primary alone** — `CreateSurfaceEx` for the root only; the back buffer
+  comes from the attach list (GTA 2, 2026-09-05: `render target handle 2
+  unknown`, half the frames showing the undrawn buffer). Its
+  `TEXTUREMAPBLEND` reaches a DX7 driver untranslated, chosen before any
+  texture is bound, so the executor re-maps it per texture. And the
+  driver's Direct3D state must not live in the PDEV: a game's mode switch
+  back at exit replaces the PDEV before dxg's `ContextDestroyAll`, so a
+  context table there leaked every context on the host and the *next* run
+  of the game got `E_FAIL` from `CreateDevice` (doc 15 "A DirectX 6
+  title's flip chain").
 - Host toolchains: pinned 9.2.x needs `--disable-werror` (+ native-file
   strip), `-fPIC` + `b_staticpic` for the shared lib, uv-managed Python 3.12
   (3.14 breaks mkvenv), `MACOSX_DEPLOYMENT_TARGET` = running OS.

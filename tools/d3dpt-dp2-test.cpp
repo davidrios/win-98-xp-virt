@@ -44,7 +44,7 @@ static void doorbell(d3dpt_enc *e) { p_submit(X, e->shm, D3DPT_SHM_SIZE); }
 
 /* --- the scene, shared with guest-tools/src/d3dptvid/d3d7test.c --- */
 enum { W = 640, H = 480, TEX = 64 };
-enum { RT_OFF = 0, RT_PITCH = W * 4, Z_OFF = 0x200000, Z_PITCH = W * 2, TEX_OFF = 0x300000, TEX_PITCH = TEX * 4, VRAM_SIZE = 0x400000 };
+enum { RT_OFF = 0, RT_PITCH = W * 4, Z_OFF = 0x200000, Z_PITCH = W * 2, TEX_OFF = 0x300000, TEX_PITCH = TEX * 4, RT2_OFF = 0x400000, VRAM_SIZE = 0x600000 };
 enum { TEX16_OFF = 0x310000, TEX16_PITCH = TEX * 2, TEXP8_OFF = 0x320000, TEXP8_PITCH = TEX };   /* v8: a 16-bit keyed texture, a palettized one */
 enum { H_RT = 1, H_Z = 2, H_TEX = 3, H_TEX16 = 4, H_TEXP8 = 5, CTX = 1 };
 #define CLEAR_COLOR 0xff203040u
@@ -604,6 +604,16 @@ int main(int argc, char **argv) {
         hr |= readback(&enc, H_RT);
         CHECK(hr == 0 && near_(px(104, 84), 0xff0000, 2) && near_(px(124, 84), 0xff0000, 2),
               "TEXTUREHANDLE 0: the vertex colour 0x%06x 0x%06x", px(104, 84), px(124, 84));
+        /* a DirectX 6 title: the blend chosen while no texture is bound, the texture then bound as a
+         * stage state per draw (GTA 2's menu text, 2026-09-05): the blend must follow the texture */
+        Dp2Buf e5;
+        e5.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        e5.rs(21, 2 /* MODULATE */); e5.tss(0, 0, H_TEX16);
+        e5.cmd(3, 2); e5.u16(0); e5.u16(1); e5.u16(2); e5.u16(0x1f); e5.u16(3); e5.u16(4); e5.u16(5); e5.u16(0x1f);
+        hr = send_dp2(&enc, e5, quad);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x000000, 2) && near_(px(124, 84), 0xff0000, 2),
+              "TEXTUREMAPBLEND before the texture, bound as a stage state: blue cell x red = 0x%06x, white cell x red = 0x%06x", px(104, 84), px(124, 84));
         Dp2Buf e4; e4.rs(21, 2); e4.tss(0, 1, D3DTOP_MODULATE); e4.tss(0, 4, D3DTOP_SELECTARG1);   /* back to the scene's stage states */
         hr = send_dp2(&enc, e4, quad);
         CHECK(hr == 0, "stage states restored (0x%08x)", hr);
@@ -685,6 +695,31 @@ int main(int argc, char **argv) {
     Dp2Buf gone; gone.tss(0, 0, H_TEX); gone.trilist(0, 2);
     hr = send_dp2(&enc, gone, vtx);
     CHECK(hr == 0, "released texture bound: drawn untextured, not fatal (0x%08x)", hr);
+
+    /* --- a runtime that swaps two flip buffers' memory (a DirectX 6 title's, doc 15): the
+     * target registered again at another offset. The host's shadow of the old memory must not
+     * count against the new: the readback into it is the whole frame, so the two frames of the
+     * same scene are identical --- */
+    vram_surface(&enc, H_RT, RT2_OFF, W, H, RT_PITCH, D3DFMT_X8R8G8B8, D3DPT_VS_RENDER_TARGET | D3DPT_VS_PRIMARY);
+    hr = send_dp2(&enc, d, vtx);
+    hr |= readback(&enc, H_RT);
+    vram_surface(&enc, H_RT, RT_OFF, W, H, RT_PITCH, D3DFMT_X8R8G8B8, D3DPT_VS_RENDER_TARGET | D3DPT_VS_PRIMARY);
+    hr |= send_dp2(&enc, d, vtx);
+    hr |= readback(&enc, H_RT);
+    CHECK(hr == 0 && memcmp(vram + RT_OFF, vram + RT2_OFF, (size_t)RT_PITCH * H) == 0,
+          "a target moved to another offset reads back whole (0x%08x, frames %s)", hr,
+          memcmp(vram + RT_OFF, vram + RT2_OFF, (size_t)RT_PITCH * H) ? "differ" : "equal");
+    /* --- the context again under its open handle: a guest that never destroyed it (the display
+     * driver lost its table with the PDEV until 2026-09-05, GTA 2) gets a fresh one, not BAD_HANDLE --- */
+    {
+        uint32_t off = d3dpt_enc_ret(&enc, 0);
+        d3dpt_ctx_create *c = (d3dpt_ctx_create *)d3dpt_enc_cmd(&enc, D3DPT_OP_CTX_CREATE, sizeof *c, 0);
+        *c = { CTX, off, H_RT, H_Z };
+        d3dpt_enc_flush(&enc);
+        CHECK(enc.last_status == 0 && d3dpt_enc_result(&enc, off)->hr == 0, "context re-created under its open handle (status %u hr 0x%08x)", enc.last_status, d3dpt_enc_result(&enc, off)->hr);
+        hr = send_dp2(&enc, d, vtx);
+        CHECK(hr == 0, "the scene draws on the re-created context (0x%08x)", hr);
+    }
 
     p_attach(X, 0);
     p_destroy(X);

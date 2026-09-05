@@ -152,6 +152,7 @@ struct Ddi {
     std::unordered_map<uint32_t, Palette> palettes;
     uint32_t ckey_rs = 0, stage_tex[8] = {};    /* the surface handle bound at each stage */
     bool ckey_forced = false, ckey_alpha_ovr = false;
+    bool legacy_blend = false;          /* TEXTUREMAPBLEND set since the app's last explicit stage-0 op: the blend follows the texture */
     uint32_t pal_lines = 0;                     /* palette / colour-key events logged (the first few) */
     uint32_t dp2_calls = 0, draws = 0, readbacks = 0;
     uint32_t untracked = 0;                     /* target pixels the guest wrote without VRAM_DIRTY (uploaded or kept) */
@@ -1189,7 +1190,7 @@ struct Dp2 {
             x.dev->SetSamplerState(0, D3DSAMP_MIPFILTER, mipf[i]);
             break;
         }
-        case 21: apply_mapblend(); break;                                   /* TEXTUREMAPBLEND */
+        case 21: d.legacy_blend = true; apply_mapblend(); break;            /* TEXTUREMAPBLEND */
         }
     }
 
@@ -1400,7 +1401,16 @@ struct Dp2 {
             case DP2_TEXTURESTAGESTATE:
                 need = count * 8u;
                 if (need > left) return fail("truncated TEXTURESTAGESTATE");
-                for (uint32_t i = 0; i < count; i++) stage_state(u16(q + 8 * i), u16(q + 8 * i + 2), u32(q + 8 * i + 4));
+                for (uint32_t i = 0; i < count; i++) {
+                    uint32_t stg = u16(q + 8 * i), st = u16(q + 8 * i + 2), v = u32(q + 8 * i + 4);
+                    if (stg == 0 && st >= 1 && st <= 6) d.legacy_blend = false;     /* the app's own ops from now on */
+                    stage_state(stg, st, v);
+                    /* a DirectX 6 title picks its blend with TEXTUREMAPBLEND once (no texture bound
+                     * yet: the diffuse alone) and binds textures as a stage state per draw; the
+                     * DX6 runtime passes both through, so the blend is re-evaluated for the
+                     * texture now bound (GTA 2's menu text drew as white boxes, 2026-09-05) */
+                    if (stg == 0 && st == 0 && d.legacy_blend) apply_mapblend();
+                }
                 break;
             case DP2_INDEXEDTRIANGLELIST2: {
                 need = 2 + count * 6u;
@@ -1749,7 +1759,10 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
         /* the same surface again (a flip moved it): keep the host object if it still fits */
         if ((s.tex || s.rt) && (s.d.width != nd.width || s.d.height != nd.height || s.d.format != nd.format ||
                                 s.d.caps != nd.caps || s.d.levels != nd.levels)) s.release();
-        if (s.d.offset != nd.offset || s.d.pitch != nd.pitch) s.dirty = true;
+        /* moved (a runtime that swaps two flip buffers' memory, doc 15): what the shadow
+         * remembers of the old memory says nothing about the new, or the next readback
+         * would keep every differing pixel as the guest's */
+        if (s.d.offset != nd.offset || s.d.pitch != nd.pitch) { s.dirty = true; s.shadow.clear(); }
         if (!s.tex && !s.rt) s.dirty = true;
         s.d = nd;
         s.levels.assign(lv, lv + (levels - 1));
@@ -1792,7 +1805,16 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
         auto *a = body<d3dpt_ctx_create>(c, 0, b); if (!a) return true;
         d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return true;
         Ddi &d = ddi(x);
-        if (!a->handle || d.ctxs.count(a->handle)) { b.err = D3DPT_ERR_BAD_HANDLE; return true; }
+        if (!a->handle) { b.err = D3DPT_ERR_BAD_HANDLE; return true; }
+        auto stale = d.ctxs.find(a->handle);
+        if (stale != d.ctxs.end()) {
+            /* the guest never destroyed it (a display driver that lost its context table
+             * with the PDEV, before 2026-09-05): the new one takes its place */
+            x.log("ddi: context %u still open, replaced", a->handle);
+            if (x.dev && (!stale->second.vshaders.empty() || !stale->second.pshaders.empty())) { x.dev->SetVertexShader(nullptr); x.dev->SetPixelShader(nullptr); }
+            stale->second.release_shaders();
+            d.ctxs.erase(stale);
+        }
         VramSurf *rt = surf(x, a->rt);
         if (!rt) { r->hr = (uint32_t)D3DERR_INVALIDCALL; x.log("ddi: context %u: render target %u unknown", a->handle, a->rt); return true; }
         Ctx cx;

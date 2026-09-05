@@ -116,8 +116,6 @@ typedef struct _PDEV {
     ULONG cmd_offset;           /* window offset in VRAM (0 = the device has none) */
     BOOL d3d;                   /* window mapped and the host executor answered */
     d3dpt_enc enc;
-    D3DCTX ctx[D3D_MAX_CTX];
-    ULONG ctx_live;
     ULONG dp2_calls, dp2_errors, reg_lines;
     /* the runtime's parser for the tokens a DrawPrimitives2 stream may carry
      * that are not the driver's: the DX3 execute-buffer opcodes
@@ -125,6 +123,7 @@ typedef struct _PDEV {
     HRESULT (APIENTRY *parse_unknown)(PVOID cmd, PVOID *next);
     ULONG parse_lines;
     ULONG blt_lines;                    /* the first DdBlt calls logged */
+    ULONG flip_lines;                   /* the first flips logged: the two buffers' handles and offsets */
 
     /* the hardware cursor (register set v4): its image lives in the
      * D3DPT_FB_CURSOR_BYTES above the DirectDraw heap */
@@ -132,6 +131,15 @@ typedef struct _PDEV {
 } PDEV, *PPDEV;
 
 static PPDEV d3d_pdev;              /* the PDEV whose Direct3D is on (the primary display) */
+
+/* the contexts, by handle - 1: global, not in the PDEV. A game's exclusive
+ * mode switch gives GDI a new PDEV (the context is created on that one),
+ * and its switch back at exit another, before dxg's ContextDestroyAll for
+ * the process arrives; a table in the PDEV was empty by then, the host kept
+ * the context, and the game's next run had its CTX_CREATE of the same
+ * handle refused — E_FAIL from CreateDevice, a crash (GTA 2, 2026-09-05) */
+static D3DCTX d3d_ctx[D3D_MAX_CTX];
+static ULONG d3d_ctx_live;
 
 /* ------------------------------------------------------------ debug log */
 
@@ -848,7 +856,9 @@ VOID APIENTRY DrvMovePointer(SURFOBJ *pso, LONG x, LONG y, RECTL *prcl)
 /* the Direct3D section below */
 static BOOL d3d_init(PPDEV p);
 static ULONG pf_format(const DDPIXELFORMAT *f);
-static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset);
+static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL quiet);
+static void d3d_register_chain(PPDEV p, PDD_SURFACE_LOCAL s);
+static void d3d_register_moved(PPDEV p, PDD_SURFACE_LOCAL s);
 static ULONG surf_handle(PDD_SURFACE_LOCAL s);
 static void d3d_colorkey_op(PPDEV p, ULONG handle, ULONG lo, ULONG hi, ULONG flags);
 static void surf_colorkey_check(PPDEV p, ULONG handle);
@@ -1100,13 +1110,28 @@ static DWORD APIENTRY DdFlip(PDD_FLIPDATA d)
         wait_frame(p);
         p->flip_pending = FALSE;
     }
-    if (p->ctx_live) {
+    if (p->flip_lines < 8 && d->lpSurfCurr && d->lpSurfCurr->lpGbl && d->lpSurfTarg->lpGbl) {
+        /* which object is where: under dxg's model the offsets never change
+         * and the runtime's render target handle alternates; a runtime that
+         * swaps memory shows the same handle at alternating offsets */
+        p->flip_lines++;
+        dbg_hex(p, "d3dptdisp: flip curr ", surf_handle(d->lpSurfCurr));
+        dbg_hex(p, " at ", (ULONG)d->lpSurfCurr->lpGbl->fpVidMem);
+        dbg_hex(p, " targ ", surf_handle(d->lpSurfTarg));
+        dbg_hex(p, " at ", (ULONG)d->lpSurfTarg->lpGbl->fpVidMem);
+        dbg_puts(p, "\n");
+    }
+    if (d3d_ctx_live) {
         /* what Direct3D rendered into the back buffer must be in its VRAM
-         * before it is scanned out */
+         * before it is scanned out — the VRAM the target has *now*: a
+         * surface the host knows at another offset is registered again
+         * first (a no-op under dxg's model below) */
+        d3d_register_moved(p, d->lpSurfCurr);
+        d3d_register_moved(p, d->lpSurfTarg);
         d3d_readback(p, d->lpSurfTarg);
     }
     /* the page flip: scan out from the target's VRAM offset. Nothing to
-     * re-register: on NT dxg does not exchange the two surfaces' memory, it
+     * exchange: on NT dxg does not exchange the two surfaces' memory, it
      * exchanges their roles (the PRIMARYSURFACE caps move, each handle keeps
      * its VRAM, the application's "back buffer" is the other object from now
      * on) and tells the driver with a CreateSurfaceEx pair. The first M7c cut
@@ -2099,7 +2124,7 @@ static ULONG surf_rows(ULONG fmt, ULONG h)
 }
 
 /* VRAM_SURFACE for s at the given VRAM offset (its own, or the one a flip hands it) */
-static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
+static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL quiet)
 {
     d3dpt_vram_surface *r;
     d3dpt_u32x2 lv[15];
@@ -2123,7 +2148,7 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     /* one line per surface in the QEMU log: what the host will know it as
      * (a "skipped" surface is one a later SETRENDERTARGET / TEXTUREMAP
      * would report unknown) */
-    if (p->reg_lines < 4096) {
+    if (!quiet && p->reg_lines < 4096) {
         p->reg_lines++;
         dbg_hex(p, "d3dptdisp: surface ", handle);
         dbg_hex(p, " caps ", s->ddsCaps.dwCaps);
@@ -2255,7 +2280,66 @@ static void d3d_colorkey_op(PPDEV p, ULONG handle, ULONG lo, ULONG hi, ULONG fla
 
 static void d3d_register(PPDEV p, PDD_SURFACE_LOCAL s)
 {
-    d3d_register_at(p, s, (ULONG)s->lpGbl->fpVidMem);
+    d3d_register_at(p, s, (ULONG)s->lpGbl->fpVidMem, FALSE);
+}
+
+/* s and what is attached to it — a flip chain's other buffers, a Z buffer
+ * — each under its own handle, the ones the host does not know yet or
+ * knows at another offset. dxg's CreateSurfaceEx comes for the root of a
+ * complex surface; a DirectX 7 interface's flip chain gets one call per
+ * member as well, a DirectX 6 title's arrives as its primary alone (GTA 2,
+ * 2026-09-05): the back buffer, handle 2, was never registered, the
+ * runtime's SETRENDERTARGET 2 was unknown to the host, every frame went
+ * into the front buffer's VRAM while the flips alternated the scanout, and
+ * half the frames showed the buffer nobody drew. A flip chain's attach
+ * list is a ring; mip levels go with their texture (d3d_register_at) */
+static void d3d_register_chain(PPDEV p, PDD_SURFACE_LOCAL s)
+{
+    PDD_SURFACE_LOCAL seen[8];
+    ULONG n = 0, i, j;
+
+    d3d_register(p, s);
+    seen[n++] = s;
+    for (i = 0; i < n; i++) {
+        PDD_ATTACHLIST a;
+        for (a = seen[i]->lpAttachList; a && n < 8; a = a->lpLink) {
+            PDD_SURFACE_LOCAL t = a->lpAttached;
+            SURF *k;
+
+            if (!t || !t->lpGbl || (t->ddsCaps.dwCaps & DDSCAPS_MIPMAP)) {
+                continue;
+            }
+            for (j = 0; j < n && seen[j] != t; j++) {
+            }
+            if (j < n) {
+                continue;
+            }
+            seen[n++] = t;
+            k = (t->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) ? NULL : surf_slot(surf_handle(t), FALSE);
+            if (!k || k->mem != (ULONG_PTR)p->fb + (ULONG)t->lpGbl->fpVidMem) {
+                d3d_register(p, t);
+            }
+        }
+    }
+}
+
+/* a video-memory surface the host knows at another offset: registered
+ * again where it is now, silently. Under dxg's flip model nothing moves
+ * (DdFlip); a runtime that swaps two buffers' memory instead is caught
+ * here at the next flip or lock */
+static void d3d_register_moved(PPDEV p, PDD_SURFACE_LOCAL s)
+{
+    SURF *k;
+
+    if (!p->d3d || !s || !s->lpGbl || (s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
+        return;
+    }
+    k = surf_slot(surf_handle(s), FALSE);
+    if (!k) {
+        d3d_register(p, s);
+    } else if (k->mem != (ULONG_PTR)p->fb + (ULONG)s->lpGbl->fpVidMem) {
+        d3d_register_at(p, s, (ULONG)s->lpGbl->fpVidMem, TRUE);
+    }
 }
 
 static void d3d_handle_op(PPDEV p, ULONG op, ULONG handle)
@@ -2289,8 +2373,8 @@ static BOOL surf_is_target(PDD_SURFACE_LOCAL s)
                                  DDSCAPS_FRONTBUFFER | DDSCAPS_BACKBUFFER)) != 0;
 }
 
-/* dxg calls this once per surface it creates (each member of a flip chain
- * or mip chain gets its own call); with Direct3D on, every one is mirrored */
+/* dxg calls this once per surface it creates; with Direct3D on, every one is
+ * mirrored (CreateSurfaceEx: a flip chain's members from the attach list) */
 /* dxg sizes a video-memory surface from its pixel format's bit count before
  * it takes it from the heap; a compressed FOURCC format has none, so the
  * request was for zero bytes and every DXT texture failed at CreateTexture
@@ -2353,7 +2437,7 @@ static DWORD APIENTRY DdCreateSurfaceEx(PDD_CREATESURFACEEXDATA d)
     PDD_SURFACE_LOCAL s = d->lpDDSLcl;
 
     if (p && s && s->lpGbl && p->d3d) {
-        d3d_register(p, s);
+        d3d_register_chain(p, s);
     }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_HANDLED;
@@ -2395,7 +2479,8 @@ static DWORD APIENTRY DdLock(PDD_LOCKDATA d)
     PDD_SURFACE_LOCAL s = d->lpDDSurface;
 
     /* a render target the host drew into: bring the frame into VRAM first */
-    if (p->ctx_live && s && surf_is_target(s)) {
+    if (d3d_ctx_live && s && surf_is_target(s)) {
+        d3d_register_moved(p, s);
         d3d_readback(p, s);
     }
     d->ddRVal = DD_OK;
@@ -2465,7 +2550,7 @@ static DWORD APIENTRY DdUnlock(PDD_UNLOCKDATA d)
 
     /* the guest wrote texels (or a target): the host re-reads them before use */
     if (p->d3d && s && !(s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) &&
-        ((s->ddsCaps.dwCaps & DDSCAPS_TEXTURE) || (p->ctx_live && surf_is_target(s)))) {
+        ((s->ddsCaps.dwCaps & DDSCAPS_TEXTURE) || (d3d_ctx_live && surf_is_target(s)))) {
         d3d_handle_op(p, D3DPT_OP_VRAM_DIRTY, surf_handle(s));
     }
     d->ddRVal = DD_OK;
@@ -2476,10 +2561,10 @@ static DWORD APIENTRY DdUnlock(PDD_UNLOCKDATA d)
 
 static D3DCTX *ctx_of(PPDEV p, ULONG_PTR h)
 {
-    if (h == 0 || h > D3D_MAX_CTX || !p->ctx[h - 1].used) {
+    if (h == 0 || h > D3D_MAX_CTX || !d3d_ctx[h - 1].used) {
         return NULL;
     }
-    return &p->ctx[h - 1];
+    return &d3d_ctx[h - 1];
 }
 
 static DWORD APIENTRY D3dContextCreate(LPD3DNTHAL_CONTEXTCREATEDATA d)
@@ -2493,14 +2578,16 @@ static DWORD APIENTRY D3dContextCreate(LPD3DNTHAL_CONTEXTCREATEDATA d)
     if (!p || !p->d3d || !rt || !rt->lpGbl) {
         return DDHAL_DRIVER_HANDLED;
     }
-    for (i = 0; i < D3D_MAX_CTX && p->ctx[i].used; i++) {
+    for (i = 0; i < D3D_MAX_CTX && d3d_ctx[i].used; i++) {
     }
     if (i == D3D_MAX_CTX) {
         dbg_puts(p, "d3dptdisp: out of contexts\n");
         return DDHAL_DRIVER_HANDLED;
     }
-    /* the targets again: a flip chain's surfaces may have moved */
-    d3d_register(p, rt);
+    /* the targets again (and the chain the target belongs to: a DirectX 6
+     * title's back buffer is first seen here): a flip chain's surfaces may
+     * have moved */
+    d3d_register_chain(p, rt);
     if (z) {
         d3d_register(p, z);
     }
@@ -2524,12 +2611,12 @@ static DWORD APIENTRY D3dContextCreate(LPD3DNTHAL_CONTEXTCREATEDATA d)
     if (hr & 0x80000000u) {
         return DDHAL_DRIVER_HANDLED;
     }
-    memset(&p->ctx[i], 0, sizeof(p->ctx[i]));
-    p->ctx[i].used = TRUE;
-    p->ctx[i].pid = d->dwPID;
-    p->ctx[i].rt = c->rt;
-    p->ctx[i].z = c->z;
-    p->ctx_live++;
+    memset(&d3d_ctx[i], 0, sizeof(d3d_ctx[i]));
+    d3d_ctx[i].used = TRUE;
+    d3d_ctx[i].pid = d->dwPID;
+    d3d_ctx[i].rt = c->rt;
+    d3d_ctx[i].z = c->z;
+    d3d_ctx_live++;
     d->dwhContext = i + 1;
     d->ddrval = DD_OK;
     return DDHAL_DRIVER_HANDLED;
@@ -2538,8 +2625,8 @@ static DWORD APIENTRY D3dContextCreate(LPD3DNTHAL_CONTEXTCREATEDATA d)
 static void ctx_destroy(PPDEV p, ULONG i)
 {
     d3d_handle_op(p, D3DPT_OP_CTX_DESTROY, i + 1);
-    p->ctx[i].used = FALSE;
-    p->ctx_live--;
+    d3d_ctx[i].used = FALSE;
+    d3d_ctx_live--;
     d3dpt_enc_flush(&p->enc);
     dbg_hex(p, "d3dptdisp: d3d context gone ", i + 1);
     dbg_hex(p, " dp2 calls ", p->dp2_calls);
@@ -2566,7 +2653,7 @@ static DWORD APIENTRY D3dContextDestroyAll(LPD3DNTHAL_CONTEXTDESTROYALLDATA d)
 
     if (p) {
         for (i = 0; i < D3D_MAX_CTX; i++) {
-            if (p->ctx[i].used && p->ctx[i].pid == d->dwPID) {
+            if (d3d_ctx[i].used && d3d_ctx[i].pid == d->dwPID) {
                 ctx_destroy(p, i);
             }
         }
@@ -2598,7 +2685,7 @@ static DWORD APIENTRY D3dSetRenderTarget(LPD3DNTHAL_SETRENDERTARGETDATA d)
     if (!c || !d->lpDDS || !d->lpDDS->lpGbl) {
         return DDHAL_DRIVER_HANDLED;
     }
-    d3d_register(p, d->lpDDS);
+    d3d_register_chain(p, d->lpDDS);
     if (d->lpDDSZ) {
         d3d_register(p, d->lpDDSZ);
     }

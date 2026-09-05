@@ -19,7 +19,8 @@
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
 #   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
-# Env: DDFLAGS=N (-device d3dpt-vga,ddflags=N), OUT=dir for screendumps
+# Env: QEMU_EXTRA='-audiodev none,id=snd0 -device AC97,audiodev=snd0' (more QEMU arguments: a
+# sound card), VGA=cirrus (XP's inbox driver instead of ours: the control for a crash), DDFLAGS=N (-device d3dpt-vga,ddflags=N), OUT=dir for screendumps
 # and logs (default build/xp-driver-test), NO_KVM=1, CPU=pentium3 (the KVM CPU model), GAME_ISO=game.iso (the
 # game disc takes the CD-ROM drive the game was installed from, D:; the
 # driver ISO moves to the next drive, F: after the E: scratch), and for `cmd` / `bat`:
@@ -68,15 +69,17 @@ SOCK="$OUT/qmp.sock"; rm -f "$SOCK"
 ACCEL=(-cpu pentium3)
 [ -e /dev/kvm ] && [ -z "${NO_KVM:-}" ] && ACCEL=(-accel kvm -cpu "${CPU:-host}")   # CPU=pentium3: Max Payne's JPEG decoder mis-decodes on a modern family
 LOG="$OUT/qemu-$MODE.log"
+VGA_ARGS=(-vga none -device "d3dpt-vga,ddflags=${DDFLAGS:-0}")
+[ -n "${VGA:-}" ] && VGA_ARGS=(-vga "$VGA")     # VGA=cirrus: the control run on XP's inbox driver (no Direct3D)
 CD2=()
 CD1="$ISO"
 if [ -n "${GAME_ISO:-}" ]; then CD1="$GAME_ISO"; CD2=(-drive "file=$ISO,media=cdrom,if=ide,index=3,readonly=on"); fi
 export D3DPT_EXEC_LIB="${D3DPT_EXEC_LIB:-$ROOT/build/d3dpt/libd3dpt_exec.so}"
 export D3DPT_DXVK_LIB="${D3DPT_DXVK_LIB:-$ROOT/build/dxvk/src/d3d9/libdxvk_d3d9.so.0}"
 "$ROOT/build/qemu/qemu-system-i386" -L "$ROOT/qemu/pc-bios" "${ACCEL[@]}" -machine pc -m 512 \
-  -hda "$IMG" -hdb "$SCRATCH" -cdrom "$CD1" "${CD2[@]}" -vga none -device "d3dpt-vga,ddflags=${DDFLAGS:-0}" \
+  -hda "$IMG" -hdb "$SCRATCH" -cdrom "$CD1" "${CD2[@]}" "${VGA_ARGS[@]}" \
   -net none -usb -device usb-tablet -display none -qmp "unix:$SOCK,server,nowait" \
-  -serial none -monitor none > "$LOG" 2>&1 &
+  -serial none -monitor none ${QEMU_EXTRA:-} > "$LOG" 2>&1 &
 QPID=$!
 Q() { python3 "$ROOT/tools/qmpc.py" "$SOCK" "$@"; }
 run() {  # one chained guest command line in a console that stays open

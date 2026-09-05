@@ -260,6 +260,27 @@ picture and the track rules, then this file, then doc 15.
   E_NOTIMPL to the app, not a HEL fallback) and the game never blits its
   movies anyway (doc 15 "Blit caps and the HEL"). Open: where the user
   saw them full-screen.
+- **GTA 2 (DirectX 6, 640×480×16) glitched on its first run and crashed
+  on its second (user, 2026-09-05 evening) — three faults, all fixed**
+  (doc 15 "A DirectX 6 title's flip chain"): its flip chain reaches
+  `CreateSurfaceEx` as the primary alone, so the back buffer (handle 2)
+  was never registered and the host drew every frame into the front
+  buffer while the flips alternated the scanout; the Direct3D context
+  table sat in the PDEV, which the game's mode switch back at exit
+  replaced before dxg's `ContextDestroyAll`, so the context leaked on the
+  host and the next run's `CTX_CREATE` of the same handle was refused
+  (`E_FAIL` from `CreateDevice`); and its menu text drew as white boxes
+  because the DX6 runtime passes `TEXTUREMAPBLEND` through untranslated
+  and the executor had mapped it once, before any texture was bound. The
+  driver walks the attach list, keeps its contexts in a global table and
+  re-registers a target the host knows at another offset before every
+  readback; the host replaces a context re-created under an open handle
+  and re-maps the legacy blend per texture. Verified headless on an
+  overlay of `winxp-m7g` (three launches in one boot, the menu with its
+  text); **the driver must be reinstalled from the ISO in the user's
+  image**. Enter during the Bink intro movie crashes the game on XP's
+  inbox cirrus driver just the same (`VGA=cirrus` control): the game's,
+  not ours (doc 15). Not yet: played past the menu.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main

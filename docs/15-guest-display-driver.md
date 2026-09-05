@@ -306,6 +306,85 @@ line at all while a game runs means it blits to the primary instead of
 flipping** — the vertical blank cannot pace that game, and if it is too
 fast the cause is the guest CPU, not the display path.
 
+## A DirectX 6 title's flip chain (2026-09-05, GTA 2)
+
+GTA 2 (1999, `IDirectDraw4` / `IDirect3D3`, 640×480×16) glitched on its
+first run after a boot and crashed on the second, both on the driver
+(`/tmp/player3.log`, TCG, `winxp-m7g`). Three faults, two in the driver
+and one in the executor, all found from that log and one traced frame:
+
+- **The glitch: the back buffer was never registered.** dxg's
+  `CreateSurfaceEx` came for the primary (handle 1) only — a DirectX 7
+  interface's chain gets one call per member, D3D7TEST and CKTEST never
+  missed one, but this DX6 chain arrived as its root alone. The runtime's
+  `SETRENDERTARGET 2` was `render target handle 2 unknown` to the host,
+  every frame was rendered and read back into handle 1's VRAM (offset 0)
+  while the flips alternated the scanout between 0 and 614400, so every
+  other frame showed the buffer nobody drew. `DdCreateSurfaceEx` now
+  walks the surface's attach list (`d3d_register_chain`: the ring of a
+  flip chain, an attached Z buffer; mip levels stay with their texture)
+  and registers each member the host does not know, or knows at another
+  offset; `D3dContextCreate` and `D3dSetRenderTarget` do the same for
+  the target they are handed. The DDK's sample drivers walk the list in
+  their `CreateSurfaceEx` for the same reason.
+- **The crash: the context table lived in the PDEV.** A game's exclusive
+  mode switch gives GDI a new PDEV (the Direct3D context is created on
+  that one) and its switch back at exit another, *before* dxg's
+  `ContextDestroyAll` for the process arrives. The table in the new PDEV
+  was empty, no `CTX_DESTROY` ever reached the host (the log has no
+  `d3d context gone` line), and the next run's `CTX_CREATE` of handle 1
+  came back `batch error 3` (`BAD_HANDLE`: the handle was still open) —
+  `E_FAIL` from `CreateDevice`, the game dereferenced nothing. The table
+  and its live count are globals now, like the surface table; and the
+  host replaces a context re-created under an open handle instead of
+  refusing it (`ddi: context N still open, replaced`), so a driver that
+  lost one cannot wedge the next process. `tools/d3dpt-dp2-test.cpp`
+  checks the re-creation.
+- **The white menu text: the legacy blend was decided before the
+  texture.** With the chain right, the menu drew — the photo, the logos,
+  and solid white boxes where its text belongs. The traced frame
+  (`D3DPT_DP2_TRACE`) showed 16×16 and 32×32 A4R4G4B4 glyph textures
+  bound per draw as a stage state (`tss 0.0`), `ALPHABLENDENABLE` on with
+  `SRCALPHA` / `INVSRCALPHA`, and stage 0's colour *and* alpha op at
+  `SELECTARG2`: the diffuse, `ffffffff`. GTA 2 picks its blend with the
+  DirectX 5 `TEXTUREMAPBLEND` render state (4, `MODULATEALPHA`) once,
+  before any texture is bound, and the DX6 runtime passes that state to
+  a DX7 driver as it is (it does *not* translate it into stage states,
+  contrary to what "Execute buffers" assumed) — the executor's
+  `apply_mapblend` mapped it at that moment ("no texture: the diffuse
+  alone") and never again. The executor now keeps a `legacy_blend` flag
+  (set by `TEXTUREMAPBLEND`, cleared by the app's own explicit stage-0
+  op) and re-evaluates the blend whenever stage 0's texture changes
+  while it is set. `d3dpt-dp2-test` covers the order (blend first, the
+  texture as a stage state) and fails without the fix.
+- **The flip model, measured.** `DdFlip` logs its first eight calls
+  (`d3dptdisp: flip curr H at OFF targ H at OFF`). For this DX6 chain
+  they read `curr 1 at 0 targ 2 at 0x96000`, then `curr 2 at 0x96000
+  targ 1 at 0`, and so on: the handles keep their VRAM and the roles
+  alternate, exactly dxg's DX7 model above — only the `CreateSurfaceEx`
+  notifications are missing. Whatever the model, `DdFlip` and a
+  `DdLock` of a target now re-register a surface the host knows at
+  another offset (`d3d_register_moved`, silent) before the readback: a
+  no-op here, the fix should a runtime ever swap memory; the host drops
+  a moved surface's shadow (the untracked-writes compare, "Untracked
+  writes" below) so the first readback into new memory is whole
+  (`d3dpt-dp2-test` checks that too).
+- **Not ours: Enter during the intro movie.** Headless, a press of
+  Enter while the Bink intro movie plays kills the game with `c0000095`
+  in `binkw32!BinkGetSummary` (`div ecx`: a 33-bit dividend over a
+  playback time of 1 ms; Dr. Watson's stack, pulled out of the overlay
+  with `7z` after `qemu-img convert`). The same press at the logos a few
+  seconds earlier reaches the menu. It is not the display path: the
+  control run on XP's inbox cirrus driver (`VGA=cirrus`, no Direct3D at
+  all) crashes the same way, with or without an AC97 card. A GTA 2 /
+  11.44-build matter; let the intro play, or skip it at the logos.
+- **Verified** with `tools/xp-driver-test.sh <overlay> bat` (three
+  launches in one boot, `tskill` between them, the driver reinstalled
+  from the ISO first): every launch creates its context, the flip lines
+  above, `ddi: 91 frames/s`, the menu with its text in the screendumps.
+  The driver ISO must be reinstalled in a guest for any of this: the old
+  DLL keeps the old behaviour.
+
 ## When a title falls back to its software renderer
 
 Moto Racer draws through its software rasterizer on the driver while FIFA
