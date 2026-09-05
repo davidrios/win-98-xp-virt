@@ -12,15 +12,14 @@ use eframe::egui_wgpu::RenderState;
 use eframe::{egui, wgpu};
 use std::path::{Path, PathBuf};
 
-/// The output is rendered at roughly this on-screen size (integer-scaled
-/// from the input image, clamped to a sane range) rather than the
-/// image's native resolution: a CRT preset's scanline/mask math depends
-/// on the *actual* pixel size it renders at, so rendering small and
-/// letting egui stretch the result would blur away the very thing being
-/// previewed — the real player has the same reason to run the chain at
-/// viewport size rather than the guest's native resolution.
-const MAX_DISPLAY_W: f32 = 480.0;
-const MAX_DISPLAY_H: f32 = 360.0;
+/// A source bigger than this is downsized on the CPU before the shader
+/// ever sees it — generous enough to pass any real game resolution
+/// through untouched (this is meant to *look like the player*: a native
+/// game resolution treated as-is, then integer-scaled up exactly the way
+/// `player::Gpu::viewport` does), it's only a sanity cap against
+/// rendering, say, a 12-megapixel phone photo at full size every frame.
+const MAX_SOURCE_W: f32 = 1600.0;
+const MAX_SOURCE_H: f32 = 1200.0;
 
 pub struct Preview {
     render_state: RenderState,
@@ -29,7 +28,7 @@ pub struct Preview {
     preset_path: Option<PathBuf>,
     chain: Option<shader_chain::Chain>,
     texture_id: Option<egui::TextureId>,
-    display_size: egui::Vec2,
+    viewport_size: egui::Vec2,
     error: Option<String>,
 }
 
@@ -42,7 +41,7 @@ impl Preview {
             preset_path: None,
             chain: None,
             texture_id: None,
-            display_size: egui::Vec2::ZERO,
+            viewport_size: egui::Vec2::ZERO,
             error: None,
         }
     }
@@ -53,11 +52,15 @@ impl Preview {
         self.texture_id
     }
 
-    /// The size to draw `texture_id()` at (an integer scale of the input
-    /// image — see `MAX_DISPLAY_W`/`H` — so the shader isn't blurred by a
-    /// second, egui-side resample).
-    pub fn display_size(&self) -> egui::Vec2 {
-        self.display_size
+    /// The exact size (in the same units as `update`'s `area`) the last
+    /// rendered frame came out at: the input image's own size times the
+    /// largest *integer* factor that fits `area` — never a fraction, so
+    /// the shader is never blurred by a second, non-integer resample the
+    /// way stretching it to fill `area` exactly would. Smaller than
+    /// `area` on one axis (letterboxed) unless the aspect ratios happen
+    /// to match exactly; the caller centers it and fills the rest.
+    pub fn viewport_size(&self) -> egui::Vec2 {
+        self.viewport_size
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -74,9 +77,11 @@ impl Preview {
 
     /// Reflect the editor's current preset path, effective parameter
     /// values (defaults already merged with overrides — this module
-    /// doesn't need to know which is which), and preview image path,
-    /// reloading only what actually changed and re-rendering a frame.
-    pub fn update(&mut self, preset: &Path, params: &[(String, f32)], image: &Path) {
+    /// doesn't need to know which is which), preview image path, and the
+    /// area available to render into (the caller's layout, so this can
+    /// grow with the editor window — e.g. a "fullscreen preview" toggle)
+    /// — reloading only what actually changed and re-rendering a frame.
+    pub fn update(&mut self, preset: &Path, params: &[(String, f32)], image: &Path, area: egui::Vec2) {
         if self.image_path.as_deref() != Some(image) {
             self.load_image(image);
         }
@@ -90,7 +95,7 @@ impl Preview {
         if let Some(chain) = &self.chain {
             chain.set_parameters(params);
         }
-        self.render();
+        self.render(area);
     }
 
     fn load_image(&mut self, path: &Path) {
@@ -108,14 +113,13 @@ impl Preview {
         // compute `scale = floor(OutputSize / SourceSize)` and then
         // divide by it — 0 when the source is bigger than the render
         // target, i.e. NaN, i.e. a solid black frame (found from a real
-        // report: a 1025x791 photo through crt-aperture, downscaled to
-        // fit the preview pane, rendered black; a small game screenshot
-        // upscaled through the same preset was fine). So a source larger
-        // than the pane is downsized *here*, on the CPU, before the
-        // shader ever sees it — the shader then only ever upscales, same
-        // as it would from a real game's native resolution.
-        let img = if img.width() > MAX_DISPLAY_W as u32 || img.height() > MAX_DISPLAY_H as u32 {
-            img.resize(MAX_DISPLAY_W as u32, MAX_DISPLAY_H as u32, image::imageops::FilterType::Triangle)
+        // report: a 1025x791 photo through crt-aperture rendered black).
+        // `render`'s own `.max(1.0)` on the scale now guarantees that
+        // can't happen regardless of this cap (see there) — this is just
+        // a sanity limit against treating an arbitrarily huge photo as
+        // "native resolution" and rendering it at full size every frame.
+        let img = if img.width() > MAX_SOURCE_W as u32 || img.height() > MAX_SOURCE_H as u32 {
+            img.resize(MAX_SOURCE_W as u32, MAX_SOURCE_H as u32, image::imageops::FilterType::Triangle)
         } else {
             img
         };
@@ -166,20 +170,27 @@ impl Preview {
         }
     }
 
-    fn render(&mut self) {
+    fn render(&mut self, area: egui::Vec2) {
         let Some((_, iw, ih)) = &self.input else { return };
         let (iw, ih) = (*iw, *ih);
         if self.chain.is_none() {
             return;
         }
-        // Always >= 1.0 (upscale only, never shrink): `load_image` has
-        // already downsized anything bigger than the pane, specifically
-        // so this never asks the shader to render smaller than its
-        // source — some presets divide by `floor(OutputSize/SourceSize)`
-        // and go straight to NaN (solid black) the moment that's < 1.
-        let scale = (MAX_DISPLAY_W / iw as f32).min(MAX_DISPLAY_H / ih as f32).clamp(1.0, 8.0);
-        let (rw, rh) = ((iw as f32 * scale).round() as u32, (ih as f32 * scale).round() as u32);
-        self.display_size = egui::Vec2::new(rw as f32, rh as f32);
+        // Exactly `player::Gpu::viewport`'s own math: the largest
+        // *integer* scale that fits `area`, floored (never a fraction —
+        // a non-integer scale would blur the very thing being
+        // previewed) and never below 1 (never shrunk — the source is
+        // already capped to `MAX_SOURCE_W/H` in `load_image`, but this
+        // is also what keeps some presets' own internal
+        // `1.0 / floor(OutputSize/SourceSize)` away from a division by
+        // zero regardless of that cap). Below 1 in `area` itself, the
+        // rendered frame is bigger than `area` and the caller crops it
+        // around the center — same as making the real player's window
+        // smaller than the guest's native resolution.
+        let (aw, ah) = (area.x.max(1.0), area.y.max(1.0));
+        let scale = (aw / iw as f32).min(ah / ih as f32).floor().max(1.0);
+        let (rw, rh) = ((iw as f32 * scale) as u32, (ih as f32 * scale) as u32);
+        self.viewport_size = egui::Vec2::new(rw as f32, rh as f32);
 
         let device = self.render_state.device.clone();
         let queue = self.render_state.queue.clone();

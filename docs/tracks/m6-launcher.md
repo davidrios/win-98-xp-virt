@@ -446,8 +446,66 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   `update_buffers` → a real render pass) and dumps the composite —
   useful for any future "the preview looks wrong" report to rule the
   egui-compositing layer in or out. `LAUNCHER_DEBUG_SHADER_PREVIEW=
-  <preset>;<image>` opens the editor pre-filled at startup, for
+  <preset>;<image>[;fullscreen]` opens the editor pre-filled at startup
+  (optionally with the fullscreen toggle below already on), for
   screenshotting the *real* windowed app without a GUI click.
+
+- **Preview reworked to match the player exactly** (user request,
+  2026-09-05, same day): "I want to pick a 640x480 image and see exactly
+  how it will look in the player, integer scaling and all" plus a
+  fullscreen toggle that gives the sliders the horizontal space the
+  letterboxed image doesn't need. `shader_preview.rs::Preview::render`
+  now runs the *exact* formula `player::Gpu::viewport` uses — `scale =
+  (area.x/iw).min(area.y/ih).floor().max(1.0)` — instead of the ad hoc
+  "fit inside a small fixed pane" scale from the first preview cut, and
+  `shader_manager.rs::preview_ui` paints the result centered in a
+  black-filled area via `ui.painter_at(rect).image(...)` (an
+  `egui::Image` widget would stretch to whatever size it's given,
+  losing the "always an *integer* multiple" property entirely) instead
+  of an image widget sized to fill its slot. Cropped-at-the-edges when
+  the native resolution doesn't fit the area — same as making the real
+  player's window smaller than the guest's resolution.
+
+  `render`'s own `.max(1.0)` now guarantees no downscale request ever
+  reaches the shader regardless of the source image's size, which is
+  actually *why* the previous bugfix's CPU pre-resize (still in
+  `load_image`, `MAX_SOURCE_W`/`H`) is no longer load-bearing for
+  correctness — it's now just a sanity cap (1600×1200) against treating
+  an arbitrarily huge photo as "native resolution" and rendering it at
+  full size every frame, not what stands between the user and another
+  black-frame divide-by-zero.
+
+  Layout: a fixed-width (300px) controls column + the rest of the
+  window for the preview (`editor_ui`, replacing the old 50/50
+  `ui.columns`) — growing the window (the new "Fullscreen" checkbox
+  next to "Preview", `Editor::fullscreen`) grows the *preview*, not the
+  sliders, matching the user's ask to use the freed-up width for
+  controls rather than wasted black bars. Fullscreen forces
+  `egui::Window::fixed_rect(ctx.viewport_rect())`; turning it back off
+  falls back to `.max_size(900×700)`, since egui otherwise remembers a
+  window's last (now huge) rect across frames and `default_width` only
+  applies the very first time a window is ever shown. The non-fullscreen
+  case also floors the preview area at 480×360 — otherwise an
+  auto-sizing egui window shrinks its content to whatever's left over
+  rather than growing to fit a request, so without a floor the compact
+  window would squeeze the preview down to a sliver and crop most of a
+  640×480 image out of view.
+
+  Verified for real on the actual windowed app (`LAUNCHER_DEBUG_SHADER_
+  PREVIEW`, screenshotted): a synthetic 640×480 test image through
+  `crt-lottes.slangp` renders at native 1:1 in the compact window (no
+  visible scanlines at scale 1 — correct: there's no sub-pixel gap
+  between rows to darken until you're actually upscaling, exactly what
+  the real player would also show for a window barely bigger than the
+  guest's own resolution) and at a visibly higher integer scale,
+  properly letterboxed with black bars either side and the sliders
+  filling that freed width, once "Fullscreen" is on. Re-ran the
+  crt-aperture/large-photo combination from the bugfix above through the
+  new algorithm with no CPU pre-resize needed to protect it (a 480×360
+  area against a 1025×791 photo: `floor(min(480/1025,360/791)) = 0`,
+  `.max(1.0) = 1` — native resolution, letterboxed/cropped, not
+  black) — confirms the `.max(1.0)` alone is sufficient, independent of
+  the sanity cap. `cargo build --workspace` clean, no warnings.
 
 ## Next steps, in order
 

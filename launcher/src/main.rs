@@ -128,6 +128,20 @@ impl eframe::App for LauncherApp {
     }
 }
 
+/// `PREVIEW_AREA=<w>x<h>` for the shader-preview debug verbs — the area
+/// the real editor's preview pane would have reserved, since headlessly
+/// there's no window to measure one from. Defaults to 800x600, a
+/// plausible non-fullscreen editor size.
+fn preview_area_env() -> egui::Vec2 {
+    std::env::var("PREVIEW_AREA")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some(egui::Vec2::new(w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or(egui::Vec2::new(800.0, 600.0))
+}
+
 fn main() -> eframe::Result {
     // Debug/advanced-drawer aids (doc 07), until the wizard exists:
     // `--new` bootstraps a bundle into the library from the doc 06
@@ -262,6 +276,7 @@ fn main() -> eframe::Result {
             let image_path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
             let params = shader_profile::parse_params(&args.next().unwrap_or_default());
+            let area = preview_area_env(); // PREVIEW_AREA=WxH, default 800x600
             let instance = eframe::wgpu::Instance::new(
                 eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
             );
@@ -273,7 +288,7 @@ fn main() -> eframe::Result {
             ))
             .expect("create a headless wgpu render state");
             let mut preview = shader_preview::Preview::new(render_state.clone());
-            preview.update(&preset, &params, &image_path);
+            preview.update(&preset, &params, &image_path, area);
             if let Some(err) = preview.error() {
                 eprintln!("[preview] {err}");
             }
@@ -294,6 +309,7 @@ fn main() -> eframe::Result {
             let preset: PathBuf = args.next().expect(usage).into();
             let image_path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
+            let area = preview_area_env();
             let instance = eframe::wgpu::Instance::new(
                 eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
             );
@@ -305,12 +321,12 @@ fn main() -> eframe::Result {
             ))
             .expect("create a headless wgpu render state");
             let mut preview = shader_preview::Preview::new(render_state.clone());
-            preview.update(&preset, &[], &image_path);
+            preview.update(&preset, &[], &image_path, area);
             if let Some(err) = preview.error() {
                 eprintln!("[preview] {err}");
             }
             let tex_id = preview.texture_id().expect("preview never registered a texture");
-            let size = preview.display_size();
+            let size = preview.viewport_size();
 
             let ctx = egui::Context::default();
             let mut full_output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -377,7 +393,7 @@ fn main() -> eframe::Result {
     let shader_profiles = shader_library::scan(&shader_profiles_dir);
     // Debug hook: screenshot the real windowed editor (bypassing the
     // GUI click this session has no automation for) pre-filled from
-    // `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset.slangp>;<image>`.
+    // `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset.slangp>;<image>[;fullscreen]`.
     let debug_shader_preview = std::env::var("LAUNCHER_DEBUG_SHADER_PREVIEW").ok();
     eframe::run_native(
         "win98-xp-virt launcher",
@@ -385,8 +401,10 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             let mut shader_manager = shader_manager::ShaderManager::default();
             if let Some(spec) = debug_shader_preview {
-                if let Some((preset, image)) = spec.split_once(';') {
-                    shader_manager.debug_open_editor(preset.to_string(), image.to_string());
+                let mut parts = spec.split(';');
+                if let (Some(preset), Some(image)) = (parts.next(), parts.next()) {
+                    let fullscreen = parts.next() == Some("fullscreen");
+                    shader_manager.debug_open_editor(preset.to_string(), image.to_string(), fullscreen);
                 }
             }
             Ok(Box::new(LauncherApp {

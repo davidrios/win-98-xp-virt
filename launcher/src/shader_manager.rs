@@ -34,6 +34,10 @@ struct Editor {
     /// wgpu render backend, which isn't guaranteed to exist) on first use.
     preview_image_path: String,
     preview: Option<Preview>,
+    /// Whether the editor window is currently blown up to (roughly) the
+    /// full screen, for a big, "how it'll really look in the player"
+    /// preview — see `ShaderManager::show`.
+    fullscreen: bool,
     error: Option<String>,
 }
 
@@ -49,6 +53,7 @@ impl Editor {
             overrides: Vec::new(),
             preview_image_path: String::new(),
             preview: None,
+            fullscreen: false,
             error: None,
         }
     }
@@ -126,13 +131,15 @@ impl ShaderManager {
     }
 
     /// Opens the editor directly, pre-filled with a preset and preview
-    /// image — a debug hook (`LAUNCHER_DEBUG_SHADER_PREVIEW=preset;image`
-    /// in `main.rs`) to screenshot the *real* windowed editor without a
-    /// GUI click, since this session has no click automation.
-    pub fn debug_open_editor(&mut self, preset_path: String, preview_image_path: String) {
+    /// image (and optionally fullscreen) — a debug hook
+    /// (`LAUNCHER_DEBUG_SHADER_PREVIEW=preset;image[;fullscreen]` in
+    /// `main.rs`) to screenshot the *real* windowed editor without a GUI
+    /// click, since this session has no click automation.
+    pub fn debug_open_editor(&mut self, preset_path: String, preview_image_path: String, fullscreen: bool) {
         let mut editor = Editor::fresh();
         editor.preset_path = preset_path;
         editor.preview_image_path = preview_image_path;
+        editor.fullscreen = fullscreen;
         editor.reparse();
         self.editor = Some(editor);
         self.open = true;
@@ -149,11 +156,23 @@ impl ShaderManager {
         }
         let mut changed = None;
         let mut still_open = true;
-        egui::Window::new("Shader profiles")
-            .open(&mut still_open)
-            .collapsible(false)
-            .default_width(480.0)
-            .show(ctx, |ui| {
+        // "Fullscreen": blows the window up to the screen so the preview
+        // pane (which fills whatever's left of the window after the
+        // fixed-width controls column, see `editor_ui`) gets much bigger
+        // — closer to actually seeing it "the way the player would show
+        // it". `resizable` always on so a non-fullscreen user can still
+        // grow it a bit by hand; `max_size` (rather than nothing) is what
+        // makes toggling fullscreen back *off* actually shrink it again —
+        // egui remembers a window's last rect across frames, and without
+        // this it would just stay at the fullscreen size once it had been there.
+        let fullscreen = self.editor.as_ref().is_some_and(|e| e.fullscreen);
+        let mut window = egui::Window::new("Shader profiles").open(&mut still_open).collapsible(false).resizable(true);
+        window = if fullscreen {
+            window.fixed_rect(ctx.viewport_rect())
+        } else {
+            window.default_width(760.0).max_size(egui::vec2(900.0, 700.0))
+        };
+        window.show(ctx, |ui| {
                 if let Some(editor) = &mut self.editor {
                     editor.reparse();
                     match editor_ui(ui, editor, profiles_dir, render_state) {
@@ -223,38 +242,49 @@ fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path, render
     });
     filepicker::path_field(ui, "Preset (.slangp)", &mut editor.preset_path, Some(PRESET_FILTER));
     ui.separator();
-    ui.columns(2, |cols| {
-        if let Some(err) = &editor.parse_error {
-            cols[0].colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
-        } else if editor.params.is_empty() {
-            cols[0].label("Pick a preset to see its parameters.");
-        } else {
-            egui::ScrollArea::vertical().id_salt("params").max_height(320.0).show(&mut cols[0], |ui| {
-                for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
-                    ui.horizontal(|ui| {
-                        let mut enabled = over.is_some();
-                        if ui.checkbox(&mut enabled, "").changed() {
-                            *over = if enabled { Some(meta.default) } else { None };
-                        }
-                        ui.add_enabled_ui(enabled, |ui| {
-                            let mut value = over.unwrap_or(meta.default);
-                            let resp = ui.add(
-                                egui::Slider::new(&mut value, meta.minimum..=meta.maximum)
-                                    .step_by(if meta.step > 0.0 { meta.step as f64 } else { 0.0 })
-                                    .text(&meta.id),
-                            );
-                            if resp.changed() {
-                                *over = Some(value);
+    // A fixed-width controls column, the rest of the window (however
+    // big — see the "Fullscreen" toggle in `ShaderManager::show`) for
+    // the preview: growing the window grows the preview, not the
+    // sliders, since a bigger *preview* is the whole point of going
+    // fullscreen (the user's own ask: "use the remaining horizontal
+    // space for the shader controls" once the image no longer needs it).
+    const CONTROLS_WIDTH: f32 = 300.0;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(CONTROLS_WIDTH);
+            if let Some(err) = &editor.parse_error {
+                ui.colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
+            } else if editor.params.is_empty() {
+                ui.label("Pick a preset to see its parameters.");
+            } else {
+                egui::ScrollArea::vertical().id_salt("params").show(ui, |ui| {
+                    for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
+                        ui.horizontal(|ui| {
+                            let mut enabled = over.is_some();
+                            if ui.checkbox(&mut enabled, "").changed() {
+                                *over = if enabled { Some(meta.default) } else { None };
                             }
+                            ui.add_enabled_ui(enabled, |ui| {
+                                let mut value = over.unwrap_or(meta.default);
+                                let resp = ui.add(
+                                    egui::Slider::new(&mut value, meta.minimum..=meta.maximum)
+                                        .step_by(if meta.step > 0.0 { meta.step as f64 } else { 0.0 })
+                                        .text(&meta.id),
+                                );
+                                if resp.changed() {
+                                    *over = Some(value);
+                                }
+                            });
                         });
-                    });
-                    if !meta.description.is_empty() && meta.description != meta.id {
-                        ui.label(egui::RichText::new(&meta.description).weak().small());
+                        if !meta.description.is_empty() && meta.description != meta.id {
+                            ui.label(egui::RichText::new(&meta.description).weak().small());
+                        }
                     }
-                }
-            });
-        }
-        preview_ui(&mut cols[1], editor, render_state);
+                });
+            }
+        });
+        ui.separator();
+        ui.vertical(|ui| preview_ui(ui, editor, render_state));
     });
     ui.separator();
     if let Some(err) = &editor.error {
@@ -288,9 +318,16 @@ fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path, render
 /// The live preview column: an image picker plus, once both a valid
 /// preset and an image are chosen, the shader's effect on it — re-run
 /// every time this is called with the sliders' current values, so
-/// dragging one updates the picture live.
+/// dragging one updates the picture live. Rendered integer-scaled and
+/// letterboxed exactly like `player::Gpu::viewport` (`shader_preview.rs`
+/// does the actual scale/render math); this just reserves the area and
+/// paints the result centered in it, black behind — "how it'll really
+/// look in the player", not an image widget stretched to fit.
 fn preview_ui(ui: &mut egui::Ui, editor: &mut Editor, render_state: Option<&RenderState>) {
-    ui.label("Preview");
+    ui.horizontal(|ui| {
+        ui.label("Preview");
+        ui.checkbox(&mut editor.fullscreen, "Fullscreen");
+    });
     filepicker::path_field(ui, "Image", &mut editor.preview_image_path, Some(IMAGE_FILTER));
     let Some(render_state) = render_state else {
         ui.label("(no wgpu render backend — live preview unavailable)");
@@ -303,18 +340,31 @@ fn preview_ui(ui: &mut egui::Ui, editor: &mut Editor, render_state: Option<&Rend
     if editor.parse_error.is_some() || editor.params.is_empty() {
         return; // nothing valid to render yet; the error already shows on the left
     }
+
+    // Everything left of the window/screen (however big) after the
+    // fields above and the controls column beside us — floored to a
+    // reasonable minimum so a compact (non-fullscreen) window doesn't
+    // just shrink the preview down to whatever little space is left
+    // over (egui auto-sizes an unconstrained window to its content,
+    // not the other way around: asking for at least this much here is
+    // what keeps the window itself from collapsing too small to show
+    // the image un-cropped).
+    let avail = ui.available_size();
+    let area = egui::vec2(avail.x.max(480.0), avail.y.max(360.0));
+
     let preview = editor.preview.get_or_insert_with(|| Preview::new(render_state.clone()));
     let effective: Vec<(String, f32)> =
         editor.params.iter().zip(&editor.overrides).map(|(meta, over)| (meta.id.clone(), over.unwrap_or(meta.default))).collect();
-    preview.update(
-        Path::new(editor.preset_path.trim()),
-        &effective,
-        Path::new(editor.preview_image_path.trim()),
-    );
+    preview.update(Path::new(editor.preset_path.trim()), &effective, Path::new(editor.preview_image_path.trim()), area);
     if let Some(err) = preview.error() {
         ui.colored_label(egui::Color32::RED, err);
     }
+
+    let (rect, _response) = ui.allocate_exact_size(area, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
     if let Some(id) = preview.texture_id() {
-        ui.image((id, preview.display_size()));
+        let image_rect = egui::Rect::from_center_size(rect.center(), preview.viewport_size());
+        painter.image(id, image_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
 }
