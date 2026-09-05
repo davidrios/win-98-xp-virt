@@ -241,6 +241,19 @@ picture and the track rules, then this file, then doc 15.
   the sprite into the frame at the guest's position instead — the first
   cut lacked that and showed no cursor at all in the game. **User-confirmed
   the same evening: steady desktop cursor, present in Moto Racer's menus.**
+- **GTA Vice City plays on the DX8 DDI (user, 2026-09-05 evening).** The
+  first real DirectX 8 title through XP's own d3d8.dll on our driver
+  (`FLT-VCA` / `FLT-VCB` in the oldstuff folder, a May 2003 build):
+  installed and played by hand under TCG (`-cpu pentium3`, no KVM),
+  800×600×32 with a D24S8 depth buffer, "everything ok, water effects
+  and all". The log (`/tmp/player3.log`) has no unknown token, no
+  dropped state and no `dx8 draws skipped` line; the city runs 400–600
+  draws a frame over 3–4 DrawPrimitives2 calls at 20–30 frames/s, the
+  menus at 60. Slow-ish under TCG at 800×600: the cost is the guest CPU
+  (the game, the DX8 runtime, the driver copying every draw's vertices
+  into the window) — KVM first, then `D3DDEVCAPS_HWVERTEXBUFFER` (vertex
+  buffers in VRAM, written once, a handle and a range per draw) is the
+  driver-side win.
 - **Tried and dropped the same evening: blit / stretch caps** for FIFA
   2000's 320×240 intro videos — `DDCAPS_BLT | BLTSTRETCH | …` with a
   declining `DdBlt` broke DDTEST's colour fill (on XP `NOTHANDLED` is
@@ -447,7 +460,11 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    same evening on `winxp-m7g`: works great, fast even without KVM** (the
    showroom's 2D panels fixed first, doc 15 "Untracked writes"); the
    user's own `winxp-m7` still needs the driver reinstalled from the ISO.
-   Then what the next title asks
+   **GTA Vice City, the first DX8 title, plays (user, the same evening;
+   nothing refused, 400–600 draws a frame, 20–30 fps under TCG).** Next
+   for it: a KVM number, then video-memory vertex buffers
+   (`D3DDEVCAPS_HWVERTEXBUFFER`) so a draw stops copying its vertices
+   through the window. Then what the next title asks
    for first among: **more than one stream** (the driver copies stream 0
    only; a multi-stream declaration's draws are skipped with a log line —
    the DRAW8 token would carry one blob per stream), cube / volume textures, presenting the
