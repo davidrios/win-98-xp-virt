@@ -637,6 +637,28 @@ int main(int argc, char **argv) {
         hr |= readback(&enc, H_RT);
         CHECK(hr == 0 && near_(px(220, 220), 0xff0000, 2) && near_(px(520, 40), 0x00ffff, 2),
               "kept pixels in the next frame: drawn over 0x%06x, persisting 0x%06x", px(220, 220), px(520, 40));
+
+        /* --- ZBIAS (47) -> DEPTHBIAS: a coplanar quad loses the Z test
+         * (LESS) without it and wins with it --- */
+        std::vector<tlv> green(quad);
+        for (tlv &v : green) v.diffuse = 0xff00ff00u;
+        Dp2Buf z1;
+        z1.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        z1.rs(7, 1); z1.rs(14, 1); z1.rs(23, D3DCMP_LESS);
+        z1.cmd(3, 2); z1.u16(0); z1.u16(1); z1.u16(2); z1.u16(0x1f); z1.u16(3); z1.u16(4); z1.u16(5); z1.u16(0x1f);
+        hr = send_dp2(&enc, z1, quad);
+        Dp2Buf z2;
+        z2.cmd(3, 2); z2.u16(0); z2.u16(1); z2.u16(2); z2.u16(0x1f); z2.u16(3); z2.u16(4); z2.u16(5); z2.u16(0x1f);
+        hr |= send_dp2(&enc, z2, green);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(220, 220), 0xff0000, 2), "coplanar quad under ZFUNC LESS: the first stays 0x%06x", px(220, 220));
+        Dp2Buf z3;
+        z3.rs(47, 8);
+        z3.cmd(3, 2); z3.u16(0); z3.u16(1); z3.u16(2); z3.u16(0x1f); z3.u16(3); z3.u16(4); z3.u16(5); z3.u16(0x1f);
+        z3.rs(47, 0); z3.rs(23, D3DCMP_LESSEQUAL);
+        hr = send_dp2(&enc, z3, green);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(220, 220), 0x00ff00, 2), "with ZBIAS 8 it wins: 0x%06x", px(220, 220));
     }
 
     /* --- hostile records --- */

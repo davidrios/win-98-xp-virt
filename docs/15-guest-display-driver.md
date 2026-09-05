@@ -1109,6 +1109,10 @@ and what it taught:
   drops once: 4, 10, 30, 33, 40, 47 (TEXTUREPERSPECTIVE, LINEPATTERN,
   ZVISIBLE, STIPPLEDALPHA, EDGEANTIALIAS, ZBIAS — the last one matters
   for decals and has a d3d9 twin, DEPTHBIAS; the alley sets it to 0).
+  Since 2026-09-05 (evening) ZBIAS is mapped: each of its 0..16 steps
+  becomes DEPTHBIAS −1/65535, the scale DXVK's own d3d8 layer uses
+  (`d8caps::ZBIAS_SCALE`); `d3dpt-dp2-test` draws a coplanar quad that
+  loses the Z test without it and wins with ZBIAS 8.
   What the traced frame looks like, for the next title: 230 draws, sky as
   38 opaque fans of one 512×256 texture, world geometry as `ADD(lightmap,
   diffuse)` on stage 0 (uv set 1) then `MODULATE(material)` on stage 1,
@@ -1270,7 +1274,7 @@ working; Max Payne renders on it except its clipped fans (the
   d3d9 oracle of `scripts/test.sh` (HUD masked).
 - Not there: more than one stream, video-memory
   buffers (`D3DDEVCAPS_HWVERTEXBUFFER`), cube and volume textures, N-
-  and RT-patches, ZBIAS → DEPTHBIAS, palettized textures. DXT textures on this path were fixed
+  and RT-patches, palettized textures (ZBIAS → DEPTHBIAS landed 2026-09-05 evening). DXT textures on this path were fixed
   on 2026-09-05 (the compressed-textures bullet above); vertex and pixel
   shaders 1.x the same night (the section below).
 

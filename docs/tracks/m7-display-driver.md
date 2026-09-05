@@ -109,8 +109,9 @@ picture and the track rules, then this file, then doc 15.
   fan with the runtime's padding and the wild light / transform (the old
   library fails both: parse error, then abort). `winxp-m7g` carries this
   driver build (surface log lines); `cd.ini` in it points at D: now (the
-  batch rewrites it). Not played by hand yet; ZBIAS (47) is still dropped
-  (the alley sets it to 0).
+  batch rewrites it). Not played by hand yet; ZBIAS (47) maps to
+  DEPTHBIAS since 2026-09-05 evening (DXVK's d3d8 scale, −1/65535 a
+  step; the alley sets it to 0).
 - **The DirectX 8 DDI (2026-09-05, branch `track/m7-fifa`):** `GetDriverInfo2`
   (`D3DCAPS8`, the DX8 format list), hardware T&L claimed (DX7 and DX8
   caps; `ddflags=0x1000` withdraws it, `0x2000` keeps the DX7 face), the
@@ -314,10 +315,10 @@ picture and the track rules, then this file, then doc 15.
      never sees (the executor's target shadow catches them now, doc 15
      "Untracked writes"), and the one-triangle draws are one texture
      switch each in painter's order — nothing to batch. Open: a
-     hand-played check; the attract demo's Esc menu shows its text
-     with a letter missing per line ("EXT DEMO", "UIT DEMO",
-     "C NTINUE DEMO"; seen with the old executor, to be re-checked
-     with the shadow).
+     hand-played check. (The attract demo's Esc menu looked like "EXT
+     DEMO / UIT DEMO / C NTINUE DEMO" in the screendumps: at 3× the
+     letters are there, drawn in a darker red as the hotkeys — the
+     game's own style, not a rendering fault.)
   7. Then the small things the
      runs showed: D3DGAME8's frame still differs from the native oracle
      along the checker texture's texel edges only (2026-09-05 night:
@@ -404,7 +405,7 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    confirmed `D3DPT\DINPUT.DLL` fixes it (2026-09-05), and the shim stays
    per-game by decision (doc 15). Max Payne runs through XP's d3d8.dll on the DX7-level DDI
    (tutorial level clean, now on the DX8 DDI with hardware T&L); play it
-   by hand, ZBIAS → DEPTHBIAS when a title needs it. Shaders 1.x landed
+   by hand (ZBIAS → DEPTHBIAS landed 2026-09-05 evening). Shaders 1.x landed
    2026-09-05 (protocol v7; a title that uses them is the next check —
    a DX8 game with vs 1.1 / ps 1.1 paths). Moto Racer 1997 ran its
    software rasterizer (main, 2026-09-05) for want of palettized (P8)

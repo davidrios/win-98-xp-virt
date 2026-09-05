@@ -1194,10 +1194,18 @@ struct Dp2 {
     }
 
     void render_state(uint32_t s, uint32_t v) {
-        tr("rs %u = 0x%x%s", s, v, rs_passthrough(s) || s == 41 || legacy_texture_state(s) ? "" : " (dropped)");
+        tr("rs %u = 0x%x%s", s, v, rs_passthrough(s) || s == 41 || s == 47 || legacy_texture_state(s) ? "" : " (dropped)");
         if (s < 256) { d.rs_val[s] = v; d.rs_set[s] = 1; }
         if (s == 28 && d.nofog) v = 0;
         if (s == 41) { d.ckey_rs = v; apply_ckey(); return; }              /* COLORKEYENABLE */
+        if (s == 47) {
+            /* ZBIAS (0..16, DX6-DX8) -> d3d9's DEPTHBIAS: the scale DXVK's
+             * own d3d8 layer uses (-1/65535 per step, D16 precision) */
+            float bias = (float)(v & 0xffff) * (-1.0f / 65535.0f);
+            uint32_t bits; memcpy(&bits, &bias, 4);
+            x.dev->SetRenderState(D3DRS_DEPTHBIAS, bits);
+            return;
+        }
         if (legacy_texture_state(s)) { legacy_render_state(s, v); return; }
         if (rs_passthrough(s)) {
             x.dev->SetRenderState((D3DRENDERSTATETYPE)s, v);
