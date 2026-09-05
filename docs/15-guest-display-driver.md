@@ -537,6 +537,17 @@ KVM) and working under KVM. What the investigation established
   alike. The user-facing recipe: copy `D3DPT\DINPUT.DLL` next to
   `fifa2000.exe`; `tools/xp-fifa2000.bat` does it from `E:\DINPUT.DLL`.
   **Confirmed by the user 2026-09-05: the shim fixes their TCG match.**
+- **How much this matters, from the same day:** the user's everyday setup is
+  the Linux host run natively (KVM) with `-vga none -device d3dpt-vga`, and
+  there they have **no input issues and no custom DLLs anywhere** — no
+  WineD3D set renamed out of a game folder, no shim next to any EXE, a stock
+  XP on the driver. So the unpumped-hook symptom is a **TCG-only** one, as
+  the KVM/TCG split above already suggested: the game's match loop does pump,
+  rarely, and only a guest slow enough to stretch the gaps lets the hook fall
+  behind. `DINPUT.DLL` is therefore medicine for the Apple Silicon path (TCG
+  is the only x86 accelerator there) and for `xp-fifa-match.sh tcg` — not
+  something in the normal path on a KVM host, which is one more reason for
+  the per-game placement decided below.
 
 **Where the merge lives: next to the game, never system-wide** (decided
 2026-09-05, after the confirmation). The tempting alternatives are both

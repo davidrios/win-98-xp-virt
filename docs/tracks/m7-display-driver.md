@@ -57,8 +57,7 @@ picture and the track rules, then this file, then doc 15.
   `build/xp-driver-test/fifa/`). No unsupported token, no refused record,
   no colour keying requested; the match blits instead of flipping. The
   image is `~/vms/winxp-m7f.qcow2` (a copy of the user's `winxp-m7` with
-  the M7c driver reinstalled and the DLLs renamed); the user's own image
-  still has the M7b driver (register set v1) and the DLLs in place.
+  the M7c driver reinstalled and the DLLs renamed).
 - **Played by hand (user, 2026-09-04): graphics clean, smooth; the
   keyboard dead in the match under TCG.** Root cause and fix in doc 15
   ("FIFA 2000 on the HAL"): the game's non-exclusive DirectInput keyboard
@@ -86,6 +85,19 @@ picture and the track rules, then this file, then doc 15.
   `winxp-m7g` has Diablo installed at `C:\Diablo`; it and the user's
   `winxp-m7` carry the v3 driver (installed 2026-09-05 00:50); `m7f` still
   has v2, which refuses the v3 device: reinstall from the ISO first.
+- **The driver is the user's daily driver, on a stock guest (2026-09-05).**
+  They run the Linux host natively (KVM) with `-vga none -device d3dpt-vga`
+  on `~/vms/winxp-m7` (v3 driver) and report it working great, with **no
+  input issues and no custom DLLs anywhere** — no WineD3D set to rename out
+  of a game folder, no `D3DPT\DINPUT.DLL`, nothing next to any EXE. That is
+  the bar the driver now meets: an unmodified XP talking to the adapter
+  through our miniport and display DLL, and unmodified games on the HAL.
+  It also scopes the keyboard shim: the dead match keyboard is a **TCG-only**
+  symptom (doc 15 — the game's unpumped DirectInput hook only loses the race
+  when the guest is slow enough), so `DINPUT.DLL` is medicine for the Apple
+  Silicon path and for `xp-fifa-match.sh tcg`, not something in anyone's
+  normal path on a KVM host. One more reason it stays per-game rather than
+  system-wide.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -101,11 +113,9 @@ picture and the track rules, then this file, then doc 15.
   driver, WineD3D DLLs renamed, `DINPUT.DLL` already in the FIFA folder,
   `m7g` also has `LowLevelHooksTimeout` = 5000 which proved irrelevant);
   `tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2` is the check that the
-  match takes keys (pause menu on Esc). The user's own `winxp-m7` still
-  needs the M7c driver (`install`), the renames and the shim. The keyboard
-  question is answered: the user confirmed 2026-09-05 that the shim fixes
-  FIFA for them, so M7c item 1's keyboard half is closed and the next
-  item is whatever the next title asks for.
+  match takes keys (pause menu on Esc). The keyboard question is answered
+  — see the daily-driver bullet below; M7c item 1's keyboard half is
+  closed and the next item is whatever the next title asks for.
 
 ## Build / run / test
 
