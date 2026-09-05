@@ -97,12 +97,29 @@ impl Preview {
         self.image_path = Some(path.to_path_buf());
         self.input = None;
         let img = match image::open(path) {
-            Ok(img) => img.to_rgba8(),
+            Ok(img) => img,
             Err(e) => {
                 self.error = Some(format!("loading {}: {e}", path.display()));
                 return;
             }
         };
+        // A CRT preset is written to *upscale* a small native-resolution
+        // source, never to shrink one: several (crt-aperture.slang, e.g.)
+        // compute `scale = floor(OutputSize / SourceSize)` and then
+        // divide by it — 0 when the source is bigger than the render
+        // target, i.e. NaN, i.e. a solid black frame (found from a real
+        // report: a 1025x791 photo through crt-aperture, downscaled to
+        // fit the preview pane, rendered black; a small game screenshot
+        // upscaled through the same preset was fine). So a source larger
+        // than the pane is downsized *here*, on the CPU, before the
+        // shader ever sees it — the shader then only ever upscales, same
+        // as it would from a real game's native resolution.
+        let img = if img.width() > MAX_DISPLAY_W as u32 || img.height() > MAX_DISPLAY_H as u32 {
+            img.resize(MAX_DISPLAY_W as u32, MAX_DISPLAY_H as u32, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        };
+        let img = img.to_rgba8();
         let (w, h) = img.dimensions();
         let device = &self.render_state.device;
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -155,11 +172,12 @@ impl Preview {
         if self.chain.is_none() {
             return;
         }
-        // Upscale a small capture (a real game's native resolution) so a
-        // CRT preset's scanline/mask math has enough pixels to be
-        // visible at all; shrink a large one (a modern screenshot) down
-        // to the preview pane instead of rendering it at full size.
-        let scale = (MAX_DISPLAY_W / iw as f32).min(MAX_DISPLAY_H / ih as f32).clamp(0.1, 8.0);
+        // Always >= 1.0 (upscale only, never shrink): `load_image` has
+        // already downsized anything bigger than the pane, specifically
+        // so this never asks the shader to render smaller than its
+        // source — some presets divide by `floor(OutputSize/SourceSize)`
+        // and go straight to NaN (solid black) the moment that's < 1.
+        let scale = (MAX_DISPLAY_W / iw as f32).min(MAX_DISPLAY_H / ih as f32).clamp(1.0, 8.0);
         let (rw, rh) = ((iw as f32 * scale).round() as u32, (ih as f32 * scale).round() as u32);
         self.display_size = egui::Vec2::new(rw as f32, rh as f32);
 

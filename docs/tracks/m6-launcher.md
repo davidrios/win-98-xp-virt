@@ -401,29 +401,53 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   `shader.rs` → `shader-chain/` move. **Not click-tested through the
   actual editor window** — same Wayland gap as the rest of this track.
 
-- **Open issue (user-reported, 2026-09-05): "preview shows just a black
-  image-sized shape."** Investigated the same day without reproducing it:
-  confirmed the chain's output alpha is 1.0 (not a premultiplied-alpha
-  compositing artifact); a new `--diag-preview-frame <preset> <image>
-  <out.png>` debug verb renders one *full* egui frame the way eframe's
-  own paint step would (tessellate → `update_texture`/`update_buffers` →
-  a real render pass) and dumps the composited result — correct, not
-  black, for `crt-lottes.slangp` and `crt-royale.slangp` against a PNG
-  (RGB and RGBA) and a converted JPEG. Went a step further: a new
-  `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset>;<image>` env var
-  (`ShaderManager::debug_open_editor`) opens the editor pre-filled at
-  startup, screenshotted on the **real windowed app** (this session's
-  actual Wayland compositor, `grim`) — also correct. Three independent
-  levels of verification (headless texture readback, full manual
-  compositing, the real running window) all show the shader working, so
-  the bug is most likely specific to the exact preset or image the user
-  tried (not yet identified) or to a platform this session can't test
-  (e.g. macOS/Metal — this box is Linux/RADV). Next session: get the
-  user's exact preset + image (or reproduce with more of the ~150
-  `third_party/slang-shaders` CRT-family presets — bezel/mega-bezel
-  presets that composite external border images are an untried,
-  plausible suspect) and, if on Linux, try
-  `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset>;<image> launcher` directly.
+- **Bug fixed (user-reported, 2026-09-05): preview showed a solid black
+  image-sized shape.** First investigated without reproducing it (the
+  `--diag-preview-frame`/`LAUNCHER_DEBUG_SHADER_PREVIEW` debug tools
+  below were built for this) against a few CRT presets and small
+  game-resolution images — all correct. The user then gave the exact
+  repro: `crt-aperture.slangp` against a real photo (1025×791, from
+  `~/Pictures`). Reading `crt-aperture.slang`
+  (`third_party/slang-shaders/crt/shaders/crt-aperture.slang:145-148`)
+  found the actual bug: `scale = floor(OutputSize.y / SourceSize.y)`,
+  then `offset = 1.0 / scale * 0.5` — a **divide by zero** the moment the
+  render target is smaller than the source, i.e. the moment the shader
+  is asked to *shrink* rather than upscale. The preview's own scaling
+  (`shader_preview.rs`) was shrinking any image bigger than the ~480×360
+  pane to fit it, which a 1025×791 photo triggers and a small game
+  screenshot never does — exactly why every case tried first (small
+  icons, an upscaled test pattern) worked and the user's real photo
+  didn't. This isn't really this one preset's bug: RetroArch/libretro
+  slang CRT presets are written on the assumption that they upscale a
+  small *native* resolution, the same assumption the player's own doc 03
+  pipeline makes (guest-native input, viewport-sized — always ≥ — output).
+
+  Fixed on our side, not upstream (`third_party/slang-shaders` is a
+  submodule): `load_image` now downsizes an oversized source *on the
+  CPU* (`image::DynamicImage::resize`, `FilterType::Triangle`) to fit the
+  pane **before** the shader ever sees it, so the shader is only ever
+  asked to upscale; `render`'s scale computation is now `clamp(1.0, 8.0)`
+  (was `clamp(0.1, 8.0)`) to match — both by construction (post-resize,
+  the source can't exceed the pane) and as a defensive floor.
+
+  Verified for real: `--preview-shader` against the user's exact
+  preset+photo now renders the actual (correctly CRT-shaded) image
+  instead of black; re-ran every previously-working case (small icon and
+  a bigger icon through `crt-lottes.slangp`, the small icon through
+  `crt-aperture.slangp` itself, the photo through `crt-royale.slangp`
+  too) to confirm no regression — all still correct. The photo is a
+  personal document image (the user's driver's license) from
+  `~/Pictures`; none of the render outputs were kept (`rm`'d after
+  visual/size-based verification, never committed).
+
+  **Debug tooling from the investigation, kept:** `--diag-preview-frame
+  <preset> <image> <out.png>` renders one full egui frame the way
+  eframe's own paint step would (tessellate → `update_texture`/
+  `update_buffers` → a real render pass) and dumps the composite —
+  useful for any future "the preview looks wrong" report to rule the
+  egui-compositing layer in or out. `LAUNCHER_DEBUG_SHADER_PREVIEW=
+  <preset>;<image>` opens the editor pre-filled at startup, for
+  screenshotting the *real* windowed app without a GUI click.
 
 ## Next steps, in order
 
