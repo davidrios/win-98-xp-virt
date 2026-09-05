@@ -95,11 +95,16 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   display, one variable. A timing measurement perturbed by channel sharing is
   the obvious guess for an anchor-then-probe pattern, but only the correlation
   is measured. Put a protected title's disc on its own channel.
-  **Defect found on the way, not yet fixed:** `GET CONFIGURATION` RT=10b
-  answers `ILLEGAL REQUEST / INVALID FIELD IN CDB` for unimplemented features
-  including **0x1e (CD Read)**, where MMC wants a valid header with an empty
-  feature list; `MODE SENSE(10)` page 0x1b is refused the same way. Both are
-  wrong regardless of whether SafeDisc trips on them.
+  **A defect reported and withdrawn the same day (2026-09-05):** the
+  `GET CONFIGURATION` rejections in the first trace are **not ours**. Split by
+  IDEState across all five traces, every one came from the *empty* default
+  CD-ROM drive, where `atapi_disc(s)` is NULL and the command falls through to
+  QEMU's stock handler (feature 0 only); our path returned 0 such errors, and
+  `atapi_disc_get_configuration` already answers an unsupported starting
+  feature with the header alone. The single sense reply our drive does give
+  every run is MODE SENSE(10) page 0x1b, and refusing an unsupported mode page
+  with INVALID FIELD IN CDB is correct SPC behaviour. Nothing to fix — and the
+  lesson is to attribute a sense reply to its device before calling it a bug.
   Harness: `tools/xp-game-test.sh` gains `QEMU_EXTRA=` (extra qemu args) and
   `NO_ATTACH=1` (a run with no D3D device, which every CD-protection run is).
   The likeliest single cause of both: protections of the era skip

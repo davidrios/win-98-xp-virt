@@ -462,12 +462,27 @@ hypothesis, not a measurement. What is established is the correlation, and
 that `tools/xp-game-test.sh`'s default CD placement makes a protected title
 fail for reasons that have nothing to do with the disc image.
 
-**A real defect found on the way** (not yet fixed): `GET CONFIGURATION` with
-RT=10b (request one feature) answers `ILLEGAL REQUEST / INVALID FIELD IN CDB`
-for every feature we do not implement — including **0x1e, CD Read**, which
-every CD drive must report. MMC requires a valid header with an empty feature
-list instead. `MODE SENSE(10)` page 0x1b is refused the same way. Windows
-issues both; neither is known to be what SafeDisc trips on, but both are wrong.
+**A defect reported here on 2026-09-05 and withdrawn the same day.** The
+first trace showed `GET CONFIGURATION` RT=10b answered `ILLEGAL REQUEST /
+INVALID FIELD IN CDB` for features including 0x1e (CD Read), and that was read
+as a bug in our model. It is not ours. Attributing every sense reply to its
+IDEState across all five traces shows **every one of those came from the
+*empty* default CD-ROM drive**, which has no disc model, so `atapi_disc(s)` is
+NULL and the command falls through to QEMU's stock `cmd_get_configuration` —
+which supports feature 0 only. Our path returned **0** GET CONFIGURATION
+errors in all five runs; `atapi_disc_get_configuration` already answers an
+unsupported starting feature with the header alone, which is what MMC wants.
+
+The one sense reply our drive does return in every run is on `0x5a`, MODE
+SENSE(10) page 0x1b, which we do not implement — and `ILLEGAL REQUEST /
+INVALID FIELD IN CDB` is the *correct* SPC reply to an unsupported mode page,
+not a defect either.
+
+The stock path is also what a plain `.iso` uses (it probes to `raw`, doc 17
+§5.2), so an ISO-backed disc answers per-feature probes the same way. Leave it:
+patch 51's stated invariant is that a NULL model behaves like today's QEMU byte
+for byte, which is what keeps every number recorded on the ISO path valid, and
+XP has never minded.
 
 Until the passing trace exists, the drive model's error delivery is proven
 only host-side and by `atapi-guest-test.py` — real evidence, just not evidence
