@@ -144,7 +144,7 @@ GPU); don't propose wiring it in.
 | `DRIVER\DXTTEST.EXE` (guest-tools ISO; `guest-tools/src/d3dptvid/dxttest.c`) | Direct3D 8 texture formats through our driver: every format (RGB and DXT1/3/5) × pool (DEFAULT, MANAGED, SYSTEMMEM): CheckDeviceFormat, CreateTexture, Lock, a textured quad read back (pure red / blue block texels = pass), CreateImageSurface; every HRESULT in `dxttest.log`, the driver's `surface … pf …` lines in the QEMU log; run it with `tools/xp-driver-test.sh <image> cmd 'cd /d %TEMP% & D:\DRIVER\DXTTEST.EXE & copy dxttest.log E:\'` |
 | `DRIVER\SHTEST.EXE` (guest-tools ISO; `guest-tools/src/d3dptvid/shtest.c`) | vertex / pixel shaders 1.x through XP's own d3d8.dll on our DX8 DDI: vs 1.1 through a declaration and its constants (user memory and a vertex + index buffer), a declaration-only shader, `D3DVSD_CONST`, ps 1.1 with a constant and with a texture, the FVF path again; every draw read back in the guest and compared, `shtest.log` ends with `shtest: N cases, M failed`; `OUT=build/xp-driver-test/sh tools/xp-driver-test.sh <image> shtest` runs it (PASS = 0 failed) |
 | `DRIVER\DITEST.EXE` (guest-tools ISO) | a game-style DirectInput keyboard (exclusive + foreground, busy loop between polls): what DirectInput buffered data, DirectInput state, GetAsyncKeyState and WM_KEYDOWN each see of the keys; `ditest.log` |
-| `D3DPT\DINPUT.DLL` (guest-tools ISO) | next to a game's EXE: logs its DirectInput use (`dinput_log.txt`: devices, cooperative level, poll rate, every key/button, what Windows sees) and merges `GetAsyncKeyState` into the keyboard state — the FIFA 2000 match keyboard fix (doc 15) |
+| `D3DPT\DINPUT.DLL` (guest-tools ISO) | next to a game's EXE: merges `GetAsyncKeyState` into the keyboard state — the FIFA 2000 match keyboard fix (doc 15), user-confirmed 2026-09-05 by A/B on a Linux TCG run. TCG-only medicine: on a KVM host the games need no shim at all. Per-game by decision, never `system32` / `AppInit_DLLs`. Silent by default; `D3DPT_DINPUT_LOG=1` adds `dinput_log.txt` (devices, cooperative level, poll rate, every key/button, what Windows sees) at a cost that matters under TCG |
 | `qemu-embed: input:` lines (player stderr) | the embed input queue's drain latency, key down/up pairs delivered in one drain (zero-length presses), drops — printed only when something is off |
 
 Guest images are not in the repo (`~/vms/win98.qcow2`, `~/vms/winxp.qcow2`;
@@ -180,6 +180,13 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   plain VGA (vga.sys, 800×600×4), and `-vga std` has no XP driver at all.
   Kernel-mode debugging = the device's DEBUG register → QEMU log; never a
   debugger. Miniport headers: `ntdef.h`+`ddk/miniport.h`, **not** `ntddk.h`.
+- **A game that runs far too fast is a missing frame limiter, not a clock
+  bug**: titles of the era pace themselves by the DirectDraw flip chain, so
+  `Flip` must block until the flip is scanned out (doc 15, "The flip chain's
+  vertical blank"). `d3dpt-vga: N page flips in 5.0 s` in the QEMU log is the
+  guest's real frame rate; no line means the game blits to the primary and
+  nothing in the display path can pace it. `ddflags=32768` turns the vertical
+  blank off for the A/B.
 - **A game that "freezes" on the D3D device is usually showing a message box
   you cannot see**: the player used to show only 3D frames once a device
   existed. Since 2026-09-04 it falls back to the VGA surface after 1 s without

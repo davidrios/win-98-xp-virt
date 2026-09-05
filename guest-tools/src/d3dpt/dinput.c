@@ -14,6 +14,14 @@
  * back (DIK from the scan code, the extended keys mapped by hand), logged
  * once per key when DirectInput's own state lacked it.
  *
+ * Two modes. By default the shim is the fix and nothing else: silent, no
+ * log file, no sampler thread. That is the build that ships next to a game.
+ * Setting D3DPT_DINPUT_LOG=1 in the environment before launching turns it
+ * back into the diagnostic tool the fix came out of, described next; the
+ * merge is always on, only the observation is optional, and under TCG the
+ * observation is not cheap (the sampler polls 248 virtual keys every 5 ms
+ * and every log line is flushed).
+ *
  * The log (dinput_log.txt next to the EXE): which device is created
  * (keyboard / mouse / other), the data format, cooperative level, buffer
  * size, event notification, every Acquire / Unacquire and its result, the
@@ -53,7 +61,7 @@ typedef struct Wrap {
 } Wrap;
 
 static HMODULE sys;
-static FILE *logf;
+static FILE *logf;                          /* diagnostics only: NULL unless D3DPT_DINPUT_LOG */
 static CRITICAL_SECTION lock;
 static DWORD t0;
 static int ndev;
@@ -150,7 +158,9 @@ static void dev_wrap_vtbl(Wrap *w);
 
 static void report(Wrap *w)
 {
-    DWORD now = GetTickCount();
+    DWORD now;
+    if (!logf) return;
+    now = GetTickCount();
     if (now - w->last_report >= 1000) {
         if (w->st_calls || w->dd_calls || w->poll_calls)
             logp("%s: per %lu ms: GetDeviceState %u (%u failed), GetDeviceData %u (%u failed), Poll %u", w->name,
@@ -230,11 +240,13 @@ static HRESULT WINAPI dev_GetDeviceState(void *self, DWORD size, LPVOID data)
                 if (!w->merged_logged[dik]) { w->merged_logged[dik] = 1; logp("%s: DIK 0x%02x set from GetAsyncKeyState VK 0x%02x (DirectInput's state did not have it)", w->name, dik, vk); }
             }
         }
-        const BYTE *s = (const BYTE *)data;
-        for (int k = 0; k < 256; k++)
-            if ((s[k] & 0x80) != (w->prev[k] & 0x80)) logp("%s: state DIK 0x%02x %s", w->name, k, (s[k] & 0x80) ? "down" : "up");
-        memcpy(w->prev, s, 256);
-    } else if (w->kind == 2 && size >= 16) {
+        if (logf) {
+            const BYTE *s = (const BYTE *)data;
+            for (int k = 0; k < 256; k++)
+                if ((s[k] & 0x80) != (w->prev[k] & 0x80)) logp("%s: state DIK 0x%02x %s", w->name, k, (s[k] & 0x80) ? "down" : "up");
+            memcpy(w->prev, s, 256);
+        }
+    } else if (w->kind == 2 && size >= 16 && logf) {
         const DIMOUSESTATE *m = (const DIMOUSESTATE *)data;
         for (int b = 0; b < 4; b++)
             if ((m->rgbButtons[b] & 0x80) != (w->prev[b] & 0x80)) logp("%s: state button %d %s", w->name, b, (m->rgbButtons[b] & 0x80) ? "down" : "up");
@@ -420,9 +432,13 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)inst; (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
-        char path[MAX_PATH];
+        char path[MAX_PATH], env[8];
         InitializeCriticalSection(&lock);
         t0 = GetTickCount();
+        /* the fix runs always; the log and the sampler thread cost too much
+         * under TCG to leave on in a game folder (header) */
+        if (!(GetEnvironmentVariableA("D3DPT_DINPUT_LOG", env, sizeof env) > 0 && env[0] != '0'))
+            return TRUE;
         GetModuleFileNameA(NULL, path, sizeof path);
         char *slash = strrchr(path, '\\');
         if (slash) lstrcpyA(slash + 1, "dinput_log.txt"); else lstrcpyA(path, "dinput_log.txt");

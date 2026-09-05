@@ -33,6 +33,7 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "qemu/error-report.h"
+#include "qemu/timer.h"
 #include "qapi/error.h"
 #include "hw/pci/pci_device.h"
 #include "hw/qdev-properties.h"
@@ -59,8 +60,10 @@ struct D3dptVgaState {
 
     /* guest-programmed registers */
     uint32_t r_enable, r_w, r_h, r_bpp, r_pitch, r_offset, r_hz, r_sel;
-    uint32_t frames;
+    int64_t vbl_ns;             /* clock at the last ENABLE: the vblank counter's origin */
     uint32_t flips;
+    uint32_t flips_last;        /* flips at the last rate report */
+    int64_t flips_ns;           /* and when it was made */
     uint32_t ddflags;           /* property: test knob read by the guest driver */
 
     /* the linear mode currently shown (lin_on) */
@@ -210,6 +213,57 @@ static void fb_update_span(D3dptVgaState *s, int y0, int y1)
     dpy_gfx_update(s->vga.con, 0, y0, s->lin.w, y1 - y0);
 }
 
+/* The vertical blank the guest waits on (REG_FRAMES).
+ *
+ * It counts periods of the mode's refresh rate since the mode was enabled,
+ * off the host clock — not the display client's pull. The guest's frame
+ * pacing then does not depend on whether anything is looking: the player
+ * pulls at its own interval, a headless run pulls not at all, and a game
+ * still gets the 60 (or 85) Hz it asked for.
+ */
+static uint32_t fb_vblank_count(D3dptVgaState *s)
+{
+    uint32_t hz = s->r_hz;
+
+    if (!s->vbl_ns) {
+        return 0;
+    }
+    if (hz < 30 || hz > 200) {
+        hz = 60;   /* the guest left HZ unset or nonsensical */
+    }
+    return (uint32_t)((qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - s->vbl_ns) *
+                      hz / NANOSECONDS_PER_SECOND);
+}
+
+/* The guest's real frame rate. A game of the era paces itself by its flip
+ * chain, so page flips per second is the number that says whether it runs
+ * at the display's rate or as fast as the CPU allows; a game that blits to
+ * the primary instead prints nothing here, which is the answer too. It is
+ * driven by the flips themselves, not by the refresh, so a headless run
+ * (xp-game-test.sh) reports the same as the player. */
+static void fb_flip_rate(D3dptVgaState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    double secs;
+
+    if (!s->flips_ns) {
+        s->flips_ns = now;
+        s->flips_last = s->flips;
+        return;
+    }
+    if (now - s->flips_ns < 5 * NANOSECONDS_PER_SECOND) {
+        return;
+    }
+    secs = (double)(now - s->flips_ns) / NANOSECONDS_PER_SECOND;
+    if (s->flips != s->flips_last) {
+        info_report("d3dpt-vga: %u page flips in %.1f s (%.1f/s)",
+                    s->flips - s->flips_last, secs,
+                    (s->flips - s->flips_last) / secs);
+    }
+    s->flips_ns = now;
+    s->flips_last = s->flips;
+}
+
 static void d3dpt_vga_gfx_update(void *opaque)
 {
     D3dptVgaState *s = opaque;
@@ -240,7 +294,6 @@ static void d3dpt_vga_gfx_update(void *opaque)
     if (!s->lin_on || memcmp(&s->lin, &m, sizeof(m)) != 0) {
         fb_switch(s, &m);
     }
-    s->frames++;
     if (s->pal_dirty && m.bpp == 8) {
         /* a new palette recolours every pixel: one full conversion */
         fb_apply_palette(s);
@@ -427,7 +480,7 @@ static uint64_t d3dpt_vga_regs_read(void *opaque, hwaddr addr, unsigned size)
     case D3DPT_FB_REG_HZ:
         return s->r_hz;
     case D3DPT_FB_REG_FRAMES:
-        return s->frames;
+        return fb_vblank_count(s);
     case D3DPT_FB_REG_DDFLAGS:
         return s->ddflags;
     case D3DPT_FB_REG_CMD_OFFSET:
@@ -465,7 +518,7 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
             s->vga_grace = D3DPT_FB_VGA_GRACE_REFRESHES;
         }
         s->r_enable = val != 0;
-        s->frames = 0;
+        s->vbl_ns = s->r_enable ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         graphic_hw_invalidate(s->vga.con);
         break;
     case D3DPT_FB_REG_WIDTH:
@@ -487,6 +540,7 @@ static void d3dpt_vga_regs_write(void *opaque, hwaddr addr, uint64_t val,
         }
         if (val != s->r_offset) {
             s->flips++;
+            fb_flip_rate(s);
         }
         s->r_offset = val;
         break;
@@ -569,7 +623,9 @@ static void d3dpt_vga_reset(DeviceState *dev)
     /* the VGA core registers its own reset; ours goes back to VGA text */
     s->r_enable = s->r_w = s->r_h = s->r_bpp = s->r_pitch = 0;
     s->r_offset = s->r_hz = s->r_sel = 0;
-    s->frames = 0;
+    s->vbl_ns = 0;
+    s->flips = s->flips_last = 0;
+    s->flips_ns = 0;
     s->vga_grace = 0;
     s->dbg_len = 0;
     d3d_reset(s);

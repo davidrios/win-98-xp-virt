@@ -57,14 +57,18 @@ picture and the track rules, then this file, then doc 15.
   `build/xp-driver-test/fifa/`). No unsupported token, no refused record,
   no colour keying requested; the match blits instead of flipping. The
   image is `~/vms/winxp-m7f.qcow2` (a copy of the user's `winxp-m7` with
-  the M7c driver reinstalled and the DLLs renamed); the user's own image
-  still has the M7b driver (register set v1) and the DLLs in place.
+  the M7c driver reinstalled and the DLLs renamed).
 - **Played by hand (user, 2026-09-04): graphics clean, smooth; the
   keyboard dead in the match under TCG.** Root cause and fix in doc 15
   ("FIFA 2000 on the HAL"): the game's non-exclusive DirectInput keyboard
   never updates in the match because its thread stops pumping messages;
   `D3DPT\DINPUT.DLL` next to the EXE merges `GetAsyncKeyState` into the
-  state and logs the game's DirectInput use. Tools that came out of it:
+  state and logs the game's DirectInput use. **Confirmed by the user 2026-09-05 by A/B on a
+  Linux TCG run: keys with the DLL in place, dead keyboard again with it
+  moved away.** Decided with it (doc 15): the merge stays a per-game,
+  side-by-side DLL — not `system32`, not `AppInit_DLLs` — and the launcher
+  (M6) gets the job of staging it; the shim is now silent by default, with
+  the log and the sampler thread behind `D3DPT_DINPUT_LOG=1`. Tools that came out of it:
   `DRIVER\DITEST.EXE`, the `qemu-embed: input:` statistics in the embed
   library, `PLAYER_KEYS_HOLD`, the executor's `frames/s` line,
   `xp-driver-test.sh`'s `bat` / `GAME_ISO` / `SHOTS` / `SHOT_KEYS`,
@@ -125,6 +129,48 @@ picture and the track rules, then this file, then doc 15.
   the `CLIPPEDTRIANGLEFAN` tokens and their offsets count into that
   stream (doc 15, found in the disassembly). Read from stream 0 the
   alley renders complete on the DX8 DDI (`build/xp-driver-test/mp-fan/`).
+- **The driver is the user's daily driver, on a stock guest (2026-09-05).**
+  They run the Linux host natively (KVM) with `-vga none -device d3dpt-vga`
+  on `~/vms/winxp-m7` (v3 driver) and report it working great, with **no
+  input issues and no custom DLLs anywhere** — no WineD3D set to rename out
+  of a game folder, no `D3DPT\DINPUT.DLL`, nothing next to any EXE. That is
+  the bar the driver now meets: an unmodified XP talking to the adapter
+  through our miniport and display DLL, and unmodified games on the HAL.
+  It also scopes the keyboard shim: the dead match keyboard is a **TCG-only**
+  symptom (doc 15 — the game's unpumped DirectInput hook only loses the race
+  when the guest is slow enough), so `DINPUT.DLL` is medicine for the Apple
+  Silicon path and for `xp-fifa-match.sh tcg`, not something in anyone's
+  normal path on a KVM host. One more reason it stays per-game rather than
+  system-wide.
+- **The flip chain has a vertical blank (2026-09-05).** The user reported
+  Moto Racer 1997 playing at several times its speed on the driver. Cause:
+  `DdFlip` wrote the OFFSET register and returned, `DdGetFlipStatus` always
+  said "done", so `Flip` never blocked — and a 1997 racer is paced by its
+  flip chain, not by a clock. Fixed on both sides (doc 15 "The flip chain's
+  vertical blank"): `FRAMES` is now periods of the mode's `HZ` off the host
+  clock rather than the display client's pull (so a headless run paces like
+  the player instead of falling back on the 50 ms bail-out at 20 fps), and
+  the driver holds the second flip of a double-buffered chain until it
+  moves. `DDTEST`'s three exclusive chains and `D3D7TEST` all report 60 fps
+  (the D3D7 frame is still byte-identical to `d3dpt-dp2-test`'s), the
+  windowed `Blt` path is untouched at 346 fps as on real hardware, and
+  `DDFLAGS=32768` (`DDF_NO_VSYNC`) restores the old throughput numbers to the
+  frame. The device logs `N page flips in 5.0 s` while flips happen: that is
+  a title's real frame rate, and no line at all means it blits to the
+  primary, which no vertical blank can pace. No `D3DPT_FB_VERSION` bump (the
+  register's contract is unchanged), so an installed v3 driver keeps working
+  against the new device — it just needs a reinstall from the ISO to get the
+  pacing. Not verified on a real title yet: **Moto Racer itself is the
+  outstanding check** (the user's box, `~/vms/winxp-m7` after a driver
+  reinstall).
+- **Moto Racer 1997 runs its software rasterizer, not the HAL (2026-09-05,
+  open).** The user's report; not yet diagnosed on a log. The two caps a
+  1997 title wants and this HAL does not offer are palettized (P8) textures
+  and colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`) — doc 15, "When a title
+  falls back to its software renderer". `DdCanCreateSurface` now prints the
+  first eight pixel formats it refuses, so one run with the log kept says
+  which. That log is the next step here, and it decides whether the next
+  piece of work is P8 textures or colour keying.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
@@ -251,18 +297,20 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
 
 ## Next steps, in order
 
-1. **M7c, the rest:** FIFA 2000 plays (user-verified under KVM; the TCG
-   keyboard needs `D3DPT\DINPUT.DLL` in the game folder — confirm on the
-   user's setup, then decide whether the merge belongs in a system-wide
-   place). Max Payne runs through XP's d3d8.dll on the DX7-level DDI
+1. **M7c, the rest:** FIFA 2000 plays, keyboard included — the user
+   confirmed `D3DPT\DINPUT.DLL` fixes it (2026-09-05), and the shim stays
+   per-game by decision (doc 15). Max Payne runs through XP's d3d8.dll on the DX7-level DDI
    (tutorial level clean, now on the DX8 DDI with hardware T&L); play it
    by hand, ZBIAS → DEPTHBIAS when a title needs it. Shaders 1.x landed
    2026-09-05 (protocol v7; a title that uses them is the next check —
-   a DX8 game with vs 1.1 / ps 1.1 paths). Then what the next title asks
+   a DX8 game with vs 1.1 / ps 1.1 paths). Moto Racer 1997 runs its
+   software rasterizer (main, 2026-09-05): palettized (P8) textures and
+   colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`) are the two caps a 1997
+   title wants that this HAL does not offer — both next. Then what the
+   next title asks
    for first among: **more than one stream** (the driver copies stream 0
    only; a multi-stream declaration's draws are skipped with a log line —
-   the DRAW8 token would carry one blob per stream), colour keying (key →
-   alpha at upload + alpha test), cube / volume textures, presenting the
+   the DRAW8 token would carry one blob per stream), cube / volume textures, presenting the
    host frame through the player's 3D path instead of the per-frame
    readback copy. A validator for SM2/3 bytecode on the d3d9 half (the
    M4 track's `d3dpt_exec.cpp` hands guest bytecode straight to DXVK,
@@ -324,3 +372,17 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   before the call — and every shader's bytecode (`sm1_valid`): DXVK's
   compiler asserts on an unknown opcode instead of failing the create. `pgrep -f '<image>'` matches the shell loop that
   contains the pattern — use `pgrep -a qemu-system` to see guests.
+- Two harness bugs found 2026-09-05 while re-checking the keyboard fix, both
+  of which make a *tool* failure look like a *driver* failure:
+  `xp-fifa-match.sh` looked for the shim as `dinput.dll` while
+  `build-wrappers.sh` upper-cases the whole staged tree for 8.3, so after any
+  real build it staged nothing (`set -u`, no `-e`: silently) and the match
+  ignored every key; and its wait for the game's mode switch was an unbounded
+  `until`, so a QEMU that never started span for ever. Both fixed: the shim is
+  looked up under either name and its absence is a loud warning, and the wait
+  is bounded and prints `qemu.log` when it gives up.
+- Only one process may hold a guest image: QEMU takes a write lock and the
+  second one dies with `Failed to get "write" lock`. With tracks running in
+  parallel, check `pgrep -af qemu-system-i386` for the image before starting a
+  headless run — `winxp-m7g` in particular is shared by the FIFA and Max Payne
+  loops.

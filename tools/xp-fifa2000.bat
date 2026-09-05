@@ -16,10 +16,13 @@ ren DDRAW.DLL DDRAW.WINE
 ren WINED3D.DLL WINED3D.WINE
 ren WINEDD.DLL WINEDD.WINE
 cd ..
-rem a DINPUT.DLL on E:\ (the D3DPT logging shim) goes next to the EXE: dinput_log.txt
-rem then records what the game asks DirectInput for and what it gets back
+rem a DINPUT.DLL on E:\ (the D3DPT shim) goes next to the EXE: it merges what
+rem Windows reports pressed into the state, which is what makes the match take
+rem keys (doc 15). Silent unless E:\DILOG is staged, then it also writes
+rem dinput_log.txt with what the game asks DirectInput for and what it gets.
 if exist E:\DINPUT.DLL copy /y E:\DINPUT.DLL . > nul
 if exist E:\DINPUT.DLL copy /y E:\DINPUT.DLL THRASH > nul
+if exist E:\DILOG set D3DPT_DINPUT_LOG=1
 dir /b > E:\fifadir.txt
 dir /b THRASH >> E:\fifadir.txt
 start /wait fifa2000.exe
