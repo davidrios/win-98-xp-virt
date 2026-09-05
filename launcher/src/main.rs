@@ -118,8 +118,11 @@ fn main() -> eframe::Result {
             // Exercises the real OS file dialog (rfd) headlessly — proof
             // the portal/NSOpenPanel/IFileDialog wiring works, since this
             // session has no GUI click automation to drive the wizard's
-            // "Browse…" button through an actual dialog.
-            match filepicker::pick_file_headless(None) {
+            // "Browse…" button through an actual dialog. An optional arg
+            // (a path field's current value, file or directory) exercises
+            // the same start-directory extraction path_field itself uses.
+            let start_dir = args.next().and_then(|v| filepicker::start_dir(&v));
+            match filepicker::pick_file_headless(None, start_dir.as_deref()) {
                 Some(path) => println!("{}", path.display()),
                 None => println!("(cancelled)"),
             }

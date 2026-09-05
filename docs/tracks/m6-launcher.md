@@ -272,6 +272,30 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   real qcow2 and a correct bundle. This worktree's own *default* (no
   override) still fails the same way, but that's the pre-existing,
   already-documented "no `build/qemu` here" limitation, not the cwd bug.
+- **Bugfix: "Browse…" should open where the field already points** (user
+  request, 2026-09-05). `filepicker::pick_file_headless` gained a
+  `start_dir: Option<&Path>` parameter (`rfd::FileDialog::set_directory`);
+  a new `filepicker::start_dir(value)` extracts it from a path field's
+  current text — the value's own directory if it names one (a file
+  inside it, or the directory itself), `None` (the OS default) if the
+  field is empty or names a bare filename. `path_field`'s "Browse…" now
+  passes `start_dir(value)`, so re-opening it browses from wherever the
+  field already points instead of always the platform default (home).
+
+  Verified for real, including a self-caught bug in the verification
+  tool itself: first tried exercising this by passing a path straight
+  through `--pick-file`'s new optional arg to `set_directory` — with a
+  *directory* argument it worked (screenshotted opening in it), but with
+  a *file* path (what the wizard's fields actually hold) the dialog
+  opened to a broken empty view (confirmed by screenshot: no breadcrumb,
+  no listing) — proving `set_directory` needs a directory, not a file,
+  which is exactly why `path_field` needs its own parent-extracting
+  `start_dir()` rather than passing the raw field value. Fixed the debug
+  verb to call the same `filepicker::start_dir()` `path_field` uses
+  (made `pub` for this) instead of a separate stand-in, then reverified:
+  a file path now correctly opens the dialog in its parent directory
+  (screenshotted), and no argument still falls back to the OS default
+  (also screenshotted, unchanged from before this fix).
 
 ## Next steps, in order
 
