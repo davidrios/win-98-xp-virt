@@ -787,6 +787,65 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   claims almost no width, so the label column collapsed to five
   characters — `add_sized`, not `desired_width`.
 
+- **The shelf, from inside the guest** (user request, 2026-09-05): "a
+  program that works on both dos, win98 and xp, this program talks to the
+  host and shows the list of cds on the shelf, then I can use the same
+  program to insert one of the shelf cds in the tray directly from inside
+  the machine". Only the host half is built so far; the guest program is
+  the next step.
+
+  **Transport, decided.** The program must run on DOS, Win98 and XP,
+  which rules out most channels: XP blocks ring-3 port I/O, DOS has no
+  networking worth the name, and the d3dpt device (doc 14) is XP-only.
+  What all three *do* have is a way to send a raw command to their own
+  optical drive — direct ATAPI PIO on DOS (exactly what
+  `tools/atapi-guest-test.py` already does), ASPI on Win98, SPTI
+  (`IOCTL_SCSI_PASS_THROUGH_DIRECT`) on XP — and we own that drive's
+  firmware, because it is our ATAPI model (patch 51). So the shelf is a
+  **vendor-specific ATAPI command** (opcode 0xD0, in MMC's vendor range)
+  on the drive itself: no new device, no driver to install in the guest,
+  and a drive without a shelf answers ILLEGAL REQUEST as it should.
+  `cdshelf/cdshelf_proto.h` is the one header for every side (QEMU, the
+  DOS program, the Win98/XP program); bump `CDSHELF_PROTO_VERSION` on any
+  change, the way doc 14's protocol does.
+
+  **Landed (host side):**
+  - `cdshelf/cdshelf_proto.h` — LIST / LOAD / EJECT, a fixed-stride reply
+    so the DOS build can walk it with an index register rather than a
+    parser, and the flat `<label>\t<path>` shelf-file format.
+  - `patches/qemu/52-atapi-disc-shelf.patch` — `ide-cd` gains
+    `shelf=<file>`; the opcode lists it, and LOAD/EJECT run the medium
+    change from a **bottom half** rather than inline, because changing
+    the medium drains and reopens the very drive whose command is still
+    executing. That is also how a real drive behaves — the command
+    returns, the tray moves after, and the guest sees the change as the
+    UNIT ATTENTION `blockdev-change-medium` already raises.
+  - The launcher publishes the shelf to `<runtime>/<bundle>-<hash>.shelf`
+    beside the monitor socket at spawn *and whenever the shelf changes*,
+    so a disc added while the guest runs is in its next listing.
+
+  **Cross-track note:** patch 52 and the ATAPI files are M5's area
+  (`patches/qemu/README.md` reserved 52–59 for the CD-ROM backend). This
+  is CD-ROM work driven from the launcher track because the shelf is a
+  doc 07 feature; the reservation note now says so, and 53–59 stay M5's.
+
+  Verified so far: prepare applies the patch cleanly and idempotently
+  (run twice), QEMU builds and `-device ide-cd,help` lists `shelf=`, a
+  real player boots with the shelf attached, and
+  `tools/atapi-guest-test.py` still passes (164 replies identical to
+  `discx`) — so patch 51's behaviour is unregressed in a real DOS guest.
+  **The vendor command itself is not yet exercised by any guest**: that
+  needs the program below.
+
+  **Next, in order:** (1) `guest-tools/src/cdshelf.c` for Win98/XP —
+  SPTI on XP, ASPI on Win98, one EXE; (2) the DOS build, as NASM against
+  the ports `tools/atapi-guest-test.py` already drives; (3) extend
+  `tools/atapi-guest-test.py` with a CDSHELF case so the opcode is
+  guarded like every other one. Win98's ASPI availability on a clean
+  SE install is the one unknown — if `wnaspi32.dll` isn't there, the
+  fallback is the same direct PIO the DOS build uses, which Win9x
+  permits from ring 3.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.

@@ -1,0 +1,329 @@
+Expose the host's disc shelf to the guest as a vendor ATAPI command
+(doc 07's shared disc shelf, doc 17's ATAPI drive; protocol in
+cdshelf/cdshelf_proto.h).
+
+The in-guest CDSHELF program has to run on DOS, Win98 and XP, which rules
+out most transports: XP blocks ring-3 port I/O, DOS has no networking to
+speak of, and the d3dpt device (doc 14) is XP-only. What all three do
+have is a way to send a raw command to their own optical drive - direct
+ATAPI PIO on DOS (as tools/atapi-guest-test.py already does), ASPI on
+Win98, SPTI on XP - and we own that drive's firmware. So the shelf is a
+vendor-specific opcode (0xD0, in MMC's vendor range) on the drive itself:
+no new device, no driver to install in the guest, and a drive without a
+shelf answers ILLEGAL REQUEST exactly as it should.
+
+ide-cd gains shelf=<file>, a flat "<label>\t<path>" line file the
+launcher writes next to the machine's monitor socket and rewrites
+whenever the user changes the shelf, so a disc added while the guest runs
+shows up in its next listing. Deliberately not the launcher's own
+discs.toml: this side is C, and a tab-separated line file is a parser you
+can read in one sitting.
+
+Subcommands: LIST (data-in, a fixed-stride header + entries so the DOS
+build can walk the reply with an index register rather than a parser),
+LOAD <slot>, EJECT. LOAD and EJECT run the medium change from a bottom
+half rather than inline - changing the medium drains and reopens the very
+drive whose command is still executing - which is also how a real drive
+behaves: the command returns, the tray moves after, and the guest picks
+the change up as the UNIT ATTENTION blockdev-change-medium raises on its
+next command.
+
+The new IDEState fields are not migrated, like patch 51's.
+
+--- a/hw/ide/atapi.c
++++ b/hw/ide/atapi.c
+@@ -31,6 +31,11 @@
+ #include "ide-internal.h"
+ #include "trace.h"
+ #include "qemu/timer.h"
++/* win98-xp-virt (patch 52): the disc shelf's medium change (cdshelf/cdshelf_proto.h) */
++#include "qapi/error.h"
++#include "qapi/qapi-commands-block.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
+ #ifdef CONFIG_CDIMAGE
+ /* win98-xp-virt (patch 51, doc 17 §5.3): the disc model behind a cdimage medium */
+ #include "block/cdimage.h"
+@@ -2127,6 +2132,196 @@
+     CONDDATA = 0x08,
+ };
+ 
++/*
++ * win98-xp-virt (patch 52): the disc shelf, as a vendor ATAPI command.
++ *
++ * The guest program that lists and swaps discs (CDSHELF) has to run on
++ * DOS, Win98 and XP. What all three have in common is a way to send a
++ * raw command to their own optical drive — direct ATAPI PIO, ASPI, SPTI
++ * — and we own that drive's firmware. So the shelf is a vendor-specific
++ * opcode here rather than a new device or a driver in the guest. The
++ * constants below are the C half of cdshelf/cdshelf_proto.h; keep them
++ * in step with it (and with the DOS program, which spells them out).
++ */
++#define CDSHELF_OPCODE            0xd0
++#define CDSHELF_PROTO_VERSION     1
++#define CDSHELF_SUB_LIST          0x00
++#define CDSHELF_SUB_LOAD          0x01
++#define CDSHELF_SUB_EJECT         0x02
++#define CDSHELF_LABEL_MAX         64
++#define CDSHELF_LIST_HEADER_SIZE  12
++#define CDSHELF_ENTRY_SIZE        68
++#define CDSHELF_NO_SLOT           0xffff
++#define CDSHELF_FLAG_LOADED       0x01
++#define CDSHELF_FLAG_MISSING      0x02
++#define CDSHELF_MAX_ENTRIES       256
++
++/* One shelf line: "<label>\t<path>\n" (cdshelf/cdshelf_proto.h). */
++typedef struct CdshelfEnt {
++    char *label;
++    char *path;
++} CdshelfEnt;
++
++/*
++ * Read the shelf file. Re-read on every command rather than cached at
++ * realize: the launcher rewrites this file when the user adds a disc,
++ * and a shelf that only showed what existed at boot would be a worse
++ * feature than none. It is a handful of lines; this is not a hot path.
++ */
++static GArray *cdshelf_read(IDEState *s)
++{
++    GArray *ents = g_array_new(false, false, sizeof(CdshelfEnt));
++    char *contents = NULL;
++    gsize len = 0;
++    char **lines;
++    int i;
++
++    if (!g_file_get_contents(s->shelf_path, &contents, &len, NULL)) {
++        return ents;   /* no shelf yet is an empty shelf, not an error */
++    }
++    lines = g_strsplit(contents, "\n", 0);
++    for (i = 0; lines[i] && ents->len < CDSHELF_MAX_ENTRIES; i++) {
++        char *tab = strchr(lines[i], '\t');
++        CdshelfEnt ent;
++
++        if (!tab || tab == lines[i] || !tab[1]) {
++            continue;      /* blank line, or no path: skip, don't fail */
++        }
++        *tab = '\0';
++        ent.label = g_strdup(lines[i]);
++        ent.path = g_strdup(tab + 1);
++        g_array_append_val(ents, ent);
++    }
++    g_strfreev(lines);
++    g_free(contents);
++    return ents;
++}
++
++static void cdshelf_free(GArray *ents)
++{
++    guint i;
++
++    for (i = 0; i < ents->len; i++) {
++        CdshelfEnt *ent = &g_array_index(ents, CdshelfEnt, i);
++        g_free(ent->label);
++        g_free(ent->path);
++    }
++    g_array_free(ents, true);
++}
++
++/*
++ * The medium change a CDSHELF_SUB_LOAD asked for, run from a bottom half.
++ * Not inline in the command handler: changing the medium drains and
++ * reopens the very drive whose command is still executing. A real drive
++ * behaves the same way — the command returns, the tray moves after — and
++ * the guest picks the change up as the UNIT ATTENTION that
++ * blockdev-change-medium raises on its next command.
++ */
++static void ide_atapi_shelf_bh(void *opaque)
++{
++    IDEState *s = opaque;
++    char *filename = s->shelf_load;
++    Error *err = NULL;
++
++    s->shelf_load = NULL;
++    if (!s->shelf_qdev_id) {
++        g_free(filename);
++        return;
++    }
++    if (filename) {
++        /* No format: a .cue/.ccd probes to the cdimage driver (doc 17)
++         * exactly as it does on the command line. */
++        qmp_blockdev_change_medium(NULL, s->shelf_qdev_id, filename, NULL,
++                                   true, true, false, 0, &err);
++        g_free(filename);
++    } else {
++        qmp_eject(NULL, s->shelf_qdev_id, true, true, &err);
++    }
++    if (err) {
++        warn_report_err(err);
++    }
++}
++
++static void cmd_cdshelf(IDEState *s, uint8_t *buf)
++{
++    GArray *ents;
++    guint i;
++
++    if (!s->shelf_path) {
++        /* No shelf on this drive: answer the way a drive that doesn't
++         * know the opcode does, so a guest program can probe safely. */
++        ide_atapi_cmd_error(s, ILLEGAL_REQUEST, ASC_ILLEGAL_OPCODE);
++        return;
++    }
++    if (!s->shelf_bh) {
++        s->shelf_bh = qemu_bh_new(ide_atapi_shelf_bh, s);
++    }
++    ents = cdshelf_read(s);
++
++    switch (buf[1]) {
++    case CDSHELF_SUB_LIST: {
++        int max_len = lduw_be_p(buf + 7);
++        guint fit, n;
++        int size;
++
++        fit = (s->io_buffer_total_len - CDSHELF_LIST_HEADER_SIZE) / CDSHELF_ENTRY_SIZE;
++        n = MIN(ents->len, fit);
++        if (max_len > CDSHELF_LIST_HEADER_SIZE) {
++            n = MIN(n, (guint)((max_len - CDSHELF_LIST_HEADER_SIZE) / CDSHELF_ENTRY_SIZE));
++        } else {
++            n = 0;   /* header only: how the guest learns `total` first */
++        }
++        size = CDSHELF_LIST_HEADER_SIZE + n * CDSHELF_ENTRY_SIZE;
++        memset(buf, 0, size);
++        stw_le_p(buf + 0, CDSHELF_PROTO_VERSION);
++        stw_le_p(buf + 2, CDSHELF_ENTRY_SIZE);
++        stw_le_p(buf + 4, n);
++        stw_le_p(buf + 6, ents->len);
++        stw_le_p(buf + 8, s->shelf_loaded);
++        for (i = 0; i < n; i++) {
++            CdshelfEnt *ent = &g_array_index(ents, CdshelfEnt, i);
++            uint8_t *e = buf + CDSHELF_LIST_HEADER_SIZE + i * CDSHELF_ENTRY_SIZE;
++            size_t label_len = MIN(strlen(ent->label), (size_t)CDSHELF_LABEL_MAX);
++
++            stw_le_p(e + 0, i);
++            e[2] = (i == s->shelf_loaded) ? CDSHELF_FLAG_LOADED : 0;
++            if (access(ent->path, R_OK) != 0) {
++                e[2] |= CDSHELF_FLAG_MISSING;
++            }
++            e[3] = label_len;
++            memcpy(e + 4, ent->label, label_len);
++        }
++        ide_atapi_cmd_reply(s, size, max_len);
++        break;
++    }
++    case CDSHELF_SUB_LOAD: {
++        uint16_t slot = lduw_be_p(buf + 2);
++
++        if (slot >= ents->len) {
++            ide_atapi_cmd_error(s, ILLEGAL_REQUEST, ASC_INV_FIELD_IN_CMD_PACKET);
++            break;
++        }
++        g_free(s->shelf_load);
++        s->shelf_load = g_strdup(g_array_index(ents, CdshelfEnt, slot).path);
++        s->shelf_loaded = slot;
++        qemu_bh_schedule(s->shelf_bh);
++        ide_atapi_cmd_ok(s);
++        break;
++    }
++    case CDSHELF_SUB_EJECT:
++        g_free(s->shelf_load);
++        s->shelf_load = NULL;
++        s->shelf_loaded = CDSHELF_NO_SLOT;
++        qemu_bh_schedule(s->shelf_bh);
++        ide_atapi_cmd_ok(s);
++        break;
++    default:
++        ide_atapi_cmd_error(s, ILLEGAL_REQUEST, ASC_INV_FIELD_IN_CMD_PACKET);
++        break;
++    }
++    cdshelf_free(ents);
++}
++
+ static const struct AtapiCmd {
+     void (*handler)(IDEState *s, uint8_t *buf);
+     int flags;
+@@ -2158,6 +2353,11 @@
+     [ 0xbd ] = { cmd_mechanism_status,              0 },
+     [ 0xb9 ] = { cmd_read_cd_msf,                   CHECK_READY | CONDDATA },
+     [ 0xbe ] = { cmd_read_cd,                       CHECK_READY | CONDDATA },
++    /* win98-xp-virt (patch 52): the disc shelf. No CHECK_READY — listing
++     * the shelf and loading from it are exactly what you want to do with
++     * an empty tray — and ALLOW_UA so a program can run right after a
++     * medium change without a REQUEST SENSE dance first. */
++    [ 0xd0 ] = { cmd_cdshelf,                       ALLOW_UA },
+     /* [1] handler detects and reports not ready condition itself */
+ };
+ 
+--- a/hw/ide/ide-dev.c
++++ b/hw/ide/ide-dev.c
+@@ -205,6 +205,24 @@
+         }
+         ide_atapi_audio_init(s, &dev->card);
+     }
++    /* win98-xp-virt (patch 52): the disc shelf when shelf= was given.
++     * The ATAPI handlers only ever see an IDEState, so both the shelf
++     * file and this drive's qdev id (which the medium change names) are
++     * copied across here. Without an id there is nothing to address a
++     * change to, so the shelf is listable but read-only — say so once
++     * rather than failing a command later with no explanation. */
++    if (dev->shelf) {
++        IDEBus *bus = DO_UPCAST(IDEBus, qbus, dev->qdev.parent_bus);
++        IDEState *s = bus->ifs + dev->unit;
++
++        s->shelf_path = g_strdup(dev->shelf);
++        s->shelf_qdev_id = g_strdup(dev->qdev.id);
++        s->shelf_loaded = 0xffff;   /* CDSHELF_NO_SLOT */
++        if (!s->shelf_qdev_id) {
++            warn_report("ide-cd shelf= without id=: the guest can list the "
++                        "shelf but not load from it");
++        }
++    }
+ }
+ 
+ static Property ide_hd_properties[] = {
+@@ -238,6 +256,8 @@
+     DEFINE_IDE_DEV_PROPERTIES(),
+     /* win98-xp-virt (patch 51): CD-DA through a host audiodev (doc 17 §5.4) */
+     DEFINE_AUDIO_PROPERTIES(IDEDrive, dev.card),
++    /* win98-xp-virt (patch 52): the disc shelf file (cdshelf/cdshelf_proto.h) */
++    DEFINE_PROP_STRING("shelf", IDEDrive, dev.shelf),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+--- a/include/hw/ide/ide-dev.h
++++ b/include/hw/ide/ide-dev.h
+@@ -160,6 +160,25 @@
+     SWVoiceOut *atapi_voice;        /* 44100 Hz stereo S16, opened at realize */
+     uint8_t atapi_audio_frame[2352]; /* the sector being written to the voice */
+     int atapi_audio_frame_pos, atapi_audio_frame_len;
++    /* win98-xp-virt (patch 52): the disc shelf (cdshelf/cdshelf_proto.h).
++     * Copied from the IDEDevice at realize so the ATAPI handlers, which
++     * only ever see an IDEState, can reach them. `shelf_load` is the
++     * medium change a CDSHELF_SUB_LOAD asked for, run from `shelf_bh`
++     * rather than inline: swapping the medium drains the very drive
++     * whose command is still executing. Not migrated, like the rest of
++     * patch 51's fields. */
++    char *shelf_path;
++    char *shelf_qdev_id;
++    char *shelf_load;
++    QEMUBH *shelf_bh;
++    /* Which shelf slot this drive was told to load, or 0xffff. Tracked
++     * rather than derived from the medium's filename: a device model has
++     * no public accessor for that, and comparing paths would be wrong
++     * anyway across symlinks and relative paths. So it means "loaded
++     * through the shelf", and is 0xffff until the guest loads something
++     * — including when the bundle's own boot disc happens to be on the
++     * shelf. It is a marker in a list, never something a decision hangs on. */
++    uint16_t shelf_loaded;
+ };
+ 
+ struct IDEDeviceClass {
+@@ -187,6 +206,9 @@
+     bool win2k_install_hack;
+     /* win98-xp-virt (patch 51): ide-cd audiodev= for CD-DA (doc 17 §5.4) */
+     QEMUSoundCard card;
++    /* win98-xp-virt (patch 52): ide-cd shelf=<file>, the disc shelf the
++     * in-guest CDSHELF program lists and loads from (cdshelf/cdshelf_proto.h) */
++    char *shelf;
+ };
+ 
+ typedef struct IDEDrive {

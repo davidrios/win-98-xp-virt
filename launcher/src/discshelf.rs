@@ -36,6 +36,8 @@ pub struct DiscShelf {
     /// rather than saved inline so an edited label doesn't write the
     /// file on every keystroke's borrow of the list.
     dirty: bool,
+    /// Set by `flush` when it actually wrote; see `take_saved`.
+    saved: bool,
     /// `None` when the window was opened for the shelf itself rather
     /// than for one machine.
     machine: Option<MachineContext>,
@@ -88,8 +90,16 @@ impl DiscShelf {
     pub fn flush(&mut self) -> std::io::Result<()> {
         if std::mem::take(&mut self.dirty) {
             self.library.save(&self.library_path)?;
+            self.saved = true;
         }
         Ok(())
+    }
+
+    /// Whether the shelf was written since this was last asked — the cue
+    /// to republish it to any running machine's drive so the in-guest
+    /// CDSHELF program sees a disc the moment it's added.
+    pub fn take_saved(&mut self) -> bool {
+        std::mem::take(&mut self.saved)
     }
 
     /// The directory of the bundle this window has open, so the caller

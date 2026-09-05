@@ -106,6 +106,40 @@ impl DiscLibrary {
     }
 }
 
+/// Write the shelf in the flat form QEMU's ATAPI handler reads
+/// (`cdshelf/cdshelf_proto.h`): one `<label>\t<path>` line per disc.
+///
+/// Not `discs.toml` itself, because QEMU's side of this is C and a
+/// tab-separated line file is a parser you can read in one sitting.
+/// Labels have tabs and newlines replaced rather than being rejected —
+/// the user typed a label, not a record separator, and losing their disc
+/// over a stray tab would be absurd. A *path* containing a newline is
+/// skipped instead: there is no safe way to write it in this format, and
+/// silently truncating it would point the guest at the wrong file.
+pub fn write_shelf_file(library: &DiscLibrary, path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut out = String::new();
+    for disc in library.discs.iter().take(crate::disc_library::MAX_SHELF_ENTRIES) {
+        let path_str = disc.path.display().to_string();
+        if path_str.contains('\n') {
+            eprintln!("[discs] skipping {path_str:?}: a newline in a path can't be written to the shelf file");
+            continue;
+        }
+        let label = disc.label.replace(['\t', '\n', '\r'], " ");
+        out.push_str(&label);
+        out.push('\t');
+        out.push_str(&path_str);
+        out.push('\n');
+    }
+    std::fs::write(path, out)
+}
+
+/// Matches `CDSHELF_FILE_MAX_ENTRIES` in `cdshelf/cdshelf_proto.h`: the
+/// guest walks the reply with a fixed stride and a bounded buffer.
+pub const MAX_SHELF_ENTRIES: usize = 256;
+
 /// The newest guest-tools ISO (`guest-tools/build-wrappers.sh` writes
 /// `guest-tools/out/guest-tools-3dfx-<date>.iso`), for doc 07's
 /// "one-click guest-tools ISO attach". Found relative to the checkout

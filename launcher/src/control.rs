@@ -45,6 +45,14 @@ pub fn socket_path(bundle_dir: &Path) -> PathBuf {
 /// platform without Unix sockets. Also removes a stale socket file left
 /// by a player that was killed rather than shut down — QEMU refuses to
 /// bind over one.
+/// The flat shelf file this machine's ATAPI drive reads
+/// (`cdshelf/cdshelf_proto.h`), beside its monitor socket: both are
+/// per-run, per-machine host state that belongs in the runtime dir
+/// rather than in the bundle.
+pub fn shelf_path(bundle_dir: &Path) -> PathBuf {
+    socket_path(bundle_dir).with_extension("shelf")
+}
+
 /// A QMP monitor is complete control of the machine, so the directory
 /// holding these sockets is owner-only. The platform runtime dir already
 /// is (`/run/user/<uid>` is 0700, macOS's per-user `$TMPDIR` likewise),

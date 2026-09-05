@@ -101,7 +101,12 @@ impl eframe::App for LauncherApp {
                                 // wants live control can find it again
                                 // without the app carrying it around.
                                 let socket = control::socket_path(&entry.dir);
-                                match player::spawn(&entry.machine, Some(&socket)) {
+                                // The shelf the guest's own CDSHELF
+                                // program will read, refreshed here so a
+                                // disc added since the last run is on it.
+                                let shelf = control::shelf_path(&entry.dir);
+                                publish_shelf(&self.disc_library_path, &shelf);
+                                match player::spawn(&entry.machine, Some(&socket), Some(&shelf)) {
                                     Ok(child) => {
                                         self.running.insert(entry.dir.clone(), child);
                                     }
@@ -156,6 +161,14 @@ impl eframe::App for LauncherApp {
             .unwrap_or(false);
         if self.disc_shelf.show(&ctx, shelf_running).is_some() {
             self.entries = library::scan(&self.library_dir);
+        }
+        if self.disc_shelf.take_saved() {
+            // A disc added or renamed should show up in the guest's own
+            // CDSHELF listing without restarting the machine, so every
+            // running drive gets the new shelf file.
+            for dir in self.running.keys() {
+                publish_shelf(&self.disc_library_path, &control::shelf_path(dir));
+            }
         }
         let snapshots_running =
             self.snapshots.bundle_dir().map(|dir| self.running.contains_key(dir)).unwrap_or(false);
@@ -350,6 +363,21 @@ fn parse_script(spec: &str) -> Vec<DiagAction> {
 /// this is idempotent and can simply run at startup. The bundles
 /// themselves migrate the next time anything saves them
 /// (`Machine::save` writes `disc` and drops `discs`).
+/// Write the shared shelf out in the flat form a machine's ATAPI drive
+/// reads (`cdshelf/cdshelf_proto.h`), so the in-guest CDSHELF program
+/// sees the same discs the launcher does. Failing to publish it is not
+/// fatal: the machine still runs, its drive just reports an empty shelf.
+fn publish_shelf(library_path: &std::path::Path, shelf_path: &std::path::Path) {
+    match disc_library::DiscLibrary::load(library_path) {
+        Ok(library) => {
+            if let Err(e) = disc_library::write_shelf_file(&library, shelf_path) {
+                eprintln!("[discs] {}: {e}", shelf_path.display());
+            }
+        }
+        Err(e) => eprintln!("[discs] {}: {e}", library_path.display()),
+    }
+}
+
 fn import_legacy_discs(entries: &[library::LibraryEntry], library_path: &std::path::Path) {
     match disc_library::DiscLibrary::load(library_path) {
         Ok(mut discs) => {
@@ -375,7 +403,7 @@ fn main() -> eframe::Result {
         Some("--print-args") => {
             let path = args.next().expect("usage: launcher --print-args <machine.toml>");
             let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
-            println!("{}", machine.qemu_args(&player::pc_bios_dir()).join(" "));
+            println!("{}", machine.qemu_args(&player::pc_bios_dir(), None).join(" "));
             return Ok(());
         }
         Some("--play") => {
@@ -384,9 +412,12 @@ fn main() -> eframe::Result {
             // Same monitor socket the grid's "Play" opens, so the live
             // half of `--disc-shelf`/`--snapshots` can be scripted
             // against a player started this way.
-            let socket = control::socket_path(path.parent().unwrap_or(std::path::Path::new(".")));
-            let child = player::spawn(&machine, Some(&socket)).expect("spawn player");
-            println!("pid {} qmp {}", child.id(), socket.display());
+            let dir = path.parent().unwrap_or(std::path::Path::new("."));
+            let socket = control::socket_path(dir);
+            let shelf = control::shelf_path(dir);
+            publish_shelf(&disc_library::default_path(), &shelf);
+            let child = player::spawn(&machine, Some(&socket), Some(&shelf)).expect("spawn player");
+            println!("pid {} qmp {} shelf {}", child.id(), socket.display(), shelf.display());
             return Ok(());
         }
         Some("--pick-file") => {

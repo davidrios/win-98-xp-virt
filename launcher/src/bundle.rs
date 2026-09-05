@@ -84,8 +84,10 @@ impl Machine {
 
     /// The `qemu-system-i386` arguments the player expects on its own
     /// command line (`player -- <these>`), per doc 06's reference tables.
-    /// `pc_bios_dir` is `qemu/pc-bios` (see README's `-L`).
-    pub fn qemu_args(&self, pc_bios_dir: &Path) -> Vec<String> {
+    /// `pc_bios_dir` is `qemu/pc-bios` (see README's `-L`); `shelf`, when
+    /// given, is the flat disc-shelf file the drive answers the in-guest
+    /// `CDSHELF` program from (`cdshelf/cdshelf_proto.h`).
+    pub fn qemu_args(&self, pc_bios_dir: &Path, shelf: Option<&Path>) -> Vec<String> {
         let mut args = vec![
             "-L".into(),
             pc_bios_dir.display().to_string(),
@@ -129,12 +131,16 @@ impl Machine {
         if let Some(disc) = self.boot_disc() {
             drive.push_str(&format!(",file={}", disc.display()));
         }
-        args.extend([
-            "-drive".into(),
-            drive,
-            "-device".into(),
-            format!("ide-cd,bus=ide.1,id={},drive=cd0,audiodev=embed0", crate::control::CDROM_ID),
-        ]);
+        let mut cd = format!("ide-cd,bus=ide.1,id={},drive=cd0,audiodev=embed0", crate::control::CDROM_ID);
+        if let Some(shelf) = shelf {
+            // The drive answers the in-guest CDSHELF program from this
+            // file (patch 52). Without it the vendor command reports
+            // "no shelf" and the drive is an ordinary CD-ROM — which is
+            // also what a hand-written bundle run straight through
+            // `player` gets.
+            cd.push_str(&format!(",shelf={}", shelf.display()));
+        }
+        args.extend(["-drive".into(), drive, "-device".into(), cd]);
         args
     }
 }

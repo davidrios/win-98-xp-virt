@@ -75,9 +75,14 @@ pub fn shader_args(machine: &Machine) -> Vec<String> {
 /// monitor the launcher drives for live media/snapshot control
 /// (`control.rs`) — the player's own in-process monitor is untouched and
 /// the player itself needs no change, since everything after `--` is
-/// passed through to QEMU.
-pub fn spawn(machine: &Machine, qmp_socket: Option<&std::path::Path>) -> std::io::Result<Child> {
-    let mut args = machine.qemu_args(&pc_bios_dir());
+/// passed through to QEMU. `shelf` is the flat disc-shelf file the
+/// drive answers the in-guest CDSHELF program from.
+pub fn spawn(
+    machine: &Machine,
+    qmp_socket: Option<&std::path::Path>,
+    shelf: Option<&std::path::Path>,
+) -> std::io::Result<Child> {
+    let mut args = machine.qemu_args(&pc_bios_dir(), shelf);
     if let Some(extra) = qmp_socket.and_then(crate::control::qmp_args) {
         args.extend(extra);
     }
