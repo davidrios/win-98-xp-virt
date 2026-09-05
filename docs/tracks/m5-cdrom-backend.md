@@ -57,13 +57,31 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   repaired disc satisfies it too, so original-runs / repaired-runs / empty-
   refuses is equally consistent with a presence check that always ran and an
   authentication that never did. Settlers has not had this run yet.
-  **Next** (doc 17 §2.6b): an ATAPI trace across a launch on the original
-  dump, looking for the band's LBAs — 811 for FIFA, 195539 for Settlers. Never
-  requested = the authentication is not reaching the disc; requested = it reads
-  our errors and accepts a repaired disc anyway, which is a more interesting
-  finding about the scheme. Pair it with an offline look at the installed tree
-  for whether the EXE is SafeDisc-wrapped at all and whether `secdrv.sys` is
-  there — an unwrapped binary explains everything at once.
+  **Both binaries are genuinely wrapped** (offline; `7z` opens a qcow2
+  directly, no `qemu-img convert` needed): `fifa2002.exe` carries SafeDisc 2's
+  `stxt371` / `stxt774` sections and `BoG_` marker, `S3.EXE` ProtectCD's
+  `.ficken` section. Not cracked binaries.
+  **The ATAPI trace answers it** (doc 17 §2.6b). SafeDisc's probe is **LBA 800,
+  then one pseudo-random single sector, repeated** — 22 pairs per launch,
+  probes scattered over ~1300–9900 — and **never touches a corrupt sector at
+  all**: 0 of 506 reads land in the 584-sector band. It measures something
+  about reading (timing is the obvious candidate for anchor-then-seek), not the
+  L-EC failures. That is exactly why a repaired disc passes.
+  **And we have now seen a check fail.** Headless on this image FIFA 2002
+  refuses — *"Por favor insira o CD FIFA 2002"* — reproducibly, with and
+  without QEMU's default empty CD drive (`-nodefaults` changed nothing; that
+  drive was answering 263 medium-not-present). The player passes with the same
+  disc, so the difference is the player's path versus bare QEMU, not the bytes.
+  **Next: trace a passing launch in the player and diff the command streams** —
+  we finally have a working and a failing configuration side by side, which is
+  worth more than any further disc variation.
+  **Defect found on the way, not yet fixed:** `GET CONFIGURATION` RT=10b
+  answers `ILLEGAL REQUEST / INVALID FIELD IN CDB` for unimplemented features
+  including **0x1e (CD Read)**, where MMC wants a valid header with an empty
+  feature list; `MODE SENSE(10)` page 0x1b is refused the same way. Both are
+  wrong regardless of whether SafeDisc trips on them.
+  Harness: `tools/xp-game-test.sh` gains `QEMU_EXTRA=` (extra qemu args) and
+  `NO_ATTACH=1` (a run with no D3D device, which every CD-protection run is).
   The likeliest single cause of both: protections of the era skip
   authentication rather than risk a false positive when they cannot get the
   low-level access they want (no SPTI/ASPI, `secdrv.sys` absent, a drive that
