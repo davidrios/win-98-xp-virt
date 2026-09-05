@@ -79,9 +79,9 @@ picture and the track rules, then this file, then doc 15.
   mode (ddraw.dll fails a mode switch to a PDEV without it). `DDTEST 640
   480 8` (palette rotated every frame, 1200 fps), `tools/xp-diablo.sh
   install|play <image>` (installer, intro, menus, Tristram, screendumps).
-  `winxp-m7g` has Diablo installed at `C:\Diablo`; the M7c driver there is
-  the v3 build (the user's `winxp-m7` and `m7f` still carry v2 drivers,
-  which refuse the v3 device: reinstall from the ISO first).
+  `winxp-m7g` has Diablo installed at `C:\Diablo`; it and the user's
+  `winxp-m7` carry the v3 driver (installed 2026-09-05 00:50); `m7f` still
+  has v2, which refuses the v3 device: reinstall from the ISO first.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
