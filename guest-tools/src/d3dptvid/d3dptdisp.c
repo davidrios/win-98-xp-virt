@@ -59,6 +59,7 @@
 #define DDF_NO_D3D_CB3         0x200  /* bisection: no GUID_D3DCallbacks3 answer */
 #define DDF_NO_MISC2           0x400  /* bisection: no GUID_Miscellaneous2Callbacks answer */
 #define DDF_NO_PARSEUNKNOWN    0x800  /* bisection: refuse GUID_D3DParseUnknownCommandCallback */
+#define DDF_NO_VSYNC           0x1000 /* flips complete instantly again (M7b): throughput runs */
 
 #define D3D_MAX_CTX 16
 
@@ -81,6 +82,13 @@ typedef struct _PDEV {
     volatile ULONG *regs;       /* public access range (register page) */
     BOOL device_surface;        /* EngCreateDeviceSurface took: DirectDraw possible */
     ULONG pal[256];             /* 8 bpp: GDI's default palette (PALETTEENTRY form) */
+
+    ULONG refusals;             /* pixel formats logged by DdCanCreateSurface */
+
+    /* the flip chain's vertical blank (see flip_done) */
+    BOOL flip_pending;          /* a flip is still waiting to be scanned out */
+    ULONG flip_frame;           /* FRAMES when it was issued */
+    LONGLONG flip_qpc;          /* and when, so a stalled refresh cannot hang a game */
 
     /* M7c: the command window and the Direct3D state */
     ULONG cmd_offset;           /* window offset in VRAM (0 = the device has none) */
@@ -698,7 +706,8 @@ static ULONG ddflags(PPDEV p)
 
 static void wait_frame(PPDEV p)
 {
-    ULONG f;
+    ULONG f, i;
+    volatile ULONG spin = 0;
     LONGLONG t0, t, freq;
 
     if (!p->regs) {
@@ -707,16 +716,58 @@ static void wait_frame(PPDEV p)
     f = p->regs[D3DPT_FB_REG_FRAMES / 4];
     EngQueryPerformanceFrequency(&freq);
     EngQueryPerformanceCounter(&t0);
-    /* the counter moves at the player's refresh pull; give up after 50 ms */
+    /* the counter moves at the mode's refresh rate; give up after 50 ms so
+     * a device that has stopped counting cannot stop the guest with it */
     for (;;) {
         if (p->regs[D3DPT_FB_REG_FRAMES / 4] != f) {
             return;
         }
+        /* both the register read and XP's performance counter leave the
+         * guest; pause between two polls so a 16 ms wait costs hundreds of
+         * exits instead of tens of thousands */
+        for (i = 0; i < 4000; i++) {
+            spin = i;
+        }
+        (void)spin;
         EngQueryPerformanceCounter(&t);
         if ((t - t0) * 20 > freq) {
             return;
         }
     }
+}
+
+/* Has the last page flip been scanned out?
+ *
+ * FRAMES counts the mode's vertical blanks, so a flip issued at one count
+ * is on the screen once the count has moved. Until then the flip is in the
+ * air — which is exactly what a real card does to a double-buffered chain,
+ * and the only frame-rate cap a game of the era has. Without it a flip
+ * chain runs at thousands of frames a second and every title that paces
+ * itself by its own frame loop (Moto Racer, most 1997 racers) plays far
+ * too fast.
+ *
+ * Bounded like wait_frame: a device that has stopped counting must not
+ * stop the guest with it, so after 50 ms the flip counts as done.
+ * DDF_NO_VSYNC brings the M7b behaviour back for throughput runs.
+ */
+static BOOL flip_done(PPDEV p)
+{
+    LONGLONG t, freq;
+
+    if (!p->flip_pending) {
+        return TRUE;
+    }
+    if (p->regs[D3DPT_FB_REG_FRAMES / 4] != p->flip_frame) {
+        p->flip_pending = FALSE;
+        return TRUE;
+    }
+    EngQueryPerformanceFrequency(&freq);
+    EngQueryPerformanceCounter(&t);
+    if ((t - p->flip_qpc) * 20 > freq) {
+        p->flip_pending = FALSE;
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static DWORD APIENTRY DdMapMemory(PDD_MAPMEMORYDATA d)
@@ -781,6 +832,24 @@ static DWORD APIENTRY DdCanCreateSurface(PDD_CANCREATESURFACEDATA d)
     } else if (p->d3d && pf_format(&d->lpDDSurfaceDesc->ddpfPixelFormat) != 0) {
         d->ddRVal = DD_OK;
     } else {
+        /* The surface a game cannot have is why it falls back to its
+         * software renderer, so say which format was refused (the first
+         * few: a game that keeps asking would flood the log). Palettized
+         * and colour-keyed textures are what a 1997 title asks for and
+         * this HAL does not offer yet. */
+        if (p->refusals < 8) {
+            const DDPIXELFORMAT *f = &d->lpDDSurfaceDesc->ddpfPixelFormat;
+            p->refusals++;
+            dbg_hex(p, "d3dptdisp: refused pixel format, flags ", f->dwFlags);
+            dbg_hex(p, " fourcc ", f->dwFourCC);
+            dbg_hex(p, " bits ", f->dwRGBBitCount);
+            dbg_hex(p, " r ", f->dwRBitMask);
+            dbg_hex(p, " g ", f->dwGBitMask);
+            dbg_hex(p, " b ", f->dwBBitMask);
+            dbg_hex(p, " a ", f->dwRGBAlphaBitMask);
+            dbg_hex(p, " caps ", d->lpDDSurfaceDesc->ddsCaps.dwCaps);
+            dbg_puts(p, "\n");
+        }
         d->ddRVal = DDERR_INVALIDPIXELFORMAT;
     }
     return DDHAL_DRIVER_HANDLED;
@@ -794,6 +863,18 @@ static DWORD APIENTRY DdFlip(PDD_FLIPDATA d)
         d->ddRVal = DDERR_UNSUPPORTED;
         return DDHAL_DRIVER_HANDLED;
     }
+    /* the previous flip is still on its way to the screen: this is where a
+     * double-buffered game waits for the refresh, as it would on a real
+     * card. Nothing above may have happened yet — without DDFLIP_WAIT the
+     * runtime hands DDERR_WASSTILLDRAWING straight to the game. */
+    if (!flip_done(p)) {
+        if (!(d->dwFlags & DDFLIP_WAIT)) {
+            d->ddRVal = DDERR_WASSTILLDRAWING;
+            return DDHAL_DRIVER_HANDLED;
+        }
+        wait_frame(p);
+        p->flip_pending = FALSE;
+    }
     if (p->ctx_live) {
         /* what Direct3D rendered into the back buffer must be in its VRAM
          * before it is scanned out; afterwards dxg exchanges the two
@@ -806,6 +887,9 @@ static DWORD APIENTRY DdFlip(PDD_FLIPDATA d)
         d3d_register_at(p, d->lpSurfTarg, (ULONG)d->lpSurfCurr->lpGbl->fpVidMem);
         d3d_register_at(p, d->lpSurfCurr, (ULONG)d->lpSurfTarg->lpGbl->fpVidMem);
     }
+    p->flip_frame = p->regs[D3DPT_FB_REG_FRAMES / 4];
+    EngQueryPerformanceCounter(&p->flip_qpc);
+    p->flip_pending = !(ddflags(p) & DDF_NO_VSYNC);
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_HANDLED;
 }
@@ -818,7 +902,12 @@ static DWORD APIENTRY DdGetBltStatus(PDD_GETBLTSTATUSDATA d)
 
 static DWORD APIENTRY DdGetFlipStatus(PDD_GETFLIPSTATUSDATA d)
 {
-    d->ddRVal = DD_OK;
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    /* DDGFS_CANFLIP and DDGFS_ISFLIPDONE both come down to "is the last
+     * flip on the screen": the runtime spins here for DDFLIP_WAIT and
+     * passes DDERR_WASSTILLDRAWING to the game without it */
+    d->ddRVal = (p->regs && !flip_done(p)) ? DDERR_WASSTILLDRAWING : DD_OK;
     return DDHAL_DRIVER_HANDLED;
 }
 
@@ -837,6 +926,7 @@ static DWORD APIENTRY DdFlipToGDISurface(PDD_FLIPTOGDISURFACEDATA d)
 
     if (d->dwToGDI && p->regs) {
         p->regs[D3DPT_FB_REG_OFFSET / 4] = 0;
+        p->flip_pending = FALSE;
     }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_HANDLED;

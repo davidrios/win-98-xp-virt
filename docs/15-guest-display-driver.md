@@ -171,8 +171,9 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
   VRAM offset into the device's OFFSET register (a real page flip: the
   console surface moves to the other buffer, nothing is copied),
   `DdWaitForVerticalBlank` = wait for the device's FRAMES counter to
-  move (bounded at 50 ms), `DdGetBltStatus` / `DdGetFlipStatus` = always
-  done. Not hooked: Lock, Unlock, Blt, CreateSurface, DestroySurface.
+  move (bounded at 50 ms), `DdGetBltStatus` = always done,
+  `DdGetFlipStatus` = the vertical blank below. Not hooked: Lock, Unlock,
+  Blt, CreateSurface, DestroySurface.
 - **Mappings are cached, not write-combined.** videoprt's
   `VideoPortMapMemory` maps frame buffers uncached or write-combined
   (right for a PCI aperture, wrong for RAM): reads from such a mapping run
@@ -187,7 +188,8 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
 - **`-device d3dpt-vga,ddflags=N`** (register `DDFLAGS`, read by the
   display driver) switches behaviours without a driver reinstall:
   1 = no GetDriverInfo, 4 = no surface callbacks, 8 = engine-bitmap
-  primary, 0x10 = add `DDCAPS_GDI`. That is how the caps were bisected
+  primary, 0x10 = add `DDCAPS_GDI`, 0x1000 = no vertical blank (flips
+  complete instantly, the M7b behaviour: throughput runs). That is how the caps were bisected
   in one afternoon: one boot per variant, `DDTEST` and the QEMU log tell.
 - **Test:** `DRIVER\DDTEST.EXE [w h bpp] [frames] [-windowed]` (guest-tools
   ISO): caps, exclusive flip chain (Lock/Unlock pattern + `Blt` colour fill
@@ -201,6 +203,12 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
   | 640×480×16 exclusive, 300 flips | 3846 fps | 4762 fps |
   | 640×480×32 exclusive, 300 flips | 6383 fps | 6383 fps |
   | 640×480×32 windowed, offscreen VRAM → primary Blt (HEL) | 29.9 fps | 305 fps |
+
+  Those are throughput numbers, from before the flip chain had a vertical
+  blank: since 2026-09-05 a flip chain runs at the mode's refresh rate and
+  `DDTEST` reports 60 fps for all three exclusive cases. Add
+  `DDFLAGS=4096` to measure throughput again (the numbers above come back
+  to the frame).
 
   Every surface reports `VIDEOMEMORY | LOCALVIDMEM`, the QEMU log shows
   `scanout offset 0 -> 614400 -> 0 …` per flip, the picture (checkerboard
@@ -224,10 +232,11 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
   composite a sprite (it ignores QEMU's `on_cursor` today) plus define /
   move registers here; deferred, the software pointer is correct and the
   dirty rectangles it causes are small.
-- `FRAMES` is a refresh counter, not a vblank: `DdWaitForVerticalBlank`
-  waits for the next player refresh pull (16 ms), not for a display's
-  vertical blank. A real per-frame signal from the player's present is
-  the follow-up; `DDFLIP_WAIT` today never throttles (flips are instant).
+- `FRAMES` is a clock, not the player's present: it counts periods of the
+  mode's `HZ` since `ENABLE`. A game therefore gets the refresh rate it
+  asked for whatever the player is doing, but the two are not in phase —
+  a present signal from the player's own swapchain is the follow-up, and
+  the only way to make the guest's frames and the host's line up exactly.
 - DirectDraw: `DdBlt` is not hooked, so blits are the HEL's user-mode
   copies on cached VRAM (fast enough for 2D); a host-side blit through
   the executor only makes sense once surfaces can live on the host GPU
@@ -239,6 +248,94 @@ What Microsoft's `ddraw.dll` → `dxg.sys` sees behind the display driver
   API call that replaces the static table, pixel-aspect flags per entry.
 - Multi-monitor, DPMS/power states, hot-unplug: not planned.
 - Win2000 untested (same DDI version; should work).
+
+## The flip chain's vertical blank (2026-09-05)
+
+Moto Racer 1997 on the driver played at several times its intended speed.
+It is not a timing bug in the guest: the game paces itself by its flip
+chain, as nearly every title of the era does, and our chain had no pace.
+`DdFlip` wrote the OFFSET register and returned, `DdGetFlipStatus` said
+"done" without looking, so `Flip` never blocked and `DDTEST`'s 640×480×16
+chain ran at 4762 fps. On a real card the second `Flip` of a
+double-buffered chain cannot be set up until the first has been scanned
+out, and that wait — not a timer in the game — is what holds a 1997 racer
+at 60 frames a second.
+
+Two halves:
+
+- **The device (`d3dpt_vga.c`, `FRAMES`).** The counter used to be
+  incremented by `gfx_update`, i.e. by whoever was pulling frames: the
+  player at `PLAYER_REFRESH_MS` (16 ms), a headless run never (there is no
+  display client, so `graphic_hw_update` is never called — a game under
+  `xp-game-test.sh` would have been capped at the 50 ms bail-out, 20 fps).
+  It is now derived from the host clock: periods of the mode's `HZ` since
+  `ENABLE`, 60 Hz if the guest left `HZ` unset. Same register, same
+  contract (a monotonic counter ticking at the display's rate), so no
+  `D3DPT_FB_VERSION` bump and an older driver still works against it.
+- **The driver (`d3dptdisp.c`).** `DdFlip` remembers `FRAMES` at the flip;
+  until it moves the flip is in the air. A second `DdFlip` in that window
+  waits (`DDFLIP_WAIT`) or returns `DDERR_WASSTILLDRAWING`, and
+  `DdGetFlipStatus` answers `DDERR_WASSTILLDRAWING` for both `DDGFS_CANFLIP`
+  and `DDGFS_ISFLIPDONE` — the runtime spins there for `DDFLIP_WAIT`.
+  Bounded at 50 ms like `wait_frame`, so a device that stops counting
+  cannot stop the guest with it. `wait_frame` now pauses between two polls:
+  the register read and XP's performance counter are both exits, and a
+  16 ms wait used to cost tens of thousands of them.
+
+Measured (KVM, RADV host, `tools/xp-driver-test.sh <image> ddtest`):
+
+| case | before | with the vertical blank |
+|---|---|---|
+| 640×480×8 exclusive flip chain (palette every frame) | 1132 fps | 60.0 fps |
+| 640×480×16 exclusive flip chain | 3846 fps | 60.0 fps |
+| 640×480×32 exclusive flip chain | 4762 fps | 60.4 fps |
+| 640×480×32 windowed, offscreen → primary `Blt` (HEL) | 346 fps | 346 fps |
+| `D3D7TEST` 640×480×32, 300 frames | 2400–2700 fps | 60.2 fps, frame still byte-identical to `d3dpt-dp2-test` |
+
+The windowed case is unchanged on purpose: a blit to the primary is not a
+flip and a real card does not throttle it either — a game that presents
+that way and never calls `WaitForVerticalBlank` runs as fast as the CPU
+allows on real hardware too. `DDFLAGS=4096` (`DDF_NO_VSYNC`) restores the
+old behaviour to the frame, which is both the A/B for a suspect title and
+how the throughput numbers above are still measured.
+
+The device prints the guest's real frame rate every 5 s while flips are
+happening (`d3dpt-vga: 299 page flips in 5.0 s (59.6/s)`), driven by the
+flips themselves so a headless run reports the same as the player. **No
+line at all while a game runs means it blits to the primary instead of
+flipping** — the vertical blank cannot pace that game, and if it is too
+fast the cause is the guest CPU, not the display path.
+
+## When a title falls back to its software renderer
+
+Moto Racer draws through its software rasterizer on the driver while FIFA
+2000 gets the HAL. The two differ by two years: FIFA's 1999 DX6 renderer
+asks for RGB textures and alpha blending, which the HAL offers; a 1997
+title asks for what a Voodoo of the day had. Two gaps stand out in
+`d3d_caps_init`:
+
+- **No palettized textures.** `d3d_texformats` offers 32/16-bit RGB and
+  DXT1/3/5 — no `DDPF_PALETTEINDEXED8`. 8-bit palettized textures with a
+  palette per texture are how nearly every 1997 3D title stores its art
+  (it is what fits in 4 MB of texture memory), and `DdCanCreateSurface`
+  refuses the format outright, so the game cannot make its textures and
+  drops to software.
+- **No colour keying.** `dpcTriCaps.dwTextureCaps` has no
+  `D3DPTEXTURECAPS_TRANSPARENCY`, and no surface-level colour key reaches
+  the executor. 1997 titles cut out sprites and foliage with a colour key
+  rather than an alpha channel; a game that requires it will not take a
+  HAL that does not claim it.
+
+Either is enough on its own, and the log now says which: `DdCanCreateSurface`
+prints the first eight formats it refuses —
+
+    d3dpt-vga: guest: d3dptdisp: refused pixel format, flags 0x00000020 fourcc 0x00000000 bits 0x00000008 …
+
+`flags` bit 5 (`DDPF_PALETTEINDEXED8`) with 8 bits is the palettized-texture
+case. Read it together with the context line: `d3dptdisp: d3d context 1 …`
+means the game did take the HAL, and no context line at all means it never
+got that far. Neither has been seen on a Moto Racer run yet — that log is
+the next thing to collect.
 
 ## 8 bpp palettized modes (2026-09-04, register set v3)
 
@@ -323,9 +420,11 @@ modes), across the four layers:
 ## M7b / M7c pointers
 
 - **M7b DirectDraw DDI:** landed in its first cut (above); 8 bpp
-  palettized modes since 2026-09-04 evening (Diablo plays). Left:
-  `DrvDeriveSurface`, the vblank signal, StarCraft / Age of Empires /
-  Caesar 3 as further 8 bpp titles.
+  palettized modes since 2026-09-04 evening (Diablo plays); the flip
+  chain's vertical blank since 2026-09-05 (below). Left:
+  `DrvDeriveSurface`, a present signal in phase with the player's
+  swapchain, StarCraft / Age of Empires / Caesar 3 as further 8 bpp
+  titles.
 - **M7c Direct3D DDI: first cut landed (see the section below); FIFA 2000
   runs on it out of the box (intro, title, attract-mode match).** Left:
   a user-driven match (input, menus, frame rate), claiming T&L, DX8

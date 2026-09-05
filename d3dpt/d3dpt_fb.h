@@ -77,7 +77,10 @@
 #define D3DPT_FB_REG_OFFSET      0x54u   /* RW: byte offset of the first line in VRAM */
 #define D3DPT_FB_REG_HZ          0x58u   /* RW: refresh the guest picked (informational) */
 
-#define D3DPT_FB_REG_FRAMES      0x60u   /* R: console refreshes since ENABLE (vblank stand-in) */
+#define D3DPT_FB_REG_FRAMES      0x60u   /* R: vertical blanks since ENABLE — periods of the
+                                            mode's HZ off the host clock, not the display
+                                            client's pull, so the guest's frame pacing is the
+                                            same headless and under the player */
 #define D3DPT_FB_REG_DEBUG       0x70u   /* W: one character; lines go to the QEMU log */
 #define D3DPT_FB_REG_DDFLAGS     0x74u   /* R: host test knob for the display driver's DirectDraw
                                             behaviour (-device d3dpt-vga,ddflags=N); 0 = normal */

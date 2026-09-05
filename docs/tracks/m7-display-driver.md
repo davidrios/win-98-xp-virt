@@ -99,6 +99,35 @@ picture and the track rules, then this file, then doc 15.
   Silicon path and for `xp-fifa-match.sh tcg`, not something in anyone's
   normal path on a KVM host. One more reason it stays per-game rather than
   system-wide.
+- **The flip chain has a vertical blank (2026-09-05).** The user reported
+  Moto Racer 1997 playing at several times its speed on the driver. Cause:
+  `DdFlip` wrote the OFFSET register and returned, `DdGetFlipStatus` always
+  said "done", so `Flip` never blocked — and a 1997 racer is paced by its
+  flip chain, not by a clock. Fixed on both sides (doc 15 "The flip chain's
+  vertical blank"): `FRAMES` is now periods of the mode's `HZ` off the host
+  clock rather than the display client's pull (so a headless run paces like
+  the player instead of falling back on the 50 ms bail-out at 20 fps), and
+  the driver holds the second flip of a double-buffered chain until it
+  moves. `DDTEST`'s three exclusive chains and `D3D7TEST` all report 60 fps
+  (the D3D7 frame is still byte-identical to `d3dpt-dp2-test`'s), the
+  windowed `Blt` path is untouched at 346 fps as on real hardware, and
+  `DDFLAGS=4096` (`DDF_NO_VSYNC`) restores the old throughput numbers to the
+  frame. The device logs `N page flips in 5.0 s` while flips happen: that is
+  a title's real frame rate, and no line at all means it blits to the
+  primary, which no vertical blank can pace. No `D3DPT_FB_VERSION` bump (the
+  register's contract is unchanged), so an installed v3 driver keeps working
+  against the new device — it just needs a reinstall from the ISO to get the
+  pacing. Not verified on a real title yet: **Moto Racer itself is the
+  outstanding check** (the user's box, `~/vms/winxp-m7` after a driver
+  reinstall).
+- **Moto Racer 1997 runs its software rasterizer, not the HAL (2026-09-05,
+  open).** The user's report; not yet diagnosed on a log. The two caps a
+  1997 title wants and this HAL does not offer are palettized (P8) textures
+  and colour keying (`D3DPTEXTURECAPS_TRANSPARENCY`) — doc 15, "When a title
+  falls back to its software renderer". `DdCanCreateSurface` now prints the
+  first eight pixel formats it refuses, so one run with the log kept says
+  which. That log is the next step here, and it decides whether the next
+  piece of work is P8 textures or colour keying.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main

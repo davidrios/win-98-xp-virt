@@ -172,6 +172,13 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   plain VGA (vga.sys, 800×600×4), and `-vga std` has no XP driver at all.
   Kernel-mode debugging = the device's DEBUG register → QEMU log; never a
   debugger. Miniport headers: `ntdef.h`+`ddk/miniport.h`, **not** `ntddk.h`.
+- **A game that runs far too fast is a missing frame limiter, not a clock
+  bug**: titles of the era pace themselves by the DirectDraw flip chain, so
+  `Flip` must block until the flip is scanned out (doc 15, "The flip chain's
+  vertical blank"). `d3dpt-vga: N page flips in 5.0 s` in the QEMU log is the
+  guest's real frame rate; no line means the game blits to the primary and
+  nothing in the display path can pace it. `ddflags=4096` turns the vertical
+  blank off for the A/B.
 - **A game that "freezes" on the D3D device is usually showing a message box
   you cannot see**: the player used to show only 3D frames once a device
   existed. Since 2026-09-04 it falls back to the VGA surface after 1 s without
