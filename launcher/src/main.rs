@@ -1,7 +1,8 @@
 //! Companion launcher (doc 07): machine library, guided creation, disc
 //! shelf. M6 skeleton: the library grid (`library.rs`) can spawn a player
-//! (`player.rs`) and create new machines through a wizard (`wizard.rs`)
-//! over the `machine.toml` bundle format (`bundle.rs`); no thumbnails yet.
+//! (`player.rs`) and create or edit machines through a wizard
+//! (`wizard.rs`) over the `machine.toml` bundle format (`bundle.rs`); no
+//! thumbnails yet.
 
 mod bundle;
 mod filepicker;
@@ -60,16 +61,23 @@ impl eframe::App for LauncherApp {
                             bundle::Family::Xp => "XP",
                         });
                         ui.label(entry.dir.display().to_string());
-                        if self.running.contains_key(&entry.dir) {
-                            ui.label("Running");
-                        } else if ui.button("Play").clicked() {
-                            match player::spawn(&entry.machine) {
-                                Ok(child) => {
-                                    self.running.insert(entry.dir.clone(), child);
+                        ui.horizontal(|ui| {
+                            if self.running.contains_key(&entry.dir) {
+                                ui.label("Running");
+                            } else if ui.button("Play").clicked() {
+                                match player::spawn(&entry.machine) {
+                                    Ok(child) => {
+                                        self.running.insert(entry.dir.clone(), child);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[launcher] spawning player for {}: {e}", entry.dir.display())
+                                    }
                                 }
-                                Err(e) => eprintln!("[launcher] spawning player for {}: {e}", entry.dir.display()),
                             }
-                        }
+                            if ui.button("Edit…").clicked() {
+                                self.wizard.open_edit(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
+                            }
+                        });
                         ui.end_row();
                     }
                 });
@@ -119,7 +127,7 @@ fn main() -> eframe::Result {
         }
         Some("--wizard-new") => {
             // Headless equivalent of the "New machine" window, for
-            // scripted testing of the wizard's actual create() logic
+            // scripted testing of the wizard's actual submit() logic
             // (disk creation via qemu-img included) without a GUI click.
             let usage = "usage: launcher --wizard-new <win98|xp> <name> <disk-size-gb>";
             let family = match args.next().as_deref() {
@@ -130,8 +138,23 @@ fn main() -> eframe::Result {
             let name = args.next().expect(usage);
             let size_gb: u32 = args.next().expect(usage).parse().expect("disk size must be a number");
             let w = wizard::Wizard::with_new_disk(family, name, size_gb);
-            let path = w.create(&library::default_dir()).expect("create bundle");
+            let path = w.submit(&library::default_dir()).expect("create bundle");
             println!("{}", path.display());
+            return Ok(());
+        }
+        Some("--wizard-edit") => {
+            // Headless equivalent of clicking "Edit…" then "Save": loads
+            // a bundle, renames it, saves it back in place, without a
+            // GUI click.
+            let usage = "usage: launcher --wizard-edit <machine.toml> <new-name>";
+            let path = args.next().expect(usage);
+            let new_name = args.next().expect(usage);
+            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
+            let mut w = wizard::Wizard::default();
+            w.open_edit(&machine, path.clone().into());
+            w.set_name(new_name);
+            let saved = w.submit(&library::default_dir()).expect("save bundle");
+            println!("{}", saved.display());
             return Ok(());
         }
         Some("--new") => {

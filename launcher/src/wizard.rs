@@ -1,7 +1,9 @@
 //! The guided creation wizard (doc 07): family -> name -> disk size ->
 //! install media -> a bundle written from doc 06's reference defaults.
 //! An advanced toggle edits the raw TOML directly instead — still never
-//! a QEMU command line, per doc 07.
+//! a QEMU command line, per doc 07. The same form doubles as the "Edit
+//! machine" dialog for an existing bundle (`open_edit`); `submit` writes
+//! back in place instead of reserving a new library directory.
 
 use crate::bundle::{Family, Machine};
 use crate::filepicker;
@@ -11,6 +13,21 @@ use std::path::{Path, PathBuf};
 
 const DISK_FILTER: filepicker::Filter = ("Disk images", &["qcow2", "img", "raw"]);
 const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
+
+/// What editing an existing bundle needs to preserve: fields this form
+/// doesn't expose (RAM, the shader override) and any disc-shelf entries
+/// beyond the first (the form only edits the "install media" slot), so a
+/// quick edit can't silently discard them. `original_toml` is the file's
+/// exact current text, used as the advanced box's starting point instead
+/// of a reconstruction — no information loss even for a field this form
+/// (or a future one) doesn't model.
+struct EditTarget {
+    bundle_path: PathBuf,
+    ram_mb: u32,
+    shader: Option<PathBuf>,
+    extra_discs: Vec<PathBuf>,
+    original_toml: String,
+}
 
 pub struct Wizard {
     pub open: bool,
@@ -23,6 +40,7 @@ pub struct Wizard {
     advanced: bool,
     advanced_toml: String,
     error: Option<String>,
+    editing: Option<EditTarget>,
 }
 
 impl Default for Wizard {
@@ -38,6 +56,7 @@ impl Default for Wizard {
             advanced: false,
             advanced_toml: String::new(),
             error: None,
+            editing: None,
         }
     }
 }
@@ -48,24 +67,54 @@ impl Wizard {
         *self = Wizard { open: true, ..Default::default() };
     }
 
+    /// Open the form pre-filled from an existing bundle, to edit it in
+    /// place instead of creating a new one.
+    pub fn open_edit(&mut self, machine: &Machine, bundle_path: PathBuf) {
+        let original_toml = std::fs::read_to_string(&bundle_path).unwrap_or_default();
+        *self = Wizard {
+            open: true,
+            family: machine.family,
+            name: machine.name.clone(),
+            existing_disk: true,
+            disk_path: machine.disk.display().to_string(),
+            install_media: machine.discs.first().map(|d| d.display().to_string()).unwrap_or_default(),
+            editing: Some(EditTarget {
+                bundle_path,
+                ram_mb: machine.ram_mb,
+                shader: machine.shader.clone(),
+                extra_discs: machine.discs.iter().skip(1).cloned().collect(),
+                original_toml,
+            }),
+            ..Default::default()
+        };
+    }
+
+    /// Headless field access for scripted testing (`main.rs`'s
+    /// `--wizard-edit`), so an edit's actual field change can be driven
+    /// without a GUI click.
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
     /// Headless construction (a debug verb; see `main.rs`'s `--wizard-new`)
     /// with the same fields the window's widgets would otherwise have set,
-    /// so the wizard's actual disk-creation/save logic (`create`, below)
+    /// so the wizard's actual disk-creation/save logic (`submit`, below)
     /// can be exercised without clicking through the GUI.
     pub fn with_new_disk(family: Family, name: String, disk_size_gb: u32) -> Wizard {
         Wizard { family, name, disk_size_gb, ..Default::default() }
     }
 
-    /// Renders the wizard window if open. Returns the new bundle's path
-    /// once a machine has actually been created, so the caller can
+    /// Renders the wizard window if open. Returns the bundle's path once
+    /// a machine has actually been created or saved, so the caller can
     /// rescan the library.
     pub fn show(&mut self, ctx: &egui::Context, library_dir: &Path) -> Option<PathBuf> {
         if !self.open {
             return None;
         }
-        let mut created = None;
+        let editing = self.editing.is_some();
+        let mut done = None;
         let mut still_open = true;
-        egui::Window::new("New machine")
+        egui::Window::new(if editing { "Edit machine" } else { "New machine" })
             .open(&mut still_open)
             .collapsible(false)
             .resizable(false)
@@ -84,14 +133,18 @@ impl Wizard {
                     ui.text_edit_singleline(&mut self.name);
                 });
                 ui.separator();
-                ui.checkbox(&mut self.existing_disk, "Use an existing disk image");
-                if self.existing_disk {
+                if editing {
                     filepicker::path_field(ui, "Disk path", &mut self.disk_path, Some(DISK_FILTER));
                 } else {
-                    ui.horizontal(|ui| {
-                        ui.label("New disk size (GB)");
-                        ui.add(egui::DragValue::new(&mut self.disk_size_gb).range(1..=128));
-                    });
+                    ui.checkbox(&mut self.existing_disk, "Use an existing disk image");
+                    if self.existing_disk {
+                        filepicker::path_field(ui, "Disk path", &mut self.disk_path, Some(DISK_FILTER));
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label("New disk size (GB)");
+                            ui.add(egui::DragValue::new(&mut self.disk_size_gb).range(1..=128));
+                        });
+                    }
                 }
                 filepicker::path_field(ui, "Install media (optional)", &mut self.install_media, Some(DISC_FILTER));
                 ui.separator();
@@ -109,38 +162,75 @@ impl Wizard {
                 if let Some(err) = &self.error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
-                if ui.button("Create").clicked() {
-                    match self.create(library_dir) {
+                if ui.button(if editing { "Save" } else { "Create" }).clicked() {
+                    match self.submit(library_dir) {
                         Ok(path) => {
-                            created = Some(path);
+                            done = Some(path);
                             self.error = None;
                         }
                         Err(e) => self.error = Some(e.to_string()),
                     }
                 }
             });
-        self.open = still_open && created.is_none();
-        created
+        self.open = still_open && done.is_none();
+        done
+    }
+
+    /// The `Machine` the current field values describe, given the disk
+    /// path to use (a fresh disk's path isn't known until it's created,
+    /// so callers that might still need to do that pass it in rather
+    /// than this reading `disk_path` itself). Shared by the advanced
+    /// box's default and the non-advanced submit path so they can't
+    /// silently disagree.
+    fn build_machine(&self, disk: PathBuf) -> Machine {
+        let mut machine = match &self.editing {
+            Some(edit) => Machine {
+                name: self.name.clone(),
+                family: self.family,
+                ram_mb: edit.ram_mb,
+                disk,
+                discs: Vec::new(),
+                shader: edit.shader.clone(),
+            },
+            None => Machine::reference(self.family, self.name.clone(), disk),
+        };
+        if !self.install_media.trim().is_empty() {
+            machine.discs.push(self.install_media.clone().into());
+        }
+        if let Some(edit) = &self.editing {
+            machine.discs.extend(edit.extra_discs.iter().cloned());
+        }
+        machine
     }
 
     fn preview_toml(&self) -> String {
-        let disk: PathBuf = if self.existing_disk { self.disk_path.clone().into() } else { "disk.qcow2".into() };
-        let mut machine = Machine::reference(self.family, self.name.clone(), disk);
-        if !self.install_media.is_empty() {
-            machine.discs.push(self.install_media.clone().into());
+        if let Some(edit) = &self.editing {
+            return edit.original_toml.clone();
         }
-        toml::to_string_pretty(&machine).unwrap_or_default()
+        let disk: PathBuf = if self.existing_disk { self.disk_path.clone().into() } else { "disk.qcow2".into() };
+        toml::to_string_pretty(&self.build_machine(disk)).unwrap_or_default()
     }
 
-    pub fn create(&self, library_dir: &Path) -> std::io::Result<PathBuf> {
+    pub fn submit(&self, library_dir: &Path) -> std::io::Result<PathBuf> {
         if self.name.trim().is_empty() {
             return Err(std::io::Error::other("a name is required"));
+        }
+        if let Some(edit) = &self.editing {
+            let bundle_path = edit.bundle_path.clone();
+            if self.advanced {
+                // Validate before writing: a bad hand-edit shouldn't
+                // silently corrupt the library with an unreadable bundle.
+                toml::from_str::<Machine>(&self.advanced_toml).map_err(std::io::Error::other)?;
+                std::fs::write(&bundle_path, &self.advanced_toml)?;
+                return Ok(bundle_path);
+            }
+            let disk = PathBuf::from(&self.disk_path);
+            self.build_machine(disk).save(&bundle_path)?;
+            return Ok(bundle_path);
         }
         let dir = library::reserve_dir(library_dir, &self.name)?;
         let bundle_path = dir.join(library::BUNDLE_FILE);
         if self.advanced {
-            // Validate before writing: a bad hand-edit shouldn't silently
-            // corrupt the library with an unreadable bundle.
             toml::from_str::<Machine>(&self.advanced_toml).map_err(std::io::Error::other)?;
             std::fs::write(&bundle_path, &self.advanced_toml)?;
             return Ok(bundle_path);
@@ -152,11 +242,7 @@ impl Wizard {
             player::create_disk(&disk_path, self.disk_size_gb)?;
             disk_path
         };
-        let mut machine = Machine::reference(self.family, self.name.clone(), disk_path);
-        if !self.install_media.is_empty() {
-            machine.discs.push(self.install_media.clone().into());
-        }
-        machine.save(&bundle_path)?;
+        self.build_machine(disk_path).save(&bundle_path)?;
         Ok(bundle_path)
     }
 }

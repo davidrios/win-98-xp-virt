@@ -212,14 +212,45 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   "Browse…" button specifically is still unverified for the same
   click-automation reason as the rest of the wizard — one more thing for
   the human click-through pass.
+- **Editing an existing machine** (user request, 2026-09-04): the same
+  form now doubles as "Edit machine" instead of only creating new ones.
+  `Wizard::open_edit(machine, bundle_path)` pre-fills the fields from an
+  existing `Machine` and stashes an `EditTarget` — `ram_mb`, `shader`,
+  and any disc-shelf entries beyond the first (this form only edits the
+  single "install media" slot) — plus the bundle's exact original text,
+  used verbatim as the advanced box's starting point instead of a
+  reconstruction. `create()` was renamed `submit()` and now branches:
+  editing writes back to the existing bundle path with `build_machine()`
+  merging the edited fields onto the preserved ones, **never renaming
+  the bundle directory** even when the display name changes (external
+  references to the directory, and the disk path inside it, stay valid).
+  A "New machine" still reserves a fresh directory exactly as before —
+  `build_machine()` is the one place both paths agree on what a
+  `Machine` looks like, so they can't silently diverge. The grid gained
+  an "Edit…" button next to "Play"/"Running" (same cell, side by side).
+
+  Verified for real, not just reviewed: hand-crafted a bundle with a
+  non-default RAM value (768, not XP's 512 default), two disc-shelf
+  entries and a `shader` override — fields the wizard's own UI doesn't
+  expose at all — then renamed it via a `--wizard-edit <machine.toml>
+  <new-name>` debug verb (the same `submit()` the "Save" button calls).
+  Read the file back: name changed, **RAM/discs/shader all intact**,
+  directory unchanged. `--print-args` on the result showed `-m 768`,
+  confirming the preserved value reaches the real translated command
+  line, not just the TOML. The empty-name validation fires in edit mode
+  too. Screenshotted the real grid showing "Edit…" next to "Play" for an
+  entry. **Not click-tested** for the same reason as the rest of the
+  wizard — a human should click "Edit…", change a field, and click
+  "Save" once.
 
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
 2. ~~**Library grid**~~ — done above.
 3. ~~**Spawn a player**~~ — done above.
-4. ~~**Guided creation wizard**~~ — done above (needs a human click-through,
-   see the caveat above).
+4. ~~**Guided creation wizard**~~ — done above, including editing an
+   existing machine and a native file picker (needs a human
+   click-through, see the caveats above).
 5. **Snapshots UI + disc-shelf editing**: once the player exposes QMP
    snapshot/media-change operations for the launcher to drive (may need
    a small IPC surface between the two binaries — design it when this
@@ -232,9 +263,10 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
 No wired-in test tool exists yet for this track; CLAUDE.md's
 integration/e2e policy still applies once there's a real boundary worth
 guarding against regressions — don't add `#[cfg(test)]` modules.
-`launcher`'s three debug verbs (`--new`, `--print-args`, `--play`) were
-exercised by hand this session (see the state notes above) rather than
-wired into `scripts/test.sh`, because doing that from `scripts/test.sh`
+`launcher`'s debug verbs (`--new`, `--print-args`, `--play`,
+`--wizard-new`, `--wizard-edit`, `--pick-file`) were exercised by hand
+this session (see the state notes above) rather than wired into
+`scripts/test.sh`, because doing that from `scripts/test.sh`
 needs a `build/qemu` in whichever worktree runs it — this one doesn't
 have one (the shared-checkout `QEMU_EMBED_LIB_DIR` trick used above is a
 manual convenience, not something a checked-in script should depend on
