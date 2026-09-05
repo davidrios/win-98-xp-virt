@@ -44,6 +44,12 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   outside the M6 row. The machine bundle format (`machine.toml`) will
   eventually be read by both `player/` and `launcher/`; when that lands,
   decide then whether it needs a shared crate — don't preempt it now.
+- **`shader-chain/` is now a shared crate** (2026-09-05, factored out of
+  `player/src/shader.rs` for the shader-preview feature below): both
+  `player/` and `launcher/` depend on it for the librashader filter
+  chain itself. A change here affects both binaries — rebuild and
+  retest both (the player's `PLAYER_DUMP_OUT` dump-diff and the
+  launcher's `--preview-shader` debug verb, both below) before pushing.
 
 ## State (2026-09-04)
 
@@ -345,6 +351,56 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   gap as the rest of this track — a human should click through "Shader
   profiles…" and the wizard's new combo box once.
 
+- **Live shader preview** (user request, 2026-09-05): the profile editor
+  gained a second column that runs a chosen image through the real
+  filter chain and shows the result, re-rendering as sliders move.
+  Because a CRT preset's scanline/mask math depends on the actual pixel
+  size it renders at (egui stretching a small render up afterward would
+  just blur it away), the chain-running code — previously
+  `player/src/shader.rs`'s `Chain` — moved into a new shared workspace
+  crate, `shader-chain/`, so the player and the launcher run librashader
+  the same way instead of two implementations drifting apart.
+  `Chain::load`/`set_parameters` split (load once per preset, re-apply
+  parameters on every slider tick without recompiling shaders — a
+  reload would be far too slow for a live preview); `player/src/main.rs`
+  updated to match (`mod shader` → `use shader_chain as shader`,
+  otherwise unchanged behavior).
+
+  `launcher/src/shader_preview.rs`'s `Preview` runs on the
+  `wgpu::Device`/`Queue` eframe already opened for egui
+  (`egui_wgpu::RenderState`, via `eframe::wgpu`/`eframe::egui_wgpu` — no
+  separate `wgpu` pin in `launcher/Cargo.toml`, Cargo unifies it with
+  `shader-chain`'s) rather than a second GPU context: decodes the chosen
+  image (new `image` crate dep, `png`/`jpeg`/`bmp` features) into an
+  `Rgba8Unorm` input texture, runs the chain at a scale of the image
+  clamped to fit a ~480×360 pane (shrinking a large screenshot,
+  upscaling a small one so the mask is visible at all — same reasoning
+  as the player rendering its chain at viewport size, not the guest's
+  native resolution), and registers the output as an egui texture via
+  `egui_wgpu::Renderer::register_native_texture`/
+  `update_egui_texture_from_wgpu_texture` (same `TextureId` reused
+  across reruns, freed on `Drop`). `LauncherApp` captures
+  `cc.wgpu_render_state.clone()` once at startup; `None` (a non-wgpu
+  backend, not expected given the toolkit decision) shows "no live
+  preview" instead of panicking.
+
+  Verified for real: a new `--preview-shader <preset> <image> <out.png>
+  [name=value,...]` debug verb builds a real windowless
+  `egui_wgpu::RenderState` (the same `RenderState::create` call eframe
+  itself makes) and drives `Preview` exactly as the editor's preview
+  column does, dumping the frame via a new `shader_chain::Chain::
+  output_texture()` accessor. Ran it against a real 2560×1920 PNG (shrank
+  correctly to 480×360) and a real 64×64 RGBA icon (`qemu/ui/icons/
+  qemu_64x64.png`, exercising the alpha-channel decode path — upscaled
+  correctly to 360×360, `min(480/64, 360/64) = 5.625×`); with and
+  without `brightBoost=1.8` produced dumps differing from the first
+  byte, same proof-of-liveness as the shader-profile-manager work, and
+  visually confirmed (read back as images) the icon shows real
+  scanline/mask texture from `crt-lottes.slangp`, not a pass-through
+  copy. `cargo build --workspace` clean, no warnings, after the full
+  `shader.rs` → `shader-chain/` move. **Not click-tested through the
+  actual editor window** — same Wayland gap as the rest of this track.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -368,7 +424,7 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `launcher`'s debug verbs (`--new`, `--print-args`, `--play`,
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
-`--print-shader-args`) were exercised by hand
+`--print-shader-args`, `--preview-shader`) were exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`
 needs a `build/qemu` in whichever worktree runs it — this one doesn't

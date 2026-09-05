@@ -1,0 +1,11 @@
+[package]
+name = "shader-chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "librashader (RetroArch slang) filter chain on wgpu, shared by the player (doc 03's CRT pass) and the launcher's shader profile preview (doc 07)."
+
+[dependencies]
+wgpu = "30"
+librashader = { version = "0.12", default-features = false, features = ["runtime-wgpu", "presets", "preprocess", "reflect"] }
+png = "0.18"

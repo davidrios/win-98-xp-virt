@@ -18,4 +18,7 @@ data dir's `shader-profiles`). A machine picks a profile by name in the
 wizard; the launcher resolves it into the player's own `--shader
 --shader-params` (see README.md) when spawning it — hand-written bundles
 can still set `machine.toml`'s `shader` field directly instead, bypassing
-profiles entirely.
+profiles entirely. The manager also previews a profile live against a
+chosen image (a screenshot), rendering the actual filter chain
+(`shader-chain/`, shared with the player) inside the launcher's own
+window and re-rendering as sliders move.

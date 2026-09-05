@@ -7,10 +7,13 @@
 
 use crate::filepicker;
 use crate::shader_library;
+use crate::shader_preview::Preview;
 use crate::shader_profile::{self, ParamMeta, ShaderProfile};
+use eframe::egui_wgpu::RenderState;
 use std::path::{Path, PathBuf};
 
 const PRESET_FILTER: filepicker::Filter = ("Shader presets", &["slangp"]);
+const IMAGE_FILTER: filepicker::Filter = ("Images", &["png", "jpg", "jpeg", "bmp"]);
 
 struct Editor {
     /// `None` for a new profile; `Some(path)` to save back in place.
@@ -27,6 +30,10 @@ struct Editor {
     /// overridden. Indexed in lockstep with `params` rather than keyed by
     /// name so a slider drag doesn't need a map lookup per frame.
     overrides: Vec<Option<f32>>,
+    /// A screenshot to preview the shader against; built lazily (needs a
+    /// wgpu render backend, which isn't guaranteed to exist) on first use.
+    preview_image_path: String,
+    preview: Option<Preview>,
     error: Option<String>,
 }
 
@@ -40,6 +47,8 @@ impl Editor {
             params: Vec::new(),
             parse_error: None,
             overrides: Vec::new(),
+            preview_image_path: String::new(),
+            preview: None,
             error: None,
         }
     }
@@ -116,9 +125,12 @@ impl ShaderManager {
         self.editor = None;
     }
 
-    /// Renders the manager if open. Returns `Some(())` once a profile was
-    /// created, saved, or deleted, so the caller rescans the library.
-    pub fn show(&mut self, ctx: &egui::Context, profiles_dir: &Path) -> Option<()> {
+    /// Renders the manager if open. `render_state` is eframe's wgpu
+    /// context (`None` on a non-wgpu backend, e.g. web/glow — the editor
+    /// then shows the sliders without a live preview rather than
+    /// panicking). Returns `Some(())` once a profile was created, saved,
+    /// or deleted, so the caller rescans the library.
+    pub fn show(&mut self, ctx: &egui::Context, profiles_dir: &Path, render_state: Option<&RenderState>) -> Option<()> {
         if !self.open {
             return None;
         }
@@ -127,11 +139,11 @@ impl ShaderManager {
         egui::Window::new("Shader profiles")
             .open(&mut still_open)
             .collapsible(false)
-            .default_width(420.0)
+            .default_width(480.0)
             .show(ctx, |ui| {
                 if let Some(editor) = &mut self.editor {
                     editor.reparse();
-                    match editor_ui(ui, editor, profiles_dir) {
+                    match editor_ui(ui, editor, profiles_dir, render_state) {
                         EditorAction::None => {}
                         EditorAction::Saved => {
                             changed = Some(());
@@ -190,7 +202,7 @@ enum EditorAction {
 /// The profile editor form. `Saved` once "Save" wrote the profile,
 /// `Cancelled` once "Cancel" was clicked — either closes the editor, but
 /// only `Saved` should make the caller rescan the library.
-fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path) -> EditorAction {
+fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path, render_state: Option<&RenderState>) -> EditorAction {
     let mut action = EditorAction::None;
     ui.horizontal(|ui| {
         ui.label("Name");
@@ -198,36 +210,39 @@ fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path) -> Edi
     });
     filepicker::path_field(ui, "Preset (.slangp)", &mut editor.preset_path, Some(PRESET_FILTER));
     ui.separator();
-    if let Some(err) = &editor.parse_error {
-        ui.colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
-    } else if editor.params.is_empty() {
-        ui.label("Pick a preset to see its parameters.");
-    } else {
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
-                ui.horizontal(|ui| {
-                    let mut enabled = over.is_some();
-                    if ui.checkbox(&mut enabled, "").changed() {
-                        *over = if enabled { Some(meta.default) } else { None };
-                    }
-                    ui.add_enabled_ui(enabled, |ui| {
-                        let mut value = over.unwrap_or(meta.default);
-                        let resp = ui.add(
-                            egui::Slider::new(&mut value, meta.minimum..=meta.maximum)
-                                .step_by(if meta.step > 0.0 { meta.step as f64 } else { 0.0 })
-                                .text(&meta.id),
-                        );
-                        if resp.changed() {
-                            *over = Some(value);
+    ui.columns(2, |cols| {
+        if let Some(err) = &editor.parse_error {
+            cols[0].colored_label(egui::Color32::RED, format!("Couldn't read this preset's parameters: {err}"));
+        } else if editor.params.is_empty() {
+            cols[0].label("Pick a preset to see its parameters.");
+        } else {
+            egui::ScrollArea::vertical().id_salt("params").max_height(320.0).show(&mut cols[0], |ui| {
+                for (meta, over) in editor.params.iter().zip(editor.overrides.iter_mut()) {
+                    ui.horizontal(|ui| {
+                        let mut enabled = over.is_some();
+                        if ui.checkbox(&mut enabled, "").changed() {
+                            *over = if enabled { Some(meta.default) } else { None };
                         }
+                        ui.add_enabled_ui(enabled, |ui| {
+                            let mut value = over.unwrap_or(meta.default);
+                            let resp = ui.add(
+                                egui::Slider::new(&mut value, meta.minimum..=meta.maximum)
+                                    .step_by(if meta.step > 0.0 { meta.step as f64 } else { 0.0 })
+                                    .text(&meta.id),
+                            );
+                            if resp.changed() {
+                                *over = Some(value);
+                            }
+                        });
                     });
-                });
-                if !meta.description.is_empty() && meta.description != meta.id {
-                    ui.label(egui::RichText::new(&meta.description).weak().small());
+                    if !meta.description.is_empty() && meta.description != meta.id {
+                        ui.label(egui::RichText::new(&meta.description).weak().small());
+                    }
                 }
-            }
-        });
-    }
+            });
+        }
+        preview_ui(&mut cols[1], editor, render_state);
+    });
     ui.separator();
     if let Some(err) = &editor.error {
         ui.colored_label(egui::Color32::RED, err);
@@ -255,4 +270,38 @@ fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path) -> Edi
         }
     });
     action
+}
+
+/// The live preview column: an image picker plus, once both a valid
+/// preset and an image are chosen, the shader's effect on it — re-run
+/// every time this is called with the sliders' current values, so
+/// dragging one updates the picture live.
+fn preview_ui(ui: &mut egui::Ui, editor: &mut Editor, render_state: Option<&RenderState>) {
+    ui.label("Preview");
+    filepicker::path_field(ui, "Image", &mut editor.preview_image_path, Some(IMAGE_FILTER));
+    let Some(render_state) = render_state else {
+        ui.label("(no wgpu render backend — live preview unavailable)");
+        return;
+    };
+    if editor.preview_image_path.trim().is_empty() {
+        ui.label("Pick a screenshot to preview the shader on it.");
+        return;
+    }
+    if editor.parse_error.is_some() || editor.params.is_empty() {
+        return; // nothing valid to render yet; the error already shows on the left
+    }
+    let preview = editor.preview.get_or_insert_with(|| Preview::new(render_state.clone()));
+    let effective: Vec<(String, f32)> =
+        editor.params.iter().zip(&editor.overrides).map(|(meta, over)| (meta.id.clone(), over.unwrap_or(meta.default))).collect();
+    preview.update(
+        Path::new(editor.preset_path.trim()),
+        &effective,
+        Path::new(editor.preview_image_path.trim()),
+    );
+    if let Some(err) = preview.error() {
+        ui.colored_label(egui::Color32::RED, err);
+    }
+    if let Some(id) = preview.texture_id() {
+        ui.image((id, preview.display_size()));
+    }
 }

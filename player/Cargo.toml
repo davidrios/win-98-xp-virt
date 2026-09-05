@@ -17,7 +17,7 @@ pollster = "1"
 bytemuck = "1"
 png = "0.18"
 cpal = "0.18.2"
-librashader = { version = "0.12", default-features = false, features = ["runtime-wgpu", "presets", "preprocess", "reflect"] }
+shader-chain = { path = "../shader-chain" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

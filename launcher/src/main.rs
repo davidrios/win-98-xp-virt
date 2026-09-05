@@ -10,6 +10,7 @@ mod library;
 mod player;
 mod shader_library;
 mod shader_manager;
+mod shader_preview;
 mod shader_profile;
 mod wizard;
 
@@ -28,6 +29,11 @@ struct LauncherApp {
     running: HashMap<PathBuf, Child>,
     wizard: wizard::Wizard,
     shader_manager: shader_manager::ShaderManager,
+    /// `None` on a non-wgpu eframe backend (not expected in practice —
+    /// `wgpu` is a default feature, see `docs/tracks/m6-launcher.md` —
+    /// but the shader profile editor degrades to "no live preview"
+    /// rather than unwrapping this).
+    wgpu_render_state: Option<eframe::egui_wgpu::RenderState>,
 }
 
 impl eframe::App for LauncherApp {
@@ -112,7 +118,11 @@ impl eframe::App for LauncherApp {
         if let Some(_bundle_path) = self.wizard.show(&ctx, &self.library_dir, &self.shader_profiles) {
             self.entries = library::scan(&self.library_dir);
         }
-        if self.shader_manager.show(&ctx, &self.shader_profiles_dir).is_some() {
+        if self
+            .shader_manager
+            .show(&ctx, &self.shader_profiles_dir, self.wgpu_render_state.as_ref())
+            .is_some()
+        {
             self.shader_profiles = shader_library::scan(&self.shader_profiles_dir);
         }
     }
@@ -239,6 +249,38 @@ fn main() -> eframe::Result {
             println!("{}", player::shader_args(&machine).join(" "));
             return Ok(());
         }
+        Some("--preview-shader") => {
+            // Headless equivalent of the shader manager's live preview
+            // pane: proves `shader_preview::Preview`'s image-decode and
+            // render path (not just `shader-chain`, already exercised by
+            // the player) without a GUI click or a visible window — a
+            // real (if windowless) wgpu adapter/device via
+            // `egui_wgpu::RenderState::create`, same as eframe itself
+            // uses at startup.
+            let usage = "usage: launcher --preview-shader <preset.slangp> <image> <out.png> [name=value,...]";
+            let preset: PathBuf = args.next().expect(usage).into();
+            let image_path: PathBuf = args.next().expect(usage).into();
+            let out = args.next().expect(usage);
+            let params = shader_profile::parse_params(&args.next().unwrap_or_default());
+            let instance = eframe::wgpu::Instance::new(
+                eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let render_state = pollster::block_on(eframe::egui_wgpu::RenderState::create(
+                &eframe::egui_wgpu::WgpuConfiguration::default(),
+                &instance,
+                None,
+                eframe::egui_wgpu::RendererOptions::default(),
+            ))
+            .expect("create a headless wgpu render state");
+            let mut preview = shader_preview::Preview::new(render_state.clone());
+            preview.update(&preset, &params, &image_path);
+            if let Some(err) = preview.error() {
+                eprintln!("[preview] {err}");
+            }
+            let tex = preview.output_texture().expect("no frame rendered");
+            shader_chain::dump_texture(&render_state.device, &render_state.queue, tex, &out);
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -249,7 +291,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "win98-xp-virt launcher",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| {
+        Box::new(|cc| {
             Ok(Box::new(LauncherApp {
                 library_dir,
                 entries,
@@ -258,6 +300,7 @@ fn main() -> eframe::Result {
                 running: HashMap::new(),
                 wizard: wizard::Wizard::default(),
                 shader_manager: shader_manager::ShaderManager::default(),
+                wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
         }),
     )

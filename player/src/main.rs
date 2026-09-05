@@ -13,7 +13,6 @@ mod keymap;
 mod pattern;
 mod qemu_vm;
 mod qmp;
-mod shader;
 
 use pattern::Pattern;
 use qemu_embed::Qemu;
@@ -42,7 +41,7 @@ struct Gpu {
     ext_current: Option<usize>,
     zero_copy: bool,
     adapter_info: wgpu::AdapterInfo,
-    chain: Option<shader::Chain>,
+    chain: Option<shader_chain::Chain>,
     chain_bg: Option<(wgpu::BindGroup, u32, u32)>,
 }
 
@@ -175,15 +174,15 @@ impl Gpu {
     }
 
     fn load_shader(&mut self, path: &std::path::Path, params: &[(String, f32)]) {
-        match shader::Chain::load(
+        match shader_chain::Chain::load(
             path,
             &self.device,
             &self.queue,
             self.adapter_info.clone(),
             self.config.format,
-            params,
         ) {
             Ok(c) => {
+                c.set_parameters(params);
                 eprintln!("[shader] loaded {}", path.display());
                 self.chain = Some(c);
             }
@@ -385,7 +384,7 @@ impl Gpu {
                 None => &self.fb_tex.as_ref().unwrap().0,
             };
             match chain.run(&self.device, &mut enc, input, vw, vh) {
-                Ok(out) => {
+                Ok((out, _)) => {
                     let out_tex = out.clone();
                     if !matches!(&self.chain_bg, Some((_, w, h)) if *w == vw && *h == vh) {
                         let view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -413,7 +412,7 @@ impl Gpu {
                             .unwrap_or(60);
                         if chain.frame_count() == want {
                             self.queue.submit(Some(chain_enc.take().unwrap().finish()));
-                            shader::dump_texture(&self.device, &self.queue, &out_tex, &path);
+                            shader_chain::dump_texture(&self.device, &self.queue, &out_tex, &path);
                             hard_exit(0);
                         }
                     }

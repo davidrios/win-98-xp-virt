@@ -96,3 +96,24 @@ pub fn parameter_meta(preset: &Path) -> Result<Vec<ParamMeta>, String> {
     params.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(params)
 }
+
+/// Parse a `--preview-shader`-style `name=value,name=value` list — the
+/// same compact format `ShaderProfile::params_arg` produces and the
+/// player's `--shader-params` consumes. A malformed entry is skipped
+/// with a stderr line, not a hard error, matching the player's own
+/// `parse_shader_params`.
+pub fn parse_params(s: &str) -> Vec<(String, f32)> {
+    s.split(',')
+        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(|entry| {
+            let (name, value) = entry.split_once('=')?;
+            match value.trim().parse::<f32>() {
+                Ok(v) => Some((name.trim().to_string(), v)),
+                Err(e) => {
+                    eprintln!("[shader-profile] bad param entry {entry:?}: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}

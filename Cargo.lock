@@ -2000,9 +2000,12 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
+ "image",
  "librashader",
+ "pollster 1.0.1",
  "rfd",
  "serde",
+ "shader-chain",
  "toml",
 ]
 
@@ -3053,7 +3056,6 @@ dependencies = [
  "bytemuck",
  "cpal",
  "libc",
- "librashader",
  "objc2 0.6.4",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
@@ -3061,6 +3063,7 @@ dependencies = [
  "pollster 1.0.1",
  "qemu-embed",
  "serde_json",
+ "shader-chain",
  "wgpu",
  "winit",
 ]
@@ -3563,6 +3566,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "shader-chain"
+version = "0.0.1"
+dependencies = [
+ "librashader",
+ "png",
+ "wgpu",
 ]
 
 [[package]]

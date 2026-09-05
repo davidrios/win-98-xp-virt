@@ -1,8 +1,9 @@
-//! librashader (RetroArch slang) filter chain on wgpu — the CRT pass of the
-//! doc 03 pipeline. Input: the guest framebuffer texture (native resolution).
-//! Output: an intermediate texture sized to the letterboxed viewport, which
-//! the blit pass presents. Geometry stays ours; the chain sees the final
-//! viewport size so its scanline/mask math is right.
+//! librashader (RetroArch slang) filter chain on wgpu. Shared by the
+//! player (doc 03's CRT pass: guest framebuffer -> letterboxed viewport)
+//! and the launcher's shader profile preview (doc 07: a still image ->
+//! an egui-displayed texture, re-run live as parameter sliders move) —
+//! both just need "load a preset, tweak its parameters, run a frame",
+//! so the two shouldn't drift on how librashader is driven.
 
 use librashader::presets::ShaderFeatures;
 use librashader::runtime::wgpu::{FilterChain, FilterChainOptions, WgpuOutputView};
@@ -17,18 +18,12 @@ pub struct Chain {
 }
 
 impl Chain {
-    /// `params` overrides the preset's own parameter defaults by name
-    /// (the launcher's shader profiles, doc 07); a name the preset
-    /// doesn't declare is silently ignored — a profile saved against an
-    /// older version of a preset shouldn't fail the whole machine over a
-    /// parameter that no longer exists.
     pub fn load(
         path: &Path,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         adapter_info: wgpu::AdapterInfo,
         format: wgpu::TextureFormat,
-        params: &[(String, f32)],
     ) -> Result<Chain, String> {
         let opts = FilterChainOptions {
             force_no_mipmaps: false,
@@ -38,23 +33,34 @@ impl Chain {
         let chain =
             FilterChain::load_from_path(path, ShaderFeatures::NONE, device, queue, Some(&opts))
                 .map_err(|e| format!("{e}"))?;
-        if !params.is_empty() {
-            chain.parameters().update_parameters(|map| {
-                for (name, value) in params {
-                    if let Some(slot) = map.get_mut::<str>(name.as_ref()) {
-                        *slot = *value;
-                    } else {
-                        eprintln!("[shader] preset has no parameter named {name:?}, ignoring override");
-                    }
-                }
-            });
-        }
         Ok(Chain {
             chain,
             frame_count: 0,
             out: None,
             format,
         })
+    }
+
+    /// Override parameter values by name (the launcher's shader profiles,
+    /// doc 07) without reloading the chain — cheap enough to call on
+    /// every slider tick in the profile preview, unlike `load` (which
+    /// recompiles shaders). A name the preset doesn't declare is silently
+    /// ignored — a profile saved against an older preset version, or a
+    /// stale slider from a preset that was just swapped out, shouldn't
+    /// fail the whole load over one parameter that no longer exists.
+    pub fn set_parameters(&self, params: &[(String, f32)]) {
+        if params.is_empty() {
+            return;
+        }
+        self.chain.parameters().update_parameters(|map| {
+            for (name, value) in params {
+                if let Some(slot) = map.get_mut::<str>(name.as_ref()) {
+                    *slot = *value;
+                } else {
+                    eprintln!("[shader] preset has no parameter named {name:?}, ignoring override");
+                }
+            }
+        });
     }
 
     fn ensure_out(&mut self, device: &wgpu::Device, w: u32, h: u32) {
@@ -81,8 +87,9 @@ impl Chain {
         self.out = Some((tex, view, w, h));
     }
 
-    /// Run the chain: guest texture → output texture of size (w, h).
-    /// Returns the output texture (valid until the next size change).
+    /// Run the chain: `input` texture -> output texture of size (w, h).
+    /// Returns the output texture and its view (valid until the next
+    /// size change).
     pub fn run(
         &mut self,
         device: &wgpu::Device,
@@ -90,7 +97,7 @@ impl Chain {
         input: &wgpu::Texture,
         w: u32,
         h: u32,
-    ) -> Result<&wgpu::Texture, String> {
+    ) -> Result<(&wgpu::Texture, &wgpu::TextureView), String> {
         self.ensure_out(device, w, h);
         let (tex, view, _, _) = self.out.as_ref().unwrap();
         let size = Size::new(w, h);
@@ -105,15 +112,24 @@ impl Chain {
             .frame(input, &viewport, encoder, self.frame_count, None)
             .map_err(|e| format!("{e}"))?;
         self.frame_count += 1;
-        Ok(tex)
+        Ok((tex, view))
     }
 
     pub fn frame_count(&self) -> usize {
         self.frame_count
     }
+
+    /// The last frame's output texture, if `run` has ever succeeded — for
+    /// a consumer that needs to read it back itself (the launcher's
+    /// shader-preview debug verb dumps it to PNG the same way the
+    /// player's `PLAYER_DUMP_OUT` does via `dump_texture`).
+    pub fn output_texture(&self) -> Option<&wgpu::Texture> {
+        self.out.as_ref().map(|(tex, _, _, _)| tex)
+    }
 }
 
-/// Debug readback of a texture to PNG (PLAYER_DUMP_OUT). Blocks on the GPU.
+/// Debug/tooling readback of a texture to PNG (the player's
+/// `PLAYER_DUMP_OUT`). Blocks on the GPU.
 pub fn dump_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, path: &str) {
     let (w, h) = (tex.width(), tex.height());
     let bpr = (w * 4).div_ceil(256) * 256;
