@@ -1,0 +1,64 @@
+Build the cdimage block driver (block/cdimage.c, overlaid from
+libdisc/qemu/ by scripts/prepare-qemu.sh) when -Dlibdisc_dir names the
+directory holding liblibdisc.a, the Rust staticlib of the CD-ROM image
+model (libdisc/, built by scripts/configure-qemu.sh). CONFIG_CDIMAGE
+guards the disc paths in hw/ide/atapi.c (patch 51). Doc 17 §5.2.
+
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -196,6 +196,8 @@
+        description: 'Linux io_uring support')
+ option('lzfse', type : 'feature', value : 'auto',
+        description: 'lzfse support for DMG images')
++option('libdisc_dir', type : 'string', value : '',
++       description: 'directory holding liblibdisc.a (win98-xp-virt: the CD-ROM image block driver, block/cdimage.c)')
+ option('lzo', type : 'feature', value : 'auto',
+        description: 'lzo compression support')
+ option('rbd', type : 'feature', value : 'auto',
+--- a/meson.build
++++ b/meson.build
+@@ -2006,6 +2006,17 @@
+   endif
+ endif
+ 
++# win98-xp-virt: libdisc, the CD-ROM image model (a Rust staticlib built by
++# scripts/configure-qemu.sh) behind block/cdimage.c; doc 17 §5.2
++libdisc = not_found
++if get_option('libdisc_dir') != ''
++  libdisc_lib = cc.find_library('libdisc', dirs: [get_option('libdisc_dir')],
++                                static: true, required: true)
++  libdisc = declare_dependency(dependencies: [libdisc_lib, threads],
++                               link_args: host_os == 'darwin' ? ['-liconv'] :
++                                          ['-ldl', '-lm', '-lrt', '-lutil', '-lgcc_s'])
++endif
++
+ lzo = not_found
+ if not get_option('lzo').auto() or have_system
+   lzo = cc.find_library('lzo2', has_headers: ['lzo/lzo1x.h'],
+@@ -2421,6 +2432,7 @@
+ config_host_data.set('CONFIG_POSIX', host_os != 'windows')
+ config_host_data.set('CONFIG_WIN32', host_os == 'windows')
+ config_host_data.set('CONFIG_LZO', lzo.found())
++config_host_data.set('CONFIG_CDIMAGE', libdisc.found())
+ config_host_data.set('CONFIG_MPATH', mpathpersist.found())
+ config_host_data.set('CONFIG_BLKIO', blkio.found())
+ if blkio.found()
+@@ -4816,6 +4828,7 @@
+ summary_info += {'TPM support':       have_tpm}
+ summary_info += {'libssh support':    libssh}
+ summary_info += {'lzo support':       lzo}
++summary_info += {'cdimage (libdisc)':  libdisc}
+ summary_info += {'snappy support':    snappy}
+ summary_info += {'bzip2 support':     libbzip2}
+ summary_info += {'lzfse support':     liblzfse}
+--- a/block/meson.build
++++ b/block/meson.build
+@@ -69,6 +69,8 @@
+ if get_option('bochs').allowed()
+   block_ss.add(files('bochs.c'))
+ endif
++# win98-xp-virt: the CD-ROM image driver over libdisc (overlaid by scripts/prepare-qemu.sh)
++block_ss.add(when: libdisc, if_true: files('cdimage.c'))
+ if get_option('vvfat').allowed()
+   block_ss.add(files('vvfat.c'))
+ endif

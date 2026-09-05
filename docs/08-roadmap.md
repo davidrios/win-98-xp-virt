@@ -112,12 +112,18 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 - **Exit:** the doc 04 matrix through the driver on XP; M4's per-game DLL
   install no longer needed on XP.
 
-## M5 — CD-ROM backend
+## M5 — CD-ROM backend (track opened 2026-09-04: `docs/tracks/m5-cdrom-backend.md`, spec doc 17)
 
-- libdisc (Rust): cue/bin + CCD first; ATAPI command coverage incl.
-  C2/subchannel/raw TOC; CD-DA playback; runtime disc swap UX.
-- Golden ATAPI traces from the rig as exerciser fixtures (doc 09).
-- Then CHD, MDS/DPM, timing profile as needed.
+- M5a libdisc (Rust): cue/bin + ISO model, EDC/ECC, Q synthesis, C API,
+  the `discx` exerciser; `cdimage` QEMU block driver; ATAPI patch: raw
+  sector reads, READ CD / READ CD MSF, subchannel, raw TOC; DOS ATAPI
+  guest test.
+- M5b CD-DA playback (`audiodev` on `ide-cd`), mode pages, runtime disc
+  swap over QMP, player command lines.
+- M5c CCD + `.sub` replay, a SecuROM title from an owned dump; golden
+  ATAPI traces from the rig as fixtures (doc 09).
+- M5d SafeDisc on the L-EC path with a real dump.
+- M5e CHD, MDS/DPM, timing profile as needed; disc shelf with M6.
 - **Exit:** doc 05 acceptance table green for CD-DA, SafeDisc, SecuROM rows.
 
 ## M6 — Launcher, packaging, release

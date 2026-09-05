@@ -13,6 +13,13 @@
 #
 # Host stage
 #   x87-fast       tools/x87-fast-test.c: patch 05's fast path vs the real x87
+#   libdisc        discx selftest (doc 17 §6.1): synthetic cue/bin, CCD and ISO
+#                  images, the CD model's reads, EDC/ECC, Q synthesis and the
+#                  MMC responders checked through libdisc's C API
+#   cdimage        the cdimage block driver (patch 50) through QEMU's block layer:
+#                  qemu-img probes the cue and the ccd to "cdimage" with the
+#                  lead-out × 2048 as the size, the data track dd'd out equals the
+#                  ISO, a plain .iso still probes to raw
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
@@ -27,9 +34,17 @@
 #
 # Guest stage
 #   sse-guest      tools/sse-guest-test.py: the SSE battery, sse-fast on/off identical (doc 16)
+#   atapi-guest    tools/atapi-guest-test.py: a DOS program drives the ATAPI drive
+#                  on the selftest's flipped-sector cue by PIO (patch 51); every
+#                  reply identical to discx's at byte-count limits 512 and 65534
 #   x87-guest      tools/x87-guest-test.py: a DOS x87 battery under TCG,
 #                  identical with the fast path on and off (needs nasm,
 #                  mtools and the FreeDOS floppy the tool fetches on first use)
+#   guest-cdimage  tools/xp-cdimage-test.sh: XP boots with the guest-tools ISO
+#                  converted to a cue (+ a 1 kHz tone track) as its CD-ROM and
+#                  copies the whole disc through cdrom.sys; every file must
+#                  match the ISO's; with mingw, CDTEST.EXE then plays the tone
+#                  through MCI and the drive's audiodev (a wav) must carry it
 #   XP (Linux; KVM when /dev/kvm is usable, TCG otherwise):
 #   boots WINXP_IMG read-only (snapshot=on) with the newest guest-tools ISO
 #   and a fresh FAT32 scratch disk carrying RUN.BAT, drives the Run dialog
@@ -82,6 +97,24 @@ run_check() { # name, log file, command...
   if [ $rc = 77 ]; then skip "$name" "$(tail -1 "$lf")"; return 0; fi
   FAIL+=("$name"); printf '  FAIL %s (exit %d) — %s\n' "$name" $rc "$lf"; tail -5 "$lf" | sed 's/^/       /'; return 1
 }
+cdimage_check() { # the block driver through qemu-img / qemu-io on the selftest images
+  local d="$OUT/disc" want=$((6800 * 2048)) rc=0
+  for f in mixed.cue mixed.ccd cooked.cue; do
+    local info; info="$(build/qemu/qemu-img info --output=json "$d/$f")" || { echo "$f: qemu-img info failed"; return 1; }
+    echo "$info" | grep -q '"format": "cdimage"' || { echo "$f: not probed as cdimage"; echo "$info"; rc=1; }
+    echo "$info" | grep -q "\"virtual-size\": $want" || { echo "$f: virtual size is not $want"; echo "$info"; rc=1; }
+  done
+  build/qemu/qemu-img info --output=json "$d/plain.iso" | grep -q '"format": "raw"' || { echo "plain.iso: no longer probes to raw"; rc=1; }
+  build/qemu/qemu-img dd -f cdimage -O raw bs=2048 count=2000 "if=$d/mixed.cue" "of=$OUT/cdimage-dd.bin" || rc=1
+  cmp "$OUT/cdimage-dd.bin" "$d/plain.iso" || { echo "the data track through the block layer differs from plain.iso"; rc=1; }
+  local o
+  o="$(build/qemu/qemu-io -r -c "read $((1000 * 2048)) 2048" "$d/lec.cue" 2>&1)"
+  case "$o" in *"read failed"*) ;; *) echo "the flipped sector read cleanly"; rc=1;; esac
+  o="$(build/qemu/qemu-io -r -c "read $((2000 * 2048)) 2048" "$d/mixed.cue" 2>&1)"
+  case "$o" in *"read failed"*) ;; *) echo "an audio sector read as data"; rc=1;; esac
+  [ "$(nm -D build/qemu/libqemu-embed-i386.$SO 2>/dev/null | grep -c ' T _ZN3std')" = 0 ] || { echo "Rust std symbols exported from the embed library"; rc=1; }
+  return $rc
+}
 have_display() { [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || [ "$OS" = Darwin ]; }
 
 # ---------------------------------------------------------------- host stage
@@ -96,6 +129,14 @@ host_stage() {
   else
     skip x87-fast "x87 oracle needs an x86 host"
   fi
+
+  # the CD-ROM model (M5, doc 17): images written and read back by discx
+  cargo build --release -p libdisc -q 2>"$OUT/libdisc-build.log" \
+    && run_check libdisc libdisc.log target/release/discx selftest "$OUT/disc" \
+    || { [ -x target/release/discx ] || { FAIL+=(libdisc); echo "  FAIL libdisc (build)"; }; }
+  if [ -x build/qemu/qemu-img ] && [ -f "$OUT/disc/mixed.cue" ]; then
+    run_check cdimage cdimage.log cdimage_check || true
+  else skip cdimage "needs build/qemu/qemu-img and the libdisc check's images"; fi
 
   # the embed library's Mesa backend, Linux (EGL) only, one VM per process
   if [ "$OS" = Linux ] && [ -f build/qemu/libqemu-embed-i386.so ]; then
@@ -165,6 +206,7 @@ guest_stage() {
     if [ -f build/images/144m/x86BOOT.img ]; then
       run_check x87-guest x87-guest.log python3 tools/x87-guest-test.py || true
       run_check sse-guest sse-guest.log python3 tools/sse-guest-test.py || true
+      run_check atapi-guest atapi-guest.log python3 tools/atapi-guest-test.py || true
     else skip x87-guest "no FreeDOS floppy yet: run tools/x87-guest-test.py once to fetch it"; fi
   else skip x87-guest "needs nasm, mtools and build/qemu"; fi
   if [ "$OS" != Linux ]; then skip guest "Linux only for now (mkfs.fat, sfdisk, mtools)"; return; fi
@@ -172,6 +214,22 @@ guest_stage() {
   [ -f "$img" ] || { skip guest "no XP image at $img (WINXP_IMG)"; return; }
   [ -n "$iso" ] && [ -f "$iso" ] || { skip guest "no guest-tools ISO (guest-tools/build-wrappers.sh)"; return; }
   [ -x build/qemu/qemu-system-i386 ] || { skip guest "no build/qemu/qemu-system-i386"; return; }
+  # the CD-ROM backend: XP copies a converted guest-tools disc through cdrom.sys (doc 17 §6.3)
+  if [ -x target/release/discx ] && command -v bsdtar >/dev/null; then
+    # bsdtar keeps the ISO's read-only modes: make the previous extraction deletable first
+    [ -d "$OUT/gt-iso" ] && chmod -R u+w "$OUT/gt-iso"
+    rm -rf "$OUT/gt-iso"; mkdir -p "$OUT/gt-iso" "$OUT/disc"
+    if bsdtar -xf "$iso" -C "$OUT/gt-iso" 2>/dev/null && chmod -R u+w "$OUT/gt-iso" \
+       && target/release/discx convert "$iso" "$OUT/disc/gt.cue" --audio "$OUT/disc/tone.wav" >/dev/null 2>&1; then
+      # with mingw the run also plays the tone track through MCI into a wav (CD-DA, doc 17 §5.4)
+      cdtest=""
+      if command -v i686-w64-mingw32-gcc >/dev/null && i686-w64-mingw32-gcc -O2 -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
+           -march=pentium3 -mtune=generic -o "$OUT/CDTEST.EXE" guest-tools/src/cdtest.c -lwinmm 2>"$OUT/cdtest-build.log"; then
+        cdtest="$OUT/CDTEST.EXE"
+      else echo "  (no mingw: guest-cdimage runs without the CD audio part)"; fi
+      CDTEST="$cdtest" run_check guest-cdimage guest-cdimage.log tools/xp-cdimage-test.sh "$img" "$OUT/disc/gt.cue" "$OUT/gt-iso" "$OUT/cdimage-xp" || true
+    else skip guest-cdimage "could not extract or convert $iso"; fi
+  else skip guest-cdimage "needs target/release/discx and bsdtar"; fi
   [ -f "$D3DPT_EXEC_LIB" ] || { skip guest "no $D3DPT_EXEC_LIB"; return; }
   [ -f "$OUT/g9-native.bmp" ] && [ -f "$OUT/f9-native.bmp" ] || { skip guest "run the host stage first (native oracle frames)"; return; }
   local accel="${TEST_ACCEL:-}"

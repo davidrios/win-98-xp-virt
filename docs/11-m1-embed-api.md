@@ -67,7 +67,13 @@ overlaid into `qemu/embed/` by `prepare-qemu.sh`, like the 3dfx devices;
 2. `20-embed-audio.patch` (done) — driver lives in `embed/embedaudio.c`
    (compiled into the shared lib, so no `audio/meson.build` change): the
    mixer clips straight into the caller's ring via
-   `get_buffer_out`/`put_buffer_out`, rate-paced like `noaudio`. QEMU-side
+   `get_buffer_out`/`put_buffer_out`. Pacing (2026-09-04): a cushion of
+   `out.buffer-length` (default 60 ms, player `PLAYER_AUDIO_MS`) is kept
+   ahead of the consumer and topped up every mixer tick; the guest's audio
+   clock is wall time, so a main-loop stall longer than the cushion drops
+   the backlog (one gap) instead of queuing it in the guest's DMA buffers
+   for the rest of the session (the first version kept 10 ms and never
+   caught up: XP audio grew laggier the longer and harder it ran). QEMU-side
    touches: `qapi/audio.json` enum+union entry, `audio_template.h`
    per-direction case, **and `audio/audio.c: audio_create_pdos()` CASE**
    (missing it → NULL pdo → segfault in `audio_validate_per_direction_opts`).
