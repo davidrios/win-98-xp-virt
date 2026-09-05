@@ -50,18 +50,37 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
 - **Skeleton landed:** `launcher/Cargo.toml` takes `eframe`/`egui`
   0.36.1; `main.rs` opens a native window (`eframe::run_native`) with an
   empty-state central panel ("No machines yet.", a disabled "New
-  machine…" button). No machine bundle format, thumbnails, or scanning
-  yet — this is the M0 stub replaced with a real (if empty) window.
-  Verified: `cargo build` clean (no warnings), the binary runs against
-  the box's Wayland session for 5 s with no crash (RADV's usual
-  non-conformant-ICD notice only).
+  machine…" button). No library scanning yet — this is the M0 stub
+  replaced with a real (if empty) window. Verified: `cargo build` clean
+  (no warnings), the binary runs against the box's Wayland session for
+  5 s with no crash (RADV's usual non-conformant-ICD notice only).
+- **Step 1 (bundle format) landed:** `launcher/src/bundle.rs` — `Machine`
+  (name, family, `ram_mb`, `disk`, `discs` shelf, `shader` override),
+  serde + `toml` round-trip (`load`/`save`), `Machine::reference(family,
+  name, disk)` from doc 06's defaults (256 MB Win98 / 512 MB XP), and
+  `qemu_args(pc_bios_dir)` translating a bundle to the real
+  `qemu-system-i386` command line the player expects (doc 06's per-family
+  tables: `-vga cirrus` + `pcnet` + `sb16` for Win98, `-vga none -device
+  d3dpt-vga` + `rtl8139` + `AC97` for XP; `-cpu pentium3` per doc 06's
+  floor rationale; `usb-tablet`; the first disc shelf entry as a
+  `bus=ide.1` CD-ROM, `audiodev=embed0` throughout — the id the player
+  itself adds, per README). Two debug verbs on `launcher` exercise this
+  for real until the wizard and library grid exist: `--new
+  <win98|xp> <name> <disk> <out.toml>` (bootstrap from the reference
+  defaults) and `--print-args <machine.toml>` (the translated command
+  line). Verified by hand: bootstrapped both families against real
+  `~/vms/*.qcow2` paths, round-tripped through real TOML files on disk,
+  `--print-args` output checked field-by-field against doc 06 and the
+  invocation shapes already validated elsewhere (README's player
+  example, `tools/xp-cdimage-test.sh`'s `ide-cd` line); also checked with
+  a disc-shelf entry added by hand. Not yet run through an actual QEMU
+  boot (no `build/qemu` in this worktree) — that's the natural point to
+  add a real check once step 3 (spawning a player) exists; see the
+  testing note below.
 
 ## Next steps, in order
 
-1. **The machine bundle format**: pin down `machine.toml`'s shape (doc 06
-   has the reference machine definitions this should read/write) —
-   family (Win98/XP), disk path(s), disc shelf, RAM, the shader preset
-   override, grab behavior. This unblocks everything else below.
+1. ~~**The machine bundle format**~~ — done above.
 2. **Library grid**: scan a configured library directory for bundles,
    render as a grid (name, family badge, running state; thumbnails come
    later — decide the thumbnail source, e.g. `PLAYER_DUMP_OUT` style
@@ -80,7 +99,15 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
    criterion ("stranger installs → plays a disc dump with a CRT shader
    in under an hour") needs both binaries and this step.
 
-No test tooling exists yet for this track; CLAUDE.md's integration/e2e
-policy still applies once there's a real boundary to test (e.g. a bundle
-round-trip, or the launcher successfully spawning and detecting a player
-exit) — don't add `#[cfg(test)]` modules.
+No wired-in test tool exists yet for this track; CLAUDE.md's
+integration/e2e policy still applies once there's a real boundary worth
+guarding against regressions — don't add `#[cfg(test)]` modules. The
+bundle format's `--new`/`--print-args` pair was exercised by hand this
+session (see above) rather than wired into `scripts/test.sh`, since the
+real end-to-end boundary — a bundle actually booting a guest to the
+BIOS/POST screen — needs `build/qemu` prepared in this worktree, which
+step 3 (spawning a player) will need anyway. Do that build then, and add
+a check at that point (e.g. `launcher --new` a bundle against a fresh
+empty qcow2, spawn `player -- $(launcher --print-args …)`, confirm a
+frame via `PLAYER_DUMP_OUT` — no OS install required, just a BIOS
+splash) rather than before.

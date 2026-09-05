@@ -1,6 +1,9 @@
 //! Companion launcher (doc 07): machine library, guided creation, disc
-//! shelf. M6 skeleton: a window with the (empty) library grid; no machine
-//! bundle format, thumbnails or guided creation yet.
+//! shelf. M6 skeleton: a window with the (empty) library grid, and the
+//! `machine.toml` bundle format (`bundle.rs`); no library scanning,
+//! thumbnails or guided creation yet.
+
+mod bundle;
 
 struct LauncherApp;
 
@@ -16,6 +19,36 @@ impl eframe::App for LauncherApp {
 }
 
 fn main() -> eframe::Result {
+    // Debug/advanced-drawer aids (doc 07), until the wizard and library
+    // grid exist: `--new` bootstraps a bundle from the doc 06 reference
+    // defaults, `--print-args` shows the qemu-system-i386 command line it
+    // translates to. Neither opens a window.
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("--print-args") => {
+            let path = args.next().expect("usage: launcher --print-args <machine.toml>");
+            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
+            let pc_bios = std::path::Path::new("qemu/pc-bios");
+            println!("{}", machine.qemu_args(pc_bios).join(" "));
+            return Ok(());
+        }
+        Some("--new") => {
+            let usage = "usage: launcher --new <win98|xp> <name> <disk.qcow2> <out.toml>";
+            let family = match args.next().as_deref() {
+                Some("win98") => bundle::Family::Win98,
+                Some("xp") => bundle::Family::Xp,
+                _ => panic!("{usage}"),
+            };
+            let name = args.next().expect(usage);
+            let disk = args.next().expect(usage).into();
+            let out = args.next().expect(usage);
+            let machine = bundle::Machine::reference(family, name, disk);
+            machine.save(std::path::Path::new(&out)).expect("save bundle");
+            return Ok(());
+        }
+        _ => {}
+    }
+
     eframe::run_native(
         "win98-xp-virt launcher",
         eframe::NativeOptions::default(),
