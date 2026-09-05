@@ -30,7 +30,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   5u
+#define D3DPT_PROTO_VERSION   6u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -313,7 +313,24 @@ typedef struct d3dpt_ctx_clear {
 typedef struct d3dpt_dp2 {
     uint32_t ctx, ret_off;
     uint32_t flags, fvf;            /* D3DHALDP2_* flags, dwVertexType */
-    uint32_t vertex_stride, command_bytes, vertex_bytes, pad;
+    uint32_t vertex_stride, command_bytes, vertex_bytes, pad;   /* vertex_bytes may be 0 (DX8: the draws carry their own) */
 } d3dpt_dp2;
+
+/* M7c, the DX8 DDI: the display driver rewrites the runtime's DX8 draw
+ * tokens (SETSTREAMSOURCE / SETINDICES / DRAWPRIMITIVE… name vertex and
+ * index buffers in guest memory the host cannot see) into this
+ * self-contained token inside the DP2 command stream: the 4-byte
+ * D3DHAL_DP2COMMAND header with bCommand = D3DPT_DP2_DRAW8, this struct,
+ * the vertices (nverts * stride bytes, padded to 4), then the 16-bit
+ * indices (nindices * 2 bytes, padded to 4; none for a plain draw). The
+ * indices are the runtime's, relative to min_index (its MinIndex): vertex
+ * 0 of the copied range is index min_index. */
+#define D3DPT_DP2_DRAW8 200u
+typedef struct d3dpt_dp2_draw8 {
+    uint32_t prim_type, prim_count;     /* D3DPRIMITIVETYPE, primitives */
+    uint32_t fvf, stride;               /* the copied vertices' format */
+    uint32_t nverts, nindices;          /* copied vertices; copied indices (0 = not indexed) */
+    uint32_t min_index, pad;
+} d3dpt_dp2_draw8;
 
 #endif /* D3DPT_PROTO_H */

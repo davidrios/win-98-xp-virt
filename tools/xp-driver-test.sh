@@ -8,6 +8,8 @@
 #   tools/xp-driver-test.sh <image.qcow2> ddtest       # DDTEST 640x480x8 (palette) / x16 / x32 / windowed, logs + BMP
 #   tools/xp-driver-test.sh <image.qcow2> modes        # SETMODE 1024x768x32@85, 800x600x16@75, list
 #   tools/xp-driver-test.sh <image.qcow2> d3d7         # D3D7TEST: the DX7 HAL scene, diffed against the host test's frame
+#   tools/xp-driver-test.sh <image.qcow2> d3dgame8     # D3DGAME8 through XP's own d3d8.dll on the DX8 DDI (no wrapper DLL),
+#                                                       # its frame diffed against the native d3d9 oracle of scripts/test.sh
 #   tools/xp-driver-test.sh <image.qcow2> cmd 'D:\DRIVER\SETMODE.EXE'   # any guest command line
 #   tools/xp-driver-test.sh <image.qcow2> bat run.bat                   # a batch file, staged as E:\RUN.BAT (long command lines)
 #
@@ -25,7 +27,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|cmd|bat}"; shift 2
+IMG="${1:?image.qcow2}"; MODE="${2:?install|ddtest|modes|d3d7|d3dgame8|cmd|bat}"; shift 2
 OUT="${OUT:-$ROOT/build/xp-driver-test}"; mkdir -p "$OUT"
 ISO="$ROOT/guest-tools/out/d3dpt-driver.iso"
 [ -f "$ISO" ] || { echo "no $ISO: run guest-tools/build-driver.sh"; exit 1; }
@@ -45,6 +47,16 @@ if [ "$MODE" = ddtest ]; then
     '  D:\DRIVER\DDTEST.EXE 640 480 %%b 300' '  copy ddtest.log E:\dd%%b.log > nul' '  copy ddtest.bmp E:\dd%%b.bmp > nul' ')' \
     'D:\DRIVER\DDTEST.EXE 640 480 32 200 -windowed' 'copy ddtest.log E:\ddwin.log > nul' > "$OUT/ddtest.bat"
   stage_bat "$OUT/ddtest.bat"
+fi
+if [ "$MODE" = d3dgame8 ]; then
+  # the reference scene's DX8 build from the guest-tools ISO (D3DPT\), copied out alone so no
+  # D3DPT\D3D8.DLL sits next to it: XP's own d3d8.dll, our DX8 DDI
+  FULL_ISO="$(ls -t "$ROOT"/guest-tools/out/guest-tools-*.iso 2>/dev/null | head -1)"
+  [ -f "$FULL_ISO" ] || { echo "no guest-tools ISO (D3DPT\\D3DGAME8.EXE): run guest-tools/build-wrappers.sh"; exit 1; }
+  ISO="$FULL_ISO"
+  printf '%s\n' '@echo off' 'mkdir E:\G8' 'copy D:\D3DPT\D3DGAME8.EXE E:\G8\ > nul' 'cd /d E:\G8' \
+    'D3DGAME8.EXE -frames 600 -dump 300 E:\G8.BMP' 'copy d3dgame8.log E:\g8.log > nul' 'echo done > E:\G8DONE.TXT' > "$OUT/g8.bat"
+  stage_bat "$OUT/g8.bat"
 fi
 SOCK="$OUT/qmp.sock"; rm -f "$SOCK"
 ACCEL=(-cpu pentium3)
@@ -105,6 +117,18 @@ case "$MODE" in
       ( cd "$ROOT" && D3DPT_EXEC_LIB="${D3DPT_EXEC_LIB:-$ROOT/build/d3dpt/libd3dpt_exec.so}" build/d3dpt-dp2-test "$OUT/d3d7-host.bmp" >"$OUT/d3d7-host.log" 2>&1 ) || true
       python3 "$ROOT/tools/bmpdiff.py" "$OUT/d3d7-host.bmp" "$OUT/d3d7.bmp" --tolerance 2 --max-over 0 -o "$OUT/d3d7-diff.bmp" && echo "-- d3d7: guest frame == host frame" || echo "-- d3d7: FRAMES DIFFER ($OUT/d3d7-diff.bmp)"
     fi ;;
+  d3dgame8)
+    run 'E:\RUN.BAT'
+    for _ in $(seq 40); do sleep 3; mcopy -n -i "$SCRATCH@@1048576" ::/G8DONE.TXT "$OUT/G8DONE.TXT" 2>/dev/null && break; done
+    sleep 2; Q screendump "$OUT/d3dgame8-end.png" || true
+    finish
+    pull g8.log
+    mcopy -n -i "$SCRATCH@@1048576" ::/G8.BMP "$OUT/G8.BMP" 2>/dev/null || true
+    # the native d3d9 frame of the same scene (scripts/test.sh host writes it): the HUD masked, the rig budget
+    if [ -f "$OUT/G8.BMP" ] && [ -f "$ROOT/build/test/g9-native.bmp" ]; then
+      python3 "$ROOT/tools/bmpdiff.py" "$ROOT/build/test/g9-native.bmp" "$OUT/G8.BMP" --mask 0,368,270,112 --tolerance 8 --max-over 1200 -o "$OUT/g8-diff.bmp" \
+        && echo "-- d3dgame8: frame within budget of the native d3d9 frame" || echo "-- d3dgame8: FRAME DIFFERS ($OUT/g8-diff.bmp)"
+    else echo "-- d3dgame8: no frame ($OUT/G8.BMP) or no native oracle (build/test/g9-native.bmp: run scripts/test.sh host)"; fi ;;
   cmd|bat)
     if [ "$MODE" = bat ]; then run 'E:\RUN.BAT'; else run "${1:?guest command line}"; fi
     if [ -n "${SHOTS:-}" ]; then

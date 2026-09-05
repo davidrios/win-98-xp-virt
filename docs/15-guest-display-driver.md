@@ -556,12 +556,14 @@ XP's d3d8.dll treats a driver without a `D3DCAPS8` answer as a
 "DirectX 7 driver": it does the vertex processing itself and feeds the
 DX7 token set (`INDEXEDTRIANGLELIST2`, `TRIANGLEFAN_IMM`, the DX7 render
 and stage states) through DrawPrimitives2 — the same HAL FIFA runs on.
-Result: the launcher, the main menu and the tutorial level (Max in the
-alley, textures, lightmaps, decals, snow, HUD, matching the M4 device's
-frame of the same scene) render at 800×600×16, ~290 frames/s under KVM
-`-cpu pentium3` with 18 DP2 calls and ~230 draws per frame, no
-unsupported token, no refused record; screendumps in
-`build/xp-driver-test/mp-hal10/`. What it took, and what it taught:
+Result (on the DX7 face of the driver — since the DX8 DDI below landed,
+`ddflags=0x2000` gives d3d8.dll that face again): the launcher, the main
+menu and the tutorial level (Max in the alley, textures, lightmaps,
+decals, snow, HUD, matching the M4 device's frame of the same scene)
+render at 800×600×16, ~290 frames/s under KVM `-cpu pentium3` with 18
+DP2 calls and ~230 draws per frame, no unsupported token, no refused
+record; screendumps in `build/xp-driver-test/mp-hal10/`. What it took,
+and what it taught:
 
 - **`TRIANGLEFAN_IMM` / `LINELIST_IMM`: the payload after the 4-byte
   header is DWORD-aligned, and so is the next token.** The first runs
@@ -631,4 +633,142 @@ unsupported token, no refused record; screendumps in
   textures (alpha test on for some), fog on with table mode NONE and
   the factor in the specular alpha, all textures 16- or 32-bit RGB (no
   DXT, no palettes).
+
+## M7c — the DirectX 8 DDI (2026-09-05)
+
+The driver is a DirectX 8 driver to d3d8.dll now: `D3DCAPS8` with hardware
+transform and lighting, the DX8 token stream, render-to-texture, state
+sets. D3DGAME8 (the M4 track's DX8 reference scene) runs through XP's own
+d3d8.dll on it with **hardware vertex processing** — cubes, lit ground,
+the render-to-texture panel, the index-buffer grid, the particles — at
+~575 fps under KVM, with no wrapper DLL near it
+(`tools/xp-driver-test.sh <image> d3dgame8`). FIFA and D3D7TEST keep
+working; Max Payne renders on it except its clipped fans (the
+"clipper" bullet, open). What the DDI is made of:
+
+- **`GetDriverInfo2`.** With `DDHALINFO_GETDRIVERINFO2` in the HAL info
+  the runtime sends `GUID_DDStereoMode` queries whose data starts with a
+  `DD_GETDRIVERINFO2DATA` header (`dwMagic` = `D3DGDI2_MAGIC`); the
+  driver answers `DXVERSION` (the runtime says 0x802), `GETD3DCAPS8`
+  (the 212-byte `D3DCAPS8`), `GETFORMATCOUNT` / `GETFORMAT` (the DX8
+  format list: `DDPF_D3DFORMAT` entries with the `D3DFORMAT` in `dwFourCC`
+  and the operations in the `dwRBitMask` slot — texture, display mode
+  with 3D acceleration, offscreen / same-format render target, Z-stencil
+  for the twelve formats the host mirrors) and refuses the rest (0x18 is
+  asked too). A real stereo query, without the magic, is refused as
+  before. **Two findings from `d3d8.dll`'s disassembly:** without the
+  HAL-info flag the runtime never asks and stays on the DX7 path (which
+  is why the first run reported hardware vertex processing and no
+  render-target textures — the T&L claim in the DX7 caps was enough for
+  that); and the runtime checks `dwActualSize` against the size *inside*
+  the GDI2 header while leaving the outer `dwExpectedSize` at the
+  previous query's 24 bytes — an answer clamped to the outer size makes
+  it drop the driver altogether (`GetDeviceCaps` fails, `CreateDevice`
+  answers `D3DERR_NOTAVAILABLE`). `pf_format` reads the D3DFORMAT-coded
+  pixel formats the DX8 runtime creates surfaces with.
+- **The caps.** `D3DCAPS8`: the DX7 caps in DX8 form plus
+  `HWTRANSFORMANDLIGHT` (also claimed in the DX7 `D3DDEVICEDESC`, with
+  the transform / lighting caps, the extended caps' lights, clip planes,
+  blend matrices and vertex-processing caps: the executor maps
+  SETTRANSFORM / MULTIPLYTRANSFORM / SETLIGHT / SETMATERIAL and the
+  lighting states onto DXVK's fixed-function pipeline, so the runtime
+  hands us untransformed vertices; `ddflags=0x1000` withdraws the claim),
+  `PUREDEVICE`, one stream, 16-bit indices, no vertex or pixel shaders
+  (`D3DVS_VERSION(0,0)` / `D3DPS_VERSION(0,0)`), 4096² textures, 8
+  stages, no cube or volume maps, and **no `D3DPMISCCAPS_CLIPTLVERTS`**:
+  with it the runtime stops clipping pre-transformed vertices and hands
+  the driver polygons that cross the camera plane, which the host
+  rasterizes as garbage (Max Payne transforms on the CPU even on a T&L
+  device — every draw of its frame is an RHW format — and its alley
+  walls came out as flat panels at wrong depths until the claim went;
+  the DX7 runtime always clipped them). `ddflags=0x2000` keeps the DX7
+  face (no GDI2 flag).
+- **The tokens.** The runtime's DX8 draws name vertex and index buffers
+  by surface handle — buffers in guest system memory the host cannot
+  see. The driver keeps a table of every surface dxg reports (VRAM and
+  system memory alike, with each level's address and pitch, buffers with
+  their linear size) and walks the stream twice in `D3dDrawPrimitives2`:
+  SETVERTEXSHADER (an FVF: shader handles have bit 0 set), SETSTREAMSOURCE
+  / SETSTREAMSOURCEUM / SETINDICES become driver state, each DRAWPRIMITIVE
+  (2) / DRAWINDEXEDPRIMITIVE(2) / CLIPPEDTRIANGLEFAN becomes a
+  self-contained `D3DPT_DP2_DRAW8` token (`d3dpt_proto.h` v6) carrying
+  the primitive, the FVF, the vertex range and the indices (relative to
+  the runtime's MinIndex), TEXBLT is done in the driver (system-memory
+  texture → VRAM, every level, then VRAM_DIRTY; the DX8 runtime loads
+  managed textures that way instead of blitting), shader tokens, patches,
+  volume / buffer blits and dirty rects are dropped by size, the DX7
+  tokens pass through (the inline-vertex ones re-padded for their new
+  offset). The first pass measures and does the blits, the second writes
+  the record. **That state persists between calls:** the runtime sends
+  SETVERTEXSHADER / SETSTREAMSOURCE / SETINDICES only on change, so the
+  vertex format and the bindings live in the context (`D3DCTX`) — as
+  handles, resolved from the table at every call, because a `Lock` with
+  DISCARD gives a buffer new memory and dxg reports it with another
+  `CreateSurfaceEx` (the log's `at 0x00000000` lines are the old memory
+  going); the first D3DGAME8 run lost every `DrawPrimitiveUP` for that
+  (they arrive in their own calls, "dx8 draws skipped … fvf 0"). A
+  user-memory stream holds `dwVertexLength` vertices of the token's
+  stride, not of `dwVertexSize`. The executor draws a
+  DRAW8 with `DrawPrimitiveUP` / `DrawIndexedPrimitiveUP` after
+  `SetFVF`, and for the DX8 tokens that do reach it knows the sizes and
+  drops them with a note.
+- **State sets** (`STATESET`): BEGIN / END record into a d3d9 state block
+  (a predefined type is `CreateStateBlock`), EXECUTE applies it, CAPTURE
+  refreshes it, DELETE releases it. **Render-to-texture:** a texture with
+  3DDEVICE caps is a default-pool render-target texture whose level 0 is
+  the target; uploads go through the staging path, readback as for any
+  target. **MULTIPLYTRANSFORM** and the d3d8-only render states (153,
+  164, 172, 173 dropped; the DX8 numbering of the rest is d3d9's).
+- **Compressed textures:** for DXT surfaces dxg's `lPitch` union holds
+  the linear size; the driver derives block-row pitches for the table,
+  the copies and the VRAM records. And DirectDraw creates a FOURCC
+  surface only when the code is in the driver's FOURCC list
+  (`DrvGetDirectDrawInfo`'s `pdwFourCC`, two-call protocol), whatever
+  the texture-format lists say: without DXT1/3/5 there
+  `CreateTexture(DXT1)` succeeded at the API and the texture never
+  reached the driver (D3DGAME8's particles as flat squares), and a
+  FOURCC-style entry in the GDI2 format list made the same call fail
+  outright — d3d8.dll matches formats against `dwFourCC` under
+  `DDPF_D3DFORMAT` only.
+- **The runtime's clipper writes into the call's vertex buffer.** With
+  `CLIPTLVERTS` withdrawn the runtime clips pre-transformed triangles
+  itself and emits them as `CLIPPEDTRIANGLEFAN` tokens whose vertices sit
+  in the DP2 vertex buffer *beyond* `dwVertexLength` (that count covers
+  the application's vertices only) — and the DX8 runtime passes that
+  buffer as user memory (`D3DNTHALDP2_USERMEMVERTICES`, flags 0x9), so
+  there is no size to consult: the runtime names the offsets itself and
+  the driver trusts them up to a 16 MiB cap, as a real driver does (a
+  dxg buffer keeps its linear size as the bound), and the fans are in
+  the *current vertex format*, not in the call's `dwVertexSize` (that is
+  the application's stream). Bounded by `dwVertexLength` or sized by
+  `dwVertexSize`, they were skipped, and they were exactly the wall and
+  ground polygons nearest the camera. **Still open at the end of the
+  session:** read at `lpVertices + FirstVertexOffset` (with
+  `dwVertexOffset` = 0) the fans are zeros — the offsets (0x930 + n ×
+  0x310, 784-byte slots) point past the 10 × 32 bytes the call declares
+  and into memory that is not theirs; what buffer they count from is the
+  next thing to read out of d3d8.dll (the track doc has the candidates).
+  Until then Max Payne's nearest walls and ground are black on the DX8
+  path, and `ddflags=0x2000` (the DX7 face) renders it clean.
+- Tests: `tools/d3dpt-dp2-test.cpp` sends DRAW8 tokens (an indexed quad
+  with a MinIndex of 10, a fan), a recorded state set executed, captured
+  and deleted, a DRAW8 with an index beyond its vertices (skipped) and
+  one lying about its stride (refused);
+  `tools/xp-driver-test.sh <image> d3dgame8` boots the guest-tools ISO,
+  copies `D3DGAME8.EXE` out alone and diffs its frame against the native
+  d3d9 oracle of `scripts/test.sh` (HUD masked).
+- Not there: vertex / pixel shaders (the DX8 declaration → d3d9
+  declaration translation exists in the M4 track's `d3d8.c`; on this side
+  it would go into the executor with `CreateVertexShader` /
+  `CreatePixelShader` on the bytecode), more than one stream, video-memory
+  buffers (`D3DDEVCAPS_HWVERTEXBUFFER`), cube and volume textures, N-
+  and RT-patches, ZBIAS → DEPTHBIAS, palettized textures. **Open: DXT
+  textures on the DX8 path.** `CreateTexture(DXT1)` succeeds at the API
+  (the D3DFORMAT-coded list entry), the FOURCC codes are in the HAL
+  info's list, `DdCanCreateSurface` accepts the format, yet no DXT
+  surface ever reaches dxg and the runtime leaves the previous texture
+  bound at the draw (D3DGAME8's particles: its 64×64 gradient instead of
+  the DXT1 disc, the one region of its frame that differs from the native
+  oracle). The failure is in user-mode d3d8 / ddraw before the kernel;
+  the next step is the `CreateSurface` path in ddraw.dll's disassembly.
 

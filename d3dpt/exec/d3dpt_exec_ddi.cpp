@@ -47,6 +47,14 @@ enum {
     DP2_ZRANGE = 32, DP2_SETMATERIAL = 33, DP2_SETLIGHT = 34, DP2_CREATELIGHT = 35,
     DP2_SETTRANSFORM = 36, DP2_TEXBLT = 38, DP2_STATESET = 39, DP2_SETPRIORITY = 40,
     DP2_SETRENDERTARGET = 41, DP2_CLEAR = 42, DP2_SETTEXLOD = 43, DP2_SETCLIPPLANE = 44,
+    /* DX8 (the display driver rewrites the draws into D3DPT_DP2_DRAW8; the
+     * rest is parsed for its size and dropped, or mapped when d3d9 has it) */
+    DP2_CREATEVERTEXSHADER = 45, DP2_DELETEVERTEXSHADER = 46, DP2_SETVERTEXSHADER = 47,
+    DP2_SETVERTEXSHADERCONST = 48, DP2_SETSTREAMSOURCE = 49, DP2_SETSTREAMSOURCEUM = 50, DP2_SETINDICES = 51,
+    DP2_DRAWPRIMITIVE = 52, DP2_DRAWINDEXEDPRIMITIVE = 53, DP2_CREATEPIXELSHADER = 54, DP2_DELETEPIXELSHADER = 55,
+    DP2_SETPIXELSHADER = 56, DP2_SETPIXELSHADERCONST = 57, DP2_CLIPPEDTRIANGLEFAN = 58, DP2_DRAWPRIMITIVE2 = 59,
+    DP2_DRAWINDEXEDPRIMITIVE2 = 60, DP2_DRAWRECTPATCH = 61, DP2_DRAWTRIPATCH = 62, DP2_VOLUMEBLT = 63,
+    DP2_BUFFERBLT = 64, DP2_MULTIPLYTRANSFORM = 65, DP2_ADDDIRTYRECT = 66, DP2_ADDDIRTYBOX = 67,
 };
 #define D3DERR_COMMAND_UNPARSED_ 0x88760BB8u
 
@@ -81,6 +89,9 @@ struct Ddi {
     D3DFORMAT stage_fmt = D3DFMT_UNKNOWN;
     std::vector<uint16_t> idx;
     std::vector<uint32_t> warned;           /* one log line per unsupported state / token */
+    /* DX8 state sets (STATESET tokens) as d3d9 state blocks, by the runtime's handle */
+    std::unordered_map<uint32_t, IDirect3DStateBlock9 *> sblocks;
+    bool recording = false;
     uint32_t dp2_calls = 0, draws = 0, readbacks = 0;
     /* D3DPT_DP2_TRACE=<flag file>: while the file exists, every token of
      * the next frame (DP2 records up to the next READBACK) is logged with
@@ -191,6 +202,11 @@ static bool ensure_object(Exec &x, VramSurf &s) {
         for (uint32_t i = 0; FAILED(hr) && i < 3; i++)
             hr = x.dev->CreateDepthStencilSurface(s.d.width, s.d.height, (D3DFORMAT)fallback[i], D3DMULTISAMPLE_NONE, 0, FALSE, &s.rt, nullptr);
         if (FAILED(hr)) x.log("ddi: depth surface %ux%u fmt %u: 0x%08x", s.d.width, s.d.height, s.d.format, (unsigned)hr);
+    } else if ((s.d.caps & D3DPT_VS_TEXTURE) && (s.d.caps & D3DPT_VS_RENDER_TARGET)) {
+        /* render-to-texture: a default-pool render-target texture, level 0 is the target */
+        hr = x.dev->CreateTexture(s.d.width, s.d.height, 1, D3DUSAGE_RENDERTARGET, (D3DFORMAT)s.d.format, D3DPOOL_DEFAULT, &s.tex, nullptr);
+        if (SUCCEEDED(hr)) hr = s.tex->GetSurfaceLevel(0, &s.rt);
+        if (FAILED(hr)) x.log("ddi: render-target texture %ux%u fmt %u: 0x%08x", s.d.width, s.d.height, s.d.format, (unsigned)hr);
     } else if (s.d.caps & (D3DPT_VS_RENDER_TARGET | D3DPT_VS_PRIMARY)) {
         hr = x.dev->CreateRenderTarget(s.d.width, s.d.height, (D3DFORMAT)s.d.format, D3DMULTISAMPLE_NONE, 0, FALSE, &s.rt, nullptr);
         if (FAILED(hr)) x.log("ddi: render target %ux%u fmt %u: 0x%08x", s.d.width, s.d.height, s.d.format, (unsigned)hr);
@@ -301,7 +317,8 @@ static bool bind_ctx(Exec &x, Ddi &d, Ctx &c, Batch &b, bool for_draw) {
  * no d3d9 equivalent and are dropped */
 static bool rs_passthrough(uint32_t s) {
     static const uint8_t dropped[] = { 1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 17, 18, 21, 30, 31, 32, 33, 39, 40, 41,
-                                       43, 44, 45, 46, 47, 49, 50, 51, 138, 144 };
+                                       43, 44, 45, 46, 47, 49, 50, 51, 138, 144,
+                                       153, 164, 172, 173 };    /* d3d8: SOFTWAREVERTEXPROCESSING, PATCHSEGMENTS, POSITION/NORMALORDER */
     if (s >= 210 || (s >= 64 && s <= 95)) return false;
     for (uint8_t v : dropped) if (v == s) return false;
     return true;
@@ -339,6 +356,7 @@ struct Dp2 {
     Exec &x; Ddi &d; Ctx &c; Batch &b;
     const uint8_t *cmd, *cmd_end, *vtx;
     uint32_t stride, nverts, fvf_;
+    uint32_t cur_fvf = 0;       /* what SetFVF was last given */
     uint32_t pos = 0;           /* offset of the current token, for dwErrorOffset */
     HRESULT hr = S_OK;
 
@@ -401,16 +419,79 @@ struct Dp2 {
         }
     }
     /* trace: the first three vertices of a draw (position, colours, two uv sets) */
-    void trv(const uint8_t *v, uint32_t n) {
-        for (uint32_t i = 0; i < n && i < 3; i++, v += stride) {
-            float f[4]; memcpy(f, v, 16); uint32_t col = 0, spec = 0; const uint8_t *q = v + 16;
-            if (fvf_ & 0x40) { memcpy(&col, q, 4); q += 4; }
-            if (fvf_ & 0x80) { memcpy(&spec, q, 4); q += 4; }
-            float uv[4] = { 0, 0, 0, 0 }; uint32_t nt = (fvf_ >> 8) & 0xf;
+    void trv(const uint8_t *v, uint32_t n, uint32_t st = 0, uint32_t fvf = 0) {
+        if (!st) st = stride;
+        if (!fvf) fvf = fvf_;
+        for (uint32_t i = 0; i < n && i < 3; i++, v += st) {
+            /* position (3 or 4 floats), blend weights, normal, then the colours and uv sets */
+            uint32_t pos = fvf & 0xe, npos = pos == 0x4 ? 4 : pos == 0x2 ? 3 : 3 + (pos - 4) / 2;
+            float f[4] = { 0, 0, 0, 0 }; memcpy(f, v, npos > 4 ? 16 : npos * 4);
+            const uint8_t *q = v + npos * 4;
+            float nrm[3] = { 0, 0, 0 };
+            if (fvf & 0x10) { memcpy(nrm, q, 12); q += 12; }
+            if (fvf & 0x20) q += 4;
+            uint32_t col = 0, spec = 0;
+            if (fvf & 0x40) { memcpy(&col, q, 4); q += 4; }
+            if (fvf & 0x80) { memcpy(&spec, q, 4); q += 4; }
+            float uv[4] = { 0, 0, 0, 0 }; uint32_t nt = (fvf >> 8) & 0xf;
             if (nt > 0) memcpy(uv, q, 8);
             if (nt > 1) memcpy(uv + 2, q + 8, 8);
-            tr("    v%u %.1f,%.1f z %.4f rhw %.5f diffuse %08x specular %08x uv0 %.3f,%.3f uv1 %.3f,%.3f", i, f[0], f[1], f[2], f[3], col, spec, uv[0], uv[1], uv[2], uv[3]);
+            if (pos == 0x4)
+                tr("    v%u %.1f,%.1f z %.4f rhw %.5f diffuse %08x specular %08x uv0 %.3f,%.3f uv1 %.3f,%.3f", i, f[0], f[1], f[2], f[3], col, spec, uv[0], uv[1], uv[2], uv[3]);
+            else
+                tr("    v%u %.3f,%.3f,%.3f n %.2f,%.2f,%.2f diffuse %08x specular %08x uv0 %.3f,%.3f uv1 %.3f,%.3f", i, f[0], f[1], f[2], nrm[0], nrm[1], nrm[2], col, spec, uv[0], uv[1], uv[2], uv[3]);
         }
+    }
+    void set_fvf(uint32_t fvf) {
+        if (fvf != cur_fvf) { x.dev->SetFVF(fvf); cur_fvf = fvf; }
+    }
+    static uint32_t prim_verts(uint32_t t, uint32_t count) {
+        switch (t) {
+        case D3DPT_POINTLIST: return count;
+        case D3DPT_LINELIST: return count * 2;
+        case D3DPT_LINESTRIP: return count + 1;
+        case D3DPT_TRIANGLELIST: return count * 3;
+        case D3DPT_TRIANGLESTRIP: case D3DPT_TRIANGLEFAN: return count + 2;
+        default: return 0;
+        }
+    }
+    /* the driver's self-contained DX8 draw: vertices and 16-bit indices inline */
+    bool draw8(const uint8_t *q, size_t left, size_t &need) {
+        d3dpt_dp2_draw8 h;
+        if (left < sizeof h) return fail("truncated DRAW8");
+        memcpy(&h, q, sizeof h);
+        size_t vb = ((size_t)h.nverts * h.stride + 3) & ~(size_t)3, ib = ((size_t)h.nindices * 2 + 3) & ~(size_t)3;
+        need = sizeof h + vb + ib;
+        if (need > left) return fail("truncated DRAW8 data");
+        uint32_t st = stride_of_fvf(h.fvf);
+        if (!st || st > h.stride || h.stride > 1024 || h.nverts > 0x10000 || h.nindices > 0x100000 || h.prim_type < 1 || h.prim_type > 6)
+            return fail("bad DRAW8");
+        const uint8_t *vd = q + sizeof h, *id = vd + vb;
+        D3DPRIMITIVETYPE t = (D3DPRIMITIVETYPE)h.prim_type;
+        uint32_t nv = prim_verts(t, h.prim_count);
+        set_fvf(h.fvf);
+        tr("draw8 type %u prims %u fvf 0x%x stride %u vertices %u indices %u (min %u)", h.prim_type, h.prim_count, h.fvf, h.stride, h.nverts, h.nindices, h.min_index);
+        if (d.trace) trv(vd, h.nverts, h.stride, h.fvf);
+        if (!h.prim_count) return true;
+        if (!h.nindices) {
+            if (nv > h.nverts) { if (d.warn_once(0xa0000 | t)) x.log("ddi: dp2: draw8 primitive %u: %u vertices of %u", t, nv, h.nverts); return true; }
+            x.dev->DrawPrimitiveUP(t, h.prim_count, vd, h.stride);
+        } else {
+            if (nv > h.nindices) { if (d.warn_once(0xa0010 | t)) x.log("ddi: dp2: draw8 indexed primitive %u: %u indices of %u", t, nv, h.nindices); return true; }
+            d.idx.resize(nv);
+            for (uint32_t i = 0; i < nv; i++) {
+                uint32_t v = u16(id + 2 * i);
+                if (v < h.min_index || v - h.min_index >= h.nverts) {
+                    if (d.warn_once(0xa0020 | t)) x.log("ddi: dp2: draw8 index %u outside %u..%u", v, h.min_index, h.min_index + h.nverts);
+                    return true;
+                }
+                d.idx[i] = (uint16_t)(v - h.min_index);
+            }
+            x.dev->DrawIndexedPrimitiveUP(t, 0, h.nverts, h.prim_count, d.idx.data(), D3DFMT_INDEX16, vd, h.stride);
+        }
+        d.draws++;
+        snap();
+        return true;
     }
     /* trace: the render target after a draw, as draw-<n>.ppm next to the flag file */
     void snap() {
@@ -452,14 +533,7 @@ struct Dp2 {
     }
 
     void draw(D3DPRIMITIVETYPE t, uint32_t first, uint32_t count) {
-        bool ok; uint32_t nv = 0;
-        switch (t) {
-        case D3DPT_POINTLIST: nv = count; break;
-        case D3DPT_LINELIST: nv = count * 2; break;
-        case D3DPT_LINESTRIP: nv = count + 1; break;
-        case D3DPT_TRIANGLELIST: nv = count * 3; break;
-        default: nv = count + 2; break;
-        }
+        bool ok; uint32_t nv = prim_verts(t, count);
         ok = count && (uint64_t)first + nv <= nverts;
         tr("draw type %u first %u prims %u (%u vertices)%s", t, first, count, nv, ok ? "" : " OUT OF RANGE");
         if (!ok) { if (d.warn_once(0x20000 | t)) x.log("ddi: dp2: primitive %u: vertices %u+%u of %u", t, first, nv, nverts); return; }
@@ -516,7 +590,10 @@ struct Dp2 {
                     /* the mean of the level-0 texels in VRAM (every 8th pixel of every 8th row, 32/16-bit only):
                      * black VRAM = the guest never wrote it, content = the host copy may be stale */
                     uint32_t bpp = fmt_row_bytes(s->d.format, 1), n = 0; uint64_t sum = 0;
-                    if (bpp == 4 || bpp == 2) {
+                    if (fmt_dxt(s->d.format)) {                 /* compressed: the mean of the block bytes */
+                        uint32_t rows = fmt_rows(s->d.format, s->d.height), row = fmt_row_bytes(s->d.format, s->d.width);
+                        for (uint32_t yy = 0; yy < rows; yy++) for (uint32_t xx = 0; xx < row; xx += 4, n++) sum += 3 * x.vram[s->d.offset + (size_t)yy * s->d.pitch + xx];
+                    } else if (bpp == 4 || bpp == 2) {
                         for (uint32_t yy = 0; yy < s->d.height; yy += 8) {
                             const uint8_t *row = x.vram + s->d.offset + (size_t)yy * s->d.pitch;
                             for (uint32_t xx = 0; xx < s->d.width; xx += 8, n++) {
@@ -529,7 +606,7 @@ struct Dp2 {
                     if (d.trace && (bpp == 4 || bpp == 2)) dump_texture(*s, v);
                 }
                 if (!s) { if (d.warn_once(0x50000)) x.log("ddi: dp2: texture handle %u unknown", v); }
-                else if (ensure_object(x, *s) && s->tex) { if (s->dirty) upload_texture(x, *s); t = s->tex; }
+                else if (ensure_object(x, *s) && s->tex) { if (s->dirty) { if (s->rt) upload_target(x, d, *s); else upload_texture(x, *s); } t = s->tex; }
             }
             x.dev->SetTexture(stage, t);
             break;
@@ -763,16 +840,21 @@ struct Dp2 {
                 if (need > left) return fail("truncated CREATELIGHT");
                 break;
             case DP2_SETTRANSFORM:
+            case DP2_MULTIPLYTRANSFORM:
                 need = count * 68u;
                 if (need > left) return fail("truncated SETTRANSFORM");
                 for (uint32_t i = 0; i < count; i++) {
                     uint32_t t = u32(q + 68 * i);
                     D3DMATRIX m; memcpy(&m, q + 68 * i + 4, sizeof m);
-                    /* DX7 WORLD(1) / WORLD1..3 (4..6) -> d3d9 WORLD = 256..;
-                     * anything else DXVK indexes an array with: dropped */
+                    /* DX7 WORLD(1) / WORLD1..3 (4..6) -> d3d9 WORLD = 256..
+                     * (DX8 already numbers them 256..); anything else DXVK
+                     * indexes an array with: dropped */
                     if (t == 1) t = 256; else if (t >= 4 && t <= 6) t = 256 + (t - 3);
-                    if (t == 2 || t == 3 || (t >= 16 && t <= 23) || (t >= 256 && t <= 259)) x.dev->SetTransform((D3DTRANSFORMSTATETYPE)t, &m);
-                    else if (d.warn_once(0x90001)) x.log("ddi: dp2: transform %u out of range, dropped", u32(q + 68 * i));
+                    tr("%s %u", op == DP2_SETTRANSFORM ? "transform" : "multiply transform", t);
+                    if (t == 2 || t == 3 || (t >= 16 && t <= 23) || (t >= 256 && t <= 511)) {
+                        if (op == DP2_SETTRANSFORM) x.dev->SetTransform((D3DTRANSFORMSTATETYPE)t, &m);
+                        else x.dev->MultiplyTransform((D3DTRANSFORMSTATETYPE)t, &m);
+                    } else if (d.warn_once(0x90001)) x.log("ddi: dp2: transform %u out of range, dropped", u32(q + 68 * i));
                 }
                 break;
             case DP2_TEXBLT:
@@ -781,9 +863,48 @@ struct Dp2 {
                 if (d.warn_once(op)) x.log("ddi: dp2: TEXBLT is not supported (no driver-managed textures)");
                 break;
             case DP2_STATESET:
+                /* the runtime's state sets: BEGIN records what follows into a
+                 * block (a predefined block type captures the device state
+                 * at once), EXECUTE applies it, CAPTURE refreshes it */
                 need = count * 12u;
                 if (need > left) return fail("truncated STATESET");
-                if (d.warn_once(op)) x.log("ddi: dp2: state sets are not supported (ignored)");
+                for (uint32_t i = 0; i < count; i++) {
+                    uint32_t sop = u32(q + 12 * i), handle = u32(q + 12 * i + 4), type = u32(q + 12 * i + 8);
+                    auto it = d.sblocks.find(handle);
+                    tr("stateset op %u handle %u type %u", sop, handle, type);
+                    switch (sop) {
+                    case 0:                                             /* BEGIN */
+                        if (d.recording) { IDirect3DStateBlock9 *sb = nullptr; x.dev->EndStateBlock(&sb); if (sb) sb->Release(); d.recording = false; }
+                        if (it != d.sblocks.end()) { if (it->second) it->second->Release(); d.sblocks.erase(it); }
+                        if (type >= 1 && type <= 3) {
+                            IDirect3DStateBlock9 *sb = nullptr;
+                            if (SUCCEEDED(x.dev->CreateStateBlock((D3DSTATEBLOCKTYPE)type, &sb)) && sb) d.sblocks[handle] = sb;
+                        } else if (SUCCEEDED(x.dev->BeginStateBlock())) {
+                            d.recording = true;
+                            d.sblocks[handle] = nullptr;
+                        }
+                        break;
+                    case 1:                                             /* END */
+                        if (d.recording) {
+                            IDirect3DStateBlock9 *sb = nullptr;
+                            x.dev->EndStateBlock(&sb);
+                            d.recording = false;
+                            if (it != d.sblocks.end() && !it->second) it->second = sb;
+                            else if (sb) sb->Release();
+                        }
+                        break;
+                    case 2:                                             /* DELETE */
+                        if (it != d.sblocks.end()) { if (it->second) it->second->Release(); d.sblocks.erase(it); }
+                        break;
+                    case 3:                                             /* EXECUTE */
+                        if (it != d.sblocks.end() && it->second) { it->second->Apply(); x.dev->GetViewport(&c.vp); }
+                        else if (d.warn_once(0xb0000)) x.log("ddi: dp2: state set %u executed before it was recorded", handle);
+                        break;
+                    case 4:                                             /* CAPTURE */
+                        if (it != d.sblocks.end() && it->second) it->second->Capture();
+                        break;
+                    }
+                }
                 break;
             case DP2_SETPRIORITY:
                 need = count * 8u;
@@ -815,6 +936,79 @@ struct Dp2 {
                     if (u32(q + 20 * i) < 6) x.dev->SetClipPlane(u32(q + 20 * i), pl);
                 }
                 break;
+            case D3DPT_DP2_DRAW8:
+                if (!draw8(q, left, need)) return false;
+                break;
+            case DP2_SETVERTEXSHADER:                            /* an FVF, or a shader handle (bit 0) we do not claim */
+                need = count * 4u;
+                if (need > left) return fail("truncated SETVERTEXSHADER");
+                for (uint32_t i = 0; i < count; i++) {
+                    uint32_t h = u32(q + 4 * i);
+                    tr("vertex shader 0x%x", h);
+                    if (!(h & 1)) set_fvf(h);
+                    else if (d.warn_once(0xc0000)) x.log("ddi: dp2: a vertex shader handle (0x%x) with no shader support", h);
+                }
+                break;
+            case DP2_CREATEVERTEXSHADER: case DP2_CREATEPIXELSHADER: case DP2_SETVERTEXSHADERCONST: case DP2_SETPIXELSHADERCONST: {
+                /* variable: handle [, decl size], code size / register, count */
+                need = 0;
+                for (uint32_t i = 0; i < count; i++) {
+                    if (left < need + 8) return fail("truncated shader token");
+                    if (op == DP2_CREATEVERTEXSHADER) { if (left < need + 12) return fail("truncated CREATEVERTEXSHADER"); need += 12 + (size_t)u32(q + need + 4) + u32(q + need + 8); }
+                    else if (op == DP2_CREATEPIXELSHADER) need += 8 + (size_t)u32(q + need + 4);
+                    else need += 8 + (size_t)u32(q + need + 4) * 16;
+                    if (need > left) return fail("truncated shader token");
+                }
+                if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: token %u (shaders) is not supported: dropped", op);
+                break;
+            }
+            case DP2_DELETEVERTEXSHADER: case DP2_DELETEPIXELSHADER: case DP2_SETPIXELSHADER:
+                need = count * 4u;
+                if (need > left) return fail("truncated shader handle token");
+                if (op == DP2_SETPIXELSHADER && count && u32(q) && d.warn_once(0xc0000 | op)) x.log("ddi: dp2: a pixel shader handle with no shader support");
+                break;
+            case DP2_SETSTREAMSOURCE: case DP2_DRAWPRIMITIVE: case DP2_DRAWPRIMITIVE2: case DP2_CLIPPEDTRIANGLEFAN:
+                need = count * 12u;
+                if (need > left) return fail("truncated DX8 stream token");
+                if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: DX8 token %u reached the host (the driver did not rewrite it)", op);
+                break;
+            case DP2_SETSTREAMSOURCEUM: case DP2_SETINDICES:
+                need = count * 8u;
+                if (need > left) return fail("truncated DX8 stream token");
+                break;
+            case DP2_DRAWINDEXEDPRIMITIVE: case DP2_DRAWINDEXEDPRIMITIVE2:
+                need = count * 24u;
+                if (need > left) return fail("truncated DX8 draw token");
+                if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: DX8 token %u reached the host (the driver did not rewrite it)", op);
+                break;
+            case DP2_DRAWRECTPATCH: case DP2_DRAWTRIPATCH: {
+                need = 0;
+                for (uint32_t i = 0; i < count; i++) {
+                    if (left < need + 8) return fail("truncated patch token");
+                    uint32_t fl = u32(q + need + 4);
+                    need += 8 + ((fl & 1) ? (op == DP2_DRAWRECTPATCH ? 16 : 12) : 0) + ((fl & 2) ? (op == DP2_DRAWRECTPATCH ? 28 : 16) : 0);
+                }
+                if (need > left) return fail("truncated patch token");
+                if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: patches are not supported: dropped");
+                break;
+            }
+            case DP2_VOLUMEBLT:
+                need = count * 48u;
+                if (need > left) return fail("truncated VOLUMEBLT");
+                if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: volume textures are not supported: VOLUMEBLT dropped");
+                break;
+            case DP2_BUFFERBLT:
+                need = count * 24u;
+                if (need > left) return fail("truncated BUFFERBLT");
+                break;
+            case DP2_ADDDIRTYRECT:
+                need = count * 20u;
+                if (need > left) return fail("truncated ADDDIRTYRECT");
+                break;
+            case DP2_ADDDIRTYBOX:
+                need = count * 28u;
+                if (need > left) return fail("truncated ADDDIRTYBOX");
+                break;
             default:
                 return fail_token(op, count);
             }
@@ -830,6 +1024,8 @@ void exec_ddi_release(Exec &x)
 {
     if (!x.ddi) return;
     for (auto &kv : x.ddi->surfs) kv.second.release();
+    for (auto &kv : x.ddi->sblocks) if (kv.second) kv.second->Release();
+    x.ddi->sblocks.clear();
     x.ddi->drop_stage();
     delete x.ddi;
     x.ddi = nullptr;
@@ -942,21 +1138,23 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
         d3dpt_ret *r = b.slot(a->ret_off, 0); if (!r) return true;
         uint64_t cmd_aligned = D3DPT_ALIGN8(a->command_bytes);
         uint32_t stride = stride_of_fvf(a->fvf);
-        if (!stride || stride != a->vertex_stride || a->command_bytes > (16u << 20) || a->vertex_bytes > (32u << 20) ||
-            a->vertex_bytes % stride || c->size < sizeof(d3dpt_cmd) + sizeof *a + cmd_aligned + a->vertex_bytes) { b.err = D3DPT_ERR_BAD_ARG; return true; }
+        if (a->command_bytes > (48u << 20) || a->vertex_bytes > (32u << 20) ||
+            c->size < sizeof(d3dpt_cmd) + sizeof *a + cmd_aligned + a->vertex_bytes) { b.err = D3DPT_ERR_BAD_ARG; return true; }
+        /* a record without vertices (DX8: every draw carries its own) may name any FVF */
+        if (a->vertex_bytes && (!stride || stride != a->vertex_stride || a->vertex_bytes % stride)) { b.err = D3DPT_ERR_BAD_ARG; return true; }
         if (!x.ddi) { b.err = D3DPT_ERR_BAD_HANDLE; return true; }
         auto it = x.ddi->ctxs.find(a->ctx);
         if (it == x.ddi->ctxs.end()) { b.err = D3DPT_ERR_BAD_HANDLE; return true; }
         if (!x.dev) { b.err = D3DPT_ERR_NO_DEVICE; return true; }
         const uint8_t *cmds = tail(a);
-        Dp2 p = { x, *x.ddi, it->second, b, cmds, cmds + a->command_bytes, cmds + cmd_aligned, stride, a->vertex_bytes / stride, a->fvf };
+        Dp2 p = { x, *x.ddi, it->second, b, cmds, cmds + a->command_bytes, cmds + cmd_aligned, stride, stride ? a->vertex_bytes / stride : 0, a->fvf };
         x.ddi->dp2_calls++;
         if (x.ddi->trace_flag && !x.ddi->trace && !x.ddi->trace_armed && access(x.ddi->trace_flag, F_OK) == 0) {
             x.ddi->trace_armed = true;                 /* the trace starts with the next frame */
             x.log("ddi: trace: armed at dp2 call %u", x.ddi->dp2_calls);
         }
-        if (x.ddi->trace) x.log("ddi: trace: dp2 call %u: ctx %u flags 0x%x fvf 0x%x stride %u, %u vertices, %u command bytes", x.ddi->dp2_calls, a->ctx, a->flags, a->fvf, stride, a->vertex_bytes / stride, a->command_bytes);
-        x.dev->SetFVF(a->fvf);
+        if (x.ddi->trace) x.log("ddi: trace: dp2 call %u: ctx %u flags 0x%x fvf 0x%x stride %u, %u vertices, %u command bytes", x.ddi->dp2_calls, a->ctx, a->flags, a->fvf, stride, stride ? a->vertex_bytes / stride : 0, a->command_bytes);
+        if (stride) { x.dev->SetFVF(a->fvf); p.cur_fvf = a->fvf; }
         bool ok = p.run();
         r->hr = b.err ? (uint32_t)E_FAIL : ok ? (uint32_t)S_OK : (uint32_t)p.hr;
         r->bytes = ok ? 0 : p.pos;

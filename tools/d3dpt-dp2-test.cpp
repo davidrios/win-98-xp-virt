@@ -78,6 +78,20 @@ struct Dp2Buf {
     void indexed_trilist2(uint16_t base, const std::vector<uint16_t> &idx) {
         cmd(26, idx.size() / 3); u16(base); for (uint16_t i : idx) u16(i);
     }
+    /* the DX8 DDI's self-contained draw (the display driver's rewrite of the
+     * runtime's DRAWPRIMITIVE / DRAWINDEXEDPRIMITIVE): vertices and 16-bit
+     * indices inline, indices relative to min_index */
+    template <class T> void draw8(uint32_t prim, uint32_t prims, uint32_t fvf, const std::vector<T> &v,
+                                  const std::vector<uint16_t> &idx = {}, uint32_t min_index = 0, uint32_t stride_lie = 0) {
+        cmd(D3DPT_DP2_DRAW8, 0);
+        u32(prim); u32(prims); u32(fvf); u32(stride_lie ? stride_lie : (uint32_t)sizeof(T));
+        u32((uint32_t)v.size()); u32((uint32_t)idx.size()); u32(min_index); u32(0);
+        for (const T &e : v) { const uint8_t *q = (const uint8_t *)&e; b.insert(b.end(), q, q + sizeof(T)); }
+        while (b.size() % 4) b.push_back(0xcc);
+        for (uint16_t i : idx) u16(i);
+        while (b.size() % 4) b.push_back(0xcc);
+    }
+    void stateset(uint32_t op, uint32_t handle, uint32_t type = 0) { cmd(39, 1); u32(op); u32(handle); u32(type); }
     /* TRIANGLEFAN_IMM as the runtime lays it out: the 4-byte header (which
      * may sit at offset 2 mod 4), padding to a DWORD boundary, the edge
      * flags, the vertices inline, padding so the next token starts at a
@@ -254,6 +268,52 @@ int main(int argc, char **argv) {
     hr |= readback(&enc, H_RT);
     CHECK(hr == 0 && near_(px(200, 200), 0x404040, 2), "texture re-read after VRAM_DIRTY (0x%06x)", px(200, 200));
 
+    uint32_t err_off = 0;
+
+    /* --- the DX8 DDI: the driver's self-contained draws, state sets --- */
+    {
+        /* the same scene through DRAW8 tokens: the quad as an indexed
+         * triangle list whose indices are relative to a MinIndex of 10, the
+         * fan as a plain draw; then a recorded state set that switches the
+         * quad to its diffuse colour, executed, captured back, deleted */
+        std::vector<tlv> quad(vtx.begin(), vtx.begin() + 6), fan(vtx.begin() + 6, vtx.begin() + 12);
+        Dp2Buf e8;
+        e8.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        e8.tss(0, 0, H_TEX); e8.tss(0, D3DTSS_COLOROP, D3DTOP_MODULATE); e8.tss(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        e8.tss(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE); e8.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1); e8.tss(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        e8.draw8(4, 2, FVF_TLVERTEX, quad, { 10, 11, 12, 13, 14, 15 }, 10);
+        e8.tss(0, 0, 0); e8.tss(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2); e8.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
+        e8.draw8(6, 4, FVF_TLVERTEX, fan);
+        hr = send_dp2(&enc, e8, vtx);
+        hr |= readback(&enc, H_RT);
+        /* the texture is the re-read case's grey by now */
+        CHECK(hr == 0 && near_(px(104, 84), 0x404040, 2) && near_(px(124, 84), 0x404040, 2) && near_(px(480, 240), 0xffffff, 2),
+              "DRAW8 tokens: indexed quad (0x%06x 0x%06x) and fan (0x%06x)", px(104, 84), px(124, 84), px(480, 240));
+        Dp2Buf sb;
+        sb.stateset(0, 77);                                     /* BEGIN handle 77: record */
+        sb.tss(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);           /* the quad's colour from its diffuse (white) */
+        sb.stateset(1, 77);                                     /* END */
+        sb.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        sb.tss(0, 0, H_TEX); sb.tss(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        sb.stateset(3, 77);                                     /* EXECUTE: SELECTARG2 again */
+        sb.draw8(4, 2, FVF_TLVERTEX, quad, { 10, 11, 12, 13, 14, 15 }, 10);
+        sb.stateset(4, 77);                                     /* CAPTURE and DELETE: accepted */
+        sb.stateset(2, 77);
+        sb.stateset(3, 77);                                     /* EXECUTE of a deleted set: logged, not fatal */
+        hr = send_dp2(&enc, sb, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0xffffff, 2) && near_(px(124, 84), 0xffffff, 2),
+              "state set recorded, executed: quad drawn from diffuse (0x%06x 0x%06x)", px(104, 84), px(124, 84));
+        Dp2Buf bad8;
+        bad8.draw8(4, 2, FVF_TLVERTEX, quad, { 10, 11, 12, 13, 14, 99 }, 10);    /* an index beyond the copied range */
+        hr = send_dp2(&enc, bad8, vtx);
+        CHECK(hr == 0, "DRAW8 with an index beyond its vertices: skipped, not fatal (0x%08x)", hr);
+        Dp2Buf lie8;
+        lie8.draw8(4, 2, FVF_TLVERTEX, quad, {}, 0, 20);                        /* a stride that is not the FVF's */
+        hr = send_dp2(&enc, lie8, vtx, 0, &err_off);
+        CHECK(hr == 0x88760BB8u, "DRAW8 lying about its stride -> D3DERR_COMMAND_UNPARSED (0x%08x)", hr);
+    }
+
     /* --- hostile records --- */
     vram_surface(&enc, 9, VRAM_SIZE - 4096, 64, 64, 256, D3DFMT_X8R8G8B8, D3DPT_VS_TEXTURE);
     d3dpt_enc_flush(&enc);
@@ -261,7 +321,6 @@ int main(int argc, char **argv) {
     hr = send_dp2(&enc, d, vtx, (uint32_t)d.b.size() + 4096);
     CHECK(hr == (0xffff0000u | D3DPT_ERR_BAD_ARG), "DP2 record lying about its command bytes refused (0x%08x)", hr);
     Dp2Buf bad; bad.rs(D3DRS_ZENABLE, 1); bad.cmd(18, 3);           /* TRIANGLELIST without its start vertex */
-    uint32_t err_off = 0;
     hr = send_dp2(&enc, bad, vtx, 0, &err_off);
     CHECK(hr == 0x88760BB8u && err_off == 12, "truncated token stream -> D3DERR_COMMAND_UNPARSED at %u (0x%08x)", err_off, hr);
     /* a light index / transform id off the scale: DXVK would grow its light

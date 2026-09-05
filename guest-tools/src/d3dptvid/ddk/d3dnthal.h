@@ -83,7 +83,8 @@ typedef struct _D3DPRIMCAPS_ {
 #define D3DPRASTERCAPS_FOGRANGE       0x00010000
 #define D3DPRASTERCAPS_ANISOTROPY     0x00020000
 #define D3DPRASTERCAPS_WBUFFER        0x00040000
-#define D3DPRASTERCAPS_ZFOG           0x00100000
+#define D3DPRASTERCAPS_WFOG           0x00100000
+#define D3DPRASTERCAPS_ZFOG           0x00200000
 #define D3DPCMPCAPS_ALL               0x000000ff
 #define D3DPBLENDCAPS_ALL             0x00001fff
 #define D3DPSHADECAPS_COLORFLATRGB    0x00000002
@@ -410,6 +411,161 @@ typedef struct _D3DNTHAL_DP2COMMAND {
   };
 } D3DNTHAL_DP2COMMAND, *LPD3DNTHAL_DP2COMMAND;
 #define D3DDP2OP_RENDERSTATE_ 8
+
+/* --- the DirectX 8 DDI (d3dhal.h of the DX8 DDK): GetDriverInfo2 and D3DCAPS8 --- */
+
+#define D3DGDI2_MAGIC_                  0xFFFFFFFF
+#define D3DGDI2_TYPE_GETD3DCAPS8_       0x00000001
+#define D3DGDI2_TYPE_GETFORMATCOUNT_    0x00000002
+#define D3DGDI2_TYPE_GETFORMAT_         0x00000003
+#define D3DGDI2_TYPE_DXVERSION_         0x00000004
+
+typedef struct _DD_GETDRIVERINFO2DATA_ {
+  DWORD dwReserved;
+  DWORD dwMagic;
+  DWORD dwType;
+  DWORD dwExpectedSize;
+} DD_GETDRIVERINFO2DATA_;
+
+typedef struct _DD_GETFORMATCOUNTDATA_ {
+  DD_GETDRIVERINFO2DATA_ gdi2;
+  DWORD dwFormatCount;
+  DWORD dwReserved;
+} DD_GETFORMATCOUNTDATA_;
+
+typedef struct _DD_GETFORMATDATA_ {
+  DD_GETDRIVERINFO2DATA_ gdi2;
+  DWORD dwFormatIndex;
+  DDPIXELFORMAT format;
+} DD_GETFORMATDATA_;
+
+typedef struct _DD_DXVERSION_ {
+  DD_GETDRIVERINFO2DATA_ gdi2;
+  DWORD dwDXVersion;
+  DWORD dwReserved;
+} DD_DXVERSION_;
+
+typedef struct _D3DCAPS8_ {
+  DWORD DeviceType;
+  DWORD AdapterOrdinal;
+  DWORD Caps;
+  DWORD Caps2;
+  DWORD Caps3;
+  DWORD PresentationIntervals;
+  DWORD CursorCaps;
+  DWORD DevCaps;
+  DWORD PrimitiveMiscCaps;
+  DWORD RasterCaps;
+  DWORD ZCmpCaps;
+  DWORD SrcBlendCaps;
+  DWORD DestBlendCaps;
+  DWORD AlphaCmpCaps;
+  DWORD ShadeCaps;
+  DWORD TextureCaps;
+  DWORD TextureFilterCaps;
+  DWORD CubeTextureFilterCaps;
+  DWORD VolumeTextureFilterCaps;
+  DWORD TextureAddressCaps;
+  DWORD VolumeTextureAddressCaps;
+  DWORD LineCaps;
+  DWORD MaxTextureWidth;
+  DWORD MaxTextureHeight;
+  DWORD MaxVolumeExtent;
+  DWORD MaxTextureRepeat;
+  DWORD MaxTextureAspectRatio;
+  DWORD MaxAnisotropy;
+  float MaxVertexW;
+  float GuardBandLeft;
+  float GuardBandTop;
+  float GuardBandRight;
+  float GuardBandBottom;
+  float ExtentsAdjust;
+  DWORD StencilCaps;
+  DWORD FVFCaps;
+  DWORD TextureOpCaps;
+  DWORD MaxTextureBlendStages;
+  DWORD MaxSimultaneousTextures;
+  DWORD VertexProcessingCaps;
+  DWORD MaxActiveLights;
+  DWORD MaxUserClipPlanes;
+  DWORD MaxVertexBlendMatrices;
+  DWORD MaxVertexBlendMatrixIndex;
+  float MaxPointSize;
+  DWORD MaxPrimitiveCount;
+  DWORD MaxVertexIndex;
+  DWORD MaxStreams;
+  DWORD MaxStreamStride;
+  DWORD VertexShaderVersion;
+  DWORD MaxVertexShaderConst;
+  DWORD PixelShaderVersion;
+  float MaxPixelShaderValue;
+} D3DCAPS8_;
+
+/* the DX8 format list: DDPIXELFORMAT with DDPF_D3DFORMAT, the D3DFORMAT in
+ * dwFourCC and these in the dwRBitMask slot (dwOperations) */
+#define DDPF_D3DFORMAT_                        0x00200000
+#define D3DFORMAT_OP_TEXTURE_                  0x00000001
+#define D3DFORMAT_OP_OFFSCREEN_RENDERTARGET_   0x00000008
+#define D3DFORMAT_OP_SAME_FORMAT_RENDERTARGET_ 0x00000010
+#define D3DFORMAT_OP_ZSTENCIL_                 0x00000040
+#define D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_ 0x00000080
+#define D3DFORMAT_OP_DISPLAYMODE_              0x00000400
+#define D3DFORMAT_OP_3DACCELERATION_           0x00000800
+
+#define D3DDEVCAPS_PUREDEVICE         0x00100000
+#define D3DPMISCCAPS_COLORWRITEENABLE 0x00000080
+#define D3DPMISCCAPS_CLIPTLVERTS      0x00000200
+#define D3DPMISCCAPS_TSSARGTEMP       0x00000400
+#define D3DPMISCCAPS_BLENDOP          0x00000800
+#define D3DPRASTERCAPS_MIPMAPLODBIAS  0x00002000
+#define D3DPRASTERCAPS_COLORPERSPECTIVE 0x00400000
+#define D3DPTEXTURECAPS_MIPMAP        0x00004000
+#define D3DPTADDRESSCAPS_MIRRORONCE   0x00000020
+#define D3DLINECAPS_TEXTURE           0x00000001
+#define D3DLINECAPS_ZTEST             0x00000002
+#define D3DLINECAPS_BLEND             0x00000004
+#define D3DLINECAPS_ALPHACMP          0x00000008
+#define D3DLINECAPS_FOG               0x00000010
+#define D3DVTXPCAPS_TEXGEN            0x00000001
+#define D3DVTXPCAPS_MATERIALSOURCE7   0x00000002
+#define D3DVTXPCAPS_VERTEXFOG         0x00000004
+#define D3DVTXPCAPS_DIRECTIONALLIGHTS 0x00000008
+#define D3DVTXPCAPS_POSITIONALLIGHTS  0x00000010
+#define D3DVTXPCAPS_LOCALVIEWER       0x00000020
+#define D3DTRANSFORMCAPS_CLIP         0x00000001
+#define D3DCAPS2_CANRENDERWINDOWED    0x00080000
+#define D3DCAPS2_DYNAMICTEXTURES      0x20000000
+#define D3DPRESENT_INTERVAL_ONE       0x00000001
+#define D3DPRESENT_INTERVAL_IMMEDIATE 0x80000000
+#define D3DVS_VERSION_0               0xFFFE0000
+#define D3DPS_VERSION_0               0xFFFF0000
+#define D3DDEVTYPE_HAL_               1
+
+/* the DX8 DP2 tokens the driver rewrites or drops (D3DHAL_DP2OPERATION) */
+#define D3DDP2OP_TEXBLT_                38
+#define D3DDP2OP_CREATEVERTEXSHADER_    45
+#define D3DDP2OP_DELETEVERTEXSHADER_    46
+#define D3DDP2OP_SETVERTEXSHADER_       47
+#define D3DDP2OP_SETVERTEXSHADERCONST_  48
+#define D3DDP2OP_SETSTREAMSOURCE_       49
+#define D3DDP2OP_SETSTREAMSOURCEUM_     50
+#define D3DDP2OP_SETINDICES_            51
+#define D3DDP2OP_DRAWPRIMITIVE_         52
+#define D3DDP2OP_DRAWINDEXEDPRIMITIVE_  53
+#define D3DDP2OP_CREATEPIXELSHADER_     54
+#define D3DDP2OP_DELETEPIXELSHADER_     55
+#define D3DDP2OP_SETPIXELSHADER_        56
+#define D3DDP2OP_SETPIXELSHADERCONST_   57
+#define D3DDP2OP_CLIPPEDTRIANGLEFAN_    58
+#define D3DDP2OP_DRAWPRIMITIVE2_        59
+#define D3DDP2OP_DRAWINDEXEDPRIMITIVE2_ 60
+#define D3DDP2OP_DRAWRECTPATCH_         61
+#define D3DDP2OP_DRAWTRIPATCH_          62
+#define D3DDP2OP_VOLUMEBLT_             63
+#define D3DDP2OP_BUFFERBLT_             64
+#define D3DDP2OP_MULTIPLYTRANSFORM_     65
+#define D3DDP2OP_ADDDIRTYRECT_          66
+#define D3DDP2OP_ADDDIRTYBOX_           67
 
 #define D3DERR_COMMAND_UNPARSED_ 0x88760BB8
 

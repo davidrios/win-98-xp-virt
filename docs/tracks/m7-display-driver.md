@@ -107,26 +107,79 @@ picture and the track rules, then this file, then doc 15.
   driver build (surface log lines); `cd.ini` in it points at D: now (the
   batch rewrites it). Not played by hand yet; ZBIAS (47) is still dropped
   (the alley sets it to 0).
+- **The DirectX 8 DDI (2026-09-05, branch `track/m7-fifa`):** `GetDriverInfo2`
+  (`D3DCAPS8`, the DX8 format list), hardware T&L claimed (DX7 and DX8
+  caps; `ddflags=0x1000` withdraws it, `0x2000` keeps the DX7 face), the
+  DX8 token stream rewritten by the driver into self-contained draws
+  (`D3DPT_DP2_DRAW8`, protocol v6: the runtime's buffers are guest memory),
+  TEXBLT in the driver, per-context DX8 state, state sets as d3d9 state
+  blocks, render-to-texture, MULTIPLYTRANSFORM, DXT pitches. D3DGAME8
+  through XP's own d3d8.dll with hardware vertex processing at ~575 fps
+  (`tools/xp-driver-test.sh <image> d3dgame8`), doc 15 "M7c — the DirectX 8
+  DDI" for the d3d8.dll findings (the HAL-info flag; `dwActualSize`
+  against the inner header; no `CLIPTLVERTS`; the FOURCC list; the
+  clipper's fans). No shaders yet (VS/PS 0.0). **Max Payne on this path
+  is not done:** its clipped fans read from the wrong place (the
+  "Resuming here" list), `ddflags=0x2000` gives it the DX7 face
+  meanwhile.
 - Branch history: `worktree-luminous-dancing-cocke` (merged into main
   2026-09-04), `track/m7-d3d-ddi` (M7c, merged into main 2026-09-04),
   `track/m7-fifa` (FIFA on the HAL + the keyboard fix, merged into main
   2026-09-04 evening; the 8 bpp work continues on it). New work: branch
   `track/m7-<topic>` off main.
-- **Resuming here (2026-09-04 evening):** pull main, then prepare →
-  configure → ninja (the embed library carries the input statistics),
-  `scripts/build-d3dpt-exec.sh` (the frames/s line; main also has the M4
-  track's executor changes of the same day), `guest-tools/build-driver.sh`
-  (DITEST) and `guest-tools/build-wrappers.sh` (the DINPUT shim into
-  `guest-tools/out/iso/D3DPT/`), `cargo build --release`. Images on this
-  box: `winxp-m7f` and `winxp-m7g` (copies of the user's `winxp-m7`, M7c
-  driver, WineD3D DLLs renamed, `DINPUT.DLL` already in the FIFA folder,
-  `m7g` also has `LowLevelHooksTimeout` = 5000 which proved irrelevant);
-  `tools/xp-fifa-match.sh kvm ~/vms/winxp-m7g.qcow2` is the check that the
-  match takes keys (pause menu on Esc). The user's own `winxp-m7` still
-  needs the M7c driver (`install`), the renames and the shim. First thing
-  to hear from the user: whether `D3DPT\DINPUT.DLL` next to
-  `fifa2000.exe` fixes their TCG keyboard, and on which machine they saw
-  it (Linux TCG or the Mac).
+- **Resuming here (2026-09-05, after the DX8 DDI session):** pull main,
+  then prepare → configure → ninja (protocol v6 is checked by the
+  device), `scripts/build-d3dpt-exec.sh`, `guest-tools/build-driver.sh`,
+  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v6),
+  `cargo build --release`. `winxp-m7g` carries the last driver build
+  (`install` it again after any driver change). State of the DX8 DDI:
+  1. **Works:** D3DGAME8 through XP's own d3d8.dll with hardware vertex
+     processing, render-to-texture and all (`tools/xp-driver-test.sh
+     ~/vms/winxp-m7g.qcow2 d3dgame8`, ~575 fps); its frame differs from
+     the native oracle only in the particles, which use the gradient
+     texture because the DXT1 one never reaches the driver (open item 3).
+     FIFA 2000 (attract-mode match) and D3D7TEST (frame == host frame)
+     are unchanged on the new driver. `scripts/test.sh host` green.
+  2. **Open, the one to finish first — Max Payne's clipped fans.** The
+     game sends pre-transformed vertices even to a T&L device; the
+     runtime clips them itself (`CLIPTLVERTS` must stay unclaimed, doc
+     15) and emits `CLIPPEDTRIANGLEFAN` tokens (58: FirstVertexOffset,
+     dwEdgeFlags, PrimitiveCount). The driver rewrites them into DRAW8
+     tokens with vertices read at `lpVertices + FirstVertexOffset`, and
+     that memory reads as zeros: the fans (the nearest walls, the ground)
+     come out black while everything else in the alley is right
+     (`build/xp-driver-test/mp-dx8g/cmd-13.png`; the traced frame is
+     `mp-dx8h`, the vertex fields of the calls are in `mp-dx8i`'s log:
+     `lpVertices` 0x16c940, `dwVertexOffset` 0, `dwVertexLength` 10,
+     `dwVertexSize` 32, flags 0x9 / 0x29; the fans' offsets are 0x930 +
+     n × 0x310, i.e. 784-byte slots, far beyond those 10 × 32 bytes). So
+     `FirstVertexOffset` is relative to something else: candidates are
+     the command buffer (`lpDDCommands` + dwCommandOffset), the
+     stream-0 vertex buffer (the game's VB, 64 KB, in the VB-stream
+     calls the skipped fans had offsets like 0x310 that *did* fit it),
+     or a runtime buffer named nowhere. Settle it in `d3d8.dll`'s
+     disassembly (`build/…/scratchpad` had it; re-extract from
+     `winxp-m7f` with 7z, `i686-w64-mingw32-objdump -d`): find the
+     emitter of token 0x3a (58) and see what pointer the offset is taken
+     from. Until then, `-device d3dpt-vga,ddflags=0x2000` keeps the DX7
+     face and Max Payne renders clean on it.
+  3. **Open — DXT textures on the DX8 path** (doc 15 "M7c — the DirectX
+     8 DDI", last bullet): `CreateTexture(DXT1)` succeeds, nothing
+     reaches dxg, the runtime keeps the previous texture bound. Next
+     step: ddraw.dll's `CreateSurface` path in the disassembly.
+  4. Then shaders 1.x (the track's next item), and the small things the
+     runs showed: `render target handle 3 unknown` once at start
+     (harmless), the two textures D3DGAME8 re-registers every frame
+     (kept by the executor, cheap), the `dp2 vertices at` debug lines
+     (first four calls only).
+- The tools of this session: `D3DPT_DP2_TRACE` (a whole frame with
+  states, vertices, texture and per-draw target dumps),
+  `D3DPT_DDI_REREAD`, `D3DPT_DDI_NOFOG`, the driver's surface log and
+  `dx8 draws skipped … why …` lines (bits: 1 shader, 2 no fvf, 4 no
+  stream, 8 stride < fvf, 16 vertex range, 32 index range, 64 prim; the
+  first skipped draw's parameters follow), `tools/xp-driver-test.sh
+  d3dgame8`, `tools/xp-maxpayne.bat`, and the M7c DX8 section of doc 15
+  with the six d3d8.dll / dxg findings.
 
 ## Build / run / test
 
@@ -144,6 +197,7 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 install   # DRVINST from the ISO, 
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 ddtest    # DirectDraw: caps, flip chains, windowed blit, fps
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 modes     # SETMODE switches + the mode list
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7      # D3D7TEST: the DX7 HAL scene, diffed against build/d3dpt-dp2-test's frame
+tools/xp-driver-test.sh ~/vms/winxp-m7g.qcow2 d3dgame8  # D3DGAME8 through XP's own d3d8.dll on the DX8 DDI, diffed against build/test/g9-native.bmp
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 cmd 'D:\DRIVER\DDTEST.EXE 800 600 32 300'
 # a game: its disc as D: (the driver ISO moves to F:), a batch file staged as E:\RUN.BAT, a screendump every 5 s
 GAME_ISO=/mnt/data2/david/Downloads/oldstuff/FIFA2000.ISO SHOTS=24 tools/xp-driver-test.sh ~/vms/winxp-m7f.qcow2 bat tools/xp-fifa2000.bat
@@ -189,15 +243,16 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    keyboard needs `D3DPT\DINPUT.DLL` in the game folder — confirm on the
    user's setup, then decide whether the merge belongs in a system-wide
    place). Max Payne runs through XP's d3d8.dll on the DX7-level DDI
-   (tutorial level clean); play it by hand, ZBIAS → DEPTHBIAS when a
-   title needs it. Then what the next title asks for first among: colour keying (key →
-   alpha at upload + alpha test), claiming T&L
-   (`D3DDEVCAPS_HWTRANSFORMANDLIGHT`, the tokens are already mapped),
-   render-to-texture, state sets, the real DX8 DDI (`GUID_GetDriverInfo2`
-   / `D3DGDI2_TYPE_GETD3DCAPS8`, streams, shaders — the tokens are in
-   mingw's `ddk/d3dhal.h`; only needed for DX8 titles that insist on
-   hardware vertex processing or shaders), presenting the host frame
-   through the player's 3D path instead of the per-frame readback copy.
+   (tutorial level clean, now on the DX8 DDI with hardware T&L); play it
+   by hand, ZBIAS → DEPTHBIAS when a title needs it. Then what the next
+   title asks for first among: **vertex / pixel shaders 1.x on the DX8
+   DDI** (CREATE/SET/DELETE*SHADER + constants tokens; the DX8
+   declaration → d3d9 declaration translation is in the M4 track's
+   `d3d8.c`, to be ported into the executor; claim `D3DVS_VERSION(1,1)`
+   / `D3DPS_VERSION(1,4)`), more than one stream, colour keying (key →
+   alpha at upload + alpha test), cube / volume textures, presenting the
+   host frame through the player's 3D path instead of the per-frame
+   readback copy.
 2. Add a `driver` stage to `scripts/test.sh` (boot on `d3dpt-vga`, `modes`
    + `ddtest` with expected numbers) once the M4 track's suite structure
    is stable; until then `tools/xp-driver-test.sh` is the check.
@@ -235,6 +290,18 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
   Direct3D offered in every mode, or the HAL silently degrades to
   `DDCAPS_NOHARDWARE` (doc 15 has the disassembly trail).
 - The debugger is the DEBUG register → QEMU log. No WinDbg, no serial KD.
+- The DX8 runtime asks its `GetDriverInfo2` questions only with
+  `DDHALINFO_GETDRIVERINFO2` in the HAL info, and checks `dwActualSize`
+  against the size inside the GDI2 header (the outer one is stale). DX8
+  device state (vertex format, streams, indices) persists across
+  DrawPrimitives2 calls, by handle (buffers move on a DISCARD lock).
+  dxg's `lPitch` of a DXT surface is its linear size, and a FOURCC
+  surface needs its code in `DrvGetDirectDrawInfo`'s FOURCC list. Never
+  claim `D3DPMISCCAPS_CLIPTLVERTS`: the host does not clip
+  pre-transformed vertices; the runtime's clipped fans live in the DP2
+  vertex buffer past `dwVertexLength`. A protocol bump (`D3DPT_PROTO_VERSION`) means QEMU (prepare →
+  ninja), the executor and the guest-tools ISO all rebuilt before any
+  guest run.
 - The executor must never let DXVK throw: its exceptions abort QEMU
   (DXVK's own static unwinder vs the system personality routine), a
   `try` in the executor does not help. Validate every index / count

@@ -59,13 +59,30 @@
 #define DDF_NO_D3D_CB3         0x200  /* bisection: no GUID_D3DCallbacks3 answer */
 #define DDF_NO_MISC2           0x400  /* bisection: no GUID_Miscellaneous2Callbacks answer */
 #define DDF_NO_PARSEUNKNOWN    0x800  /* bisection: refuse GUID_D3DParseUnknownCommandCallback */
+#define DDF_NO_TNL             0x1000 /* bisection: no HWTRANSFORMANDLIGHT claim (the runtime transforms) */
+#define DDF_NO_DX8             0x2000 /* bisection: refuse GetDriverInfo2 (a DirectX 7 driver to d3d8.dll) */
 
 #define D3D_MAX_CTX 16
+
+/* a DX8 stream binding: where the vertices / indices are */
+typedef struct _DP2STREAM {
+    ULONG_PTR mem;
+    ULONG bytes, stride;
+} DP2STREAM;
 
 typedef struct _D3DCTX {
     ULONG pid;
     ULONG rt, z;                /* VRAM surface handles */
     BOOL used;
+    /* the DX8 device state that persists between DrawPrimitives2 calls (the
+     * runtime sends SETVERTEXSHADER / SETSTREAMSOURCE / SETINDICES only on
+     * change): the vertex format, stream 0, the index buffer */
+    ULONG fvf;
+    BOOL shader;                /* a real vertex shader is current */
+    BOOL vb_um;                 /* stream 0 is the call's own vertex buffer (user memory) */
+    ULONG vb_handle, ib_handle; /* the bound buffers (their memory can move between calls: a
+                                 * Lock with DISCARD gives a buffer new memory, CreateSurfaceEx again) */
+    ULONG vb_stride, ib_stride;
 } D3DCTX;
 
 typedef struct _PDEV {
@@ -670,6 +687,9 @@ static DWORD APIENTRY D3dDestroyD3DBuffer(PDD_DESTROYSURFACEDATA d);
 static DWORD APIENTRY D3dLockD3DBuffer(PDD_LOCKDATA d);
 static DWORD APIENTRY D3dUnlockD3DBuffer(PDD_UNLOCKDATA d);
 static D3DNTHAL_GLOBALDRIVERDATA d3d_global;
+static D3DCAPS8_ d3d_caps8;                 /* the DX8 DDI's caps (GetDriverInfo2) */
+static DDPIXELFORMAT d3d_fmt8[16];          /* its format list */
+static ULONG d3d_fmt8_n;
 static D3DNTHAL_CALLBACKS d3d_callbacks;
 static DD_D3DBUFCALLBACKS d3d_bufcallbacks;
 static DWORD APIENTRY D3dContextCreate(LPD3DNTHAL_CONTEXTCREATEDATA d);
@@ -782,6 +802,14 @@ static DWORD APIENTRY DdCanCreateSurface(PDD_CANCREATESURFACEDATA d)
         d->ddRVal = DD_OK;
     } else {
         d->ddRVal = DDERR_INVALIDPIXELFORMAT;
+        if (p->reg_lines < 4096) {
+            p->reg_lines++;
+            dbg_hex(p, "d3dptdisp: cannot create surface, pixel format flags ", d->lpDDSurfaceDesc->ddpfPixelFormat.dwFlags);
+            dbg_hex(p, " fourcc ", d->lpDDSurfaceDesc->ddpfPixelFormat.dwFourCC);
+            dbg_hex(p, " bits ", d->lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount);
+            dbg_hex(p, " caps ", d->lpDDSurfaceDesc->ddsCaps.dwCaps);
+            dbg_puts(p, "\n");
+        }
     }
     return DDHAL_DRIVER_HANDLED;
 }
@@ -872,6 +900,64 @@ static const GUID guid_misc2callbacks = {
 static const GUID guid_parseunknown = {
     0x2e04ffa0, 0x98e4, 0x11d1, { 0x8c, 0xe1, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8 }
 };
+/* GUID_DDStereoMode doubles as GUID_GetDriverInfo2 (DX8 DDI) when the data
+ * carries the D3DGDI2 magic; a real stereo query is refused */
+static const GUID guid_stereomode = {
+    0xf828169c, 0xa8e8, 0x11d2, { 0xa1, 0xf2, 0x00, 0xa0, 0xc9, 0x83, 0xea, 0xf6 }
+};
+
+/* the DX8 runtime's questions (GetDriverInfo2): the answer goes into the
+ * same buffer. The size that counts is the one inside the GDI2 header:
+ * d3d8.dll leaves the outer dwExpectedSize at the previous query's 24
+ * bytes and rejects the driver unless dwActualSize equals the inner one
+ * (its disassembly, 2026-09-05) */
+static void gdi2_answer(PPDEV p, PDD_GETDRIVERINFODATA d)
+{
+    DD_GETDRIVERINFO2DATA_ *g = (DD_GETDRIVERINFO2DATA_ *)d->lpvData;
+    ULONG want = g->dwExpectedSize, n;
+
+    dbg_hex(p, "d3dptdisp: gdi2 type ", g->dwType);
+    dbg_hex(p, " expected ", want);
+    dbg_puts(p, "\n");
+    switch (g->dwType) {
+    case D3DGDI2_TYPE_GETD3DCAPS8_:
+        n = sizeof(d3d_caps8);
+        if (n > want) n = want;
+        memcpy(d->lpvData, &d3d_caps8, n);
+        d->dwActualSize = n;
+        d->ddRVal = DD_OK;
+        break;
+    case D3DGDI2_TYPE_GETFORMATCOUNT_: {
+        DD_GETFORMATCOUNTDATA_ *c = (DD_GETFORMATCOUNTDATA_ *)g;
+        if (want < sizeof(*c)) { d->ddRVal = DDERR_CURRENTLYNOTAVAIL; break; }
+        c->dwFormatCount = d3d_fmt8_n;
+        d->dwActualSize = sizeof(*c);
+        d->ddRVal = DD_OK;
+        break;
+    }
+    case D3DGDI2_TYPE_GETFORMAT_: {
+        DD_GETFORMATDATA_ *f = (DD_GETFORMATDATA_ *)g;
+        if (want < sizeof(*f) || f->dwFormatIndex >= d3d_fmt8_n) { d->ddRVal = DDERR_CURRENTLYNOTAVAIL; break; }
+        f->format = d3d_fmt8[f->dwFormatIndex];
+        d->dwActualSize = sizeof(*f);
+        d->ddRVal = DD_OK;
+        break;
+    }
+    case D3DGDI2_TYPE_DXVERSION_: {
+        DD_DXVERSION_ *v = (DD_DXVERSION_ *)g;
+        if (want >= sizeof(*v)) {
+            dbg_hex(p, "d3dptdisp: runtime DirectX version ", v->dwDXVersion);
+            dbg_puts(p, "\n");
+        }
+        d->dwActualSize = sizeof(*v) <= want ? sizeof(*v) : want;
+        d->ddRVal = DD_OK;
+        break;
+    }
+    default:
+        d->ddRVal = DDERR_CURRENTLYNOTAVAIL;
+        break;
+    }
+}
 
 static void info_copy(PDD_GETDRIVERINFODATA d, const void *src, ULONG n)
 {
@@ -939,6 +1025,12 @@ static DWORD APIENTRY DdGetDriverInfo(PDD_GETDRIVERINFODATA d)
         /* the runtime hands us its parser for driver-private tokens; we emit none */
         d->dwActualSize = d->dwExpectedSize;
         d->ddRVal = DD_OK;
+    } else if (p->d3d && !(ddflags(p) & DDF_NO_DX8) && guid_eq(&d->guidInfo, &guid_stereomode) &&
+               d->lpvData && d->dwExpectedSize >= sizeof(DD_GETDRIVERINFO2DATA_) &&
+               ((DD_GETDRIVERINFO2DATA_ *)d->lpvData)->dwMagic == D3DGDI2_MAGIC_) {
+        /* the DX8 DDI: without this answer d3d8.dll takes us for a DirectX 7
+         * driver (software vertex processing, the DX7 token set) */
+        gdi2_answer(p, d);
     } else {
         d->ddRVal = DDERR_CURRENTLYNOTAVAIL;
     }
@@ -968,7 +1060,15 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
     }
     d3d_init(p);
     *pdwNumHeaps = 1;
-    *pdwNumFourCCCodes = 0;
+    /* the FOURCC surfaces DirectDraw may create at all (it checks this
+     * list before the pixel-format callbacks): the compressed textures.
+     * First call: the count; second call: the codes */
+    *pdwNumFourCCCodes = p->d3d ? 3 : 0;
+    if (pdwFourCC && p->d3d) {
+        pdwFourCC[0] = 0x31545844;      /* 'DXT1' (FOURCC_ is defined further down) */
+        pdwFourCC[1] = 0x33545844;      /* 'DXT3' */
+        pdwFourCC[2] = 0x35545844;      /* 'DXT5' */
+    }
 
     for (i = 0; i < sizeof(*pHalInfo) / 4; i++) ((ULONG *)pHalInfo)[i] = 0;
     pHalInfo->dwSize = sizeof(*pHalInfo);
@@ -1010,6 +1110,12 @@ BOOL APIENTRY DrvGetDirectDrawInfo(DHPDEV dhpdev, DD_HALINFO *pHalInfo, DWORD *p
     if (!(ddflags(p) & DDF_NO_GETDRIVERINFO)) {
         pHalInfo->GetDriverInfo = DdGetDriverInfo;
         pHalInfo->dwFlags = DDHALINFO_GETDRIVERINFOSET;
+        /* the DX8 runtime asks its GetDriverInfo2 questions (D3DCAPS8, the
+         * format list) only when this is set; without it we are a DirectX 7
+         * driver to d3d8.dll whatever the answers would have been */
+        if (p->d3d && !(ddflags(p) & DDF_NO_DX8)) {
+            pHalInfo->dwFlags |= DDHALINFO_GETDRIVERINFO2;
+        }
     }
     if (p->d3d) {
         /* the Direct3D HAL: caps here, the callbacks through GetDriverInfo */
@@ -1107,8 +1213,14 @@ VOID APIENTRY DrvDisableDirectDraw(DHPDEV dhpdev)
 /* the pixel format of a DirectDraw surface as a D3DFORMAT the host knows; 0 = not mirrored */
 static ULONG pf_format(const DDPIXELFORMAT *f)
 {
+    if (f->dwFlags & DDPF_D3DFORMAT_) {
+        return f->dwFourCC;                 /* the D3DFORMAT itself (the DX8 format list's entries) */
+    }
     if (f->dwFlags & DDPF_FOURCC) {
         ULONG cc = f->dwFourCC;
+        if (cc < 256) {
+            return cc;                      /* a D3DFORMAT in the FOURCC slot */
+        }
         if (cc == FOURCC_('D', 'X', 'T', '1') || cc == FOURCC_('D', 'X', 'T', '2') || cc == FOURCC_('D', 'X', 'T', '3') ||
             cc == FOURCC_('D', 'X', 'T', '4') || cc == FOURCC_('D', 'X', 'T', '5')) {
             return cc;
@@ -1166,9 +1278,25 @@ static void pf_z(DDPIXELFORMAT *f, ULONG bits, ULONG stencil)
 
 static DDSURFACEDESC d3d_texformats[9];
 
-static void d3d_caps_init(void)
+static void fmt8_add(ULONG fmt, ULONG ops)
+{
+    DDPIXELFORMAT *f = &d3d_fmt8[d3d_fmt8_n++];
+
+    f->dwSize = sizeof(*f);
+    /* all D3DFORMAT-coded, the compressed ones too: d3d8.dll matches the
+     * application's format against dwFourCC under this flag (a FOURCC
+     * entry made CreateTexture(DXT1) fail; the surface itself needs the
+     * code in DrvGetDirectDrawInfo's FOURCC list) */
+    f->dwFlags = DDPF_D3DFORMAT_;
+    f->dwFourCC = fmt;
+    f->dwRBitMask = ops;                    /* dwOperations */
+}
+
+static void d3d_caps_init(PPDEV p)
 {
     D3DNTHAL_GLOBALDRIVERDATA *g = &d3d_global;
+    D3DCAPS8_ *c8 = &d3d_caps8;
+    BOOL tnl = !(ddflags(p) & DDF_NO_TNL);
     D3DNTHALDEVICEDESC_V1 *c = &g->hwCaps;
     D3DPRIMCAPS_ *t = &c->dpcTriCaps;
     D3DNTHAL_D3DEXTENDEDCAPS *e = &d3d_extcaps;
@@ -1185,18 +1313,26 @@ static void d3d_caps_init(void)
                  D3DDD_LINECAPS | D3DDD_TRICAPS | D3DDD_DEVICERENDERBITDEPTH | D3DDD_DEVICEZBUFFERBITDEPTH |
                  D3DDD_MAXBUFFERSIZE | D3DDD_MAXVERTEXCOUNT;
     c->dcmColorModel = D3DCOLOR_RGB_;
-    /* a rasterizer: the runtime transforms and lights (no HWTRANSFORMANDLIGHT yet) */
+    /* a T&L device (ddflags 0x1000 makes it a rasterizer again): the
+     * executor maps SETTRANSFORM / SETLIGHT / SETMATERIAL and the lighting
+     * states onto DXVK's fixed-function pipeline, so the runtime hands us
+     * untransformed vertices instead of transforming them itself */
     c->dwDevCaps = D3DDEVCAPS_FLOATTLVERTEX | D3DDEVCAPS_EXECUTESYSTEMMEMORY | D3DDEVCAPS_TLVERTEXSYSTEMMEMORY |
                    D3DDEVCAPS_TEXTUREVIDEOMEMORY | D3DDEVCAPS_DRAWPRIMTLVERTEX | D3DDEVCAPS_CANRENDERAFTERFLIP |
                    D3DDEVCAPS_DRAWPRIMITIVES2 | D3DDEVCAPS_DRAWPRIMITIVES2EX | D3DDEVCAPS_HWRASTERIZATION;
+    if (tnl) c->dwDevCaps |= D3DDEVCAPS_HWTRANSFORMANDLIGHT;
     c->dtcTransformCaps.dwSize = sizeof(c->dtcTransformCaps);
-    c->bClipping = FALSE;
+    c->dtcTransformCaps.dwCaps = tnl ? D3DTRANSFORMCAPS_CLIP : 0;
+    c->bClipping = tnl;
     c->dlcLightingCaps.dwSize = sizeof(c->dlcLightingCaps);
     c->dlcLightingCaps.dwLightingModel = D3DLIGHTINGMODEL_RGB;
+    c->dlcLightingCaps.dwCaps = tnl ? D3DLIGHTCAPS_POINT | D3DLIGHTCAPS_SPOT | D3DLIGHTCAPS_DIRECTIONAL : 0;
+    c->dlcLightingCaps.dwNumLights = tnl ? 8 : 0;
     t->dwSize = sizeof(*t);
     t->dwMiscCaps = D3DPMISCCAPS_MASKZ | D3DPMISCCAPS_CULLNONE | D3DPMISCCAPS_CULLCW | D3DPMISCCAPS_CULLCCW;
     t->dwRasterCaps = D3DPRASTERCAPS_DITHER | D3DPRASTERCAPS_ZTEST | D3DPRASTERCAPS_SUBPIXEL | D3DPRASTERCAPS_FOGVERTEX |
-                      D3DPRASTERCAPS_FOGTABLE | D3DPRASTERCAPS_FOGRANGE | D3DPRASTERCAPS_ZFOG;
+                      D3DPRASTERCAPS_FOGTABLE | D3DPRASTERCAPS_FOGRANGE | D3DPRASTERCAPS_WFOG | D3DPRASTERCAPS_ZFOG |
+                      D3DPRASTERCAPS_MIPMAPLODBIAS | D3DPRASTERCAPS_ZBIAS;
     t->dwZCmpCaps = D3DPCMPCAPS_ALL;
     t->dwSrcBlendCaps = D3DPBLENDCAPS_ALL;
     t->dwDestBlendCaps = D3DPBLENDCAPS_ALL;
@@ -1252,6 +1388,77 @@ static void d3d_caps_init(void)
     e->wMaxTextureBlendStages = 8;
     e->wMaxSimultaneousTextures = 8;
     e->dvMaxVertexW = 1.0e10f;
+    if (tnl) {
+        e->dwMaxActiveLights = 8;
+        e->wMaxUserClipPlanes = 6;
+        e->wMaxVertexBlendMatrices = 4;
+        e->dwVertexProcessingCaps = D3DVTXPCAPS_TEXGEN | D3DVTXPCAPS_MATERIALSOURCE7 | D3DVTXPCAPS_VERTEXFOG |
+                                    D3DVTXPCAPS_DIRECTIONALLIGHTS | D3DVTXPCAPS_POSITIONALLIGHTS | D3DVTXPCAPS_LOCALVIEWER;
+    }
+
+    /* the DX8 DDI's caps: the same device, in D3DCAPS8 form (no shaders,
+     * one stream: the driver copies each draw's vertex range into the
+     * record, see D3dDrawPrimitives2) */
+    for (i = 0; i < sizeof(*c8) / 4; i++) ((ULONG *)c8)[i] = 0;
+    c8->DeviceType = D3DDEVTYPE_HAL_;
+    c8->Caps2 = D3DCAPS2_CANRENDERWINDOWED | D3DCAPS2_DYNAMICTEXTURES;
+    c8->PresentationIntervals = D3DPRESENT_INTERVAL_ONE | D3DPRESENT_INTERVAL_IMMEDIATE;
+    c8->DevCaps = c->dwDevCaps | D3DDEVCAPS_PUREDEVICE;
+    /* no CLIPTLVERTS: with it the runtime stops clipping pre-transformed
+     * vertices and hands us polygons crossing the camera plane, which the
+     * host rasterizes as garbage (Max Payne's alley walls, 2026-09-05);
+     * without it the runtime clips them itself, as the DX7 runtime did */
+    c8->PrimitiveMiscCaps = t->dwMiscCaps | D3DPMISCCAPS_COLORWRITEENABLE | D3DPMISCCAPS_TSSARGTEMP | D3DPMISCCAPS_BLENDOP;
+    c8->RasterCaps = t->dwRasterCaps | D3DPRASTERCAPS_COLORPERSPECTIVE;
+    c8->ZCmpCaps = t->dwZCmpCaps;
+    c8->SrcBlendCaps = t->dwSrcBlendCaps;
+    c8->DestBlendCaps = t->dwDestBlendCaps;
+    c8->AlphaCmpCaps = t->dwAlphaCmpCaps;
+    c8->ShadeCaps = t->dwShadeCaps;
+    c8->TextureCaps = t->dwTextureCaps | D3DPTEXTURECAPS_MIPMAP;
+    c8->TextureFilterCaps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MINFLINEAR | D3DPTFILTERCAPS_MIPFPOINT |
+                            D3DPTFILTERCAPS_MIPFLINEAR | D3DPTFILTERCAPS_MAGFPOINT | D3DPTFILTERCAPS_MAGFLINEAR;
+    c8->TextureAddressCaps = t->dwTextureAddressCaps | D3DPTADDRESSCAPS_MIRRORONCE;
+    c8->LineCaps = D3DLINECAPS_TEXTURE | D3DLINECAPS_ZTEST | D3DLINECAPS_BLEND | D3DLINECAPS_ALPHACMP | D3DLINECAPS_FOG;
+    c8->MaxTextureWidth = c8->MaxTextureHeight = 4096;
+    c8->MaxTextureRepeat = 8192;
+    c8->MaxAnisotropy = 1;
+    c8->MaxVertexW = 1.0e10f;
+    c8->StencilCaps = D3DSTENCILCAPS_ALL;
+    c8->FVFCaps = 8;
+    c8->TextureOpCaps = D3DTEXOPCAPS_ALL;
+    c8->MaxTextureBlendStages = 8;
+    c8->MaxSimultaneousTextures = 8;
+    c8->VertexProcessingCaps = e->dwVertexProcessingCaps;
+    c8->MaxActiveLights = e->dwMaxActiveLights;
+    c8->MaxUserClipPlanes = e->wMaxUserClipPlanes;
+    c8->MaxVertexBlendMatrices = e->wMaxVertexBlendMatrices;
+    c8->MaxPointSize = 64.0f;
+    c8->MaxPrimitiveCount = 0xffff;
+    c8->MaxVertexIndex = 0xffff;
+    c8->MaxStreams = 1;
+    c8->MaxStreamStride = 256;
+    c8->VertexShaderVersion = D3DVS_VERSION_0;
+    c8->PixelShaderVersion = D3DPS_VERSION_0;
+
+    /* its format list (DDPF_D3DFORMAT entries: the D3DFORMAT in dwFourCC,
+     * the operations in the dwRBitMask slot) */
+    for (i = 0; i < sizeof(d3d_fmt8) / 4; i++) ((ULONG *)d3d_fmt8)[i] = 0;
+    d3d_fmt8_n = 0;
+    fmt8_add(D3DFMT_X8R8G8B8_, D3DFORMAT_OP_TEXTURE_ | D3DFORMAT_OP_DISPLAYMODE_ | D3DFORMAT_OP_3DACCELERATION_ |
+                               D3DFORMAT_OP_OFFSCREEN_RENDERTARGET_ | D3DFORMAT_OP_SAME_FORMAT_RENDERTARGET_);
+    fmt8_add(D3DFMT_A8R8G8B8_, D3DFORMAT_OP_TEXTURE_ | D3DFORMAT_OP_OFFSCREEN_RENDERTARGET_ | D3DFORMAT_OP_SAME_FORMAT_RENDERTARGET_);
+    fmt8_add(D3DFMT_R5G6B5_, D3DFORMAT_OP_TEXTURE_ | D3DFORMAT_OP_DISPLAYMODE_ | D3DFORMAT_OP_3DACCELERATION_ |
+                             D3DFORMAT_OP_OFFSCREEN_RENDERTARGET_ | D3DFORMAT_OP_SAME_FORMAT_RENDERTARGET_);
+    fmt8_add(D3DFMT_X1R5G5B5_, D3DFORMAT_OP_TEXTURE_ | D3DFORMAT_OP_OFFSCREEN_RENDERTARGET_);
+    fmt8_add(D3DFMT_A1R5G5B5_, D3DFORMAT_OP_TEXTURE_);
+    fmt8_add(D3DFMT_A4R4G4B4_, D3DFORMAT_OP_TEXTURE_);
+    fmt8_add(FOURCC_('D', 'X', 'T', '1'), D3DFORMAT_OP_TEXTURE_);
+    fmt8_add(FOURCC_('D', 'X', 'T', '3'), D3DFORMAT_OP_TEXTURE_);
+    fmt8_add(FOURCC_('D', 'X', 'T', '5'), D3DFORMAT_OP_TEXTURE_);
+    fmt8_add(D3DFMT_D16_, D3DFORMAT_OP_ZSTENCIL_ | D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_);
+    fmt8_add(D3DFMT_D24X8_, D3DFORMAT_OP_ZSTENCIL_ | D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_);
+    fmt8_add(D3DFMT_D24S8_, D3DFORMAT_OP_ZSTENCIL_ | D3DFORMAT_OP_ZSTENCIL_WITH_ARBITRARY_COLOR_DEPTH_);
 
     d3d_callbacks.dwSize = sizeof(d3d_callbacks);
     d3d_callbacks.ContextCreate = D3dContextCreate;
@@ -1343,7 +1550,7 @@ static BOOL d3d_init(PPDEV p)
         dbg_puts(p, "d3dptdisp: no Direct3D executor on the host\n");
         return FALSE;
     }
-    d3d_caps_init();
+    d3d_caps_init(p);
     d3dpt_enc_init(&p->enc, (uint8_t *)p->fb + p->cmd_offset, d3d_doorbell);
     p->d3d = TRUE;
     d3d_pdev = p;
@@ -1393,6 +1600,94 @@ static PDD_SURFACE_LOCAL surf_next_mip(PDD_SURFACE_LOCAL s)
     return NULL;
 }
 
+/* --- the surface table (DX8 DDI): every surface dxg told us about, by
+ * handle, VRAM and system memory alike. The DX8 tokens name vertex / index
+ * buffers and the system-memory side of a TEXBLT by handle; the memory is
+ * the caller's (user-mode pointers for system-memory surfaces, read only
+ * inside DrawPrimitives2, which runs in the caller's context) --- */
+
+typedef struct _SURF_LEVEL {
+    ULONG_PTR mem;
+    ULONG pitch;
+} SURF_LEVEL;
+
+typedef struct _SURF {
+    ULONG_PTR mem;              /* system memory: the user pointer; VRAM: the mapped address */
+    ULONG size;                 /* bytes (the linear size of a buffer, pitch * height otherwise) */
+    ULONG pitch, w, h, fmt;
+    UCHAR used, sysmem, buffer, levels;
+    SURF_LEVEL lv[15];          /* mip levels 1.. */
+} SURF;
+
+static SURF *surf_tab;
+static ULONG surf_tab_n;
+
+#define DDSCAPS2_VERTEXBUFFER_ 0x02000000
+#define DDSCAPS2_INDEXBUFFER_  0x04000000
+
+static SURF *surf_slot(ULONG handle, BOOL create)
+{
+    if (handle >= surf_tab_n) {
+        SURF *t;
+        ULONG n = surf_tab_n ? surf_tab_n : 256;
+
+        if (!create || handle >= 0x100000) {
+            return NULL;
+        }
+        while (n <= handle) n *= 2;
+        t = EngAllocMem(FL_ZERO_MEMORY, n * sizeof(SURF), ALLOC_TAG);
+        if (!t) {
+            return NULL;
+        }
+        if (surf_tab) {
+            memcpy(t, surf_tab, surf_tab_n * sizeof(SURF));
+            EngFreeMem(surf_tab);
+        }
+        surf_tab = t;
+        surf_tab_n = n;
+    }
+    if (!create && !surf_tab[handle].used) {
+        return NULL;
+    }
+    return &surf_tab[handle];
+}
+
+/* bytes of one row of w pixels (blocks for DXT); 0 = unknown format */
+static ULONG fmt_row_bytes(ULONG f, ULONG w)
+{
+    switch (f) {
+    case D3DFMT_X8R8G8B8_: case D3DFMT_A8R8G8B8_: case D3DFMT_D24X8_: case D3DFMT_D24S8_: case D3DFMT_D32_:
+        return w * 4;
+    case D3DFMT_R5G6B5_: case D3DFMT_X1R5G5B5_: case D3DFMT_A1R5G5B5_: case D3DFMT_A4R4G4B4_: case D3DFMT_X4R4G4B4_:
+    case D3DFMT_D16_: case D3DFMT_D15S1_:
+        return w * 2;
+    default:
+        if (f == FOURCC_('D', 'X', 'T', '1')) return ((w + 3) / 4) * 8;
+        if (f == FOURCC_('D', 'X', 'T', '2') || f == FOURCC_('D', 'X', 'T', '3') ||
+            f == FOURCC_('D', 'X', 'T', '4') || f == FOURCC_('D', 'X', 'T', '5')) return ((w + 3) / 4) * 16;
+        return 0;
+    }
+}
+
+static BOOL fmt_is_dxt(ULONG f)
+{
+    return f == FOURCC_('D', 'X', 'T', '1') || f == FOURCC_('D', 'X', 'T', '2') || f == FOURCC_('D', 'X', 'T', '3') ||
+           f == FOURCC_('D', 'X', 'T', '4') || f == FOURCC_('D', 'X', 'T', '5');
+}
+
+/* the row pitch of a surface: dxg's lPitch, except that for a compressed
+ * format the union holds the linear size (DDSD_LINEARSIZE), and a block
+ * row is what the copies and the host want */
+static ULONG surf_pitch(ULONG fmt, ULONG w, ULONG lpitch)
+{
+    return fmt_is_dxt(fmt) ? fmt_row_bytes(fmt, w) : lpitch;
+}
+
+static ULONG surf_rows(ULONG fmt, ULONG h)
+{
+    return fmt_is_dxt(fmt) ? (h + 3) / 4 : h;
+}
+
 /* VRAM_SURFACE for s at the given VRAM offset (its own, or the one a flip hands it) */
 static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
 {
@@ -1400,6 +1695,9 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     d3dpt_u32x2 lv[15];
     ULONG handle, fmt, caps, n = 1, i;
     PDD_SURFACE_LOCAL m;
+    BOOL sysmem, buffer;
+    SURF *t;
+    ULONG pitch0, rows0;
 
     if (!p->d3d || !s || !s->lpGbl) {
         return;
@@ -1407,6 +1705,11 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     handle = surf_handle(s);
     fmt = surf_format(p, s);
     caps = surf_caps(s);
+    pitch0 = surf_pitch(fmt, s->lpGbl->wWidth, (ULONG)s->lpGbl->lPitch);
+    rows0 = surf_rows(fmt, s->lpGbl->wHeight);
+    sysmem = (s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) != 0;
+    buffer = (s->ddsCaps.dwCaps & DDSCAPS_EXECUTEBUFFER) != 0 ||
+             (s->lpSurfMore && (s->lpSurfMore->ddsCapsEx.dwCaps2 & (DDSCAPS2_VERTEXBUFFER_ | DDSCAPS2_INDEXBUFFER_)));
     /* one line per surface in the QEMU log: what the host will know it as
      * (a "skipped" surface is one a later SETRENDERTARGET / TEXTUREMAP
      * would report unknown) */
@@ -1418,20 +1721,41 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
         dbg_hex(p, " h ", s->lpGbl->wHeight);
         dbg_hex(p, " fmt ", fmt);
         dbg_hex(p, " at ", offset);
-        if (s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) dbg_puts(p, " sysmem, skipped");
+        if (buffer) dbg_hex(p, " buffer of ", s->lpGbl->dwLinearSize);
+        if (sysmem) dbg_puts(p, " sysmem");
         else if (!fmt) dbg_puts(p, " no format, skipped");
         dbg_puts(p, "\n");
     }
-    if ((s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) || !handle || !fmt ||
-        (ULONGLONG)offset + (ULONGLONG)s->lpGbl->lPitch * s->lpGbl->wHeight > heap_end(p)) {
+    if (!handle) {
         return;
     }
     if (caps & D3DPT_VS_TEXTURE) {
         for (m = surf_next_mip(s); m && n < 16; m = surf_next_mip(m)) {
             lv[n - 1].a = (ULONG)m->lpGbl->fpVidMem;
-            lv[n - 1].b = (ULONG)m->lpGbl->lPitch;
+            lv[n - 1].b = surf_pitch(fmt, m->lpGbl->wWidth, (ULONG)m->lpGbl->lPitch);
             n++;
         }
+    }
+    /* the table entry (system-memory surfaces live only here) */
+    t = surf_slot(handle, TRUE);
+    if (t) {
+        t->used = 1;
+        t->sysmem = sysmem;
+        t->buffer = buffer;
+        t->mem = sysmem ? (ULONG_PTR)s->lpGbl->fpVidMem : (ULONG_PTR)p->fb + offset;
+        t->pitch = pitch0;
+        t->w = s->lpGbl->wWidth;
+        t->h = s->lpGbl->wHeight;
+        t->fmt = fmt;
+        t->size = buffer ? s->lpGbl->dwLinearSize : pitch0 * rows0;
+        t->levels = (UCHAR)n;
+        for (i = 0; i + 1 < n; i++) {
+            t->lv[i].mem = sysmem ? (ULONG_PTR)lv[i].a : (ULONG_PTR)p->fb + lv[i].a;
+            t->lv[i].pitch = lv[i].b;
+        }
+    }
+    if (sysmem || !fmt || (ULONGLONG)offset + (ULONGLONG)pitch0 * rows0 > heap_end(p)) {
+        return;
     }
     r = d3dpt_enc_cmd(&p->enc, D3DPT_OP_VRAM_SURFACE, sizeof(*r), (n - 1) * sizeof(d3dpt_u32x2));
     if (!r) {
@@ -1441,7 +1765,7 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset)
     r->offset = offset;
     r->width = s->lpGbl->wWidth;
     r->height = s->lpGbl->wHeight;
-    r->pitch = (ULONG)s->lpGbl->lPitch;
+    r->pitch = pitch0;
     r->format = fmt;
     r->caps = caps;
     r->levels = n;
@@ -1511,7 +1835,11 @@ static DWORD APIENTRY DdGetDriverState(PDD_GETDRIVERSTATEDATA d)
 static DWORD APIENTRY DdDestroySurface(PDD_DESTROYSURFACEDATA d)
 {
     PPDEV p = (PPDEV)d->lpDD->dhpdev;
+    SURF *t = d->lpDDSurface ? surf_slot(surf_handle(d->lpDDSurface), FALSE) : NULL;
 
+    if (t) {
+        t->used = 0;
+    }
     if (d->lpDDSurface && !(d->lpDDSurface->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
         d3d_handle_op(p, D3DPT_OP_VRAM_RELEASE, surf_handle(d->lpDDSurface));
     }
@@ -1599,6 +1927,7 @@ static DWORD APIENTRY D3dContextCreate(LPD3DNTHAL_CONTEXTCREATEDATA d)
     if (hr & 0x80000000u) {
         return DDHAL_DRIVER_HANDLED;
     }
+    memset(&p->ctx[i], 0, sizeof(p->ctx[i]));
     p->ctx[i].used = TRUE;
     p->ctx[i].pid = d->dwPID;
     p->ctx[i].rt = c->rt;
@@ -1729,30 +2058,450 @@ static DWORD APIENTRY D3dValidateTextureStageState(LPD3DNTHAL_VALIDATETEXTURESTA
     return DDHAL_DRIVER_HANDLED;
 }
 
-/* the render-state array the runtime keeps next to the stream: it expects
- * the driver to mirror every RENDERSTATE token into it */
-static void dp2_track_states(const UCHAR *cmd, ULONG len, DWORD *rstates)
-{
-    ULONG pos = 0;
+/* --- the DP2 stream: the DX7 tokens pass through, the DX8 ones are
+ * rewritten (DX8 DDI, doc 15). The runtime's draw tokens name vertex and
+ * index buffers the host cannot see, so each draw becomes a self-contained
+ * D3DPT_DP2_DRAW8 token carrying its vertex range and indices; TEXBLT is a
+ * copy done here (system memory -> VRAM, then VRAM_DIRTY); the rest
+ * (shaders we do not claim, buffer blits, dirty rects) is dropped. Two
+ * passes over the stream: the first measures the output and does the
+ * blits, the second writes into the record. --- */
 
-    while (pos + sizeof(D3DNTHAL_DP2COMMAND) <= len) {
-        const D3DNTHAL_DP2COMMAND *c = (const D3DNTHAL_DP2COMMAND *)(cmd + pos);
-        ULONG count = c->wStateCount, i;
-        pos += sizeof(*c);
-        if (c->bCommand != D3DDP2OP_RENDERSTATE_) {
-            return;                 /* other tokens have other sizes: stop here */
-        }
-        if (pos + count * 8 > len) {
-            return;
-        }
-        for (i = 0; i < count; i++) {
-            const ULONG *e = (const ULONG *)(cmd + pos + i * 8);
-            if (e[0] < 256 && rstates) {
-                rstates[e[0]] = e[1];
-            }
-        }
-        pos += count * 8;
+typedef struct _DP2WALK {
+    PPDEV p;
+    const UCHAR *cmd;
+    ULONG clen;
+    const UCHAR *vtx;           /* the DP2 vertex buffer (user memory), from dwVertexOffset on */
+    const UCHAR *vraw;          /* its start (the clipper's fan offsets count from here) */
+    ULONG voffset;              /* dwVertexOffset */
+    ULONG vlen, vsize, vcount;  /* its bytes (dwVertexLength * dwVertexSize), stride, vertex count */
+    ULONG vall;                 /* the whole buffer from vtx on: dwVertexLength covers the
+                                 * application's vertices only, the runtime's clipper writes its
+                                 * fans (CLIPPEDTRIANGLEFAN) further along the same buffer */
+    ULONG fvf;                  /* the current vertex format (SETVERTEXSHADER) */
+    DP2STREAM vb, ib;           /* stream 0 and the index buffer */
+    ULONG vb_handle, ib_handle;
+    BOOL vb_um;                 /* stream 0 is the DP2 vertex buffer */
+    BOOL shader;                /* a real vertex shader is current: its draws are skipped */
+    BOOL needs_vb;              /* a DX7 draw token references the DP2 vertex buffer */
+    UCHAR *out;                 /* pass 2: the record's command area (NULL in pass 1) */
+    ULONG outlen;
+    ULONG skipped;              /* draws skipped (bad ranges, shaders, unknown buffers) */
+    ULONG skip_why;             /* bits: 1 shader, 2 no fvf, 4 no stream, 8 stride < fvf, 16 vertex range, 32 index range, 64 prim */
+    ULONG skip_info[6];         /* the first skipped draw: prim, count, voff, nverts, ioff, nindices */
+    DWORD *rstates;
+} DP2WALK;
+
+static ULONG prim_verts(ULONG prim, ULONG n)
+{
+    switch (prim) {
+    case 1: return n;               /* points */
+    case 2: return n * 2;           /* line list */
+    case 3: return n + 1;           /* line strip */
+    case 4: return n * 3;           /* triangle list */
+    case 5: case 6: return n + 2;   /* strip, fan */
+    default: return 0;
     }
+}
+
+/* the vertex size of an FVF (the host computes the same) */
+static ULONG fvf_stride(ULONG fvf)
+{
+    ULONG n = 0, tex = (fvf >> 8) & 0xf, i;
+
+    switch (fvf & 0xe) {
+    case 0x2: n = 12; break;
+    case 0x4: n = 16; break;
+    case 0x6: n = 16; break;
+    case 0x8: n = 20; break;
+    case 0xa: n = 24; break;
+    case 0xc: n = 28; break;
+    case 0xe: n = 32; break;
+    default: return 0;
+    }
+    if (fvf & 0x10) n += 12;
+    if (fvf & 0x20) n += 4;
+    if (fvf & 0x40) n += 4;
+    if (fvf & 0x80) n += 4;
+    for (i = 0; i < tex; i++) {
+        switch ((fvf >> (16 + 2 * i)) & 3) {
+        case 0: n += 8; break;
+        case 1: n += 12; break;
+        case 2: n += 16; break;
+        case 3: n += 4; break;
+        }
+    }
+    return n;
+}
+
+static void walk_put(DP2WALK *w, const void *src, ULONG bytes)
+{
+    if (w->out && bytes) {
+        memcpy(w->out + w->outlen, src, bytes);
+    }
+    w->outlen += bytes;
+}
+
+static void walk_pad(DP2WALK *w)
+{
+    static const UCHAR zero[4] = { 0, 0, 0, 0 };
+    ULONG pad = (4 - (w->outlen & 3)) & 3;
+
+    walk_put(w, zero, pad);
+}
+
+/* one self-contained draw for the host */
+static void walk_draw(DP2WALK *w, ULONG prim, ULONG count, const DP2STREAM *vs, ULONG voff, ULONG nverts,
+                      ULONG ioff, ULONG nindices, ULONG min_index)
+{
+    D3DNTHAL_DP2COMMAND h;
+    d3dpt_dp2_draw8 t;
+    ULONG stride = vs->stride, vbytes;
+
+    /* a stride wider than the FVF is legal (the runtime passes the
+     * application's stride for user-memory draws) */
+    if (w->shader) w->skip_why |= 1;
+    else if (!w->fvf) w->skip_why |= 2;
+    else if (!stride || !vs->mem) w->skip_why |= 4;
+    else if (fvf_stride(w->fvf) > stride) w->skip_why |= 8;
+    else if (!prim_verts(prim, count)) w->skip_why |= 64;
+    if (w->shader || !w->fvf || !stride || !vs->mem || fvf_stride(w->fvf) > stride || !prim_verts(prim, count)) {
+        if (!w->skipped) {
+            w->skip_info[0] = prim; w->skip_info[1] = count; w->skip_info[2] = voff;
+            w->skip_info[3] = w->fvf; w->skip_info[4] = stride; w->skip_info[5] = nindices;
+        }
+        w->skipped++;
+        return;
+    }
+    if (!nindices) {
+        nverts = prim_verts(prim, count);
+    }
+    vbytes = nverts * stride;
+    if (nverts > 0x10000 || voff > vs->bytes || vbytes > vs->bytes - voff ||
+        (nindices && (!w->ib.mem || w->ib.stride != 2 || ioff > w->ib.bytes || nindices * 2 > w->ib.bytes - ioff))) {
+        if (!w->skipped) {
+            w->skip_info[0] = prim; w->skip_info[1] = count; w->skip_info[2] = voff;
+            w->skip_info[3] = nverts; w->skip_info[4] = ioff; w->skip_info[5] = nindices;
+        }
+        w->skipped++;
+        w->skip_why |= (nverts > 0x10000 || voff > vs->bytes || vbytes > vs->bytes - voff) ? 16 : 32;
+        return;
+    }
+    h.bCommand = (BYTE)D3DPT_DP2_DRAW8;
+    h.bReserved = 0;
+    h.wPrimitiveCount = 0;
+    t.prim_type = prim;
+    t.prim_count = count;
+    t.fvf = w->fvf;
+    t.stride = stride;
+    t.nverts = nverts;
+    t.nindices = nindices;
+    t.min_index = min_index;
+    t.pad = 0;
+    walk_put(w, &h, sizeof(h));
+    walk_put(w, &t, sizeof(t));
+    walk_put(w, (const void *)(vs->mem + voff), vbytes);
+    walk_pad(w);
+    if (nindices) {
+        walk_put(w, (const void *)(w->ib.mem + ioff), nindices * 2);
+        walk_pad(w);
+    }
+}
+
+/* TEXBLT: system memory -> the VRAM texture, every level, then VRAM_DIRTY */
+static void walk_texblt(DP2WALK *w, const ULONG *b)
+{
+    PPDEV p = w->p;
+    SURF *dst = surf_slot(b[0], FALSE), *src = surf_slot(b[1], FALSE);
+    LONG dx = (LONG)b[2], dy = (LONG)b[3], sl = (LONG)b[4], st = (LONG)b[5], sr = (LONG)b[6], sb = (LONG)b[7];
+    ULONG lv, levels, bpp;
+    BOOL dxt;
+
+    if (!dst || !src || !dst->fmt || dst->fmt != src->fmt || !src->sysmem || dst->buffer || src->buffer) {
+        return;
+    }
+    if (sl < 0 || st < 0 || sr <= sl || sb <= st || dx < 0 || dy < 0) {
+        return;
+    }
+    dxt = fmt_is_dxt(dst->fmt);
+    bpp = fmt_row_bytes(dst->fmt, 1);
+    levels = dst->levels < src->levels ? dst->levels : src->levels;
+    for (lv = 0; lv < levels; lv++) {
+        ULONG_PTR smem = lv ? src->lv[lv - 1].mem : src->mem, dmem = lv ? dst->lv[lv - 1].mem : dst->mem;
+        ULONG spitch = lv ? src->lv[lv - 1].pitch : src->pitch, dpitch = lv ? dst->lv[lv - 1].pitch : dst->pitch;
+        ULONG sw = src->w >> lv, sh = src->h >> lv, dw = dst->w >> lv, dh = dst->h >> lv;
+        ULONG x0 = (ULONG)sl >> lv, y0 = (ULONG)st >> lv, x1 = (ULONG)dx >> lv, y1 = (ULONG)dy >> lv;
+        ULONG cw = (ULONG)(sr - sl) >> lv, ch = (ULONG)(sb - st) >> lv, rows, rowbytes, y;
+
+        if (!sw) sw = 1;
+        if (!sh) sh = 1;
+        if (!dw) dw = 1;
+        if (!dh) dh = 1;
+        if (!cw) cw = 1;
+        if (!ch) ch = 1;
+        if (x0 + cw > sw) cw = sw > x0 ? sw - x0 : 0;
+        if (y0 + ch > sh) ch = sh > y0 ? sh - y0 : 0;
+        if (x1 + cw > dw) cw = dw > x1 ? dw - x1 : 0;
+        if (y1 + ch > dh) ch = dh > y1 ? dh - y1 : 0;
+        if (!cw || !ch || !smem || !dmem) {
+            continue;
+        }
+        if (dxt) {
+            rows = (ch + 3) / 4;
+            rowbytes = fmt_row_bytes(dst->fmt, cw);
+            smem += (y0 / 4) * spitch + fmt_row_bytes(dst->fmt, x0);
+            dmem += (y1 / 4) * dpitch + fmt_row_bytes(dst->fmt, x1);
+        } else {
+            rows = ch;
+            rowbytes = cw * bpp;
+            smem += y0 * spitch + x0 * bpp;
+            dmem += y1 * dpitch + x1 * bpp;
+        }
+        for (y = 0; y < rows; y++) {
+            memcpy((void *)(dmem + y * dpitch), (const void *)(smem + y * spitch), rowbytes);
+        }
+    }
+    if (!dst->sysmem) {
+        d3d_handle_op(p, D3DPT_OP_VRAM_DIRTY, b[0]);
+    }
+}
+
+/* the body size of a token, ~0 when unknown or truncated; the IMM tokens'
+ * payload is DWORD-aligned by offset (their size depends on where they sit) */
+static ULONG walk_body_size(ULONG op, ULONG count, const UCHAR *q, ULONG left, ULONG pos, ULONG stride)
+{
+    ULONG pad = (4 - ((pos + 4) & 3)) & 3, n, i, sz;
+
+    switch (op) {
+    case 1: return count * 4;                                   /* POINTS */
+    case 2: return count * 4;                                   /* INDEXEDLINELIST */
+    case 3: return count * 8;                                   /* INDEXEDTRIANGLELIST */
+    case 8: return count * 8;                                   /* RENDERSTATE */
+    case 15: case 16: case 18: case 19: case 21: return 2;      /* LINELIST .. TRIANGLEFAN: wVStart */
+    case 17: return 2 + (count + 1) * 2;                        /* INDEXEDLINESTRIP */
+    case 20: case 22: return 2 + (count + 2) * 2;               /* INDEXEDTRIANGLESTRIP / FAN */
+    case 23: return pad + 4 + (count + 2) * stride;             /* TRIANGLEFAN_IMM (+ the pad after) */
+    case 24: return pad + count * 2 * stride;                   /* LINELIST_IMM */
+    case 25: return count * 8;                                  /* TEXTURESTAGESTATE */
+    case 26: return 2 + count * 6;                              /* INDEXEDTRIANGLELIST2 */
+    case 27: return 2 + count * 4;                              /* INDEXEDLINELIST2 */
+    case 28: return count * 16;                                 /* VIEWPORTINFO */
+    case 29: return count * 8;                                  /* WINFO */
+    case 30: return count * 12;                                 /* SETPALETTE */
+    case 31: return left < 8 ? ~0u : 8 + (ULONG)((const USHORT *)q)[3] * 4;   /* UPDATEPALETTE */
+    case 32: return count * 8;                                  /* ZRANGE */
+    case 33: return count * 68;                                 /* SETMATERIAL */
+    case 34:                                                    /* SETLIGHT: 8, + 104 with data */
+        sz = 0;
+        for (i = 0; i < count; i++) {
+            if (left < sz + 8) return ~0u;
+            n = ((const ULONG *)(q + sz))[1] == 2 ? 112 : 8;
+            sz += n;
+        }
+        return sz;
+    case 35: return count * 4;                                  /* CREATELIGHT */
+    case 36: return count * 68;                                 /* SETTRANSFORM */
+    case 38: return count * 36;                                 /* TEXBLT */
+    case 39: return count * 12;                                 /* STATESET */
+    case 40: return count * 8;                                  /* SETPRIORITY */
+    case 41: return count * 8;                                  /* SETRENDERTARGET */
+    case 42: return 16 + count * 16;                            /* CLEAR */
+    case 43: return count * 8;                                  /* SETTEXLOD */
+    case 44: return count * 20;                                 /* SETCLIPPLANE */
+    case 45:                                                    /* CREATEVERTEXSHADER: handle, decl size, code size */
+        sz = 0;
+        for (i = 0; i < count; i++) {
+            if (left < sz + 12) return ~0u;
+            sz += 12 + ((const ULONG *)(q + sz))[1] + ((const ULONG *)(q + sz))[2];
+        }
+        return sz;
+    case 46: case 47: case 55: case 56: return count * 4;       /* shader handles */
+    case 48: case 57:                                           /* shader constants: register, count, count * 16 */
+        sz = 0;
+        for (i = 0; i < count; i++) {
+            if (left < sz + 8) return ~0u;
+            sz += 8 + ((const ULONG *)(q + sz))[1] * 16;
+        }
+        return sz;
+    case 49: return count * 12;                                 /* SETSTREAMSOURCE */
+    case 50: return count * 8;                                  /* SETSTREAMSOURCEUM */
+    case 51: return count * 8;                                  /* SETINDICES */
+    case 52: return count * 12;                                 /* DRAWPRIMITIVE */
+    case 53: return count * 24;                                 /* DRAWINDEXEDPRIMITIVE */
+    case 54:                                                    /* CREATEPIXELSHADER: handle, code size */
+        sz = 0;
+        for (i = 0; i < count; i++) {
+            if (left < sz + 8) return ~0u;
+            sz += 8 + ((const ULONG *)(q + sz))[1];
+        }
+        return sz;
+    case 58: return count * 12;                                 /* CLIPPEDTRIANGLEFAN */
+    case 59: return count * 12;                                 /* DRAWPRIMITIVE2 */
+    case 60: return count * 24;                                 /* DRAWINDEXEDPRIMITIVE2 */
+    case 61: case 62:                                           /* patches: handle, flags [, segments] [, info] */
+        sz = 0;
+        for (i = 0; i < count; i++) {
+            if (left < sz + 8) return ~0u;
+            n = ((const ULONG *)(q + sz))[1];
+            sz += 8 + ((n & 1) ? (op == 61 ? 16 : 12) : 0) + ((n & 2) ? (op == 61 ? 28 : 16) : 0);
+        }
+        return sz;
+    case 63: return count * 48;                                 /* VOLUMEBLT */
+    case 64: return count * 24;                                 /* BUFFERBLT */
+    case 65: return count * 68;                                 /* MULTIPLYTRANSFORM */
+    case 66: return count * 20;                                 /* ADDDIRTYRECT */
+    case 67: return count * 28;                                 /* ADDDIRTYBOX */
+    default: return ~0u;
+    }
+}
+
+/* one pass over the runtime's stream; FALSE = an unknown token stopped it
+ * there (the rest is copied verbatim for the host to report) */
+static BOOL walk(DP2WALK *w)
+{
+    ULONG pos = 0, i;
+
+    while (pos + 4 <= w->clen) {
+        const D3DNTHAL_DP2COMMAND *c = (const D3DNTHAL_DP2COMMAND *)(w->cmd + pos);
+        const UCHAR *q = w->cmd + pos + 4;
+        ULONG op = c->bCommand, count = c->wPrimitiveCount, left = w->clen - pos - 4, size;
+        ULONG stride = w->vsize ? w->vsize : (w->fvf ? fvf_stride(w->fvf) : 0);
+
+        size = walk_body_size(op, count, q, left, pos, stride);
+        if (size == ~0u || size > left) {
+            walk_put(w, w->cmd + pos, w->clen - pos);
+            return FALSE;
+        }
+        if (op == 23 || op == 24) {                             /* the next token is DWORD-aligned by offset */
+            ULONG e = (pos + 4 + size + 3) & ~3u;
+            size = e - pos - 4 <= left ? e - pos - 4 : left;
+        }
+        switch (op) {
+        case 8:                                                 /* RENDERSTATE: mirrored for the runtime */
+            if (w->rstates && !w->out) {
+                for (i = 0; i < count; i++) {
+                    const ULONG *e = (const ULONG *)(q + i * 8);
+                    if (e[0] < 256) w->rstates[e[0]] = e[1];
+                }
+            }
+            walk_put(w, c, 4 + size);
+            break;
+        case 23: case 24: {                                     /* IMM: re-pad for the output offset */
+            ULONG ipad = (4 - ((pos + 4) & 3)) & 3;
+            walk_put(w, c, 4);
+            walk_pad(w);
+            walk_put(w, q + ipad, size - ipad);
+            walk_pad(w);
+            w->needs_vb = TRUE;
+            break;
+        }
+        case 1: case 2: case 3: case 15: case 16: case 17: case 18: case 19: case 20: case 21: case 22:
+        case 26: case 27:
+            w->needs_vb = TRUE;
+            walk_put(w, c, 4 + size);
+            break;
+        case 38:                                                /* TEXBLT: done here, in pass 1 */
+            if (!w->out) {
+                for (i = 0; i < count; i++) walk_texblt(w, (const ULONG *)(q + i * 36));
+            }
+            break;
+        case 47:                                                /* SETVERTEXSHADER: an FVF, or a shader (bit 0) */
+            for (i = 0; i < count; i++) {
+                ULONG h = ((const ULONG *)q)[i];
+                if (h & 1) {
+                    w->shader = TRUE;
+                } else {
+                    w->shader = FALSE;
+                    w->fvf = h;
+                }
+            }
+            walk_put(w, c, 4 + size);
+            break;
+        case 49:                                                /* SETSTREAMSOURCE: stream, handle, stride */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 12);
+                SURF *t = surf_slot(e[1], FALSE);
+                if (e[0] == 0) {
+                    w->vb.mem = t ? t->mem : 0;
+                    w->vb.bytes = t ? t->size : 0;
+                    w->vb.stride = e[2];
+                    w->vb_handle = e[1];
+                    w->vb_um = FALSE;
+                }
+            }
+            break;
+        case 50:                                                /* SETSTREAMSOURCEUM: stream, stride (the DP2 vertex buffer) */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 8);
+                if (e[0] == 0) {
+                    w->vb.mem = (ULONG_PTR)w->vtx;
+                    w->vb.bytes = w->vall;
+                    w->vb.stride = e[1];
+                    w->vb_um = TRUE;
+                }
+            }
+            break;
+        case 51:                                                /* SETINDICES: handle, stride */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 8);
+                SURF *t = e[0] ? surf_slot(e[0], FALSE) : NULL;
+                w->ib.mem = t ? t->mem : 0;
+                w->ib.bytes = t ? t->size : 0;
+                w->ib.stride = e[1];
+                w->ib_handle = e[0];
+            }
+            break;
+        case 52:                                                /* DRAWPRIMITIVE: type, VStart, count */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 12);
+                walk_draw(w, e[0], e[2], &w->vb, e[1] * w->vb.stride, 0, 0, 0, 0);
+            }
+            break;
+        case 59:                                                /* DRAWPRIMITIVE2: type, first vertex offset (bytes), count */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 12);
+                walk_draw(w, e[0], e[2], &w->vb, e[1], 0, 0, 0, 0);
+            }
+            break;
+        case 53:                                                /* DRAWINDEXEDPRIMITIVE: type, base, min, nverts, start index, count */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 24);
+                walk_draw(w, e[0], e[5], &w->vb, (e[1] + e[2]) * w->vb.stride, e[3], e[4] * 2, prim_verts(e[0], e[5]), e[2]);
+            }
+            break;
+        case 60:                                                /* DRAWINDEXEDPRIMITIVE2: type, base offset, min, nverts, start offset, count */
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 24);
+                walk_draw(w, e[0], e[5], &w->vb, (ULONG)((LONG)e[1] + (LONG)(e[2] * w->vb.stride)), e[3], e[4], prim_verts(e[0], e[5]), e[2]);
+            }
+            break;
+        case 58: {                                              /* CLIPPEDTRIANGLEFAN: first vertex offset, edge flags, count */
+            /* the clipper's fans are in the current vertex format (the
+             * call's dwVertexSize describes the application's stream), at
+             * offsets from the buffer's start, not from dwVertexOffset */
+            DP2STREAM um;
+            um.mem = (ULONG_PTR)w->vraw;
+            um.bytes = w->vall + w->voffset;
+            um.stride = w->fvf ? fvf_stride(w->fvf) : w->vsize;
+            for (i = 0; i < count; i++) {
+                const ULONG *e = (const ULONG *)(q + i * 12);
+                walk_draw(w, 6, e[2], &um, e[0], 0, 0, 0, 0);
+            }
+            break;
+        }
+        case 45: case 46: case 48: case 54: case 55: case 56: case 57:   /* shaders: not claimed */
+        case 61: case 62: case 63: case 64: case 66: case 67:            /* patches, volume / buffer blits, dirty rects */
+            break;
+        default:
+            walk_put(w, c, 4 + size);
+            break;
+        }
+        pos += 4 + size;
+    }
+    if (pos < w->clen) {
+        walk_put(w, w->cmd + pos, w->clen - pos);
+    }
+    return TRUE;
 }
 
 static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
@@ -1760,9 +2509,10 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     PPDEV p = d3d_pdev;
     D3DCTX *c = p ? ctx_of(p, d->dwhContext) : NULL;
     const UCHAR *cmd, *vtx;
-    ULONG clen = d->dwCommandLength, vsize = d->dwVertexSize, vlen, off;
+    ULONG clen = d->dwCommandLength, vsize = d->dwVertexSize, vlen, vall, vcopy, off;
     d3dpt_dp2 *r;
     d3dpt_ret *res;
+    DP2WALK w, w0;
 
     if (!c || !d->lpDDCommands || !d->lpDDCommands->lpGbl) {
         d->ddrval = DDERR_GENERIC;
@@ -1777,30 +2527,122 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
         vtx = NULL;
     }
     vlen = vtx ? d->dwVertexLength * vsize : 0;
-    if (!vsize || clen > (16u << 20) || vlen > (32u << 20) ||
-        D3DPT_ALIGN8(clen) + vlen + sizeof(*r) + sizeof(d3dpt_cmd) > D3DPT_CMD_SIZE) {
+    if (clen > (16u << 20) || vlen > (32u << 20)) {
         d->ddrval = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
     }
-    dp2_track_states(cmd, clen, d->lpdwRStates);
+    /* what the buffer really holds from vtx on: a dxg buffer's linear size;
+     * the DX8 runtime passes its own vertex buffer as user memory
+     * (USERMEMVERTICES) with dwVertexLength covering the application's
+     * vertices only, its clipper's fans lie beyond, and it names their
+     * offsets itself: trusted up to a cap, as a real driver trusts it */
+    vall = vlen;
+    if (vtx && (d->dwFlags & D3DNTHALDP2_USERMEMVERTICES)) {
+        vall = 16u << 20;
+    } else if (vtx && d->lpDDVertex->lpGbl->dwLinearSize > d->dwVertexOffset) {
+        vall = d->lpDDVertex->lpGbl->dwLinearSize - d->dwVertexOffset;
+        if (vall > (32u << 20)) vall = vlen;
+    }
+    /* pass 1: the output size, the render-state mirror, the TEXBLTs; both
+     * passes start from the context's DX8 state */
+    memset(&w0, 0, sizeof(w0));
+    w0.p = p;
+    w0.cmd = cmd;
+    w0.clen = clen;
+    w0.vtx = vtx;
+    w0.vlen = vlen;
+    w0.vsize = vsize;
+    w0.vcount = d->dwVertexLength;
+    w0.vall = vall;
+    w0.vraw = vtx ? vtx - d->dwVertexOffset : NULL;
+    w0.voffset = d->dwVertexOffset;
+    if (p->dp2_calls < 4 && vtx) {
+        dbg_hex(p, "d3dptdisp: dp2 vertices at ", (ULONG)(ULONG_PTR)vtx);
+        dbg_hex(p, " offset ", d->dwVertexOffset);
+        dbg_hex(p, " length ", d->dwVertexLength);
+        dbg_hex(p, " size ", vsize);
+        dbg_hex(p, " flags ", d->dwFlags);
+        dbg_puts(p, "\n");
+    }
+    w0.fvf = c->fvf ? c->fvf : (d->dwVertexType & 1 ? 0 : d->dwVertexType);
+    w0.shader = c->shader;
+    w0.vb_um = c->vb_um;
+    w0.vb_handle = c->vb_handle;
+    w0.ib_handle = c->ib_handle;
+    w0.vb.stride = c->vb_stride;
+    w0.ib.stride = c->ib_stride;
+    if (w0.vb_um) {
+        w0.vb.mem = (ULONG_PTR)vtx;
+        w0.vb.bytes = vall;
+    } else if (w0.vb_handle) {
+        SURF *t = surf_slot(w0.vb_handle, FALSE);
+        w0.vb.mem = t ? t->mem : 0;
+        w0.vb.bytes = t ? t->size : 0;
+    }
+    if (w0.ib_handle) {
+        SURF *t = surf_slot(w0.ib_handle, FALSE);
+        w0.ib.mem = t ? t->mem : 0;
+        w0.ib.bytes = t ? t->size : 0;
+    }
+    w = w0;
+    w.rstates = d->lpdwRStates;
+    walk(&w);
+    vcopy = w.needs_vb ? vlen : 0;
+    if (w.outlen > (48u << 20) || D3DPT_ALIGN8(w.outlen) + vcopy + sizeof(*r) + sizeof(d3dpt_cmd) > D3DPT_CMD_SIZE) {
+        d->ddrval = DDERR_GENERIC;
+        return DDHAL_DRIVER_HANDLED;
+    }
     p->dp2_calls++;
     off = d3dpt_enc_ret(&p->enc, 0);
-    r = d3dpt_enc_cmd(&p->enc, D3DPT_OP_DP2, sizeof(*r), D3DPT_ALIGN8(clen) + vlen);
+    r = d3dpt_enc_cmd(&p->enc, D3DPT_OP_DP2, sizeof(*r), D3DPT_ALIGN8(w.outlen) + vcopy);
     if (!r) {
         d->ddrval = DDERR_GENERIC;
         return DDHAL_DRIVER_HANDLED;
+    }
+    /* pass 2: the same walk, writing into the record; its end state is the
+     * context's for the next call */
+    {
+        ULONG outlen = w.outlen, skipped = w.skipped;
+        w = w0;
+        w.out = (UCHAR *)(r + 1);
+        walk(&w);
+        if (w.outlen != outlen) {           /* cannot happen: the same stream twice */
+            w.outlen = outlen;
+        }
+        c->fvf = w.fvf;
+        c->shader = w.shader;
+        c->vb_um = w.vb_um;
+        c->vb_handle = w.vb_handle;
+        c->ib_handle = w.ib_handle;
+        c->vb_stride = w.vb.stride;
+        c->ib_stride = w.ib.stride;
+        if (skipped && p->dp2_errors < 8) {
+            p->dp2_errors++;
+            dbg_hex(p, "d3dptdisp: dx8 draws skipped ", skipped);
+            dbg_hex(p, " why ", w.skip_why);
+            dbg_hex(p, " fvf ", w0.fvf);
+            dbg_hex(p, " stride ", w0.vb.stride);
+            dbg_hex(p, " bytes ", w0.vb.bytes);
+            dbg_hex(p, " ib ", w0.ib.bytes);
+            dbg_hex(p, "; first: prim ", w.skip_info[0]);
+            dbg_hex(p, " count ", w.skip_info[1]);
+            dbg_hex(p, " voff ", w.skip_info[2]);
+            dbg_hex(p, " nverts ", w.skip_info[3]);
+            dbg_hex(p, " ioff ", w.skip_info[4]);
+            dbg_hex(p, " nindices ", w.skip_info[5]);
+            dbg_puts(p, "\n");
+        }
     }
     r->ctx = (ULONG)d->dwhContext;
     r->ret_off = off;
     r->flags = d->dwFlags;
     r->fvf = d->dwVertexType;
     r->vertex_stride = vsize;
-    r->command_bytes = clen;
-    r->vertex_bytes = vlen;
+    r->command_bytes = w.outlen;
+    r->vertex_bytes = vcopy;
     r->pad = 0;
-    memcpy(r + 1, cmd, clen);
-    if (vlen) {
-        memcpy((UCHAR *)(r + 1) + D3DPT_ALIGN8(clen), vtx, vlen);
+    if (vcopy) {
+        memcpy((UCHAR *)(r + 1) + D3DPT_ALIGN8(w.outlen), vtx, vcopy);
     }
     d3dpt_enc_flush(&p->enc);
     res = d3dpt_enc_result(&p->enc, off);
