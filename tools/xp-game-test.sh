@@ -20,6 +20,8 @@
 #   FRESH_DLLS=1        copy D3DPT\D3D8.DLL, D3D9.DLL, DDRAW.DLL from whichever disc has them next to the EXE
 #   TRACE=1             d3dpt_trace.on next to the EXE: every creation/lock/upload/
 #                       present call of the DLL goes to d3d8_trace.log / d3d9_trace.log
+#   PRE_CMD="cmd"       extra batch command(s) run in the game folder before the EXE starts
+#                       (e.g. rewrite a config: PRE_CMD='echo D:\disk1\Levels> cd.ini')
 #   KEYS="8:ret,25:esc" QMP keys sent after the device attach (delay in s, QKeyCode)
 #   SHOTS=n             VGA screendump (shot-<t>.png) every n s: dialogs, launchers
 #   DUMP_EVERY=n        the executor writes every n-th presented frame to frames/
@@ -63,6 +65,7 @@ DRW='C:\Documents and Settings\All Users\Dados de aplicativos\Microsoft\Dr Watso
 PRE="rem"
 [ "${FRESH_DLLS:-0}" = 1 ] && PRE='for %%d in (D E F G H) do if exist %%d:\D3DPT\D3D8.DLL (copy /y %%d:\D3DPT\D3D8.DLL . > nul & copy /y %%d:\D3DPT\D3D9.DLL . > nul & copy /y %%d:\D3DPT\DDRAW.DLL . > nul)'
 [ "${TRACE:-0}" = 1 ] && PRE="$PRE & echo.> d3dpt_trace.on"
+[ -n "${PRE_CMD:-}" ] && PRE="$PRE & $PRE_CMD"
 # full page heap for the EXE (ntdll honours the IFEO flags without gflags.exe): every
 # heap overrun faults at the guilty instruction instead of corrupting a neighbour
 [ "${PAGEHEAP:-0}" = 1 ] && PRE="$PRE & reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$EXE\" /v GlobalFlag /t REG_DWORD /d 0x02000000 /f > nul & reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$EXE\" /v PageHeapFlags /t REG_DWORD /d 3 /f > nul"
