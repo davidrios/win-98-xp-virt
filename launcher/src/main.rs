@@ -15,6 +15,7 @@ mod shader_library;
 mod shader_manager;
 mod shader_preview;
 mod shader_profile;
+mod shader_source;
 mod snapshots;
 mod wizard;
 
@@ -289,6 +290,11 @@ enum DiagAction {
     Click(egui::Pos2),
     /// Text typed into whatever a preceding click focused.
     Type(String),
+    /// Wall-clock wait before the next step, for a window whose state is
+    /// changed by something running off the UI thread — the shader
+    /// download is the one that needs it, since its "downloading…" row
+    /// only becomes the finished collection once the worker is done.
+    Wait(std::time::Duration),
 }
 
 /// Drives one of the app's windows through egui headlessly with
@@ -337,6 +343,10 @@ fn diag_window_frames(
                 println!("type {text:?}");
                 run(vec![egui::Event::Text(text.clone())], false);
             }
+            DiagAction::Wait(duration) => {
+                println!("wait {} ms", duration.as_millis());
+                std::thread::sleep(*duration);
+            }
         }
         run(Vec::new(), false);
     }
@@ -350,6 +360,9 @@ fn parse_script(spec: &str) -> Vec<DiagAction> {
         .filter_map(|s| {
             if let Some(text) = s.strip_prefix('+') {
                 return Some(DiagAction::Type(text.to_string()));
+            }
+            if let Some(ms) = s.trim().strip_prefix('~') {
+                return Some(DiagAction::Wait(std::time::Duration::from_millis(ms.parse().ok()?)));
             }
             let (x, y) = s.split_once(',')?;
             Some(DiagAction::Click(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?)))
@@ -483,6 +496,50 @@ fn main() -> eframe::Result {
             }
             let saved = w.submit(&library::default_dir()).expect("save bundle");
             println!("{}", saved.display());
+            return Ok(());
+        }
+        Some("--browse-start") => {
+            // Where the shader editor's "Browse…" would open for a given
+            // field value: the value's own directory, or — for an empty
+            // field — the preset collection. The dialog itself is modal
+            // and needs a human, so this checks the decision, not the
+            // dialog (`--pick-file` exercises that).
+            let value = args.next().unwrap_or_default();
+            match filepicker::browse_start(&value, shader_source::presets_dir().as_deref()) {
+                Some(dir) => println!("{}", dir.display()),
+                None => println!("(OS default)"),
+            }
+            return Ok(());
+        }
+        Some("--shaders") => {
+            // What the shader manager's preset row reads: where this
+            // machine's `.slangp` collection is, or nothing — which is
+            // what puts the "Download presets" button on screen, and
+            // what "Browse…" opens on when the field is empty.
+            match shader_source::presets_dir() {
+                Some(dir) => println!("{}", dir.display()),
+                None => println!("(none; would install into {})", shader_source::install_dir().display()),
+            }
+            return Ok(());
+        }
+        Some("--download-shaders") => {
+            // The button's own work, without a window: fetch and unpack
+            // the collection, printing what arrived. Defaults to the
+            // same destination the button uses.
+            let dest = args.next().map(PathBuf::from).unwrap_or_else(shader_source::install_dir);
+            let bytes = std::sync::atomic::AtomicU64::new(0);
+            match shader_source::fetch(&dest, &bytes) {
+                Ok(()) => println!(
+                    "{:.1} MB -> {} ({})",
+                    bytes.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0,
+                    dest.display(),
+                    if shader_source::has_presets(&dest) { "presets found" } else { "NO PRESETS" }
+                ),
+                Err(e) => {
+                    eprintln!("[shaders] {e}");
+                    std::process::exit(1);
+                }
+            }
             return Ok(());
         }
         Some("--kvm") => {
@@ -886,15 +943,11 @@ fn main() -> eframe::Result {
                 .unwrap_or(egui::vec2(1400.0, 900.0));
             let drag_dy: f32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
             // This one drives its own frames (it also drags the window's
-            // bottom edge and prints the rect per frame), so it takes
-            // just the click positions out of the shared script parser.
-            let clicks: Vec<egui::Pos2> = parse_script(&args.next().unwrap_or_default())
-                .into_iter()
-                .filter_map(|a| match a {
-                    DiagAction::Click(pos) => Some(pos),
-                    DiagAction::Type(_) => None,
-                })
-                .collect();
+            // bottom edge and prints the rect per frame), so it runs the
+            // shared script's steps itself: clicks, and the `~<ms>` wait
+            // that lets a background worker (the shader download) finish
+            // between two frames.
+            let steps = parse_script(&args.next().unwrap_or_default());
 
             let render_state = headless_render_state();
             let profiles_dir = shader_library::default_dir();
@@ -943,12 +996,21 @@ fn main() -> eframe::Result {
                 run(vec![button(to, false)], false);
                 run(vec![egui::Event::PointerGone], false);
             }
-            for pos in clicks {
-                println!("click at {:.0},{:.0}", pos.x, pos.y);
-                run(vec![egui::Event::PointerMoved(pos)], false);
-                run(vec![button(pos, true)], false);
-                run(vec![button(pos, false)], false);
-                run(vec![egui::Event::PointerGone], false);
+            for step in steps {
+                match step {
+                    DiagAction::Click(pos) => {
+                        println!("click at {:.0},{:.0}", pos.x, pos.y);
+                        run(vec![egui::Event::PointerMoved(pos)], false);
+                        run(vec![button(pos, true)], false);
+                        run(vec![button(pos, false)], false);
+                        run(vec![egui::Event::PointerGone], false);
+                    }
+                    DiagAction::Wait(duration) => {
+                        println!("wait {} ms", duration.as_millis());
+                        std::thread::sleep(duration);
+                    }
+                    DiagAction::Type(_) => {} // this window has nothing to type into
+                }
                 run(Vec::new(), false);
             }
             run(Vec::new(), false);

@@ -58,6 +58,15 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   order already gave them, so the NIC's absence doesn't slide the sound
   card into its slot and make an installed guest re-detect hardware. An
   absent `network` field means on, as every bundle written before it ran.
+- **Shader presets come with the launcher or are downloaded by it:** a
+  source checkout has the `third_party/slang-shaders` submodule, and a
+  machine without one (no `--recurse-submodules`, or a packaged build)
+  gets a "Download presets" button in the profile manager instead of a
+  preset picker that opens on nothing — upstream's tarball, unpacked into
+  the data directory beside the machine and profile libraries, never into
+  `third_party/`. `LAUNCHER_SHADERS_DIR` overrides where they live. An
+  empty preset field's "Browse…" opens there, since a `.slangp` is never
+  somewhere a person would navigate to by hand.
 - **Disc shelf:** the user's disc images, labelled, shared by every machine
   (`discs.toml` beside the machine and shader-profile libraries) — a rip is a
   property of the person, not of the machine that installed it first. A

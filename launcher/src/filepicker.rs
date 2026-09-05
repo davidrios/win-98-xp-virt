@@ -56,13 +56,39 @@ pub fn start_dir(value: &str) -> Option<std::path::PathBuf> {
 /// allowed (a path the user already knows, or one on a mount the picker
 /// can't reach); the button is a convenience, not the only way in.
 pub fn path_field(ui: &mut egui::Ui, label: &str, value: &mut String, filter: Option<Filter>) {
+    path_field_in(ui, label, value, filter, None);
+}
+
+/// The same, with somewhere for the dialog to open when the field is
+/// still empty — the shader preset field points it at the preset
+/// collection (`shader_source::presets_dir`), which is otherwise buried
+/// in a data directory nobody would navigate to by hand. A field that
+/// already has a value still wins: `start_dir` browses from where it
+/// points.
+pub fn path_field_in(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    filter: Option<Filter>,
+    empty_dir: Option<&std::path::Path>,
+) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.text_edit_singleline(value);
         if ui.button("Browse…").clicked() {
-            if let Some(path) = pick_file_headless(filter, start_dir(value).as_deref()) {
+            let start = browse_start(value, empty_dir);
+            if let Some(path) = pick_file_headless(filter, start.as_deref()) {
                 *value = path.display().to_string();
             }
         }
     });
+}
+
+/// Where "Browse…" actually opens: the field's own value if it points
+/// somewhere (`start_dir`), else the caller's suggestion for an empty
+/// field, else the OS default. Its own function so `main.rs`'s
+/// `--browse-start` verb can check the choice without popping a modal
+/// dialog that only a human could answer.
+pub fn browse_start(value: &str, empty_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    start_dir(value).or_else(|| empty_dir.map(|d| d.to_path_buf()))
 }

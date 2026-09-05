@@ -9,6 +9,7 @@ use crate::filepicker;
 use crate::shader_library;
 use crate::shader_preview::Preview;
 use crate::shader_profile::{self, ParamMeta, ShaderProfile};
+use crate::shader_source::{self, Download, Status};
 use eframe::egui_wgpu::RenderState;
 use std::path::{Path, PathBuf};
 
@@ -118,10 +119,32 @@ impl Editor {
     }
 }
 
+/// The preset collection this launcher can offer, and a download of it
+/// if one is running. The directory is *cached*: finding it walks the
+/// collection's top two levels (`shader_source::has_presets`), which is
+/// nothing once but not something to repeat sixty times a second.
+#[derive(Default)]
+struct Presets {
+    dir: Option<PathBuf>,
+    looked: bool,
+    download: Option<Download>,
+}
+
+impl Presets {
+    fn dir(&mut self) -> Option<PathBuf> {
+        if !self.looked {
+            self.dir = shader_source::presets_dir();
+            self.looked = true;
+        }
+        self.dir.clone()
+    }
+}
+
 #[derive(Default)]
 pub struct ShaderManager {
     pub open: bool,
     editor: Option<Editor>,
+    presets: Presets,
     /// The outer rect the window last had while *not* fullscreen, and —
     /// for one frame after the "Fullscreen" toggle goes back off — the
     /// rect to pin it back to. egui remembers a window's size across
@@ -211,7 +234,7 @@ impl ShaderManager {
         let response = window.show(ctx, |ui| {
                 if let Some(editor) = &mut self.editor {
                     editor.reparse();
-                    match editor_ui(ui, editor, profiles_dir, render_state) {
+                    match editor_ui(ui, editor, profiles_dir, render_state, &mut self.presets) {
                         EditorAction::None => {}
                         EditorAction::Saved => {
                             changed = Some(());
@@ -252,6 +275,7 @@ impl ShaderManager {
                 if ui.button("New profile…").clicked() {
                     self.editor = Some(Editor::fresh());
                 }
+                presets_ui(ui, &mut self.presets);
             });
         if !fullscreen {
             self.windowed_rect = response.map(|r| r.response.rect);
@@ -268,6 +292,52 @@ impl ShaderManager {
     }
 }
 
+/// The preset-collection row, on both screens: nothing at all while a
+/// collection is on disk (the preset picker just works, and there is
+/// nothing to decide), a "Download presets" button when there is none,
+/// and the download's own progress while it runs.
+///
+/// Shown on both the profile list and inside the editor because that is
+/// where each question is asked — the list is where someone discovers
+/// they have no shaders at all, the editor is where an empty preset
+/// field stops them mid-profile.
+fn presets_ui(ui: &mut egui::Ui, presets: &mut Presets) {
+    if let Some(download) = &presets.download {
+        match download.status() {
+            Status::Running(bytes) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Downloading shader presets… {:.1} MB", bytes as f64 / 1_000_000.0));
+                });
+                // The download runs on its own thread and nothing else
+                // would wake the UI to show it moving.
+                ui.ctx().request_repaint();
+            }
+            Status::Done(dir) => {
+                presets.download = None;
+                presets.dir = Some(dir);
+                presets.looked = true;
+            }
+            Status::Failed(err) => {
+                ui.colored_label(egui::Color32::RED, format!("Couldn't download the shader presets: {err}"));
+                if ui.button("Try again").clicked() {
+                    presets.download = Some(Download::start(shader_source::install_dir()));
+                }
+            }
+        }
+        return;
+    }
+    if presets.dir().is_some() {
+        return;
+    }
+    ui.label("No shader presets on this machine — a profile needs a .slangp to build on.");
+    let dest = shader_source::install_dir();
+    if ui.button(format!("Download presets ({})", shader_source::DOWNLOAD_SIZE)).clicked() {
+        presets.download = Some(Download::start(dest.clone()));
+    }
+    ui.label(egui::RichText::new(format!("libretro's slang-shaders, into {}", dest.display())).weak().small());
+}
+
 enum EditorAction {
     None,
     Saved,
@@ -277,7 +347,13 @@ enum EditorAction {
 /// The profile editor form. `Saved` once "Save" wrote the profile,
 /// `Cancelled` once "Cancel" was clicked — either closes the editor, but
 /// only `Saved` should make the caller rescan the library.
-fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path, render_state: Option<&RenderState>) -> EditorAction {
+fn editor_ui(
+    ui: &mut egui::Ui,
+    editor: &mut Editor,
+    profiles_dir: &Path,
+    render_state: Option<&RenderState>,
+    presets: &mut Presets,
+) -> EditorAction {
     let mut action = EditorAction::None;
     // The form is laid out as panels inside the window rather than as a
     // plain top-to-bottom stack: header and footer take their own
@@ -291,7 +367,18 @@ fn editor_ui(ui: &mut egui::Ui, editor: &mut Editor, profiles_dir: &Path, render
             ui.label("Name");
             ui.text_edit_singleline(&mut editor.name);
         });
-        filepicker::path_field(ui, "Preset (.slangp)", &mut editor.preset_path, Some(PRESET_FILTER));
+        // "Browse…" on an empty field opens in the preset collection
+        // rather than the OS default: a `.slangp` lives in a checkout's
+        // `third_party/` or a downloaded copy in a data directory, and
+        // neither is anywhere a person would navigate to by hand.
+        filepicker::path_field_in(
+            ui,
+            "Preset (.slangp)",
+            &mut editor.preset_path,
+            Some(PRESET_FILTER),
+            presets.dir().as_deref(),
+        );
+        presets_ui(ui, presets);
         ui.separator();
     });
     egui::Panel::bottom("shader-editor-foot").frame(egui::Frame::NONE).show_separator_line(false).show(ui, |ui| {

@@ -1064,6 +1064,98 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   now decides from `ram_chosen` rather than from the field's contents, so
   any constructor that skips the widgets still gets the family's default.
 
+- **The launcher can fetch the shader presets itself** (user request,
+  2026-09-05). Until now a profile could only be built on a `.slangp`
+  the machine already had — in practice the `third_party/slang-shaders`
+  submodule, which someone who cloned without `--recurse-submodules`
+  (or, later, anyone running a packaged launcher) does not have. The
+  profile manager now says so and offers to download it;
+  `launcher/src/shader_source.rs` holds where the collection is and how
+  to get one.
+  - `presets_dir()` is the collection this machine has, or `None`:
+    `LAUNCHER_SHADERS_DIR` if set (an explicit statement — nothing else
+    is then consulted), else the checkout's submodule, else a downloaded
+    copy in the platform data dir beside `machines/` and
+    `shader-profiles/`. The submodule wins over a download because it is
+    the path this repo's docs and a developer's own `--shader
+    third_party/…` lines already name. A download never writes into
+    `third_party/`, which belongs to git.
+  - "Has presets" means *a `.slangp` within two levels*, not "the
+    directory exists" — an empty or half-unpacked directory has to read
+    as nothing. The answer is cached in the window: it walks ~50
+    directories, which is fine once and not per frame.
+  - The download is upstream's tarball over HTTPS (`ureq`, rustls, so no
+    system OpenSSL), streamed through `flate2` + `tar` straight onto
+    disk on **its own thread** — the row shows a spinner and MB-so-far,
+    with no percentage because codeload sends no `Content-Length`. It
+    unpacks into a `.part` sibling and renames only once the result
+    actually contains presets, so an interrupted download cannot leave a
+    half-collection that then reads as installed; the old collection is
+    moved aside and deleted only after the new one is in place.
+    `master`, not the submodule's pinned commit: a packaged launcher has
+    no repository to read a pin out of, and a profile stores its
+    overrides by name, so a newer preset tree is additive. Entries that
+    are neither a plain file nor a directory (a tar can name a symlink
+    pointing anywhere on the host) and any path containing `..` are
+    skipped rather than trusted.
+  - **"Browse…" on an empty preset field opens in the collection**
+    (`filepicker::path_field_in`, the same request): a `.slangp` lives
+    either in a checkout's `third_party/` or in a data directory nobody
+    would navigate to by hand. A field that already points somewhere
+    still wins — `filepicker::browse_start` is `start_dir` first, the
+    suggestion second, the OS default last.
+
+  Verified for real, over the network and through the widgets. **The
+  fetch:** `--download-shaders <dir>` pulled 50.3 MB and unpacked 2554
+  presets (80 MB) with no `.part` or `.previous` left behind; run again
+  over the same directory it replaced the collection (a marker file
+  planted in it was gone) and again left nothing behind. **That it is a
+  usable collection and not just files:** `crt-lottes.slangp` from the
+  download lists its parameters through the same librashader path the
+  editor uses, and rendered through `--preview-shader` produced a PNG
+  **byte-identical** to the submodule's own copy of that preset — the
+  `.slang` sources came along and compile. **The widgets:** with
+  `LAUNCHER_SHADERS_DIR` pointed at an empty directory, the profile list
+  and the editor both show "No shader presets on this machine" and the
+  "Download presets (~50 MB)" button; a synthetic click switched the row
+  to the spinner and "Downloading shader presets… 0.0 MB", and with a
+  new `~<ms>` wait step in the diag script runner (a window whose state
+  changes off the UI thread had no way to be observed headlessly before)
+  the same run came back 20 s later with the row *gone* and 2554 presets
+  on disk. Killing the process mid-download left the destination
+  untouched. **The browse default:** `--browse-start` prints the
+  directory the dialog would open in — the submodule for an empty field
+  here, a downloaded collection under `LAUNCHER_SHADERS_DIR`, the OS
+  default when there are no presets at all, and the field's own
+  directory whenever it names a preset or a folder. The dialog itself is
+  modal and needs a human, so the verb checks the decision, not the
+  dialog (`--pick-file` covers that).
+
+  **Open licence question for packaging (step 6), raised by this
+  change.** `ureq`'s TLS is `rustls`, whose crypto provider here is
+  `ring` — declared **`Apache-2.0 AND ISC`**, and Apache-2.0 is
+  incompatible with **GPLv2** (the patent-termination clause; it is
+  compatible with GPLv3). This workspace is `GPL-2.0-only`, so a
+  distributed launcher binary would carry a conflict. Nothing else new
+  here is a problem (`ureq`/`tar`/`flate2` are MIT OR Apache-2.0,
+  `rustls` is Apache OR ISC OR MIT, `rustls-webpki` and `untrusted` are
+  ISC, `webpki-roots` is CDLA-Permissive-2.0 root-certificate *data*),
+  and the alternatives are no better: `aws-lc-rs` brings the OpenSSL
+  licence in, and `native-tls` on Linux is OpenSSL 3, also Apache-2.0.
+  Three ways out, for the copyright holder to pick:
+  1. **License the `launcher` crate `GPL-2.0-or-later`** (or something
+     permissive) instead of inheriting the workspace's `GPL-2.0-only`.
+     It is a standalone binary that links *no* QEMU code — it spawns the
+     player as a separate process — so the GPL-2.0-only pin exists for
+     the player and `qemu-embed`, not for it.
+  2. **Move the download out of process** (`curl`, or the user's `git`),
+     which removes the linking question entirely at the cost of a
+     runtime dependency on a binary that is present but not guaranteed.
+  3. Ship without the button on platforms where that matters and treat
+     the presets as a packaging payload instead.
+  Nothing is blocked today — the code works and this repo distributes no
+  binaries yet — but step 6 cannot ship a launcher without answering it.
+
 - **CDSHELF grew a face, and always ejects first** (user, 2026-09-05,
   after running it in Win98: *"it worked, but can't you make a gui
   program? it's too unwieldy to use as a terminal command"*, and *"when
@@ -1154,9 +1246,10 @@ guarding against regressions — don't add `#[cfg(test)]` modules.
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
 `--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`,
 `--snapshots` (`--live` for a running machine), `--diag-snapshots-frame`,
-`--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`; and
+`--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`,
+`--shaders`, `--download-shaders`, `--browse-start`; and
 `--wizard-edit` now takes optional `[ram-mb] [auto|kvm|tcg] [net|nonet]`,
-`-` keeping a field) were
+`-` keeping a field, while a diag script step may now be `~<ms>`) were
 exercised by hand
 this session (see the state notes above) rather than wired into
 `scripts/test.sh`, because doing that from `scripts/test.sh`
