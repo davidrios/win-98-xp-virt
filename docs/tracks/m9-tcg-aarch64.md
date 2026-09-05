@@ -31,7 +31,12 @@ question about helper calls needing VM exits; not started).
   write-protect switch only when the state changes;
   `15-tb-invalidate-fast.patch` — TB invalidation on guest writes, four
   cuts (below); `16-tlb-floor.patch` — a 4096-entry floor for the dynamic
-  softmmu TLB. Later patches of the track: 17–19.
+  softmmu TLB; `17-rep-fast.patch` — REP MOVS / STOS as a host
+  `memcpy`/`memset` per page run (below). Later patches of the track:
+  18–19.
+- `tools/rep-guest-test.py` (the patch 17 oracle: a DOS battery of
+  `rep movs`/`stos` cases, `rep-fast` on/off identical and equal to a
+  Python model; `rep-guest` in the guest stage of `scripts/test.sh`).
 - `tools/tcg-fps.py` (the guest's VGA frame rate from outside: distinct
   QMP screendumps per second, `FPS=` in the runner).
 - Docs: this file, the M9 row of the tracks table in `docs/00-status.md`,
@@ -572,6 +577,93 @@ tools/hvf-el1/build.sh && build/hvf-el1/hvf-el1 build/hvf-el1/payload.bin   # th
 scripts/test.sh all                                                  # before every commit
 ```
 
+## Patch 17: the REP MOVS / STOS fast path (2026-09-05, evening)
+
+The table above said a per-page-run `memcpy` was 23× the loop and nothing
+else came close, so it went first. The shape (`patches/qemu/17-rep-fast.patch`,
+`target/i386/tcg/mem_helper.c` + `do_gen_rep` in `translate.c`):
+
+- `do_gen_rep` emits, before its per-element loop and only for `movs` /
+  `stos` with at least 8 elements to go (and never with TF, single-step
+  or icount, where one element per step is the architecture), a call to
+  `helper_rep_movs_fast` / `helper_rep_stos_fast` with the linear source
+  and destination (the same `gen_lea_v_seg` the loop uses: segment base,
+  a16/a32 wrap), the masked count and `ot | mmu_idx`.
+- The helper takes the run that stays inside the current page of both
+  (direction from `env->df`, an element straddling the page end ends the
+  run before it), probes the source page for a load and the destination
+  for a store with `probe_access_flags(nonfault=true)` — that fills the
+  TLB, marks the destination dirty and invalidates the TBs under the run
+  exactly as the per-element stores would, and says no for MMIO,
+  watchpoints and unmapped pages — then `memcpy` (disjoint), `memmove`
+  (the overlap the guest's order reads before it writes) or an element
+  loop in the guest's order (the overlap that replicates a pattern);
+  `stos` is `memset` when the value's bytes are equal, a store loop
+  otherwise. It returns the elements done and writes nothing to `env`:
+  a longjmp out of the probe (the write hit the current TB) resumes at
+  the instruction's start with the right state, and a fault is left to
+  the loop, which raises it at the right element.
+- The translator advances ESI/EDI/ECX by the count (`gen_op_add_reg`,
+  so a16 deposits into the low halves), exits if ECX is zero, and
+  otherwise re-enters the instruction with RF set — the same path the
+  loop takes between iterations — so the next page gets its own probe;
+  a 0 from the helper falls into the loop, now capped at 15 iterations
+  per entry instead of 65535 so that after a straddling element or an
+  MMIO page the fast path is tried again.
+
+Oracle: `-cpu …,rep-fast=off`. `tools/rep-guest-test.py`: a DOS program
+runs 536 cases (movs/stos × b/w/d × a16/a32 × DF, counts 0–17 at the
+threshold and the page's end, aligned and misaligned runs over one and
+two page boundaries, elements straddling a page, every overlap of
+source and destination in a run that crosses a page, fill values with
+equal / distinct / zero bytes) over a page-aligned 16 KiB region and
+prints a hash of the region plus ESI/EDI/ECX after each; both logs are
+identical and every line equals a Python model of the instruction.
+`tools/string-bench.py` (real mode, 8 KiB buffers): MOVSD 2.15 → 0.07
+ns per element, STOSD 2.08 → 0.07, the byte forms below the bench's
+one-tick resolution (it was written for the 12 % of patch 09), SCASB
+unchanged at 2.08. Moto Racer's race (`tools/xp-moto-race.sh`,
+`winxp-m7`, the A/B on one binary): **7.3 fps off, 7.5 fps on — unchanged.**
+
+That number needs explaining, and the runner's own profile (a 1 s sample
+during the attract demo, `build/tcg-profile/moto-rep-{off,on}/report.txt`)
+does: the path *is* active in the game. Off: generated code 96.6 % of the
+vCPU, 94 % of it on the blit page `0x460000`. On: generated code 44 %,
+`_platform_memmove` 15 %, `probe_access_internal` + `probe_access_flags`
+13 %, `helper_rep_movs_fast` 7 % — the blit went from ~80 % of the vCPU
+to ~35 %, and the `rep movsd` itself from 96 % of the generated-code
+samples to 3 %. What the generated code holds now: the game's other blit
+at `0x4604ec`–`0x460500` (a colour-keyed 16-bit sprite copy, one word per
+iteration with a transparency test — `xor esi,esi; mov si,[ebp]; test;
+je; mov [eax],si; …; dec ecx; jne` — no `rep`, nothing for this patch),
+~10 % of the vCPU; win32k 26 % of the generated code (2 % before); the
+rasterizer page `0x42a000` 10 %. And the vCPU thread is still at 100 %.
+
+So a blit 2–3× cheaper, the vCPU still saturated, the same frame rate:
+the game's frame rate is not set by the vCPU's throughput. Together with
+the intro's "8 fps on both builds" (the open puzzle above) the reading is
+that the game paces itself — a timer it spins on while re-blitting (a
+flip loop: cheaper blits mean more blits per frame, not more frames), or
+a wait the M7 driver / DirectDraw path answers at a fixed rate — and the
+race's 4.9 → 7.3 of patches 15/16 came from the *other* things those
+cut (TLB and TB storms in the kernel), not from the blit. **The next M9
+item is to find the pacer**, before any more translator work is judged by
+this game: count the blit's calls per second on and off (if they rise
+with the cheaper blit, it is a flip loop), and look at what the game
+waits on (`timeGetTime` / `QueryPerformanceCounter` polling against the
+emulated timers, `WaitForVerticalBlank` / `Flip` in our M7 DirectDraw
+HAL — the vblank the player does not signal yet is a candidate).
+
+Follow-ups inside the patch, if a workload asks: the two
+`probe_access_flags` calls per page run are 13 % of the vCPU here (a
+direct TLB-entry peek before the full probe would take most of that);
+`cmps`/`scas`; a run over several pages in one call.
+
+Not done, on purpose: `cmps`/`scas`/`lods` (no workload asks), MMIO
+destinations (VRAM through the loop, as before), a run spanning several
+pages inside one call (the per-page re-entry is a chained `goto_tb`, and
+it is where interrupts get their look).
+
 ## Next steps, in order
 
 Done on the way: patch 13 (`-perfmap` on Darwin), patch 14 (the
@@ -596,16 +688,10 @@ above):
    `winxp-m7`; Super PI before/after patches 15/16. And hand M7 the
    `D3D: NOT DETECTED` lead — Moto Racer's Direct3D 5 HAL probe against
    our driver would take the software rasterizer out of the picture.
-0b. **REP MOVS / STOS fast path** (patch 17, a day): the probe's table
-   above — 23× on the blit loop that is half of Moto Racer's vCPU, and
-   Windows' `memcpy`/`memset` everywhere. In `do_gen_rep` (or a helper
-   called from it) for `movs`/`stos` with a count worth it: probe the
-   source and destination pages once per run inside a page (refuse
-   MMIO, not-dirty, watchpoints, overlap, DF=1 → the existing loop),
-   `memcpy`/`memset` on the host, advance ESI/EDI/ECX, re-enter the
-   instruction at the page boundary; `-cpu …,rep-fast=off` as the
-   oracle; `tools/xp-moto-race.sh` fps and 7-Zip / Super PI before and
-   after; the DOS battery identical on/off.
+0b. ~~**REP MOVS / STOS fast path** (patch 17)~~ — done 2026-09-05, the
+   section above (7-Zip / Super PI not re-measured: neither is
+   `rep`-bound; the DOS batteries and the XP guest stage are the
+   regression guard).
 1. **Inline the TB lookup for indirect branches** (`ret`, `call *`,
    `jmp *`): the jump-cache probe (hash of pc, compare pc / cs_base /
    flags / cflags, `goto_ptr`) emitted as TCG ops instead of
