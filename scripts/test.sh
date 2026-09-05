@@ -43,6 +43,9 @@
 #   rep-guest      tools/rep-guest-test.py: a DOS rep movs/stos battery (widths,
 #                  address sizes, DF, page crossings, overlaps), rep-fast on/off
 #                  identical and equal to a model of the instruction (patch 17)
+#   smc-guest      tools/smc-guest-test.py: self-modifying code (patched immediates,
+#                  same-value rewrites, opcode flips, a crossing store), smc-same-value
+#                  on/off both architecturally right (patch 18)
 #   guest-cdimage  tools/xp-cdimage-test.sh: XP boots with the guest-tools ISO
 #                  converted to a cue (+ a 1 kHz tone track) as its CD-ROM and
 #                  copies the whole disc through cdrom.sys; every file must
@@ -209,6 +212,7 @@ guest_stage() {
     if [ -f build/images/144m/x86BOOT.img ]; then
       run_check x87-guest x87-guest.log python3 tools/x87-guest-test.py || true
       run_check rep-guest rep-guest.log python3 tools/rep-guest-test.py || true
+      run_check smc-guest smc-guest.log python3 tools/smc-guest-test.py || true
       run_check sse-guest sse-guest.log python3 tools/sse-guest-test.py || true
       run_check atapi-guest atapi-guest.log python3 tools/atapi-guest-test.py || true
     else skip x87-guest "no FreeDOS floppy yet: run tools/x87-guest-test.py once to fetch it"; fi

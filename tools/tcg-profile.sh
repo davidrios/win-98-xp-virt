@@ -47,6 +47,7 @@ OUT="${OUT:-$ROOT/build/tcg-profile/$NAME}"; mkdir -p "$OUT"
 OS="$(uname -s)"
 CDROM="${CDROM:-$(ls -t "$ROOT"/guest-tools/out/guest-tools-3dfx-*.iso 2>/dev/null | head -1)}"
 CPU="${CPU:-pentium3}"; MEM="${MEM:-512}"
+PERFMAP="${PERFMAP:-1}"; [ "$PERFMAP" = 0 ] && PERFMAP=   # PERFMAP=0: no -perfmap (its writer costs ~12 % of the vCPU on a retranslation-bound game; fps runs)
 BOOT_WAIT="${BOOT_WAIT:-60}"; WARM="${WARM:-20}"; SECS="${SECS:-30}"
 
 VGA_ARGS=(-vga cirrus)
@@ -77,7 +78,7 @@ SOCK="/tmp/tcgprof-$$.sock"; rm -f "$SOCK"
 LOG="$OUT/qemu.log"
 "${QEMU_BIN:-$ROOT/build/qemu/qemu-system-i386}" -L "$ROOT/qemu/pc-bios" -machine pc -cpu "$CPU" -m "$MEM" \
   -drive "file=$IMG,if=ide,index=0,snapshot=on" ${CDROM:+-cdrom "$CDROM"} \
-  "${CD_ARGS[@]}" "${VGA_ARGS[@]}" "${SND_ARGS[@]}" -net none -usb -device usb-tablet -perfmap \
+  "${CD_ARGS[@]}" "${VGA_ARGS[@]}" "${SND_ARGS[@]}" -net none -usb -device usb-tablet ${PERFMAP:+-perfmap} \
   ${DFILTER:+-d in_asm,op_opt,out_asm -dfilter "$DFILTER" -D "$OUT/qemu-d.log"} ${QEMU_EXTRA:-} \
   -display none -qmp "unix:$SOCK,server,nowait" -serial none -monitor none > "$LOG" 2>&1 &
 QPID=$!
@@ -119,7 +120,7 @@ case "$OS" in
     perf report -i "$OUT/perf.data" --stdio --no-children --sort sym > "$OUT/perf-report.txt" 2>/dev/null || true
     ;;
 esac
-cp "/tmp/perf-$QPID.map" "$OUT/perf.map"
+[ -n "$PERFMAP" ] && cp "/tmp/perf-$QPID.map" "$OUT/perf.map"
 if [ -n "${FPS:-}" ]; then
   python3 "$ROOT/tools/tcg-fps.py" "$SOCK" "$FPS" | tee "$OUT/fps.txt"
 fi

@@ -32,11 +32,17 @@ question about helper calls needing VM exits; not started).
   `15-tb-invalidate-fast.patch` — TB invalidation on guest writes, four
   cuts (below); `16-tlb-floor.patch` — a 4096-entry floor for the dynamic
   softmmu TLB; `17-rep-fast.patch` — REP MOVS / STOS as a host
-  `memcpy`/`memset` per page run (below). Later patches of the track:
-  18–19.
+  `memcpy`/`memset` per page run (below); `18-smc-same-value.patch` — a
+  store that leaves a code page's bytes unchanged invalidates no TB
+  (below). Later patches of the track: 19+.
 - `tools/rep-guest-test.py` (the patch 17 oracle: a DOS battery of
   `rep movs`/`stos` cases, `rep-fast` on/off identical and equal to a
-  Python model; `rep-guest` in the guest stage of `scripts/test.sh`).
+  Python model; `rep-guest` in the guest stage of `scripts/test.sh`);
+  `tools/smc-guest-test.py` (the patch 18 oracle, `smc-guest`);
+  `tools/smc-diff.py` (two captures of a code page diffed and
+  disassembled: what a game patches); `tools/xp-moto-race.sh`'s
+  `RACE_SAMPLE=` / `RACE_MEMSAVE=` / `RACE_DELAY=` / `FPS_RATE=` and the
+  runner's `PERFMAP=0`.
 - `tools/tcg-fps.py` (the guest's VGA frame rate from outside: distinct
   QMP screendumps per second, `FPS=` in the runner).
 - Docs: this file, the M9 row of the tracks table in `docs/00-status.md`,
@@ -625,44 +631,109 @@ one-tick resolution (it was written for the 12 % of patch 09), SCASB
 unchanged at 2.08. Moto Racer's race (`tools/xp-moto-race.sh`,
 `winxp-m7`, the A/B on one binary): **7.3 fps off, 7.5 fps on — unchanged.**
 
-That number needs explaining, and the runner's own profile (a 1 s sample
-during the attract demo, `build/tcg-profile/moto-rep-{off,on}/report.txt`)
-does: the path *is* active in the game. Off: generated code 96.6 % of the
-vCPU, 94 % of it on the blit page `0x460000`. On: generated code 44 %,
-`_platform_memmove` 15 %, `probe_access_internal` + `probe_access_flags`
-13 %, `helper_rep_movs_fast` 7 % — the blit went from ~80 % of the vCPU
-to ~35 %, and the `rep movsd` itself from 96 % of the generated-code
-samples to 3 %. What the generated code holds now: the game's other blit
-at `0x4604ec`–`0x460500` (a colour-keyed 16-bit sprite copy, one word per
-iteration with a transparency test — `xor esi,esi; mov si,[ebp]; test;
-je; mov [eax],si; …; dec ecx; jne` — no `rep`, nothing for this patch),
-~10 % of the vCPU; win32k 26 % of the generated code (2 % before); the
-rasterizer page `0x42a000` 10 %. And the vCPU thread is still at 100 %.
+That number needed explaining, and the runner's own profile (a 1 s sample
+during the attract demo) explained the wrong thing: there the path *is*
+active (generated code 96.6 % → 44 % of the vCPU, `memmove` + the two
+probes + the helper 35 %) — but the demo is not the race.
 
-So a blit 2–3× cheaper, the vCPU still saturated, the same frame rate:
-the game's frame rate is not set by the vCPU's throughput. Together with
-the intro's "8 fps on both builds" (the open puzzle above) the reading is
-that the game paces itself — a timer it spins on while re-blitting (a
-flip loop: cheaper blits mean more blits per frame, not more frames), or
-a wait the M7 driver / DirectDraw path answers at a fixed rate — and the
-race's 4.9 → 7.3 of patches 15/16 came from the *other* things those
-cut (TLB and TB storms in the kernel), not from the blit. **The next M9
-item is to find the pacer**, before any more translator work is judged by
-this game: count the blit's calls per second on and off (if they rise
-with the cheaper blit, it is a flip loop), and look at what the game
-waits on (`timeGetTime` / `QueryPerformanceCounter` polling against the
-emulated timers, `WaitForVerticalBlank` / `Flip` in our M7 DirectDraw
-HAL — the vblank the player does not signal yet is a candidate).
+## Patch 18: the pacer — same-value stores into self-modifying code (2026-09-05, night)
 
-Follow-ups inside the patch, if a workload asks: the two
-`probe_access_flags` calls per page run are 13 % of the vCPU here (a
-direct TLB-entry peek before the full probe would take most of that);
-`cmps`/`scas`; a run over several pages in one call.
+"Find the pacer": what sets the race's frame rate when a 2–3× cheaper blit
+changes nothing. Ruled out first (each with a run): the M7 driver's
+`DdWaitForVerticalBlank` spins on the device's FRAMES register, which only
+console refreshes advance — headless, only the fps probe's own screendumps
+— with a 50 ms give-up; the probe at 60 dumps/s instead of 25 (`FPS_RATE=`)
+left the race at 7.4 fps, so the game is not waiting there. (A device-side
+vblank timer is still the right shape for M7; it was written, falsified
+as the pacer, and reverted.) Then the race itself was sampled
+(`RACE_SAMPLE=15`, the sample taken with the throttle held, report in
+`<out>/race/`), and it looks nothing like the demo:
 
-Not done, on purpose: `cmps`/`scas`/`lods` (no workload asks), MMIO
-destinations (VRAM through the loop, as before), a run spanning several
-pages inside one call (the per-page re-entry is a chained `goto_tb`, and
-it is where interrupts get their look).
+| vCPU, in the race (`moto-race-prof`) | |
+|---|---|
+| translation + TB lookup (of it `tb_invalidate_phys_page_range__locked` 17 %, `liveness_pass_1` 6 %, `sys_icache_invalidate` 4.4 %, `tcg_optimize` 3.5 %) | 53 % |
+| other (`_tlv_get_addr` 8.8 % — macOS TLS for `tcg_ctx` in the translator) | 26 % |
+| the perf map writer (`-perfmap`, the runner's own cost) | 12 % |
+| generated code | 4.8 % |
+| the blit fast path (`_platform_memmove`) | 1.9 % |
+
+`info jit` over the 16 s: **58,000 TB invalidations a second**. The game is
+CPU-bound in *translation*: its rasterizer patches its own code and every
+patch throws the block away. Two captures of the hot pages a second apart
+(`RACE_MEMSAVE=0x482000:0x2000,0x436000:0x1000,0x460000:0x1000`, QMP
+`memsave`) diffed with the new `tools/smc-diff.py` (capstone) show exactly
+what: page `0x436000` is a texture-mapping span loop unrolled four times —
+`mov ax, [ebx*2 + disp32]` (the texture base), `add ecx, imm32` / `adc bl,
+imm8` / `add edx, imm32` / `adc bh, imm8` (the u/v steps and their
+carries) — 44 bytes in 28 runs patched per span setup; the other hot pages
+(`0x482000`–`0x483000`, the rasterizer of the race; `0x460000`, the blit)
+do not change at all. A stats build (counters in the store slow path and
+the invalidation walk, not committed) then gave the number that decided
+the fix, in the race:
+
+| per second | |
+|---|---|
+| stores into pages holding code | ~700,000 |
+| of those, writing the value already there | **94 %** |
+| invalidation walks / TBs visited by them | ~700,000 / ~55,000,000 |
+| TBs invalidated | ~62,000 |
+
+The game rewrites its whole span parameter block per span and most of it
+lands unchanged; QEMU invalidated on every write and walked ~80 TBs per
+write to find the one it hit. The track doc's earlier guess ("measured
+values do change between spans, so probably small") was wrong by a factor
+of 16.
+
+**The fix** (`patches/qemu/18-smc-same-value.patch`, `accel/tcg/cputlb.c`):
+the store slow path already knows the value; `MMULookupLocals` carries the
+bytes about to be written in address order (set by `do_st{1,2,4,8}_mmu`,
+memop endianness applied), `mmu_watch_or_dirty` compares them with memory
+(each page's part for a crossing store) and `notdirty_write` skips
+`tb_invalidate_phys_range_fast` when nothing changes — the dirty bits are
+still set, and the page stays "with code" so later stores keep taking the
+slow path. Exact by construction: a TB translated from bytes B is valid
+while memory holds B. 16-byte stores, the probe paths (`probe_access*`,
+so the REP fast path's `memcpy` into a code page) and the atomic path do
+not know the bytes and invalidate as before. `-accel tcg,smc-same-value=off`
+restores the old behaviour; `tools/smc-guest-test.py` (nine DOS cases:
+immediates patched from another block and inside the executing block,
+same-value rewrites, an opcode flip, 16-bit and 8-bit partial patches,
+`rep movsd` over a routine with new and identical bytes, an imm32
+straddling a page boundary written by one crossing store) is right on and
+off, and sits in the guest stage of `scripts/test.sh` as `smc-guest`.
+
+**Result: Moto Racer's race 7.3 → 21.7 fps at the standing start** (the
+25-dumps/s probe nearly saturated, 325 distinct in 354 dumps; **39.2 fps at 60 dumps/s**, 588 distinct in 710, so still near the
+probe's ceiling — over 5× from 7.3), **mid-race 12.1 → 19.0 fps** (`RACE_SAMPLE=15` then the
+probe, the perf map on both times). The race's vCPU after (`moto-smc18-prof`):
+
+| vCPU, in the race, patch 18 | before | after |
+|---|---|---|
+| translation + TB lookup (the invalidation walk) | 53 % (17 %) | 29 % (4.2 %) |
+| generated code | 4.8 % | 25.6 % |
+| the perf map writer | 12 % | 6 % |
+| TB invalidations a second (`info jit`) | 58,000 | 24,000 |
+| the store slow path (every code-page store still takes it, with the compare) | 2 % | 7 % |
+
+The 24,000 invalidations a second left are the 6 % of patches that do
+change a value (each retranslating the span loop's blocks), so translation
+is still the largest item: that is where "soft immediates" (or a cheaper
+retranslation) would go next; `_tlv_get_addr` stayed at 8.8 %.
+
+Also learned on the way, for anyone measuring this game: the fps depends
+on the track section (the user's observation from playing it: standing
+start 7.4, 13 s in 11.6 before the patch — `RACE_DELAY=` picks the
+moment); `-perfmap` costs 12 % of the vCPU on a retranslation-bound
+workload (`PERFMAP=0` on the runner for fps runs); `tcg-profile.sh`'s
+sample is of whatever runs at WARM, the race needs `RACE_SAMPLE=`.
+
+What remains of the SMC cost after patch 18: the 6 % of patches that do
+change a value still invalidate and retranslate (~4,000 TBs/s), and every
+code-page store still takes the slow path with the compare; `_tlv_get_addr`
+(macOS TLS for `tcg_ctx`, 8.8 % in the race before the patch) and
+`sys_icache_invalidate` per translation are the next translation-side
+items; the "soft immediates" translator feature (item 6 below) is no
+longer worth its days for this game.
 
 ## Next steps, in order
 
@@ -731,11 +802,9 @@ above):
 5. **Barriers off on one vCPU** (~4 %): only after an audit of every
    reader of guest RAM outside the BQL; as a machine property, not an
    env var.
-6. **Self-modifying rasterizers** (Moto Racer: 20k retranslations/s,
-   ~25 % of its vCPU after patches 15/16): compare-before-invalidate in
-   the store slow path (small, values change), a 64-byte code bitmap per
-   page to shorten the list walk (9 %), or "soft immediates" — a TB
-   invalidated N times is retranslated with its patched immediates read
-   from guest memory and writes to those bytes skip the invalidation (a
-   translator feature, days). Also `_tlv_get_addr` 3 %: macOS TLS for
-   `tcg_ctx` in the translator (cache it in a local in the hot paths).
+6. ~~**Self-modifying rasterizers**~~ — patch 18 (compare-before-invalidate
+   was the whole story: 94 % of the writes were same-value). Left: the
+   changed-value 6 % (a per-page interval structure for the walk, or
+   "soft immediates" if a game shows up whose patches do change), and
+   `_tlv_get_addr` 8.8 % in the race: macOS TLS for `tcg_ctx` in the
+   translator (cache it in a local in the hot paths).
