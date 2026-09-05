@@ -28,8 +28,12 @@ question about helper calls needing VM exits; not started).
 - QEMU patches: `patches/qemu/13-perfmap-darwin.patch` — `-perfmap` on
   every host (upstream gates the option and `tcg/perf.c` on Linux; the
   map writer is plain stdio); `14-jit-wx-state.patch` — the macOS JIT
-  write-protect switch only when the state changes. Later patches of
-  the track: 15–19.
+  write-protect switch only when the state changes;
+  `15-tb-invalidate-fast.patch` — TB invalidation on guest writes, four
+  cuts (below); `16-tlb-floor.patch` — a 4096-entry floor for the dynamic
+  softmmu TLB. Later patches of the track: 17–19.
+- `tools/tcg-fps.py` (the guest's VGA frame rate from outside: distinct
+  QMP screendumps per second, `FPS=` in the runner).
 - Docs: this file, the M9 row of the tracks table in `docs/00-status.md`,
   the M9 section of `docs/08-roadmap.md`; a design doc (doc 18) once the
   optimization is chosen.
@@ -40,8 +44,11 @@ question about helper calls needing VM exits; not started).
 ## How the profile works
 
 `tools/tcg-profile.sh <image> <name> ['guest command']` boots the image
-headless as a snapshot with `-perfmap`, types the command into the Run
-dialog over QMP, lets it settle, then samples the *whole* QEMU process
+headless as a snapshot with `-perfmap` (`CDS=a.mds:b.iso` adds game discs
+as ide-cd devices with CD audio through an AC97 card, the slots the player
+uses; `QEMU_BIN=` another binary for an A/B, `QEMU_EXTRA=` more arguments,
+`FPS=<s>` the frame-rate probe after the sample), types the command into
+the Run dialog over QMP, lets it settle, then samples the *whole* QEMU process
 with macOS `sample` at 1 ms for 30 s (Linux: `perf record`). The report
 (`tcg-profile.py`) splits the vCPU thread's self time into generated code
 / helpers by family / softmmu slow path / translation + TB lookup /
@@ -74,6 +81,20 @@ Gotchas met on the way (2026-09-04/05):
   them even on one vCPU for the i/o threads' sake (`tcg_gen_mb`). The
   `QEMU_TCG_NO_MB=1` switch used for the barrier measurement was a hack in
   the tree, not a patch (prepare removed it).
+- The second pass (`DFILTER=`) logs every translation of the filtered
+  pages; on a workload that retranslates them 20k times a second (the
+  game below) that is 6 GB in 30 s and the log writer takes over the
+  vCPU thread. Turn it off over QMP (`log none`) or filter a cold page.
+- A guest's *frame rate* is the only honest before/after number for a
+  game; `%` of a 100 %-busy vCPU says where the time goes, not how much
+  work gets done. `tools/tcg-fps.py` counts distinct VGA screendumps per
+  second (a game blitting a back buffer to the primary changes the VGA
+  surface once per frame). Moto Racer's attract-mode intro reads 8 fps on both the
+  baseline and the fixed build (2026-09-05) although the fixed build runs
+  four times more guest code per second — the demo replays inputs at a
+  fixed tick; the *race* moves (4.9 → 7.1–7.3 fps, `tools/xp-moto-race.sh`).
+  Measure the game where the player plays it, and keep a fixed-work
+  guest-reported oracle (7-Zip, Super PI) next to it.
 - macOS JIT W^X (patch 14): a thread's initial write-protect state is not
   knowable — the main thread is in execute mode when `tcg_prologue_init`
   asks for write, a vCPU thread is not — so the tracked state must start
@@ -176,9 +197,127 @@ first). Beware in `hot.txt`: the last guest instruction of a TB carries
 patch 06's slow blocks (thousands of host instructions), so per-
 instruction averages there are meaningless; read the per-sample lines.
 
-**FIFA 2000 on the M7 driver** crashes at start on this Mac (XP's own
-error box, nothing in the device log — the M7 track's open "macOS run",
-not a CPU matter); not profiled.
+**FIFA 2000 on the M7 driver** crashed at start on this Mac on the
+2026-09-05 morning image (XP's own error box); the user's updated
+`winxp-m7.qcow2` (same day, evening) runs FIFA 2000 and Moto Racer 1997,
+both slow, Moto Racer slowest — profiled below with the player's disc
+layout (`CDS=MOTO_RACER.mds:FIFA2000.ISO VGA=d3dpt MEM=1024`, the game
+started from the Run dialog as `cmd /k cd /d C:\Arquiv~1\MotoRacer &
+MOTO.EXE`; FIFA is `C:\Arquiv~1\EASPOR~1\FIFA20~1\fifa2000.exe`, the
+WineD3D DLLs already renamed away in the image).
+
+### Moto Racer 1997, the in-engine intro (2026-09-05, evening): two pathologies, not "TCG is slow"
+
+The intro is the game's own software renderer at 640×480×16 into a
+system-memory back buffer blitted to the primary (`d3dpt_ddraw.log`:
+plain DirectDrawCreate, no Direct3D). Baseline build (patches ≤ 14), 30 s
+sample, vCPU 100 % busy: **generated code 14 %, softmmu slow path 49 %,
+translation + TB maintenance 25 %**, perf-map writer 2 % (the profiler's
+own cost). 97 % of the slow-path samples are `victim_tlb_hit` /
+`mmu_lookup` / `do_ld4_mmu` / `do_st4_mmu` under the loads *and* stores of
+one guest loop, with no page walks (`tlb_fill` 0.2 %); `info jit`: 600k TBs
+translated and 557k invalidated in the 30 s. Two separate causes:
+
+1. **The dynamic TLB was 64–256 entries.** `tlb_mmu_resize_locked` sizes
+   the direct-mapped table at every flush from the entries used since the
+   previous flush, and XP flushes at every context switch (450–750/s here),
+   so the "working set" it sees is a few hundred pages and the 30–70 %
+   use-rate policy settles at 64–256 entries (`CPU_TLB_DYN_MIN_BITS` is 6).
+   At that load two live pages share an index all the time — a sampled
+   victim hit every 65536th: `page 0x77bf1000 evicts 0x5f1000, 256
+   entries` (both index 0xf1), `0x10dcc000 evicts 0xcd0c000, 64 entries` —
+   and every access to either page is a victim-TLB swap (~40 ns, three
+   entry copies under the TLB spinlock): **1.64 billion victim hits in a
+   4-minute run, ~6 million a second**. A 4096-entry floor (**patch 16**,
+   `CPU_TLB_DYN_MIN_BITS`/`DEFAULT_BITS` 12): 1.5 million hits in the same
+   run (1000× fewer), slow path 49 % → 1.3 %, generated code 14 % → 57 %.
+   128 KiB of entries per mmu index, a memset per flush (~0.5 % at XP's
+   flush rate). Upstream's policy would want a conflict counter; the floor
+   is the one-line version.
+2. **TB invalidation storms, three sources.** (a) Physical page 0xca000 is
+   QEMU's *vAPIC option ROM* (`kvm aPiC`, `hw/i386/vapic.c`): XP's HAL has
+   its TPR accesses patched into `call`s to stubs there (`out 0x7e,al;
+   movzx eax, byte [0x800ca300]; ret` per register, a `lock cmpxchg` on the
+   same dword for raises) — every IRQL change of the guest runs them, and
+   the `VAPICState` the APIC writes at every interrupt (`apic_sync_vapic`
+   → `cpu_physical_memory_write`) is at 0xca300, *the same page*. The DMA
+   side's `tb_invalidate_phys_range` rounds the first page's range down to
+   the page start (a 2023 upstream regression, still in master
+   2026-09-05), so every interrupt invalidated all 17 stub TBs, each
+   invalidation flushing the whole 64 KiB jump cache (CF_PCREL), and they
+   were retranslated ~5k times a second — *on every XP run, idle
+   included* (idle: 136k TBs in 40 s; 7-Zip: 50k). (b) Writes to pages
+   that carry any TB take the slow path and, before this patch, the page
+   collection lock (two g_tree lookups) plus a walk of the page's TB list
+   *per write* even when nothing overlaps: the vAPIC lock word (23k
+   writes/s), pool pages with a stale TB (45k/s) — ~12 % of the vCPU. (c)
+   **The game is genuinely self-modifying**: page 0x436000 of MOTO.EXE holds
+   four unrolled copies of the textured-span inner loop (`add edx, imm32;
+   adc bh, imm8; dec esi; mov [edi], ax; lea edi,[edi+2]; jmp`) whose
+   immediates (texture pointer, u/v deltas, carry bytes, 52 bytes per
+   round) are rewritten per span: 187k writes and 20.8k retranslations a
+   second, values that really change (five page dumps 0.5 s apart differ
+   at exactly those 52 bytes). **Patch 15** takes (a) away (range clamped
+   to the write), makes (b) nearly free (a per-page byte range of its TBs:
+   a write outside returns before any lock; a write that cannot hit a TB
+   shared with a neighbouring page is handled under the page's own
+   spinlock, no collection; the precise-SMC g_tree lookup of the writing
+   TB only when a TB is hit) and drops the per-invalidation jump-cache
+   flush (`CF_INVALID` already makes a stale slot miss). (c) remains:
+   after both patches the vCPU is **generated code 57–59 %, translation +
+   TB maintenance 25 %** (the list walk of the SMC page 9 %, the
+   retranslations ~10 %, `helper_lookup_tb_ptr` 4 %), softmmu 1.3–1.9 %,
+   `_tlv_get_addr` 3 % (macOS TLS: every `tcg_ctx` access in the
+   translator is a call), perf-map writer 3 % (profiling only).
+
+The remaining cost of (c) is the game's design meeting TCG's page-granular
+code protection; ideas ranked: compare-before-invalidate in the store
+slow path (skip when the patched bytes are unchanged — measured values do
+change between spans, so probably small), a per-page 64-byte code bitmap
+to shorten the walk (the patches land inside the code, so partial), and
+the real one, "soft immediates": retranslate a TB that keeps being
+invalidated with its patched immediates read from guest memory at
+runtime and let writes to those bytes skip the invalidation (a translator
+feature, days). Not before the register pinning of step 2.
+
+The guest-side loop itself, after the patches: the samples sit on the
+block end (`jmp` back, `dec esi`, the store) — the register-file-in-`env`
+cost at TB boundaries that step 2 targets.
+
+**The race, A/B** (`tools/xp-moto-race.sh`: demo → title → Play Solo →
+Practice → Speed Bay, throttle held, `tools/tcg-fps.py` for 15 s;
+`moto-race-base` / `moto-race-fix`): **4.9 → 7.1–7.3 fps** (+45–50 %, two runs of the fixed build). Less than
+the four-fold rise of the generated-code share because the renderer's
+frame now pays the SMC retranslations (25 %) and its own per-pixel loop,
+whose samples sit on the block boundary (registers through `env` — step
+2). Two leads beyond this track: the game's options screen says
+`D3D: NOT DETECTED` — Moto Racer has a Direct3D 5 renderer and its HAL
+probe fails against our M7 driver; with it detected the software
+rasterizer (and all of the above) would be bypassed (an M7 item). And the
+attract-mode intro reads 8 fps on *both* builds while the race moves, so
+the demo is paced by the game (replayed inputs at a fixed tick).
+
+**FIFA 2000 under the runner** (`fifa-fix`): `fifa2000.exe` started from
+the Run dialog exits within 45 s, no error box on the screendumps, vCPU
+idle. Under the player the user runs it fine, with the discs in another
+slot order (the runner's `CDS` puts the guest-tools ISO on ide.1/0 and the
+games on the slave slots, so FIFA's disc is F:, not the letter the
+install recorded); `tools/xp-fifa2000.bat` / `tools/xp-fifa-match.sh` (M7)
+know its start sequence. Not profiled yet — next steps.
+
+**7-Zip A/B, same day** (`7zip-ab-base` / `7zip-ab-fix`, dict 22 / 23,
+single runs): compress 1112 / 999 → 1137 / 1049 MIPS, decompress 1582 /
+1504 → 1621 / 1547 (+2–5 %). Its working set never conflicted in the small
+TLB (softmmu 1.4 % in both), so this is the vAPIC storm and the
+jump-cache flushes alone; the games are where patch 16 bites.
+
+Runs: `build/tcg-profile/moto-intro` (baseline), `-fix1` (range clamp),
+`-fix2` (+ TLB floor), `-fix3` (+ jump cache), `-fix5` (+ page ranges,
+single-page path), `moto-ab-base` / `moto-ab-fix` (A/B with the frame
+probe), `moto-intro-d/hot-tbs.txt` (the vAPIC stubs' bytes),
+`moto-intro-d/trace-1s.log` (one second of `translate_block` and
+`memory_notdirty_write_access` events, taken over QMP with
+`trace-event-set-state` on a kept guest).
 
 **What the data says.** On integer code the cost is (1) the register
 file in memory at block boundaries, (2) the four-load TLB chain per
@@ -363,14 +502,27 @@ scripts/test.sh all                                                  # before ev
 
 ## Next steps, in order
 
-Done on the way: patch 13 (`-perfmap` on Darwin) and patch 14 (the
-redundant macOS W^X toggles: Super PI 1M 1:36.2 → 1:25.3). The user
+Done on the way: patch 13 (`-perfmap` on Darwin), patch 14 (the
+redundant macOS W^X toggles: Super PI 1M 1:36.2 → 1:25.3), and from the
+Moto Racer profile patches 15 (TB invalidation: the vAPIC ROM page
+storm, per-page code ranges, no jump-cache flush per TB) and 16 (the
+4096-entry TLB floor) — the game's vCPU went from 14 % to 57 % generated
+code. The user
 picks the next item (the track was opened profile-first); the
 recommended order, each with M8's methodology (an on/off switch as the
 oracle, both guest batteries identical, `scripts/test.sh all` green,
 7-Zip / Super PI / D3DGAME9 profiled before and after with the tools
 above):
 
+0. **The games, measured where the player plays them** (a day): FIFA 2000
+   headless with the player's disc order (a `CDS_SLOTS=` or the M7
+   scripts' layout), Esc past the video, the match via
+   `tools/xp-fifa-match.sh`'s clicks, `tools/tcg-fps.py` (blind to frames
+   presented through the 3D device — use the executor's frame counter or
+   `PLAYER_DUMP_OUT` cadence there); Moto Racer's race on `winxp` vs
+   `winxp-m7`; Super PI before/after patches 15/16. And hand M7 the
+   `D3D: NOT DETECTED` lead — Moto Racer's Direct3D 5 HAL probe against
+   our driver would take the software rasterizer out of the picture.
 1. **Inline the TB lookup for indirect branches** (`ret`, `call *`,
    `jmp *`): the jump-cache probe (hash of pc, compare pc / cs_base /
    flags / cflags, `goto_ptr`) emitted as TCG ops instead of
@@ -410,3 +562,11 @@ above):
 5. **Barriers off on one vCPU** (~4 %): only after an audit of every
    reader of guest RAM outside the BQL; as a machine property, not an
    env var.
+6. **Self-modifying rasterizers** (Moto Racer: 20k retranslations/s,
+   ~25 % of its vCPU after patches 15/16): compare-before-invalidate in
+   the store slow path (small, values change), a 64-byte code bitmap per
+   page to shorten the list walk (9 %), or "soft immediates" — a TB
+   invalidated N times is retranslated with its patched immediates read
+   from guest memory and writes to those bytes skip the invalidation (a
+   translator feature, days). Also `_tlv_get_addr` 3 %: macOS TLS for
+   `tcg_ctx` in the translator (cache it in a local in the hot paths).

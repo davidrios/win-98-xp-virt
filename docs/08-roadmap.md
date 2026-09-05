@@ -141,7 +141,12 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
   `tools/tcg-hot.py`).
 - Then the optimization the data picks (candidates: flags in NZCV in the
   aarch64 backend, barrier elision on one vCPU, cheaper TLB lookups),
-  with M8's on/off-oracle methodology.
+  with M8's on/off-oracle methodology. First results (2026-09-05, from
+  the Moto Racer profile): patch 15 (TB invalidation: the vAPIC ROM page
+  storm at every interrupt, per-page code ranges, no jump-cache flush per
+  TB) and patch 16 (a 4096-entry floor for the dynamic TLB, which XP's
+  context-switch flushes had shrunk to 64–256 entries) — the game's vCPU
+  from 14 % to 57 % generated code.
 - The structural option — TCG's output inside a Hypervisor.framework VM
   with the x86 page tables mirrored in stage 1 — measured by
   `tools/hvf-el1/` (2026-09-05): feasible, ~45 KLOC of the vCPU core

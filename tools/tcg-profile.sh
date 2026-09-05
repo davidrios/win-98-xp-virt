@@ -24,13 +24,21 @@
 # WARM (20 s after the command), SECS (30 s of sampling), CPU (pentium3;
 # add ,x87-fast=off etc.), MEM (512), VGA (cirrus | d3dpt = -vga none
 # -device d3dpt-vga with the executor, for the M7 images), CDROM (a disc as
-# D:, default the newest guest-tools ISO), KEEP=1 (leave the guest running,
+# D:, default the newest guest-tools ISO), CDS='a.mds:b.iso' (more discs
+# after it, each an ide-cd with CD audio through the AC97 card, so a game's
+# disc sits where the player puts it; .mds/.cue/.ccd go through the cdimage
+# driver), SND=1 (the AC97 card, implied by CDS; the M7 images have it),
+# KEEP=1 (leave the guest running,
 # QMP socket printed), KEYS='alt+c,down,ret' (chords sent 1.5 s apart,
 # KEYS_WAIT (15 s) after the command: menus and dialogs of a GUI program,
 # `keys.png` shows the result), DFILTER='0x80501000..0x80502000,...' (second pass:
 # also log the guest disassembly, the optimized TCG ops and the host code
 # of every TB starting in those ranges to $OUT/qemu-d.log — the
-# `tcg-profile.py --hot` line of a first pass — for tools/tcg-hot.py).
+# `tcg-profile.py --hot` line of a first pass — for tools/tcg-hot.py),
+# QEMU_EXTRA='-global ...' (more QEMU arguments, e.g. an experiment's switch),
+# QEMU_BIN (another qemu-system-i386, e.g. a baseline kept aside for an A/B),
+# FPS=<s> (after the sample, tools/tcg-fps.py counts the guest's distinct VGA
+# frames for that many seconds -> fps.txt: an absolute number next to the %).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -43,6 +51,14 @@ BOOT_WAIT="${BOOT_WAIT:-60}"; WARM="${WARM:-20}"; SECS="${SECS:-30}"
 
 VGA_ARGS=(-vga cirrus)
 [ "${VGA:-cirrus}" = d3dpt ] && VGA_ARGS=(-vga none -device d3dpt-vga)
+# the game discs and the sound card, as under the player (tools/xp-game-test.sh's CDS=)
+SND_ARGS=(-audiodev none,id=snd0); [ "${SND:-${CDS:+1}}" = 1 ] && SND_ARGS+=(-device AC97,audiodev=snd0)
+# IDE slots: the disk is ide.0/0, CDROM (-cdrom = index 2) ide.1/0; the CDS discs take the two slave slots
+CD_ARGS=(); n=0; IFS=: read -ra CDLIST <<< "${CDS:-}"
+for cd in "${CDLIST[@]}"; do [ -n "$cd" ] || continue
+  [ $n -lt 2 ] || { echo "CDS: at most two discs"; exit 1; }
+  CD_ARGS+=(-drive "file=$cd,media=cdrom,id=cd$n,if=none" -device "ide-cd,bus=ide.$n,unit=1,drive=cd$n,audiodev=snd0"); n=$((n+1))
+done
 # the Direct3D executor (the M4 device is always on the pc machine; the M7
 # adapter with VGA=d3dpt): same environment as scripts/test.sh
 case "$OS" in Darwin) SO=dylib;; *) SO=so;; esac
@@ -59,10 +75,10 @@ fi
 
 SOCK="/tmp/tcgprof-$$.sock"; rm -f "$SOCK"
 LOG="$OUT/qemu.log"
-"$ROOT/build/qemu/qemu-system-i386" -L "$ROOT/qemu/pc-bios" -machine pc -cpu "$CPU" -m "$MEM" \
+"${QEMU_BIN:-$ROOT/build/qemu/qemu-system-i386}" -L "$ROOT/qemu/pc-bios" -machine pc -cpu "$CPU" -m "$MEM" \
   -drive "file=$IMG,if=ide,index=0,snapshot=on" ${CDROM:+-cdrom "$CDROM"} \
-  "${VGA_ARGS[@]}" -net none -usb -device usb-tablet -perfmap \
-  ${DFILTER:+-d in_asm,op_opt,out_asm -dfilter "$DFILTER" -D "$OUT/qemu-d.log"} \
+  "${CD_ARGS[@]}" "${VGA_ARGS[@]}" "${SND_ARGS[@]}" -net none -usb -device usb-tablet -perfmap \
+  ${DFILTER:+-d in_asm,op_opt,out_asm -dfilter "$DFILTER" -D "$OUT/qemu-d.log"} ${QEMU_EXTRA:-} \
   -display none -qmp "unix:$SOCK,server,nowait" -serial none -monitor none > "$LOG" 2>&1 &
 QPID=$!
 Q() { python3 "$ROOT/tools/qmpc.py" "$SOCK" "$@"; }
@@ -104,6 +120,9 @@ case "$OS" in
     ;;
 esac
 cp "/tmp/perf-$QPID.map" "$OUT/perf.map"
+if [ -n "${FPS:-}" ]; then
+  python3 "$ROOT/tools/tcg-fps.py" "$SOCK" "$FPS" | tee "$OUT/fps.txt"
+fi
 HMP "info jit" > "$OUT/info-jit-after.txt" || true
 HMP "info registers" > "$OUT/info-registers.txt" || true
 Q screendump "$OUT/after.png" >/dev/null || true
