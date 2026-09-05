@@ -106,13 +106,16 @@ Beyond what QEMU has today:
 
 Using dumps of discs we own, one title per scheme:
 
-| Scheme | Expectation |
-|---|---|
-| Plain mixed-mode + CD-DA | installs; in-game CD audio plays, tracks/seek correct |
-| SafeDisc 1.x and 2.x | launch check passes from raw dump with error sectors |
-| SecuROM (early + 4.x) | launch check passes from dump with subchannel |
-| StarForce (stretch) | documented result with DPM-carrying MDS dump |
-| Multisession disc | both sessions visible, TOC correct |
+| Scheme | Expectation | Result |
+|---|---|---|
+| Plain mixed-mode + CD-DA | installs; in-game CD audio plays, tracks/seek correct | **PASS** — Age of Empires Gold and Moto Racer both play their CD soundtracks while the game runs, in XP, in the player, from their `.mds` (user, 2026-09-05). Step 6 had proven CD-DA host-side and through MCI; this is the first time a title's *own* audio code drove the path |
+| **SafeDisc 2.x** | launch check passes from raw dump with error sectors | **INCONCLUSIVE** (was PASS; downgraded 2026-09-05). FIFA 2002 from `FIFA2002.mds` installs, launches and reaches its menus in XP — **but it does the same from the repaired copy, whose 584 weak sectors all verify** (user). A check that ignores the band's absence is not a check we have evidence of passing. Nothing here shows the error delivery is what satisfied it; see doc 17 §2.6 |
+| SafeDisc 1.x | *(the row's premise does not hold)* | **n/a** — 1.x writes no error sectors at all (doc 17 §6.x, measured on The Sims and Rayman 2). It checks the medium another way; a separate expectation has to be written once we know which |
+| SecuROM (early + 4.x) | launch check passes from dump with subchannel | not tested. Early needs a `.sub` (replay path exists); 4.x needs DPM, which `mds.rs` ignores — that is the stretch goal below, not this row |
+| VOB ProtectCD | launch check passes from a dump carrying both the data and the Q anomaly | **INCONCLUSIVE** (was PASS; downgraded 2026-09-05). The Settlers 3 plays in XP from the `.ccd` and the `.cue`, both discs — **and from the repaired CD01 whose 538-sector band verifies** (user). The earlier cue/ccd A/B is void with it: it concluded the check reads the data anomaly rather than Q, but the control shows it does not read the band at all. See doc 17 §2.6 |
+| StarForce (stretch) | documented result with DPM-carrying MDS dump | not started |
+| Multisession disc | both sessions visible, TOC correct | not tested |
+| Multi-disc title | the guest sees a disc change and the game accepts the new disc | **PASS** — Settlers 3's campaign asked for CD2 and took it (user, 2026-09-05). Unaffected by the protection finding: this row is about the medium change, and the game demonstrably distinguished the two discs |
 
 Plus a synthetic MMC exerciser (host-side unit tests against the disc model,
 no guest needed) for command-level regression coverage. The exerciser's

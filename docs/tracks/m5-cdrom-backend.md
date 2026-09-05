@@ -37,6 +37,178 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   `-drive`/`-device ide-cd,audiodev=` lines in M5b), `CLAUDE.md` (the
   testing-tools table), `docs/00-status.md` outside the M5 row.
 
+## State (2026-09-05, late: the negative control failed, and it matters)
+
+- **Both titles also run from their repaired discs, so the protection results
+  are inconclusive** (user, 2026-09-05). `discx repair` built copies whose
+  L-EC-failing sectors all verify — FIFA 2002's 584, Settlers CD01's 547 —
+  differing from the originals only in the parity fields of exactly those
+  sectors (byte-for-byte diffed: offsets 2064–2351, user data untouched).
+  FIFA 2002 still launches and reaches its menus; Settlers 3 still plays.
+  A check that does not notice its band has been repaired is not a check we
+  have watched pass. Doc 05's SafeDisc 2.x and ProtectCD rows are downgraded
+  from PASS to **inconclusive**, and the cue/ccd A/B conclusion below ("it
+  reads the data anomaly, not Q") is **void** — it assumed the check reads
+  something. What survives from that pair is only that replay vs synthesis
+  makes no difference to this title.
+  **Empty drive (user, same day): FIFA 2002 asks for the CD.** So *a* disc
+  check runs and an empty drive does not satisfy it — but that is all it says.
+  A volume-label or file-presence check behaves exactly this way, and the
+  repaired disc satisfies it too, so original-runs / repaired-runs / empty-
+  refuses is equally consistent with a presence check that always ran and an
+  authentication that never did. Settlers has not had this run yet.
+  **Next** (doc 17 §2.6b): an ATAPI trace across a launch on the original
+  dump, looking for the band's LBAs — 811 for FIFA, 195539 for Settlers. Never
+  requested = the authentication is not reaching the disc; requested = it reads
+  our errors and accepts a repaired disc anyway, which is a more interesting
+  finding about the scheme. Pair it with an offline look at the installed tree
+  for whether the EXE is SafeDisc-wrapped at all and whether `secdrv.sys` is
+  there — an unwrapped binary explains everything at once.
+  The likeliest single cause of both: protections of the era skip
+  authentication rather than risk a false positive when they cannot get the
+  low-level access they want (no SPTI/ASPI, `secdrv.sys` absent, a drive that
+  does not identify as expected) — in which case our drive is never asked.
+  What is *not* in doubt: the host-side and `atapi-guest-test.py` evidence
+  that the model delivers the errors. That was never the questionable part.
+
+## State (2026-09-05: the protected dumps arrived, and one passed)
+
+- **Doc 05's plain mixed-mode + CD-DA row: PASS.** Age of Empires Gold and
+  Moto Racer both play their CD soundtracks while the game runs — XP, in the
+  player, from their `.mds` (user, 2026-09-05). Step 6 had proven CD-DA
+  host-side and through MCI; this is the first time a title's own audio code
+  drove PLAY / position / routing, over a real 14- and 12-audio-track disc.
+  It also settles the pregap question below.
+
+- **VOB ProtectCD: PASS, and it is the first CCD run in a guest.** The
+  Settlers 3 plays from `CD01.ccd` and `CD02.ccd` in XP — tutorial from CD1,
+  campaign from CD2, which it asks for and accepts (user, 2026-09-05). Every
+  earlier guest pass was an `.mds`; this is the `.sub`-carrying CCD path
+  (`read_sub` replaying bytes verbatim) under a real protection.
+  **And the A/B came back the same day: it reads the data, not Q.** The game
+  also plays from `CD01.cue` / `CD02.cue`, which carry no `.sub` (user).
+  `discx scan` gives both images the same 697 failing LBAs, so the data
+  anomaly is delivered identically; they differ only in subchannel, replayed
+  verbatim from the CCD and synthesized — regular, CRC-correct, anomaly-free —
+  from the cue. **VOB ProtectCD's check therefore reads the data anomaly and
+  is satisfied by synthesized subchannel**, which also means a dump without
+  `.sub` is a good source for a ProtectCD title. Doc 05's row premise ("a
+  dump carrying both") is wrong for this scheme.
+  **The gap this leaves is a negative control:** three schemes now pass and we
+  have never watched a check *fail*, so a pass is inference from a game that
+  started. Until one is seen to refuse a disc it should refuse, none of the
+  three passes is fully nailed down.
+  **The control discs are built** (`discx repair`, new, 2026-09-05; outside
+  the repo at `oldstuff/clean/`): `fifa2002/FIFA2002.mds` (584 sectors
+  repaired, scans with 0 failures) and `settlers3/CD01.cue` (547 repaired,
+  only the 150 sync-less run-out sectors left, which a real drive fails too).
+  Each was diffed against its original byte for byte — the difference is
+  confined to offsets 2064–2351 of exactly those sectors, i.e. the EDC, the
+  reserved gap and the ECC; sync, header and all 2048 user bytes identical, so
+  the pair differs in one variable and the 0x55 fill is still 0x55. **Run each
+  title from its clean copy: both must now refuse.** For Settlers the launch
+  check is on CD1, so only CD01 is repaired — the campaign's CD2 has no band
+  at all and the original is used for it.
+  Scans, for the record: CD01 has 697 L-EC failures — the 538-sector band at
+  195539–196076, **nine scattered singles past it** (196654, 196823, 197060,
+  197160, 197219, 197424, 197584, 198370, 198977, EDC wrong as well), and 150
+  sync-less sectors at 219692–219841 which are the ordinary run-out before
+  track 02. **CD02 carries no band at all** (its only 150 failures are the
+  same benign run-out at 234254–234403): the protection is on disc 1 only,
+  and disc 2 is a plain mixed-mode disc with 12 audio tracks.
+
+- **Step 8, first title: PASS.** FIFA 2002 installed from `FIFA2002.mds`,
+  launched and navigated its menus in XP (user, 2026-09-05). SafeDisc 2.x's
+  check runs at launch, so reaching the menus means the wrapped EXE and
+  `secdrv.sys` read the 584-sector band through `cdimage` → patch 51 →
+  libdisc and got the errors they expect. Doc 05's SafeDisc 2.x row is green
+  on real protected media. A match was not reached; suspected display path,
+  not the disc — diagnose with `tools/xp-game-test.sh` (`SHOTS=`, `DRW_AFTER=`)
+  before assuming, since an invisible message box is the documented
+  failure shape.
+  **Use the `.mds`, not the `.cue`:** the DIC bin carries 64 undescrambled
+  sectors *outside* the band (LBA 135084–135086, 161089, 223875, 224045)
+  which the driver correctly answers `-EIO`, breaking an install for reasons
+  unrelated to the protection. The Alcohol dump read those sectors cleanly
+  (real bytes, valid EDC) and carries the identical 584-sector band. Keep
+  the `.cue` as the verification fixture — it is the one whose bad-sector
+  list provably equals the dumper's own log — and the `.mds` as the image to
+  run.
+
+## State (2026-09-05: the protected dumps arrived)
+
+- **Step 7 has its material.** Real dumps in
+  `/mnt/data2/david/Downloads/oldstuff` (not in the repo), checked with
+  `discx info` / `scan` / `subscan`:
+
+  | Dump | Protection, from the disc | Signal in the dump |
+  |---|---|---|
+  | `fifa2002/` (DIC **and** Alcohol sets of one disc) | SafeDisc 2.x (`00000001.TMP`, `00000002.TMP`, `DRVMGT.DLL`, `SECDRV.SYS`) | **intact in both**, and they agree: 584 sectors from LBA 811, identical in each — see the acceptance note below |
+  | `AOM_D1.ccd` | SafeDisc 2.x (`00000001.TMP`, `DRVMGT.DLL`, `SECDRV.SYS`) | **intact** — 580 weak sectors between LBA 825 and 12000, valid sync+header, 0x55 fill, wrong EDC |
+  | `AOM_D2.ccd` | none (second disc) | clean |
+  | `the settlers 3/CD01.ccd` | VOB ProtectCD (`.ficken` section in `S3.EXE`) | **intact** — 538 sectors 195539–196076 corrupt in the data *and* in the Q relative timing, over otherwise flawless subchannel |
+  | `The Sims (PT-BR) (CCD)` | SafeDisc 1.x (`CLCD16/32.DLL`, `DPLAYERX.DLL`, `SIMS.ICD`) | none to find — see the version rule below |
+  | `rayman2/` (DIC/redump submission) | SafeDisc 1.1x–1.3x (submission info names every file) | none to find; the best-documented dump here (full `.sub`, C2, DAT hashes verified) |
+
+  **The acceptance criterion is met on FIFA 2002.** Doc 17 asks that the
+  dumper's own log of bad sectors be exactly the LBAs where
+  `sector_info.lec == 0`. Three independent sources agree on the same 584:
+  DiscImageCreator's `FIFA2002.img_EccEdc.txt` ("584 unmatch sector is
+  replaced at 0x55 except header"), our scan of its `.bin`, and our scan of
+  an Alcohol dump of the same disc made four years later. Outside the
+  protection band the two dumps differ — DIC reports 64 sectors it could not
+  descramble (LBA 135084–135086, 161089, 223875, 224045) where Alcohol
+  reports none, i.e. DIC records read damage honestly and Alcohol fills it
+  silently. Neither is inside the band.
+
+  **The SafeDisc version decides whether there is a band at all**, not the
+  dumping tool (measured on four discs): 2.x writes deliberately corrupt
+  sectors (AoM 580, FIFA 2002 584), 1.x does not (The Sims, Rayman 2, both
+  0) and checks the disc another way. So a 1.x title cannot serve as an
+  L-EC fixture no matter how it was dumped, and **redump / DiscImageCreator
+  sets are perfectly good sources for 2.x titles** — `/sf` fills the bad
+  sectors with 0x55 and leaves the parity wrong, so the failure survives.
+  The Sims and Rayman are the fixtures for the *other* case: protection
+  files present, nothing for `scan` to find, which is what
+  `cd-dump-verify.sh` must report as "this dump cannot test the check".
+
+  AoM disc 1 already exercises the path end to end with no code change:
+  `qemu-img convert -f cdimage AOM_D1.ccd` fails `Input/output error`
+  because the block driver refuses the sectors whose L-EC does not verify.
+  Settlers CD01 is the widest of them — it needs the `.sub` replay path as
+  well as the L-EC one, and it is mixed-mode with 12 audio tracks.
+
+- **`discx subscan` (new)** walks every sector's stored subchannel: Q CRC
+  failures with their clustering, kind/track/ADR distribution, whether the
+  bytes would verify un-deinterleaved, and how often `subq::synthesize`
+  reproduces the disc's own frames. Verdict on the Alcohol dumps: 1.9 % and
+  0.18 % bad CRC, 99.7 % isolated single sectors, no run longer than 2, not
+  one frame valid in the raw form — **drive noise, not our layout**.
+  Subchannel is delivered with no error correction; the Settlers CloneCD
+  dump has 0 bad frames in 344,876.
+
+- **Fixed: MDS mode `0xEC` read as audio.** NFS Porsche Unleashed's v1.3
+  MDS came out as one 281,279-sector CD-DA track — no L-EC verified
+  anywhere, unmountable in a guest. It is Mode 2 XA (every sector header
+  says mode 2, the TOC control says 4); `0xEC` is Alcohol's mixed mode 2.
+  Now `mode2 form1` throughout, and an MDS whose mode byte contradicts its
+  TOC control bits is refused outright rather than silently misread.
+
+- **Not fixed, by decision: the undeclared-pregap guess** (doc 17 §2.6).
+  Synthesizing Q where the descriptor declares no index 00 is a choice
+  between three conventions real discs use, and no descriptor field
+  distinguishes them (`pregap` is 0 for every such track in both MDS
+  files). Ours reproduces AoE Gold exactly — 277,626 of 277,626 ADR 1
+  frames — and misses ~0.7 % on a Moto-Racer-shaped disc. Switching to
+  Moto's convention was implemented, measured and reverted: it fixed 1,633
+  frames on one disc and broke 1,866 and 1,650 on two others. Anything that
+  really reads subchannel wants a dump that carries it.
+  **And the residual does not reach a game:** AoE Gold and Moto Racer are the
+  very two discs the conventions differ on, and both play their CD audio
+  in-game (above), so the ~0.7 % of Q frames we get wrong on a
+  Moto-Racer-shaped disc is below what a title's own audio code looks at. The
+  guess is safe to keep, not just cheapest to keep.
+
 ## State (2026-09-04, evening)
 
 - **Step 6 done** (same commit as step 5): the voice in patch 51
