@@ -101,6 +101,11 @@ Beyond what QEMU has today:
   (secdrv.sys and friends) run unmodified.
 - Frontend UX: mount/eject/swap disc images at runtime (multi-disc installs),
   with a per-machine virtual "disc shelf".
+- A **host directory** can go in the drive too, as a lazily generated
+  ISO 9660 + Joliet volume (`isodir:/path`) — the way to hand a guest a
+  pile of files without burning an image or booting a network stack.
+  Read-only and snapshotted when the tray closes, like a disc that was
+  burned. M5g, opened 2026-09-06: `docs/tracks/m5-dirdisc.md`.
 
 ## Acceptance tests (M5 exit criteria)
 

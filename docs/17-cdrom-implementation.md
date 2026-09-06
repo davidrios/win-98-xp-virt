@@ -690,6 +690,12 @@ no-disc path.
 
 ### 5.1 `block/cdimage.c` (in the repo: `libdisc/qemu/cdimage.c`)
 
+It is also where the `isodir` protocol driver goes — a host *directory*
+served as a disc (M5g, opened 2026-09-06, not written yet;
+`docs/tracks/m5-dirdisc.md`): the same state and the same read path, no
+`file` child, and `isodir:/path` instead of a probe, because a directory
+cannot be probed. It needs no QEMU patch: this file is ours.
+
 Model it on `block/bochs.c` (format driver, read-only). Members:
 
 ```c
@@ -1041,3 +1047,4 @@ scrambled image (§2.x, `ccd.rs` refuses `DataTracksScrambled=1`, but a bare
 | M5d | SafeDisc: L-EC path against a real dump, `secdrv.sys` running | launch check passes; `atapi-guest`'s flipped-sector case is the regression guard |
 | M5e | MDS/MDF (+ DPM data), CHD, a seek/read timing profile if StarForce needs it | documented result per doc 05's table |
 | M5f | disc shelf / swap in the player and launcher (with M6) | — |
+| M5g | a host directory as a disc: ISO 9660 + Joliet generated lazily from the tree (`isodir:/path`, `libdisc/src/isodir.rs`, a second BlockDriver in our own `cdimage.c`) | `discx selftest`'s `dirdisc` case round-tripped through `bsdtar`; XP copies the folder back identical (`docs/tracks/m5-dirdisc.md`) |
