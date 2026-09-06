@@ -6,7 +6,9 @@ They play the same role for `w9x/` that `../ddk/` plays for the XP
 driver, and for the same reason: **the Microsoft DDK is not used here.**
 
 `gdidefs.h`, `dibeng.h`, `minivdd.h`, `valmode.h`, `winhack.h`,
-`dibeng.def` and `dibeng.lbc` are taken verbatim from **JHRobotics'
+`vmm.h` (the ring-0 VMM services, structures and control messages the
+mini-VDD is written against), `dibeng.def` and `dibeng.lbc` are taken
+verbatim from **JHRobotics'
 `vmdisp9x`** (`https://github.com/JHRobotics/vmdisp9x`, MIT, © 2022
 JHRobotics, deriving from Michal Necasek's Win9x video minidriver), whose
 `ddk/` directory carries no Microsoft code or copyright — they are

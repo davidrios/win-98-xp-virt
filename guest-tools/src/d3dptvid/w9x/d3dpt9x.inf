@@ -22,6 +22,7 @@ D3dpt.Copy=11
 
 [SourceDisksFiles]
 d3dpt9x.drv=1
+d3dpt9v.vxd=1
 
 [Manufacturer]
 %Mfg%=Mfg.2ksbox
@@ -35,17 +36,20 @@ AddReg=D3dpt.AddReg,Modes.AddReg
 
 [D3dpt.Copy]
 d3dpt9x.drv
+d3dpt9v.vxd
 
 [D3dpt.AddReg]
 HKR,,Ver,,4.0
 HKR,,DevLoader,,*vdd
 HKR,DEFAULT,drv,,d3dpt9x.drv
 HKR,DEFAULT,vdd,,"*vdd"
+HKR,DEFAULT,minivdd,,d3dpt9v.vxd
 HKR,DEFAULT,RefreshRate,,-1
 HKR,DEFAULT,Mode,,"32,640,480"
 
-; No minivdd= key: this driver has no mini-VDD yet, so DOS boxes and
-; screen switching are the main VDD's problem alone (doc 19, step 2).
+; The mini-VDD is what claims the adapter's PCI resources; without it
+; Windows takes the base addresses away and the display driver has
+; nothing to map (doc 19 §11).
 
 [Modes.AddReg]
 HKR,"MODES\16\640,480"

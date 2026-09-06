@@ -38,11 +38,11 @@ Branch `track/m10-win98-driver`, worktree
 
 ## State (2026-09-06)
 
-**Step 0 is done and step 1 (the Open Watcom prerequisite) is answered:
-the toolchain works and the first driver builds, installs and runs in a
-real Win98 guest — but a `.drv` alone cannot drive the adapter, because
-Windows unmaps its PCI BARs when nothing claims them (doc 19 §11). The
-mini-VDD comes first.** The findings that shape the plan:
+**Steps 0–3 are done: the toolchain, the `.drv`, and the mini-VDD, which
+now claims the adapter and keeps its BARs for the whole boot (doc 19 §11,
+§12). The one thing left before a desktop is that GDI still refuses to
+load the 16-bit driver — a load failure, not a run-time one (doc 19
+§13).** The findings that shape the plan:
 
 - A 9x display driver is **three binaries**: a 16-bit `.drv` whose drawing
   exports all jump to the DIB Engine, a ring-0 mini-VDD `.vxd`, and — the
@@ -116,15 +116,25 @@ What the track starts from:
    `KERNEL` and `DIBENG` only, no CRT), the INF installs it through PnP,
    and `tools/win98-driver-test.sh` runs the whole thing headless. The
    toolchain risk is gone.
-3. **The mini-VDD** — now the first thing that must work, not a later
-   nicety (doc 19 §11). A dynamic VxD that claims the adapter's PCI
-   resources so Windows stops unmapping its BARs, registers with the main
-   VDD (`VDD_REGISTER_DISPLAY_DRIVER_INFO`), maps VRAM and the register
-   page, and hands the 16-bit driver a frame-buffer descriptor the way
-   `vmdisp9x`'s FBHDA does. The pass is `tools/win98-driver-test.sh`
-   printing BARs that survive the boot, the driver's own `guest:` lines
-   in the QEMU log, and a desktop with more than 16 colours.
-4. **Step 1 — the split, XP unchanged.** Carve `core/` out of
+3. ~~**The mini-VDD**~~ **done 2026-09-06** (doc 19 §12): `d3dpt9v.vxd`
+   loads, claims the adapter, maps VRAM and the register page, checks the
+   register set, and installs itself in the main VDD's dispatch table —
+   and the BARs now survive the whole boot, which was the §11 blocker.
+   Three `wlink` facts had to be found first (LE objects at base 0 and
+   executable; the DDB at offset 0 of the *code* object, which needs
+   everything in one CODE-class segment; a 32-bit entry-table bundle);
+   they are in doc 19 §12 because a VxD the VMM dislikes is simply never
+   loaded, silently.
+4. **Make GDI load `d3dpt9x.drv`** — the open blocker (doc 19 §13). Its
+   first instruction never runs, and naming it directly in `SYSTEM.INI`
+   changes nothing, so GDI is refusing the module. The NE now matches
+   `CIRRUSMM.DRV` on resources, header, segment attributes and heap;
+   what is left to try is the export/entry table, the missing `#16`
+   VERSIONINFO resource, and getting `BOOTLOG.TXT` to write so the
+   refusal can be read rather than inferred. The pass is
+   `tools/win98-driver-test.sh` printing the driver's own `d3dpt9x:`
+   lines and a desktop with more than 16 colours.
+5. **Step 1 — the split, XP unchanged.** Carve `core/` out of
    `d3dptdisp.c` per doc 19, thunk NT onto it, and prove it is a
    refactor: `scripts/test.sh all` green, `d3dpt-dp2-test` and `d3d7test`
    against the same golden BMP, `shtest` / `cktest` / `ebtest` / `dxttest`
@@ -133,17 +143,17 @@ What the track starts from:
    `tools/xp-motoracer.sh`, `tools/xp-vicecity.sh`). Land this on its own
    — a 9x bug on top of an unproven refactor is two bugs wearing one
    coat.
-5. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
+6. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
    adapter, `d3dptvid: adapter found` from the device, no copy inside
    QEMU. Modes come from the INF on 9x, so decide there between an INF
    superset and a mode-list utility (doc 19 §6). Installed by INF from the
    guest-tools ISO; `SETUP.EXE` grows the component and
    `tools/setup-guest-test.sh win98`'s "never offered" check inverts.
-6. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
+7. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
    flip chain against the frame counter, `DdMapMemory`'s equivalent,
    8 bpp palettized modes. `DDTEST.EXE` and `CDTEST`-style guest probes
    run on 98 as they do on XP.
-7. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
+8. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
    under the 9x HAL. Two decisions land here, both new on 9x (doc 19 §8):
    whether the doorbell is a mapped register page or a VxD ioctl, and how
    the single command window at the top of VRAM is serialised now that
@@ -152,7 +162,7 @@ What the track starts from:
    `EBTEST` (the DX3 path, which is most of the 98 matrix), `CKTEST`,
    `DXTTEST`, and `SHTEST` — the DX8 half is in scope on 98 too, step 0
    settled that.
-8. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
+9. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
    the driver, against the same titles on the Glide/WineD3D stack: which
    is faster, which is correct, and what the launcher should default to.
 

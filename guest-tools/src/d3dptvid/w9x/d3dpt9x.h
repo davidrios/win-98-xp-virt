@@ -17,9 +17,9 @@ extern WORD wScrX, wScrY, wBpp, wDpi, wPalettized;
 extern WORD OurVMHandle;
 extern DWORD VDDEntryPoint;
 
-/* the adapter, found on the PCI bus by DriverInit */
-extern DWORD dwRegsPhys, dwVramPhys, dwVramSize;
-extern WORD  wRegsSel, wVramSel;        /* 16-bit selectors onto the two BARs */
+/* the adapter, as the mini-VDD hands it to us */
+extern DWORD dwVramSize;
+extern WORD  wRegsSel, wVramSel;        /* selectors onto the registers and VRAM */
 extern DWORD dwPitch;                   /* bytes per line of the current mode */
 
 extern LPDIBENGINE lpDriverPDevice;

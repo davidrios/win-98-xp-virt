@@ -39,6 +39,7 @@
 #include <valmode.h>
 
 #include "d3dpt9x.h"
+#include "d3dpt9v.h"
 #include "../../../../d3dpt/d3dpt_fb.h"
 
 /* Pretend we have a 208 by 156 mm screen, as every driver of the era does. */
@@ -51,7 +52,7 @@ WORD  wScrX = 640, wScrY = 480, wBpp = 32, wDpi = 96, wPalettized = 0;
 WORD  OurVMHandle = 0;
 DWORD VDDEntryPoint = 0;
 
-DWORD dwRegsPhys = 0, dwVramPhys = 0, dwVramSize = 0;
+DWORD dwVramSize = 0;
 WORD  wRegsSel = 0, wVramSel = 0;
 DWORD dwPitch = 0;
 
@@ -79,65 +80,26 @@ static void ZeroFar(void __far *p, WORD n)
 
 /* ------------------------------------------------------------ DPMI, ports */
 
-/* DPMI 0800h: map a physical range and get a linear address back. The
- * compiler wants CX:BX and DI:SI; DPMI wants the words the other way. */
-static DWORD DPMI_MapPhys(DWORD base, DWORD size);
-#pragma aux DPMI_MapPhys =      \
-    "xchg   cx, bx"             \
-    "xchg   si, di"             \
-    "mov    ax, 800h"           \
-    "int    31h"                \
-    "jnc    mp_ok"              \
-    "xor    bx, bx"             \
-    "xor    cx, cx"             \
-    "mp_ok:"                    \
-    "mov    dx, bx"             \
-    "mov    ax, cx"             \
-    parm [cx bx] [di si];
-
-static WORD DPMI_AllocSel(WORD count);
-#pragma aux DPMI_AllocSel =     \
-    "xor    ax, ax"             \
-    "int    31h"                \
-    "jnc    as_ok"              \
-    "xor    ax, ax"             \
-    "as_ok:"                    \
-    parm [cx];
-
-static void DPMI_SetBase(WORD sel, DWORD base);
-#pragma aux DPMI_SetBase =      \
-    "mov    ax, 7"              \
-    "int    31h"                \
-    parm [bx] [cx dx];
-
-static void DPMI_SetLimit(WORD sel, DWORD limit);
-#pragma aux DPMI_SetLimit =     \
-    "mov    ax, 8"              \
-    "int    31h"                \
-    parm [bx] [cx dx];
-
-/* PCI configuration space, mechanism 1. Windows 9x leaves 0xCF8/0xCFC
- * untrapped, so a ring-3 driver may read them directly — which is what
- * every display minidriver of the era does. */
-static DWORD PciRead(DWORD addr);
-#pragma aux PciRead =           \
-    ".386"                      \
-    "shl    edx, 16"            \
-    "mov    dx, ax"             \
-    "mov    eax, edx"           \
-    "mov    dx, 0CF8h"          \
-    "out    dx, eax"            \
-    "mov    dx, 0CFCh"          \
-    "in     eax, dx"            \
-    "mov    edx, eax"           \
-    "shr    edx, 16"            \
-    parm [dx ax] value [dx ax];
-
-/* One dword of the adapter's config space: bus 0, device `dev`, function 0. */
-static DWORD PciCfg(WORD dev, WORD off)
-{
-    return PciRead(0x80000000uL | ((DWORD)(dev & 0x1f) << 11) | (off & 0xfc));
-}
+/* The adapter is the mini-VDD's, not ours: it claims the device, maps
+ * VRAM and the register page, and hands us selectors onto both. Doing it
+ * here instead does not work — Windows takes the base addresses away from
+ * a device nothing claimed (doc 19 §11). */
+static WORD CallVDD_Register(void);
+#pragma aux CallVDD_Register =      \
+    ".386"                          \
+    "mov    eax, 83h"               \
+    "movzx  ebx, word ptr [OurVMHandle]" \
+    "call   dword ptr [VDDEntryPoint]"   \
+    "jc     vdd_fail"               \
+    "mov    word ptr [wRegsSel], ax"     \
+    "mov    word ptr [wVramSel], dx"     \
+    "mov    dword ptr [dwVramSize], ecx" \
+    "mov    ax, 1"                  \
+    "jmp    vdd_done"               \
+    "vdd_fail:"                     \
+    "xor    ax, ax"                 \
+    "vdd_done:"                     \
+    value [ax] modify [bx cx dx si];
 
 /* ------------------------------------------------------------ the adapter */
 
@@ -185,62 +147,27 @@ void dbg_val(const char *tag, DWORD v)
     dbg_ch('\n');
 }
 
-/* Find the adapter, map its BARs, and check that the device speaks the
- * register set this driver was built against. */
+/* Ask the mini-VDD for the adapter. Everything the driver knows about the
+ * hardware arrives here. */
 BOOL AdapterFind(void)
 {
-    WORD dev;
-    DWORD id, lin;
+    if (wRegsSel) return TRUE;          /* already asked */
+    if (!VDDEntryPoint) { dbg_str("d3dpt9x: no VDD"); return FALSE; }
 
-    if (wRegsSel) return TRUE;          /* already found */
-
-    dbg_str("d3dpt9x: probing the PCI bus");
-    for (dev = 0; dev < 32; ++dev) {
-        id = PciCfg(dev, 0);
-        if (dev < 8) dbg_val("d3dpt9x: dev", id);
-        if (id == ((DWORD)D3DPT_FB_PCI_DEVICE << 16 | D3DPT_FB_PCI_VENDOR))
-            break;
-    }
-    if (dev == 32) { dbg_str("d3dpt9x: adapter not on the bus"); return FALSE; }
-    dbg_val("d3dpt9x: at device", dev);
-
-    dwVramPhys = PciCfg(dev, 0x10) & 0xfffffff0uL;
-    dwRegsPhys = PciCfg(dev, 0x14) & 0xfffffff0uL;
-    dbg_val("d3dpt9x: bar0", dwVramPhys);
-    dbg_val("d3dpt9x: bar1", dwRegsPhys);
-    if (!dwVramPhys || !dwRegsPhys) return FALSE;
-
-    /* the register page first: nothing can be reported before it exists */
-    lin = DPMI_MapPhys(dwRegsPhys, D3DPT_FB_REGS_SIZE);
-    dbg_val("d3dpt9x: regs linear", lin);
-    if (!lin) return FALSE;
-    wRegsSel = DPMI_AllocSel(1);
-    dbg_val("d3dpt9x: regs sel", wRegsSel);
-    if (!wRegsSel) return FALSE;
-    DPMI_SetBase(wRegsSel, lin);
-    DPMI_SetLimit(wRegsSel, D3DPT_FB_REGS_SIZE - 1);
-
-    dbg_val("d3dpt9x: magic", RegGet(D3DPT_FB_REG_MAGIC));
-    if (RegGet(D3DPT_FB_REG_MAGIC) != D3DPT_FB_MAGIC) {
-        wRegsSel = 0;
+    if (!CallVDD_Register()) {
+        dbg_str("d3dpt9x: the mini-VDD has no adapter for us");
         return FALSE;
     }
-    dbg_val("d3dpt9x: version", RegGet(D3DPT_FB_REG_VERSION));
-    if (RegGet(D3DPT_FB_REG_VERSION) != D3DPT_FB_VERSION) {
+    dbg_val("d3dpt9x: regs sel", wRegsSel);
+    dbg_val("d3dpt9x: vram sel", wVramSel);
+    dbg_val("d3dpt9x: vram", dwVramSize);
+
+    if (RegGet(D3DPT_FB_REG_MAGIC) != D3DPT_FB_MAGIC ||
+        RegGet(D3DPT_FB_REG_VERSION) != D3DPT_FB_VERSION) {
         dbg_str("d3dpt9x: register set mismatch, refusing the device");
         wRegsSel = 0;
         return FALSE;
     }
-
-    dwVramSize = RegGet(D3DPT_FB_REG_VRAM_SIZE);
-    lin = DPMI_MapPhys(dwVramPhys, dwVramSize);
-    if (!lin) return FALSE;
-    wVramSel = DPMI_AllocSel(1);
-    if (!wVramSel) return FALSE;
-    DPMI_SetBase(wVramSel, lin);
-    DPMI_SetLimit(wVramSel, dwVramSize - 1);
-
-    dbg_val("d3dpt9x: vram", dwVramSize);
     dbg_str("d3dpt9x: adapter found");
     return TRUE;
 }
@@ -554,6 +481,12 @@ UINT FAR DriverInit(UINT cbHeap, UINT hModule, LPSTR lpCmdLine)
     GlobalSmartPageLock((__segment)pText);
     VDDEntryPoint = (DWORD)int2F_GetEP(0x1684, VDD_ID);
     OurVMHandle   = int2F_GetVMID(0x1683);
+
+    /* Ask the mini-VDD for the adapter here as well as in Enable: this is
+     * the earliest point at which anything of ours can be *seen* from
+     * outside, because the answer is logged in ring 0 where port 0xE9 and
+     * the DEBUG register both work. */
+    AdapterFind();
     dbg_str("d3dpt9x: DriverInit done");
     return 1;
 }

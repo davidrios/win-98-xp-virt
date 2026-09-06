@@ -79,11 +79,13 @@ name d3dpt9x.drv
 option map=d3dpt9x.map
 library dibeng.lib
 option oneautodata
+option heapsize=0
 option nodefaultlibs
 option modname=DISPLAY
 option description 'DISPLAY : 100, 96, 96 : 2ksbox d3dpt-vga mini display driver.'
+segment class 'DATA' preload fixed
 segment type data preload fixed
-segment '_TEXT' preload shared
+segment '_TEXT' preload fixed shared
 export BitBlt.1
 export ColorInfo.2
 export Control.3
@@ -126,6 +128,66 @@ import GlobalSmartPageLock KERNEL.230
 LNK
 ( cd "$BUILD" && wlink op quiet, start=DriverInit_ disable 2055 @d3dpt9x.lnk )
 
+# The ring-0 half: a dynamically loadable VxD (LE), 32-bit flat, no CRT.
+# -zls drops the runtime references, -s the stack checks; the segments are
+# PRELOAD NONDISCARDABLE because a mini-VDD must stay resident.
+echo "==> d3dptvxd.obj (32-bit, ring 0)"
+( cd "$BUILD" && wcc386 -q -wx -wcd=303 -s -zls -mf -6s -fp6 -ei -zp1 \
+    -I"$DDK" -I"$SRC" -fo=d3dptvxd.obj "$SRC/d3dptvxd.c" )
+
+echo "==> d3dpt9v.vxd"
+cat > "$BUILD/d3dpt9v.lnk" <<'LNK'
+system win_vxd dynamic
+option map=d3dpt9v.map
+option nodefaultlibs
+name d3dpt9v.vxd
+file d3dptvxd.obj
+segment '_LTEXT' PRELOAD NONDISCARDABLE IOPL
+segment '_TEXT'  PRELOAD NONDISCARDABLE IOPL
+segment '_DATA'  PRELOAD NONDISCARDABLE IOPL
+segment 'CONST'  PRELOAD NONDISCARDABLE IOPL
+segment 'CONST2' PRELOAD NONDISCARDABLE IOPL
+export VXD_DDB.1
+LNK
+( cd "$BUILD" && wlink op quiet @d3dpt9v.lnk )
+
+# wlink's LE output is not quite a VxD yet. The fix is the object table,
+# not the header (this is what vmdisp9x's `fixlink -vxd32` does): every
+# object must be marked executable, and every object's base virtual
+# address must be zero, because a VxD is flat — all its pages start at the
+# beginning. The module-type field is set to what a real Windows 98 VxD
+# carries as well (checked against the guest's own VJOYD.VXD and
+# FXMEMMAP.VXD, both 0x38000).
+python3 - "$BUILD/d3dpt9v.vxd" <<'PYVXD'
+import struct, sys
+p = sys.argv[1]
+f = bytearray(open(p, 'rb').read())
+le = struct.unpack_from('<I', f, 0x3c)[0]
+assert f[le:le+2] == b'LE', 'not an LE module: %r' % f[le:le+2]
+
+flags = struct.unpack_from('<I', f, le + 0x10)[0]
+struct.pack_into('<I', f, le + 0x10, flags | 0x00038000)
+
+# The entry table's one bundle exports the DDB. wlink types it as a
+# 16-bit/call-gate entry because the symbol is data; a real VxD's is a
+# 32-bit entry (FXMEMMAP.VXD again). The record bytes are the same either
+# way when the offset is zero, so this is just the type byte.
+ent = le + struct.unpack_from('<I', f, le + 0x5c)[0]
+if f[ent] == 1 and f[ent+1] == 2:
+    f[ent+1] = 3
+    print("   entry table: 16-bit bundle -> 32-bit")
+
+objtab = le + struct.unpack_from('<I', f, le + 0x40)[0]
+nobj   = struct.unpack_from('<I', f, le + 0x44)[0]
+for i in range(nobj):
+    o = objtab + i * 24                       # sizeof(LE_object)
+    size, addr, oflags = struct.unpack_from('<III', f, o)
+    struct.pack_into('<II', f, o + 4, 0, oflags | 0x0004)   # addr = 0, executable
+    print("   object %d: size %d, addr %d -> 0, flags %08x -> %08x"
+          % (i, size, addr, oflags, oflags | 4))
+open(p, 'wb').write(f)
+PYVXD
+
 echo "==> resources into the module"
 ( cd "$BUILD" && wrc -q d3dpt9x.res d3dpt9x.drv )
 
@@ -140,10 +202,14 @@ ne = struct.unpack_from('<I', f, 0x3c)[0]
 assert f[ne:ne+2] == b'NE', 'not an NE module'
 f[ne+0x3e] = 0        # minor
 f[ne+0x3f] = 4        # major -> 4.00
+# A display driver's DGROUP is PRELOAD FIXED SINGLE with no local heap
+# (CIRRUSMM.DRV and every other one on the guest say 0); wlink insists on
+# giving a DLL 1 KiB and `option heapsize=0` does not move it.
+struct.pack_into('<H', f, ne + 0x10, 0)
 open(p, 'wb').write(f)
 PYFIX
 
-cp "$BUILD/d3dpt9x.drv" "$OUT/"
+cp "$BUILD/d3dpt9x.drv" "$BUILD/d3dpt9v.vxd" "$OUT/"
 cp "$SRC/d3dpt9x.inf" "$OUT/" 2>/dev/null || true
 
 echo

@@ -48,7 +48,7 @@ mkdir -p "$OUT/out" "$(dirname "$SOCK")"
 if [ ! -f "$RAW" ] || [ "$WHAT" = install ]; then
   echo "==> raw copy of $IMG (the user's image is never written)"
   rm -f "$RAW"
-  "$ROOT/build/qemu/qemu-img" convert -O raw "$IMG" "$RAW"
+  "${QEMU_IMG:-$ROOT/build/qemu/qemu-img}" convert -O raw "$IMG" "$RAW"
 fi
 
 # the FAT16/32 partition, from the MBR
@@ -63,11 +63,14 @@ if [ "$WHAT" = install ]; then
   export MTOOLS_SKIP_CHECK=1
   echo "==> staging the driver and its INF (PnP installs it on the next boot)"
   mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9x.drv" ::/WINDOWS/SYSTEM/D3DPT9X.DRV
+  mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9v.vxd" ::/WINDOWS/SYSTEM/D3DPT9V.VXD
   mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9x.drv" ::/WINDOWS/INF/D3DPT9X.DRV
+  mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9v.vxd" ::/WINDOWS/INF/D3DPT9V.VXD
   mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9x.inf" ::/WINDOWS/INF/D3DPT9X.INF
 else
   export MTOOLS_SKIP_CHECK=1
   mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9x.drv" ::/WINDOWS/SYSTEM/D3DPT9X.DRV
+  mcopy -i "$RAW@@$OFF" -o "$DRV/d3dpt9v.vxd" ::/WINDOWS/SYSTEM/D3DPT9V.VXD
 fi
 
 rm -f "$OUT/out/dbg.log" "$OUT/out/stderr.log"

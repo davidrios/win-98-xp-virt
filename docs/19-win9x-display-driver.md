@@ -361,3 +361,92 @@ attempt did establish, and what carries over unchanged:
 raw copy of the image (never the user's qcow2), boots on the adapter, and
 prints the BARs at three points, the screen's colour count and both debug
 channels.
+
+### 12. Linking a VxD that the VMM will actually load (2026-09-06)
+
+The mini-VDD of §11 was written and it works — it claims the adapter,
+keeps the BARs, maps VRAM and the register page, checks the register set's
+magic and version, and installs itself in the main VDD's mini-VDD dispatch
+table:
+
+```
+d3dptvxd: Device_Init          d3dptvxd: vram=08000000
+d3dptvxd: bar0=f0000000        d3dptvxd: dispatch entries=0000003e
+d3dptvxd: bar1=febf0000        d3dptvxd: ready
+```
+
+(the last lines arrive twice over, once on port 0xE9 and once through the
+adapter's DEBUG register into the QEMU log, which is the register mapping
+proving itself). **The base addresses now survive the whole boot**, which
+was §11's blocker.
+
+Getting there cost three facts about `wlink`'s VxD output, none of which
+announce themselves — a VxD the VMM dislikes is simply never loaded, with
+no entry in `BOOTLOG.TXT` and nothing on any debug channel:
+
+- **Every LE object must have base address 0 and the executable flag.**
+  wlink leaves the objects at 0x10000 and 0x11000 and marks only the first
+  executable. A VxD is flat: all its pages start at the beginning. (This
+  is what `vmdisp9x`'s `fixlink -vxd32` does, and it is the whole of what
+  it does — not the header flags, which is what one guesses first.)
+- **The DDB must be at offset 0 of the *code* object.** Left to itself the
+  compiler puts it in `_DATA`, the entry table then names object 2 at
+  offset 0x1e0, and the loader does not find it. Putting code, data and
+  constants into one segment of class CODE (`#pragma data_seg("_LTEXT",
+  "CODE")` and its two siblings) links the module to a single object with
+  the DDB first — the shape a real driver has: the guest's own
+  `FXMEMMAP.VXD` is one object whose entry table reads *object 1, offset
+  0*.
+- **The entry-table bundle must be a 32-bit entry (type 3).** wlink writes
+  type 2 because the exported symbol is data. With a zero offset the
+  record bytes are identical either way, so this is one byte.
+
+Where the VMM's own diagnostics would have helped, they did not: `BootLog=1`
+in `MSDOS.SYS` did not produce a fresh `BOOTLOG.TXT` on this image (the one
+there was four days old, and reading it as if it were current wasted a
+cycle — check the file's date first). Port 0xE9 is the reliable channel in
+ring 0, and `-debugcon` was verified independently by pointing it at 0x402
+and watching SeaBIOS write to it.
+
+**What claims the resources is the registry, not the code.** The VxD logs
+non-zero BARs at `Device_Init`, i.e. Windows had not stripped them by
+then, and its re-programming path has never had to fire. So it is
+`minivdd=<file>` in the devnode's key — the devnode having a complete
+driver set — that makes the Configuration Manager leave the device alone.
+The re-programming stays as belt and braces.
+
+### 13. The 16-bit driver still does not load (open, 2026-09-06)
+
+With the ring-0 half working, the display driver is the remaining blocker
+and it is a *load* failure, not a run-time one: `d3dpt9x.drv`'s first
+instruction is never executed. The proof is now indirect but solid —
+`DriverInit` asks the mini-VDD for the adapter, and the mini-VDD, which
+logs reliably in ring 0, is never called.
+
+It is not the driver's selection: pointing `SYSTEM.INI`'s `[boot]
+display.drv=` straight at `d3dpt9x.drv` (binary-safe — editing that file
+through Python's text mode strips the CRLFs and eats a section header)
+changes nothing, so GDI is refusing the module rather than choosing
+another one.
+
+What has been ruled out by making the binary match `CIRRUSMM.DRV`, the
+guest's own display driver, field for field:
+
+- the `oembin` resources are present and correctly typed (§11);
+- the NE header says Windows 4.00, module `DISPLAY`, and imports only
+  `KERNEL` and `DIBENG`;
+- the code segment is PRELOAD FIXED SHAREABLE and the data segment PRELOAD
+  FIXED — wlink makes both MOVEABLE by default, and `segment class 'DATA'
+  preload fixed` is the directive that fixes the data one;
+- the local heap is 0, as every display driver on the guest has (wlink
+  gives a DLL 1 KiB and ignores `option heapsize=0`; the NE header field
+  is patched after linking).
+
+What is left to look at, in order: the entry/export table (a display
+driver is called by ordinal, and ours exports 41 entries where
+`CIRRUSMM.DRV` has its own arrangement across five segments); the missing
+`#16` VERSIONINFO resource, which `CIRRUSMM.DRV` carries and we do not;
+and the possibility that GDI rejects a driver whose `_TEXT` is a single
+segment with no `_INIT`. A way to see the refusal rather than infer it
+would be worth an hour: `BOOTLOG.TXT` should say, once it can be made to
+write.
