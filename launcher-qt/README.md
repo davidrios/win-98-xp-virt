@@ -46,7 +46,10 @@ export LAUNCHER_SHADER_PROFILES_DIR=/tmp/profiles
 # the same report `launcher --paths` prints
 ./target/debug/launcher-qt --paths
 
-# must be byte-identical to the egui build's output for the same input
+# must be byte-identical to the egui build's output for the same input;
+# prints "animated" or "still" — whether the editor would keep redrawing
+# this preset — and `PREVIEW_FRAME=<n>` names the frame to render, since
+# the editor itself takes that from a clock
 ./target/debug/launcher-qt --preview-shader <preset.slangp> <image> <out.png>
 ```
 

@@ -33,6 +33,15 @@ pub fn preview_area_env() -> (u32, u32) {
         .unwrap_or((800, 600))
 }
 
+/// `PREVIEW_FRAME=<n>`: which frame of the preset to render, for a
+/// preset whose picture depends on the frame number (an interlaced or
+/// flickering CRT, a phosphor afterglow). The real editor takes this
+/// from a clock — the picture has to move — so headlessly there has to
+/// be a way to name one frame and get it twice. Default 0.
+pub fn preview_frame_env() -> usize {
+    std::env::var("PREVIEW_FRAME").ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
 pub fn parse_family(arg: Option<&str>, usage: &str) -> Family {
     match arg {
         Some("win98") => Family::Win98,
@@ -427,10 +436,19 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
             let params = shader_profile::parse_params(&args.next().unwrap_or_default());
             let (w, h) = preview_area_env();
             let mut preview = preview::Preview::headless().expect("a headless wgpu device");
+            // The editor's preview follows a clock, so that a preset
+            // whose picture depends on the frame number actually moves in
+            // it; here one frame is named instead, so the same command
+            // twice is the same PNG twice.
+            preview.pin_frame(preview_frame_env());
             preview.update(&preset, &params, &image, w, h);
             if let Some(err) = preview.error() {
                 eprintln!("[preview] {err}");
             }
+            // Whether the editor would be redrawing this preset at all,
+            // which is as much a part of what the preview does as the
+            // pixels are — and the only way a test can see the decision.
+            println!("{}", if preview.frame_interval().is_some() { "animated" } else { "still" });
             preview.dump_png(&out).expect("no frame rendered");
         }
         _ => return None,

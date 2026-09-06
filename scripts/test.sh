@@ -32,6 +32,10 @@
 #                  the same models the egui and Qt builds use — the wizard's
 #                  DOS defaults, the disc shelf, snapshots and the profile
 #                  editor, driven through include/launcher_core.h (doc 07)
+#   preview-anim   the launcher's shader preview keeps drawing (doc 07): a preset
+#                  that stands still says so and renders the same picture at any
+#                  frame number, one that does not (an interlaced CRT) says so
+#                  and renders two different pictures at two frame numbers
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
@@ -215,6 +219,43 @@ optimizations_check() { # the wizard's fast-path switches, all the way to a real
   return $rc
 }
 have_display() { [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || [ "$OS" = Darwin ]; }
+preview_anim_check() { # the shader preview keeps drawing (doc 07)
+  # Plenty of presets do not stand still: an interlaced CRT draws
+  # alternate fields, a phosphor afterglow decays, an NTSC signal
+  # shimmers. The editor's preview renders on demand, so unless it knows
+  # to keep asking it shows one frozen frame of all that — the bug this
+  # guards. Both front ends take the answer from `launcher_core::preview`,
+  # so it is asked here through the verb they share.
+  local moving=third_party/slang-shaders/crt/crt-beans-vga.slangp
+  local still=third_party/slang-shaders/crt/crt-lottes.slangp
+  local rc=0
+  # A preset that stands still: said to stand still, and the same picture
+  # at any frame number. Also the probe — a box with no usable GPU can
+  # answer none of this, and that is a skip, not a failure.
+  if ! PREVIEW_FRAME=0 target/release/launcher --preview-shader \
+       "$still" "$GOLDEN" "$OUT/preview-still-0.png" >"$OUT/preview-still.txt" 2>&1; then
+    sed 's/^/  /' "$OUT/preview-still.txt"
+    echo "no usable GPU for a headless preview"
+    return 77
+  fi
+  grep -qx still "$OUT/preview-still.txt" || { echo "$still: reported as animated"; rc=1; }
+  PREVIEW_FRAME=7 target/release/launcher --preview-shader \
+    "$still" "$GOLDEN" "$OUT/preview-still-7.png" >>"$OUT/preview-still.txt" 2>&1 || rc=1
+  cmp -s "$OUT/preview-still-0.png" "$OUT/preview-still-7.png" \
+    || { echo "$still: frames 0 and 7 differ — the frame number reaches a preset that does not read it"; rc=1; }
+  # A preset that does not: said to animate, and two frame numbers really
+  # are two pictures (this one interlaces, so it is half the frame).
+  PREVIEW_FRAME=0 target/release/launcher --preview-shader \
+    "$moving" "$GOLDEN" "$OUT/preview-moving-0.png" >"$OUT/preview-moving.txt" 2>&1 || rc=1
+  grep -qx animated "$OUT/preview-moving.txt" || { echo "$moving: reported as still"; rc=1; }
+  PREVIEW_FRAME=1 target/release/launcher --preview-shader \
+    "$moving" "$GOLDEN" "$OUT/preview-moving-1.png" >>"$OUT/preview-moving.txt" 2>&1 || rc=1
+  if cmp -s "$OUT/preview-moving-0.png" "$OUT/preview-moving-1.png"; then
+    echo "$moving: frames 0 and 1 are the same picture — the preview would be frozen"
+    rc=1
+  fi
+  return $rc
+}
 
 # ---------------------------------------------------------------- host stage
 host_stage() {
@@ -341,6 +382,15 @@ host_stage() {
     else FAIL+=(mode-sweep); echo "  FAIL mode-sweep (build)"; tail -5 "$OUT/player-build.log"; fi
   else
     skip mode-sweep "needs a display and the slang-shaders submodule"
+  fi
+
+  # the launcher's shader preview, which unlike the player renders only
+  # when asked: that it knows which presets it must keep asking about,
+  # and that a frame number really does change their picture (doc 07)
+  if [ -f third_party/slang-shaders/crt/crt-beans-vga.slangp ] && [ -x target/release/launcher ]; then
+    run_check preview-anim preview-anim.log preview_anim_check || true
+  else
+    skip preview-anim "needs the slang-shaders submodule and target/release/launcher"
   fi
 
   # the reference scene and the feature test natively over DXVK (SDL2 needs a display)

@@ -62,6 +62,16 @@ impl Preview {
         self.core.viewport()
     }
 
+    /// How often QML must ask for another frame to keep an animated
+    /// preset moving, in milliseconds, or 0 when the picture stands
+    /// still and the timer should stop. Which of the two it is, and how
+    /// often, is `launcher_core::preview::Preview::frame_interval`'s
+    /// decision — the same one the egui build turns into a repaint
+    /// request.
+    pub fn frame_interval_ms(&self) -> i32 {
+        self.core.frame_interval().map_or(0, |d| d.as_millis() as i32)
+    }
+
     /// The URL for QML's `Image.source`: empty until a frame exists, and
     /// carrying a generation counter so each new frame is a new URL.
     pub fn source_url(&self) -> String {

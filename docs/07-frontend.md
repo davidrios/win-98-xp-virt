@@ -143,6 +143,28 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   `third_party/`. `LAUNCHER_SHADERS_DIR` overrides where they live. An
   empty preset field's "Browse…" opens there, since a `.slangp` is never
   somewhere a person would navigate to by hand.
+- **The preview moves when the preset does** (fixed 2026-09-06): plenty of
+  presets do not draw the same picture every frame — an interlaced CRT
+  puts up alternate fields, a phosphor afterglow decays over several,
+  an NTSC signal shimmers, the flicker of a TV is the whole effect — and
+  the editor's preview, which renders when something is clicked and not
+  otherwise, showed one frozen frame of all of it. So the core says which
+  presets those are and how often it wants drawing
+  (`preview::Preview::frame_interval`, `None` for a preset that stands
+  still), and each front end obeys in its own idiom: egui asks for a
+  repaint after the interval, QML runs a `Timer` at it. The frame number
+  the shader is given comes from a **clock at `FRAME_RATE` (60/s)**, not
+  from a count of renders, so the effect runs at the speed it would in
+  the player even on the Qt path, which reads every frame back to the CPU
+  and cannot always keep up — it drops frames rather than running slow.
+  Which presets animate is `shader_chain::preset_is_animated`: it reads
+  the preprocessed pass sources for a *use* of `FrameCount` (the
+  `params.FrameCount` member access, since 1131 of the slang-shaders tree
+  declare the uniform and only 271 read it) or of a history / feedback
+  texture, and errs towards animating — a preview that redraws a picture
+  that never changes costs a redraw, the other error is the bug itself.
+  The headless verbs pin one frame (`PREVIEW_FRAME`, default 0) so that
+  their PNGs stay reproducible.
 - **Disc shelf:** the user's disc images, labelled, shared by every machine
   (`discs.toml` beside the machine and shader-profile libraries) — a rip is a
   property of the person, not of the machine that installed it first. A
@@ -416,12 +438,18 @@ build command, no CMake.
 
 ### Proving they agree
 
-Three checks, all of which run without a GUI click:
+Four checks, all of which run without a GUI click:
 
 - **`--preview-shader` on both binaries renders byte-identical PNGs.**
   It is the same code now (`launcher_core::preview` on a headless
   device), so this is a check that the two builds really are linking the
   one implementation.
+- **The preview's animation is one decision, checked once.** The
+  `preview-anim` check in `scripts/test.sh` renders a still preset at two
+  frame numbers (one picture, and reported still) and an interlaced one
+  at two frame numbers (two pictures, and reported animated) through the
+  shared verb, so a front end cannot quietly stop redrawing and a
+  detector regression cannot go unnoticed.
 - **The same debug verbs, from the same code.** `launcher_core::cli`
   answers `--paths`, `--discs`, `--snapshots`, `--wizard-new`,
   `--wizard-edit`, `--boot-disc`, `--insert-disc`, `--print-args` and the

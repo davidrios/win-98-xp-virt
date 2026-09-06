@@ -391,6 +391,14 @@ fn preview_ui(ui: &mut egui::Ui, view: &mut EditorView, render_state: Option<&Re
     if let Some(err) = preview.error() {
         ui.colored_label(egui::Color32::RED, err.to_string());
     }
+    // A preset whose picture depends on the frame number only looks like
+    // itself in motion: an interlaced CRT draws alternate fields, a
+    // phosphor afterglow decays, an NTSC signal shimmers. egui repaints
+    // on input and would otherwise leave one frozen frame of that on
+    // screen, so ask for the next one on the core's own clock.
+    if let Some(interval) = preview.frame_interval() {
+        ui.ctx().request_repaint_after(interval);
+    }
 
     let (rect, _response) = ui.allocate_exact_size(area, egui::Sense::hover());
     let painter = ui.painter_at(rect);

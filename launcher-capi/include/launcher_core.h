@@ -282,6 +282,13 @@ bool lc_editor_renderable(const LcEditor *e);
  * it. The first call opens a windowless GPU device of its own. */
 bool lc_editor_render(LcEditor *e, uint32_t area_w, uint32_t area_h,
                       uint32_t *out_w, uint32_t *out_h);
+/* Milliseconds until the preview wants rendering again, or 0 when it
+ * never does. Some presets' picture depends on the frame number — an
+ * interlaced CRT's alternate fields, a TV's flicker, a phosphor
+ * afterglow — and a front end that renders only on a click shows one
+ * frozen frame of the effect: call lc_editor_render again on this
+ * interval while it is non-zero. 0 before the first render. */
+uint32_t lc_editor_frame_interval_ms(const LcEditor *e);
 /* The last frame as RGB8, row-major, top-down. Returns the bytes needed,
  * so NULL/0 sizes your buffer; nothing is written if cap is short. */
 size_t lc_editor_read_frame(const LcEditor *e, uint8_t *buf, size_t cap);

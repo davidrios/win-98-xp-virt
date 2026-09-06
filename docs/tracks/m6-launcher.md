@@ -1579,6 +1579,62 @@ which `--print-args` then places as `-cpu pentium3,sse-fast=off` and
 batteries' job (`x87-guest`, `sse-guest`, `rep-guest`, `smc-guest`);
 this check is the wiring between them and a checkbox.
 
+## The preview animates (2026-09-06, user-reported)
+
+**The report:** "some shaders change frame to frame, like to simulate the
+flicker of some TVs" — and in the profile editor they didn't.
+
+**Why:** the preview renders when something changes (the preset, a
+slider, the image, the pane's size) and never otherwise. That is right
+for a preset that draws the same picture forever and wrong for the many
+that don't: an interlaced CRT puts up alternate fields, a phosphor
+afterglow decays over several frames, an NTSC signal shimmers, a
+simulated TV flickers. `shader-chain` was even counting frames for the
+shader (`frame_count += 1` per render), so the *number* moved — nobody
+was asking for a second frame. The player, which renders continuously,
+never had the problem.
+
+**The fix, in the core, because it is a decision and not a widget:**
+
+- `shader_chain::preset_is_animated(&preset)` — whether a preset's
+  picture can change on a still input. It reads the *preprocessed* pass
+  sources (so an `#include`d `#define FrameCount params.FrameCount` is
+  already expanded) and looks for a **use** of a frame-varying uniform,
+  i.e. the `<block>.FrameCount` member access GLSL requires, or for a
+  history / feedback texture (`OriginalHistory…`, `PassFeedback…`,
+  `<alias>Feedback`), or for a pass with `frame_count_mod` set. The
+  declaration alone means nothing: **1131 files in the slang-shaders tree
+  declare `FrameCount` in a uniform block and only 271 read it**, so a
+  plain substring search would have animated everything. Reflection would
+  answer exactly, but only by compiling every pass a second time — the
+  reading is deliberately conservative instead: in doubt it says
+  animated, because that costs a redraw and the other error is the bug.
+- `preview::Preview::frame_interval()` — `Some(16 ms)` for such a preset,
+  `None` for one that stands still; and the frame number handed to the
+  shader now comes from a **clock at `FRAME_RATE` (60/s)** rather than
+  from a count of renders (`Chain::run_at`). A front end that cannot
+  redraw that often — the Qt one reads every frame back to the CPU and
+  writes a BMP — then drops frames instead of running the effect in slow
+  motion.
+- Each front end obeys in its own idiom and decides nothing:
+  `ui.ctx().request_repaint_after(interval)` in `preview_ui`, and a
+  `Timer` in `ShaderEditorWindow.qml` whose `interval`/`running` come
+  from the new `previewInterval` property (0 = still).
+- The headless verbs pin one frame (`PREVIEW_FRAME`, default 0) so
+  `--preview-shader` and `--diag-preview-frame` still dump the same PNG
+  twice, and so the two front ends' PNGs stay byte-identical.
+
+**Measured over every `crt/*.slangp` in the submodule** (100 presets,
+each rendered at frame 0 and frame 1 against the checked-in reference
+game frame): 51 still and identical, 18 animated and genuinely different,
+23 animated but identical *at this source size* (the conservative
+direction — most of those interlace only for a taller source), 8 that
+fail to load at all for unrelated reasons, and **zero called still that
+moved**. The `preview-anim` check in `scripts/test.sh` holds one of each
+kind: `crt-lottes` (still, and the same picture at frames 0 and 7) and
+`crt-beans-vga` (animated, and half the pixels different between frames 0
+and 1).
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.

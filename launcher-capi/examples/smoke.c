@@ -202,6 +202,7 @@ int main(int argc, char **argv) {
     lc_editor_new_profile(e);
     check("a new profile has no parameters yet", lc_editor_param_count(e) == 0, NULL);
     check("...and nothing to render", !lc_editor_renderable(e), NULL);
+    check("...so nothing to redraw on a timer either", lc_editor_frame_interval_ms(e) == 0, NULL);
     check("saving it without a name is refused", !lc_editor_save(e, NULL), NULL);
     char *save_err = lc_editor_error(e);
     check("...and says so", save_err && strcmp(save_err, "a name is required") == 0, save_err);

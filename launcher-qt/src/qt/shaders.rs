@@ -113,6 +113,13 @@ pub mod ffi {
         /// size on black rather than stretching it to fill.
         #[qproperty(i32, preview_width)]
         #[qproperty(i32, preview_height)]
+        /// How many milliseconds until the preview wants drawing again,
+        /// or 0 when it never does: a preset whose picture depends on the
+        /// frame number (an interlaced CRT, a phosphor afterglow, a
+        /// shimmering NTSC signal) is only itself in motion, and one that
+        /// does not must not spin a timer. QML runs its render timer at
+        /// this; the egui build asks egui to repaint after it.
+        #[qproperty(i32, preview_interval)]
         /// Where the preset collection is, or "" if there is none yet.
         #[qproperty(QString, presets_dir)]
         /// "", "running:<MB>", "failed:<message>" — the download's state.
@@ -303,6 +310,7 @@ pub struct ShaderEditorRust {
     preview_source: QString,
     preview_width: i32,
     preview_height: i32,
+    preview_interval: i32,
     presets_dir: QString,
     download_state: QString,
     presets_install_dir: QString,
@@ -406,9 +414,10 @@ impl ffi::ShaderEditor {
             this.model.preview_image_path = image;
         }
         if !self.rust().model.renderable() {
+            self.as_mut().set_preview_interval(0); // nothing to animate
             return;
         }
-        let (source, w, h, err) = {
+        let (source, w, h, err, interval) = {
             let mut this = self.as_mut().rust_mut();
             let params = this.model.effective();
             let preset = PathBuf::from(this.model.preset_path.trim());
@@ -416,11 +425,13 @@ impl ffi::ShaderEditor {
             let preview = this.preview.get_or_insert_with(preview::Preview::new);
             preview.update(&preset, &params, &image, area_w.max(1) as u32, area_h.max(1) as u32);
             let (w, h) = preview.viewport();
-            (qs(preview.source_url()), w as i32, h as i32, qs_opt(preview.error()))
+            let interval = preview.frame_interval_ms();
+            (qs(preview.source_url()), w as i32, h as i32, qs_opt(preview.error()), interval)
         };
         self.as_mut().set_preview_source(source);
         self.as_mut().set_preview_width(w);
         self.as_mut().set_preview_height(h);
+        self.as_mut().set_preview_interval(interval);
         self.as_mut().set_error(err);
     }
 

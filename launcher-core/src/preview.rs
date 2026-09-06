@@ -21,6 +21,7 @@
 //! one render path (doc 07).
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// A source bigger than this is downsized on the CPU before the shader
 /// ever sees it. Generous enough to pass any real game resolution
@@ -31,6 +32,22 @@ use std::path::{Path, PathBuf};
 const MAX_SOURCE_W: u32 = 1600;
 const MAX_SOURCE_H: u32 = 1200;
 
+/// The rate the preview's clock runs at, and so the rate an animated
+/// preset flickers, rolls or fades at in it: the frame rate the player
+/// would be presenting the same preset at on a machine of the era. The
+/// preview counts frames off this clock rather than counting its own
+/// renders (see `shader_chain::Chain::run_at`), so a front end that
+/// cannot redraw this often — the Qt build reads every frame back to the
+/// CPU and hands it over as a file — shows an effect at its real speed
+/// with frames missing, rather than the same effect in slow motion.
+pub const FRAME_RATE: f64 = 60.0;
+
+/// How long a front end may wait before asking for the next frame of an
+/// animated preset. Just under 1/60 s, so a timer that fires on this
+/// interval and a clock that runs at `FRAME_RATE` don't beat against
+/// each other into a visibly uneven flicker.
+pub const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
 pub struct Preview {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -40,6 +57,12 @@ pub struct Preview {
     preset_path: Option<PathBuf>,
     chain: Option<shader_chain::Chain>,
     viewport: (u32, u32),
+    /// When the loaded preset started animating — frame 0 of it.
+    clock: Instant,
+    /// A frame number to render instead of the clock's: the headless
+    /// verbs, so that "the same preset at frame 12" is a thing that can
+    /// be dumped twice and compared.
+    pinned_frame: Option<usize>,
     error: Option<String>,
 }
 
@@ -56,6 +79,8 @@ impl Preview {
             preset_path: None,
             chain: None,
             viewport: (0, 0),
+            clock: Instant::now(),
+            pinned_frame: None,
             error: None,
         }
     }
@@ -90,6 +115,39 @@ impl Preview {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// How soon the caller must call `update` again, or `None` when it
+    /// need not: the loaded preset draws the same picture forever and
+    /// only a slider, a new image or a resize can change it.
+    ///
+    /// Plenty of presets do *not* stand still — an interlaced CRT draws
+    /// alternate fields, a phosphor afterglow decays over several
+    /// frames, an NTSC signal shimmers — and a preview that renders only
+    /// when something is clicked shows one frozen frame of that and
+    /// nothing of the effect. Whether a preset is one of them is
+    /// `shader_chain::preset_is_animated`'s answer, not a front end's,
+    /// and so is the interval: a window that draws itself on demand
+    /// (egui) schedules a repaint this far out, a window driven by
+    /// signals (QML) runs a timer at it.
+    pub fn frame_interval(&self) -> Option<Duration> {
+        self.chain.as_ref()?.animated().then_some(FRAME_INTERVAL)
+    }
+
+    /// Render one fixed frame number from now on instead of following
+    /// the clock — for the headless verbs and the tests behind them,
+    /// where "frame 0 and frame 7 of this preset differ" has to be a
+    /// repeatable statement. Never used by the real editor: there the
+    /// animation is the point.
+    pub fn pin_frame(&mut self, frame: usize) {
+        self.pinned_frame = Some(frame);
+    }
+
+    /// The frame number the next render will be: elapsed time at
+    /// `FRAME_RATE` since the preset was loaded, unless pinned.
+    fn frame(&self) -> usize {
+        self.pinned_frame
+            .unwrap_or_else(|| (self.clock.elapsed().as_secs_f64() * FRAME_RATE) as usize)
     }
 
     /// The exact size the last rendered frame came out at: the input
@@ -210,6 +268,9 @@ impl Preview {
     fn load_preset(&mut self, path: &Path) {
         self.preset_path = Some(path.to_path_buf());
         self.chain = None;
+        // A preset that animates starts at its own frame 0, not at
+        // however long this window happened to be open.
+        self.clock = Instant::now();
         // `egui_wgpu::Renderer::register_native_texture` requires exactly
         // this format for a texture it is handed, and the readback path
         // is indifferent, so both ends agree on it.
@@ -245,13 +306,16 @@ impl Preview {
         let (rw, rh) = ((iw as f32 * scale) as u32, (ih as f32 * scale) as u32);
         self.viewport = (rw, rh);
 
+        let frame = self.frame();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shader preview") });
         let result = {
             let input_tex = &self.input.as_ref().unwrap().0;
             let chain = self.chain.as_mut().unwrap();
-            chain.run(&self.device, &mut encoder, input_tex, rw, rh).map(|_| ())
+            chain
+                .run_at(&self.device, &mut encoder, input_tex, rw, rh, frame)
+                .map(|_| ())
         };
         match result {
             Ok(()) => {

@@ -65,6 +65,21 @@ Window {
     }
 
     Timer {
+        // A preset whose picture depends on the frame number — an
+        // interlaced CRT drawing alternate fields, a phosphor afterglow
+        // decaying, an NTSC signal shimmering — is only itself in
+        // motion, so it has to be re-rendered on a clock and not only
+        // when something is clicked. How often, and whether at all, is
+        // the core's answer (`previewInterval`, 0 for a still preset),
+        // the same one the egui build turns into a repaint request.
+        id: animate
+        interval: Math.max(root.editor.previewInterval, 1)
+        repeat: true
+        running: root.visible && root.editor.open && root.editor.previewInterval > 0
+        onTriggered: root.rerender()
+    }
+
+    Timer {
         interval: 300
         repeat: true
         running: root.visible && root.editor.downloadState.startsWith("running")

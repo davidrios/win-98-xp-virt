@@ -1412,6 +1412,26 @@ pub unsafe extern "C" fn lc_editor_render(
     }
 }
 
+/// How many milliseconds until this preview wants rendering again, or 0
+/// when it never does: some presets' picture depends on the frame number
+/// — an interlaced CRT's alternate fields, a TV's flicker, a phosphor
+/// afterglow — and a front end that renders only when something is
+/// clicked shows one frozen frame of the effect. Call `lc_editor_render`
+/// again on this interval for as long as it is non-zero; it is 0 until
+/// the first render, and 0 for a preset that draws the same picture
+/// forever.
+///
+/// # Safety
+/// `e` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_editor_frame_interval_ms(e: *const LcEditor) -> u32 {
+    let e = handle!(e, 0);
+    e.preview
+        .as_ref()
+        .and_then(preview::Preview::frame_interval)
+        .map_or(0, |d| d.as_millis() as u32)
+}
+
 /// Copy the last rendered frame into `buf` as RGB8, row-major, top-down:
 /// `width * height * 3` bytes. Returns the number of bytes the frame
 /// needs, so a caller may pass NULL/0 first to size its buffer; nothing

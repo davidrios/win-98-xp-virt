@@ -5,7 +5,8 @@
 //! both just need "load a preset, tweak its parameters, run a frame",
 //! so the two shouldn't drift on how librashader is driven.
 
-use librashader::presets::ShaderFeatures;
+use librashader::preprocess::ShaderSource;
+use librashader::presets::{ShaderFeatures, ShaderPreset};
 use librashader::runtime::wgpu::{FilterChain, FilterChainOptions, WgpuOutputView};
 use librashader::runtime::{FilterChainParameters, Size, Viewport};
 use std::path::Path;
@@ -13,6 +14,7 @@ use std::path::Path;
 pub struct Chain {
     chain: FilterChain,
     frame_count: usize,
+    animated: bool,
     out: Option<(wgpu::Texture, wgpu::TextureView, u32, u32)>,
     format: wgpu::TextureFormat,
 }
@@ -36,6 +38,7 @@ impl Chain {
         Ok(Chain {
             chain,
             frame_count: 0,
+            animated: preset_is_animated(path),
             out: None,
             format,
         })
@@ -100,9 +103,9 @@ impl Chain {
         self.out = Some((tex, view, w, h));
     }
 
-    /// Run the chain: `input` texture -> output texture of size (w, h).
-    /// Returns the output texture and its view (valid until the next
-    /// size change).
+    /// Run the chain: `input` texture -> output texture of size (w, h),
+    /// as the next frame in sequence. Returns the output texture and its
+    /// view (valid until the next size change).
     pub fn run(
         &mut self,
         device: &wgpu::Device,
@@ -111,8 +114,50 @@ impl Chain {
         w: u32,
         h: u32,
     ) -> Result<(&wgpu::Texture, &wgpu::TextureView), String> {
-        self.ensure_out(device, w, h);
+        self.encode(device, encoder, input, w, h, self.frame_count)?;
+        self.frame_count += 1;
         let (tex, view, _, _) = self.out.as_ref().unwrap();
+        Ok((tex, view))
+    }
+
+    /// The same, with the frame number said outright rather than counted.
+    ///
+    /// It is the frame number, not the number of renders, that a preset
+    /// animates against (`FrameCount`, and the pass's own
+    /// `frame_count_mod`), and the two are only the same thing for a
+    /// consumer that renders every frame — which the player does and the
+    /// launcher's preview does not: the preview renders a still image on
+    /// a timer that a busy UI or a slow readback can miss ticks of, and
+    /// drives this from the clock instead, so a preset flickers at the
+    /// rate it really would in the player however many frames the
+    /// launcher managed to draw.
+    pub fn run_at(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        frame_count: usize,
+    ) -> Result<(&wgpu::Texture, &wgpu::TextureView), String> {
+        self.encode(device, encoder, input, w, h, frame_count)?;
+        let (tex, view, _, _) = self.out.as_ref().unwrap();
+        Ok((tex, view))
+    }
+
+    /// The render itself, borrowing nothing out, so both callers above
+    /// can still touch `self` after it.
+    fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        frame_count: usize,
+    ) -> Result<(), String> {
+        self.ensure_out(device, w, h);
+        let (_, view, _, _) = self.out.as_ref().unwrap();
         let size = Size::new(w, h);
         let viewport = Viewport {
             x: 0.0,
@@ -122,14 +167,23 @@ impl Chain {
             size,
         };
         self.chain
-            .frame(input, &viewport, encoder, self.frame_count, None)
-            .map_err(|e| format!("{e}"))?;
-        self.frame_count += 1;
-        Ok((tex, view))
+            .frame(input, &viewport, encoder, frame_count, None)
+            .map_err(|e| format!("{e}"))
     }
 
     pub fn frame_count(&self) -> usize {
         self.frame_count
+    }
+
+    /// Whether this preset's picture can change from one frame to the
+    /// next even though nothing else does — an interlaced or flickering
+    /// CRT, a phosphor afterglow, a shimmering NTSC signal. See
+    /// `preset_is_animated`: a consumer that renders on demand rather
+    /// than continuously (the launcher's preview) has to keep rendering
+    /// while this is true, or it shows one frozen frame of an effect
+    /// that is supposed to move.
+    pub fn animated(&self) -> bool {
+        self.animated
     }
 
     /// The texture the last `run` wrote, if `run` has ever succeeded — for
@@ -147,6 +201,91 @@ impl Chain {
     pub fn output_view(&self) -> Option<&wgpu::TextureView> {
         self.out.as_ref().map(|(_, view, _, _)| view)
     }
+}
+
+/// The uniforms whose value changes from frame to frame while the input
+/// stands still. `FrameCount` is the one presets actually animate
+/// against (`mod(FrameCount, 2.0)` is how a preset draws alternating
+/// fields, a flickering phosphor, a rolling NTSC phase); librashader
+/// hands the rest through too, and a preset reading one of them is no
+/// less animated for it.
+const FRAME_VARYING_UNIFORMS: [&str; 4] = [
+    "FrameCount",
+    "FrameDirection",
+    "FrameTimeDelta",
+    "CurrentSubFrame",
+];
+
+/// A texture bound to an earlier frame: the previous frames of the input
+/// (`OriginalHistory1`…) or a pass's own last output — which is
+/// `PassFeedback2` by number and `<alias>Feedback` when the preset named
+/// the pass, so the bare suffix catches both. A pass sampling one of
+/// these settles over several frames rather than being right at once —
+/// an afterglow, a motion blur, a running average — so it too is only
+/// itself in motion.
+const FEEDBACK_TEXTURES: [&str; 2] = ["OriginalHistory", "Feedback"];
+
+/// Whether a preset's picture can change from one frame to the next on a
+/// still input.
+///
+/// This reads the preset's shader sources rather than reflecting the
+/// compiled SPIR-V: reflection would answer exactly, but only by
+/// compiling every pass a second time, and the whole point of asking is
+/// to avoid work. It is a *conservative* reading — when in doubt it says
+/// animated, because the cost of being wrong that way is a preview that
+/// redraws a picture that never changes, and the cost of being wrong the
+/// other way is the bug this exists to fix: a flicker effect frozen on
+/// one frame.
+///
+/// Nearly every CRT shader *declares* `FrameCount` in its uniform block
+/// and most never read it (1131 of the slang-shaders tree declare it,
+/// 271 use it), so the declaration alone means nothing. What is looked
+/// for is a use: the member access `params.FrameCount` / `global.FrameCount`
+/// that GLSL requires to read a named uniform block's member. The sources
+/// are the *preprocessed* ones, so an `#include`d `#define FrameCount
+/// params.FrameCount` — how the shaders that seem to use it bare actually
+/// do it — is already expanded here.
+pub fn preset_is_animated(path: &Path) -> bool {
+    let Ok(preset) = ShaderPreset::try_parse(path, ShaderFeatures::NONE) else {
+        return true; // unreadable: `Chain::load` will have its own say
+    };
+    preset.passes.iter().any(|pass| {
+        // A pass that asks for the frame count modulo N is reading the
+        // frame count, whatever its source looks like.
+        pass.meta.frame_count_mod > 0
+            || match ShaderSource::load(&pass.path, preset.features) {
+                Ok(src) => source_is_animated(&src.vertex) || source_is_animated(&src.fragment),
+                Err(_) => true,
+            }
+    })
+}
+
+fn source_is_animated(src: &str) -> bool {
+    FEEDBACK_TEXTURES.iter().any(|name| src.contains(name))
+        || FRAME_VARYING_UNIFORMS
+            .iter()
+            .any(|name| reads_member(src, name))
+}
+
+/// Whether `src` reads `<block>.<name>` anywhere — a use of the uniform,
+/// as opposed to the `uint FrameCount;` that declares it.
+fn reads_member(src: &str, name: &str) -> bool {
+    let mut rest = src;
+    while let Some(at) = rest.find(name) {
+        let before = rest[..at].trim_end();
+        let after = &rest[at + name.len()..];
+        // `.FrameCount`, and not `.FrameCountSomething`.
+        if before.ends_with('.')
+            && !after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 /// Debug/tooling readback of a texture to PNG (the player's

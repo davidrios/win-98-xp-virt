@@ -417,6 +417,10 @@ fn main() -> eframe::Result {
             let (aw, ah) = cli::preview_area_env();
             let render_state = headless_render_state();
             let mut preview = shader_preview::Preview::new(render_state.clone());
+            // As `--preview-shader` does: one named frame, not whichever
+            // one the clock is on, so a preset that animates still dumps
+            // the same PNG twice (`PREVIEW_FRAME`, default 0).
+            preview.pin_frame(cli::preview_frame_env());
             preview.update(&preset, &[], &image_path, egui::vec2(aw as f32, ah as f32));
             if let Some(err) = preview.error() {
                 eprintln!("[preview] {err}");

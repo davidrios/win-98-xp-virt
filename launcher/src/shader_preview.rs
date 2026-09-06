@@ -47,6 +47,21 @@ impl Preview {
         self.core.error()
     }
 
+    /// How soon egui must repaint to keep an animated preset moving, or
+    /// `None` when the picture stands still and the window can go back
+    /// to sleep. The decision is the core's (`Preview::frame_interval`);
+    /// this only translates it into `request_repaint_after`.
+    pub fn frame_interval(&self) -> Option<std::time::Duration> {
+        self.core.frame_interval()
+    }
+
+    /// Render one named frame from now on rather than following the
+    /// clock — the headless dump, so that two runs of it are two
+    /// identical PNGs even for a preset that animates.
+    pub fn pin_frame(&mut self, frame: usize) {
+        self.core.pin_frame(frame);
+    }
+
     /// Reflect the editor's current preset, effective parameter values,
     /// image and available area, then hand the frame to egui.
     pub fn update(&mut self, preset: &Path, params: &[(String, f32)], image: &Path, area: egui::Vec2) {
