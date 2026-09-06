@@ -16,6 +16,8 @@
 #   libdisc        discx selftest (doc 17 §6.1): synthetic cue/bin, CCD and ISO
 #                  images, the CD model's reads, EDC/ECC, Q synthesis and the
 #                  MMC responders checked through libdisc's C API
+#   guest-dirdisc  the same tree served as a *folder* (isodir:<dir>): XP copies it
+#                  through cdrom.sys and every file matches the directory itself
 #   dirdisc        a host directory served as a disc (isodir, M5g): discx generates
 #                  the ISO 9660 + Joliet volume over a fixture tree, exports it and
 #                  xorriso (or bsdtar) reads the folder back out identical; then
@@ -188,6 +190,10 @@ dirdisc_check() { # a host directory served as a disc, read back by someone else
 
 atapi_disc_packets() { # disc, log -> packets the cdimage disc path saw while SeaBIOS probed the drive
   local disc="$1" out="$2" pid i
+  # Both logs are markers this function waits on: a stale one from an
+  # earlier run reads as "already finished" and the machine gets killed
+  # before it has probed anything.
+  rm -f "$out" "$out.bios"
   CDIMAGE_TRACE=1 build/qemu/qemu-system-i386 -L qemu/pc-bios -machine pc -m 64 \
     -display none -net none -boot d -no-reboot \
     -debugcon "file:$out.bios" -global isa-debugcon.iobase=0x402 \
@@ -563,6 +569,10 @@ guest_stage() {
         cdtest="$OUT/CDTEST.EXE"
       else echo "  (no mingw: guest-cdimage runs without the CD audio part)"; fi
       CDTEST="$cdtest" run_check guest-cdimage guest-cdimage.log tools/xp-cdimage-test.sh "$img" "$OUT/disc/gt.cue" "$OUT/gt-iso" "$OUT/cdimage-xp" || true
+      # the same tree again, this time served as a folder rather than an
+      # image (isodir, M5g): same reference, same comparison, so the disc
+      # being generated on the fly is the only difference
+      run_check guest-dirdisc guest-dirdisc.log tools/xp-cdimage-test.sh "$img" "isodir:$OUT/gt-iso" "$OUT/gt-iso" "$OUT/dirdisc-xp" || true
     else skip guest-cdimage "could not extract or convert $iso"; fi
   else skip guest-cdimage "needs target/release/discx and bsdtar"; fi
   [ -f "$D3DPT_EXEC_LIB" ] || { skip guest "no $D3DPT_EXEC_LIB"; return; }

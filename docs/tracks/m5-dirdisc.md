@@ -16,7 +16,7 @@ Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`. Rebase on
 `main` before each step and keep the shared files (§Scope) to minimal
 edits.
 
-## State (2026-09-06: steps 1 and 2 landed)
+## State (2026-09-06: steps 1–3 landed)
 
 `libdisc/src/isodir.rs` generates the volume, `discx` exercises it, and
 `scripts/test.sh`'s new **`dirdisc`** check hands the result to an ISO
@@ -76,9 +76,34 @@ plain `.iso` — the raw driver, no model — issues none. Both are in the
 suite's `dirdisc` check now; the boot ends on SeaBIOS' own "No bootable
 device" through `-debugcon`, so it costs about a second each.
 
-Next: step 3, XP end to end on Linux (`tools/xp-cdimage-test.sh` with
-`isodir:<dir>` and that directory as its own reference). The guest stage
-does not run on macOS, so that step needs the Linux box.
+Step 3 ran **on the Mac**, which the doc had assumed impossible: XP
+copies the folder through cdrom.sys and every file comes back identical.
+
+```
+RUN.BAT started after 30 s
+copy done after 33 s; shutting XP down
+xcopy: 311 arquivo(s) copiado(s), rc 0
+PASS: 311 files copied from the disc match the reference
+```
+
+`D:` is the volume: `dir` shows `café.txt` with its accent, `Program
+Files.txt` with its space, the 58-character name, `EMPTY.BIN` at 0 bytes
+and `odd2049.bin` at 2049 — Joliet, read by XP's own driver. The fixture
+is `discx mktree` minus the two names Joliet cannot hold (they would be
+reported as missing by a comparison that knows nothing about mangling;
+the host `dirdisc` check covers them). `scripts/test.sh`'s guest stage
+gained **`guest-dirdisc`**, which serves the extracted guest-tools ISO
+directory as a folder and compares against that same directory — the
+disc being generated on the fly is then the only difference from the
+`guest-cdimage` check next to it.
+
+`tools/xp-cdimage-test.sh` needed three fixes to run here, all of them
+improvements on the Linux side too (§Gotchas): the scratch disk is built
+with mtools where `sfdisk`/`mkfs.fat` are absent, the wait watches COM1
+rather than the guest's unflushed FAT writes, and `tr` runs in the C
+locale.
+
+Next: step 4, the launcher and the shelf.
 
 ## Why it is small
 
@@ -314,7 +339,7 @@ is the handoff.
    no node above `isodir` (or `cdimage_disc()` handles it and a debug
    print proves the handle is found); prepare-qemu twice leaves an
    identical tree.
-3. **XP, end to end.** `tools/xp-cdimage-test.sh` already boots XP, copies
+3. **XP, end to end** — *done 2026-09-06*. `tools/xp-cdimage-test.sh` already boots XP, copies
    the whole disc through cdrom.sys and diffs every file against a
    reference directory — point it at `isodir:<dir>` with *that same
    directory* as the reference.
@@ -386,3 +411,34 @@ Learned in step 2:
 - `$OUT` in `scripts/test.sh` is already absolute; a `"$PWD/$OUT/…"`
   built for QEMU is a path that does not exist, and `qemu-img` says only
   that it could not open it.
+- A probe that waits for a marker in a log file has to **delete the log
+  first**. The SeaBIOS check read the previous run's "No bootable
+  device", killed the machine before it had probed anything, and
+  reported that the drive saw no disc model.
+
+Learned in step 3 (all in `tools/xp-cdimage-test.sh`, which now runs on
+both systems):
+
+- **XP boots in about 35 seconds under TCG on the M1** — `RUN.BAT started
+  after 30 s`, the whole 311-file copy done at 33 s. Nothing here is slow
+  enough to need a generous timeout; when a run takes minutes, something
+  is wrong rather than slow.
+- **The guest's FAT writes are not visible to the host when they matter.**
+  XP's lazy writer held `E:\OUT\STARTED.TXT` for minutes: `mdir` on the
+  host showed the directory appear and stay empty while the batch file
+  was already through the copy. The script polled that file to know the
+  run had started, so it kept re-launching `RUN.BAT` every 11 seconds and
+  timed out having done the work several times over. It waits on **COM1**
+  now (a host file written as the guest writes it), with the FAT poll as
+  a fallback; the artefacts are still read off the FAT, after the
+  shutdown flushes it.
+- **`mformat` leaves the BPB's hidden-sectors field at 0.** The partition
+  starts at LBA 2048, so XP does not mount the volume at all — no E:, and
+  a test that only says the batch file never ran. `-H 2048` fixes it;
+  `mkfs.fat --offset` had always set it, which is why the Linux path
+  never met this.
+- macOS has no `truncate`, no `du -sb`, and GNU's `stat -f` means
+  something else entirely, so the size helpers decide once which system
+  they are on. BSD `tr` also refuses the guest's CP-850 bytes in a UTF-8
+  locale — one accented filename in the listing is enough — so it runs
+  under `LC_ALL=C`.
