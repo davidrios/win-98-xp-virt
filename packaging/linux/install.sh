@@ -32,11 +32,12 @@ app=2ksbox
 appid=com._2ksbox.Launcher
 desktop_dir=$prefix/share/applications
 icon_dir=$prefix/share/icons/hicolor/scalable/apps
+metainfo_dir=$prefix/share/metainfo
 
 if [ "$uninstall" = 1 ]; then
   rm -rf "$prefix/lib/$app" "$prefix/libexec/$app" "$prefix/share/$app" "$prefix/share/doc/$app"
   rm -f "$prefix/bin/$app" "$prefix/bin/$app-player"
-  rm -f "$desktop_dir/$appid.desktop" "$icon_dir/$appid.svg"
+  rm -f "$desktop_dir/$appid.desktop" "$icon_dir/$appid.svg" "$metainfo_dir/$appid.metainfo.xml"
   command -v update-desktop-database >/dev/null && update-desktop-database "$desktop_dir" 2>/dev/null || true
   echo "removed $app from $prefix"
   exit 0
@@ -65,6 +66,10 @@ sed -e "s|^Exec=.*|Exec=$prefix/bin/$app|" \
     -e "s|^Icon=.*|Icon=$icon_dir/$appid.svg|" \
     "$here/share/$app/desktop/$appid.desktop" > "$desktop_dir/$appid.desktop"
 cp -f "$here/share/$app/desktop/$appid.svg" "$icon_dir/$appid.svg"
+# AppStream metadata, so a software centre knows what this is. Copied
+# unmodified — nothing in it is path-dependent.
+mkdir -p "$metainfo_dir"
+cp -f "$here/share/$app/desktop/$appid.metainfo.xml" "$metainfo_dir/$appid.metainfo.xml"
 command -v update-desktop-database >/dev/null && update-desktop-database "$desktop_dir" 2>/dev/null || true
 
 echo "installed into $prefix"

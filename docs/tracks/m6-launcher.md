@@ -1313,6 +1313,25 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   a side effect of a packaging rename. `Cargo.toml`'s `repository` is
   still the placeholder for the same reason.
 
+  **The AppStream metadata landed with it** (`packaging/linux/com._2ksbox.
+  Launcher.metainfo.xml`, installed into `share/metainfo`): what a
+  software centre reads and what Flathub requires. The homepage is
+  `https://2ksbox.com` (the user's, 2026-09-05) and the **content rating
+  is an empty OARS 1.1 block** — the question it answers is about 2ksbox
+  itself, which has no chat, no purchasing and nothing user-to-user; the
+  Windows software a person runs inside a guest is their own content.
+  That is not a guess: this box's own
+  `/usr/share/metainfo/com.libretro.RetroArch.metainfo.xml` — an emulator
+  in exactly our position — declares an empty rating too, while Steam
+  carries attributes only because Steam itself has chat and purchasing.
+  `appstreamcli validate --no-net` is part of the package check, failing
+  on `E:` lines only: the file passes today with one pedantic note
+  (`cid-contains-uppercase-letter`, which `com.obsproject.Studio` and
+  `com.valvesoftware.Steam` also have), and the missing-screenshots
+  warning is a real gap that needs somewhere to host them. Both the
+  passing case and a deliberately broken file (duplicate tag, missing
+  summary → two `E:` lines) were run through the check.
+
   Verified by re-running the whole stranger path under the new names: the
   tarball is `2ksbox-0.0.1-linux-x86_64.tar.zst`, `install.sh` puts
   `bin/2ksbox` + `bin/2ksbox-player` and a valid
@@ -1356,10 +1375,12 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
      QEMU + both binaries against `org.freedesktop.Sdk`, so the ~190
      system libraries the tarball assumes come from the runtime. The
      application ID is settled (**`com._2ksbox.Launcher`**, ADR-011), and
-     the desktop entry and icon are already named after it; what is left
-     is the manifest, an AppStream metainfo file (which wants a homepage
-     URL — `2ksbox.com` — and a content rating), and `flatpak-builder`,
-     which is **not installed on this box**.
+     the desktop entry, the icon and the **AppStream metainfo** (homepage
+     `https://2ksbox.com`, empty OARS content rating) are already there
+     and validated. What is left: the manifest itself, **screenshots**
+     (the one validation warning — they need a URL to live at, so this
+     waits on 2ksbox.com having a page), and `flatpak-builder`, which is
+     **not installed on this box**.
    - 6c **macOS**: the same layout as a `.app`
      (`Contents/MacOS` + `Contents/Resources`, a third candidate in
      `paths.rs`), signed with the JIT entitlement and notarized. The Mac

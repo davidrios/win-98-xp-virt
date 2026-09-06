@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata (ADR-011's application ID). Required by Flathub and
+     read by GNOME Software / KDE Discover; `appstreamcli validate` checks
+     it, and scripts/package-linux.sh runs that on every package. -->
+<component type="desktop-application">
+  <id>com._2ksbox.Launcher</id>
+
+  <name>2ksbox</name>
+  <summary>Run Windows 98 and XP as native vintage boxes</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <!-- The launcher is GPL-2.0-or-later (ADR-009); the player it ships
+       with links QEMU and is GPL-2.0-only (ADR-010), which is the
+       stricter term the combined package is distributed under. -->
+  <project_license>GPL-2.0-only AND GPL-2.0-or-later</project_license>
+
+  <developer id="com._2ksbox">
+    <name>2ksbox</name>
+  </developer>
+
+  <description>
+    <p>
+      2ksbox runs Windows 98 and Windows XP the way the machines of the
+      era did: hardware-accelerated period 3D, a CRT shader chain over
+      the guest's own output, and a CD-ROM drive faithful enough for raw
+      dumps of discs you own — copy protection included.
+    </p>
+    <p>
+      The launcher keeps a library of machines, creates them from
+      reference configurations rather than a QEMU command line, manages a
+      shared shelf of disc images that can be swapped while a guest runs,
+      and takes snapshots. Each machine opens in its own player window,
+      which embeds a patched QEMU in-process for latency.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com._2ksbox.Launcher.desktop</launchable>
+  <provides>
+    <binary>2ksbox</binary>
+    <binary>2ksbox-player</binary>
+  </provides>
+
+  <url type="homepage">https://2ksbox.com</url>
+
+  <!-- Deliberately empty: this rates 2ksbox itself, which has no content
+       of its own to rate — no chat, no purchasing, nothing user-to-user.
+       Whatever a person runs inside a guest is their own software, the
+       same reading RetroArch and other emulators apply. -->
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.0.1" date="2026-09-05"/>
+  </releases>
+</component>

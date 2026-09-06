@@ -93,6 +93,7 @@ fi
 
 install -m644 packaging/linux/com._2ksbox.Launcher.desktop "$STAGE/share/2ksbox/desktop/"
 install -m644 packaging/linux/com._2ksbox.Launcher.svg "$STAGE/share/2ksbox/desktop/"
+install -m644 packaging/linux/com._2ksbox.Launcher.metainfo.xml "$STAGE/share/2ksbox/desktop/"
 install -m755 packaging/linux/install.sh "$STAGE/install.sh"
 install -m644 COPYING THIRD-PARTY-NOTICES.md README.md "$STAGE/share/doc/2ksbox/"
 
@@ -145,6 +146,23 @@ esac
   || { echo "package-linux.sh: the packaged qemu-img did not create a disk" >&2; fail=1; }
 desktop-file-validate "$STAGE/share/2ksbox/desktop/com._2ksbox.Launcher.desktop" \
   || { echo "package-linux.sh: the desktop entry is not valid" >&2; fail=1; }
+# The AppStream metadata, which the Flatpak (6b) will require and GNOME
+# Software / KDE Discover read. `--no-net` because a package build must
+# not depend on the network; only `E:` lines fail the build — a warning
+# about a missing screenshot is a real gap (they need somewhere to be
+# hosted) but not a reason to refuse to package.
+if command -v appstreamcli >/dev/null; then
+  metainfo_out=$(appstreamcli validate --no-net "$STAGE/share/2ksbox/desktop/com._2ksbox.Launcher.metainfo.xml" 2>&1) || true
+  if printf '%s\n' "$metainfo_out" | grep -q '^E:'; then
+    echo "$metainfo_out" >&2
+    echo "package-linux.sh: the AppStream metadata has errors" >&2
+    fail=1
+  else
+    echo "metainfo       $(printf '%s\n' "$metainfo_out" | tail -1)"
+  fi
+else
+  echo "metainfo       (appstreamcli not installed; not validated)"
+fi
 [ "$fail" = 0 ] || exit 1
 echo "checks passed"
 

@@ -161,7 +161,7 @@ which one it is in by looking at its own executable
 <prefix>/share/2ksbox/pc-bios/                 QEMU firmware (the player's -L)
 <prefix>/share/2ksbox/guest-tools/             the guest-tools ISO
 <prefix>/share/2ksbox/shaders/                 presets, when a package ships them
-<prefix>/share/2ksbox/desktop/                 .desktop + icon, for install.sh
+<prefix>/share/2ksbox/desktop/                 .desktop + icon + metainfo, for install.sh
 <prefix>/share/doc/2ksbox/                     COPYING, notices, README
 ```
 
@@ -192,9 +192,19 @@ window carries the same identity — `app_id` = `com._2ksbox.Launcher`,
 matching the desktop file's own name, plus the icon itself for X11 and
 Windows.
 
-Still open: the Flatpak (its ID is settled by ADR-011; what is left is
-the manifest and a `flatpak-builder`), the macOS .app and the Windows
-installer, and with the latter Windows live control (a named pipe or a
+The AppStream metadata (`com._2ksbox.Launcher.metainfo.xml`, installed
+into `share/metainfo`) goes with it: a software centre needs it, and
+Flathub requires it. Its content rating is a deliberately **empty** OARS
+block — that field rates 2ksbox itself, which has no chat, no purchasing
+and nothing user-to-user, and the Windows software someone runs in a
+guest is their own content, the same reading RetroArch and other
+emulators apply. `appstreamcli validate --no-net` runs on every package
+and fails it on errors only, since the one outstanding warning (no
+screenshots) needs somewhere to host them.
+
+Still open: the Flatpak (its ID and metadata are settled by ADR-011; what
+is left is the manifest, hosted screenshots and a `flatpak-builder`), the
+macOS .app and the Windows installer, and with the latter Windows live control (a named pipe or a
 loopback port in place of the Unix monitor socket above).
 
 ## Out of scope for v1
