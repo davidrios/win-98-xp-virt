@@ -120,7 +120,10 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   `docs/tracks/m6-launcher.md`). MIT/Apache-2.0 fits the project's
   GPL-2.0-only + open-source stance better than Slint's non-GPLv3 tiers;
   its default features are wgpu-backed already, unifying with the
-  player's `wgpu`/`winit` pins in `Cargo.lock`.
+  player's `wgpu`/`winit` pins in `Cargo.lock`. Since 2026-09-06 there
+  is a **second, maintained front end** on Qt 6 / QML (`launcher-qt/`),
+  and everything either of them decides lives in `launcher-core/` —
+  "Two front ends, one core" below.
 
 The launcher is optional by design: hand-written bundles + the player binary
 is a fully supported path.
@@ -237,137 +240,223 @@ is left is the manifest, hosted screenshots and a `flatpak-builder`), the
 macOS .app and the Windows installer, and with the latter Windows live control (a named pipe or a
 loopback port in place of the Unix monitor socket above).
 
-## The Qt port (a spike, `launcher-qt/`)
+## Two front ends, one core
 
-Built 2026-09-06 to answer "how would this go in Qt" with something that
-runs rather than an argument. `launcher-qt/` is a **second, complete
-front end** over the same launcher: the machine grid, the wizard, the
-disc shelf, snapshots and the shader profile manager with its live
-preview, on Qt 6.11 through **cxx-qt 0.10** (KDAB's Rust↔Qt bridge,
-MIT/Apache-2.0), with the views in QML.
+The launcher is **two maintained front ends over one library** (decided
+2026-09-06): `launcher/` on egui/eframe and `launcher-qt/` on Qt 6 / QML
+through cxx-qt, both views over `launcher-core/`. The Qt build began as a
+costed spike — "how would this go in Qt", answered with something that
+runs rather than an argument — and is now kept as a peer.
 
-It is deliberately **not** in the workspace: `launcher-qt/Cargo.toml`
-declares its own `[workspace]`, so `cargo build` at the repository root
-never starts needing Qt 6 development files on the Mac, in CI or in the
-Flatpak. Build it from its own directory; that is the whole build
-command, no CMake (`cxx-qt-build` finds Qt through `qmake6` and drives
-`moc`/`qmltyperegistrar` itself).
+### What is in the core, and why all of it
 
-### What the exercise actually measured
+`launcher-core/` is **everything the launcher does that is not drawing**,
+and the line is drawn deliberately far into what usually counts as UI:
 
-**The launcher's logic is not egui's, and that is now proven by the
-compiler.** Ten of `launcher/src/`'s seventeen modules — `bundle`,
-`control`, `disc_library`, `library`, `paths`, `player`,
-`shader_library`, `shader_profile`, `shader_source`, `snapshots`, 1,943
-lines — touch no toolkit type, and the Qt build re-includes them
-*verbatim* through `#[path]` module declarations rather than copying
-them. They compiled unchanged. Against that, 3,208 lines of egui became
-2,924 lines of Rust bridge plus 1,678 lines of QML.
+- the data — `bundle` (`machine.toml`), `library`, `disc_library`,
+  `shader_profile` / `shader_library` / `shader_source`, `paths`;
+- the machinery — `player` (spawning one, and `qemu-img`), `control`
+  (QMP to a running machine), `snapshots`, `preview` (the shader chain on
+  a still image);
+- and **the windows' own behaviour**: `machines`, `wizard`, `shelf`,
+  `snaps`, `editor`, one model per window, plus `browse` for the one
+  file-dialog decision that is not a dialog and `cli` for every debug
+  verb that needs no toolkit.
 
-(Nine and 1,516 when the port was built. Two of the shared modules were
-reaching across the boundary they were supposed to prove: `disc_library`
-named `filepicker::Filter` for its `DISC_FILTER`, and `control` used the
-`Snapshot` type out of a file that also held an egui window, which is why
-the port had to *copy* that file's free half. Both were fixed on
-2026-09-06 — the filter is a plain `(label, extensions)` pair the shelf
-owns, and `snapshots.rs` is now the free half alone with the window in
-`snapshots_ui.rs` — so the copy and the Qt crate's `filepicker` module
-are both gone.)
+That last group is the part worth arguing about, and the argument is
+settled by what happened without it. When the two builds each held their
+own copy of a window's state machine, they drifted, in ways nobody
+noticed until the models were merged:
 
-That "more lines, not fewer" is the honest headline, and it splits into
-three unequal parts:
+- the Qt wizard had **no processor, floppy or boot-order field at all**,
+  so a DOS machine created there came out unthrottled — which is the one
+  setting that decides whether a DOS game is playable;
+- its networking checkbox **did not follow the family**, so it disagreed
+  with `Machine::reference` about a new DOS machine;
+- the sentence under that checkbox said `Windows won't see a card` where
+  egui's said `the guest won't see a card`, on machines that may not run
+  Windows at all;
+- and saving a *new* shader profile **dropped the parameter overrides**
+  on the egui side (`create(…).map(|_| ())`) and kept them on the Qt
+  side. One of those two was a bug for a year of nobody looking.
 
-- **The bridge is real work egui doesn't need.** Every window's state
-  becomes a `QObject` with `#[qproperty]`/`#[qinvokable]`, and a
-  `QAbstractListModel` for every list. egui reads a `Vec` in the same
-  frame it draws it; Qt needs the model to *say* the list changed.
-- **The views got shorter and much flatter.** `qml/` describes what is
-  on screen; there is no `if ui.button(…).clicked()` interleaving
-  layout, event handling and business logic in one expression.
-- **Two places came out structurally better.** The shader editor *is*
-  the parameter list model, so "the checkbox and the slider disagree
-  about which parameter they belong to" stops being expressible (the
-  egui version keeps `params` and `overrides` in lockstep by hand). And
-  every field with a consequence goes through a named invokable
-  (`chooseFamily`, `chooseRam`, …), which makes the "…_chosen" rule —
-  memory follows the family until someone picks a number — impossible
-  to forget in a new widget.
+None of those is expressible now. A front end reads `ram_note()`,
+`accel_note()`, `network_notes()` and prints them; it fills a combo box
+from `Family::ALL`/`CpuSpeed::ALL` and their `label()`s rather than
+retyping the strings; and a field with a *consequence* has no setter at
+all, only `choose_*`, which is what applies the rule that memory, the
+accelerator, the processor and the NIC follow the family until someone
+picks one.
 
-### Windows, not floating panels
+### What each front end still owns
 
-The secondary screens are **real top-level windows** (`Window` with
-`Qt.Dialog`), not in-window popups. That is the platform doing work the
-egui build has to do itself: they move, resize, stack and close the way
-every other window on the desktop does, and the shader editor no longer
-needs the "Fullscreen" toggle the egui version grew — the user drags the
-window as wide as they like and the preview grows with it.
+Everything that is genuinely the toolkit's, and nothing else:
 
-It also forced one honest simplification. The egui shader manager is one
-window with two modes (list / editor) that resizes itself between them;
-the Qt version is **two windows**, because a real window's size cannot be
-reliably changed once the window manager has mapped it — bound or
-assigned, the request is the WM's to ignore, and here it was ignored on
-the height, leaving the editor's preview squashed into a strip. Two
-windows with fixed initial sizes is both the fix and the better shape.
+| | egui (`launcher/`) | Qt (`launcher-qt/`) |
+|---|---|---|
+| the file dialog | `rfd` — egui has none | `QtQuick.Dialogs`, declarative |
+| when to redraw | every frame; the model is read inline | a `Timer` per thing being watched, off when idle |
+| "the list changed" | no such concept; redraw | `beginResetModel` / `dataChanged` |
+| a destructive restore | the row's button becomes "Discard current state?" | a dialog |
+| the preview frame | a texture id, zero copy | CPU readback → temp BMP → `Image` |
+| secondary screens | floating panels inside the one window | real top-level windows |
+| a headless frame | ~150 lines of synthetic-input plumbing | `QT_QPA_PLATFORM=offscreen` + `grabToImage` |
 
-### What Qt gives for free
+Two of those are real differences in kind rather than in spelling. The
+**shader preview** is where Qt is meaningfully worse: eframe hands egui a
+live `wgpu::Device` and the preview borrows it, so the rendered texture
+reaches the widget by id; Qt Quick renders through QRhi and cxx-qt
+exposes no handle to it, so `launcher-qt` opens a *second*, windowless
+wgpu device (~40 MB of VRAM and another driver context) and the frame
+reaches QML through a CPU readback written to a temp BMP — ~3 ms
+readback plus ~4 ms write per 1280x960 frame, on every slider drag. (BMP,
+not PNG: ~4 ms against ~90 ms.) Doing it properly means a `QQuickRhiItem`
+subclass in C++ importing the Vulkan image. **This is the one place the
+Qt build is worse, and it is fixable, in C++.** The other, in Qt's
+favour, is that a **`Timer` says its interval out loud and stops when
+there is nothing to watch**, where the egui build polls the snapshot job
+and reaps exited players at the top of every frame because it has a
+frame anyway.
 
-- **File dialogs.** `QtQuick.Dialogs`' `FileDialog` is the XDG portal on
-  Linux, NSOpenPanel on macOS, `IFileDialog` on Windows — the same three
-  backends the egui build reaches through `rfd`. That dependency, and 94
-  lines of `filepicker.rs`, drop to a type alias and a `format!`.
-- **Headless rendering.** `QT_QPA_PLATFORM=offscreen` plus
-  `Item.grabToImage()` replaces `main.rs`'s ~150 lines of "build an
-  `egui::Context`, feed it synthetic pointer events, tessellate, paint
-  into an off-screen texture, dump it". Qt separates "render" from "have
-  a window"; egui does not.
-- **Timers say what they are.** The snapshot job poll and the
-  player-exit reap are `Timer { interval: … }` in QML, running only when
-  there is something to watch, where the egui build does both at the top
-  of every frame because it has a frame anyway.
+The **windows-not-panels** difference forced one honest simplification.
+The egui shader manager is one window with two modes (list / editor) that
+resizes itself between them; the Qt version is **two windows**, because a
+real window's size cannot be reliably changed once the window manager has
+mapped it — bound or assigned, the request is the WM's to ignore, and
+here it was ignored on the height, leaving the editor's preview squashed
+into a strip. Two windows with fixed initial sizes is both the fix and
+the better shape.
 
-### What Qt costs
+### The numbers
 
-- **The live shader preview.** eframe hands egui a `wgpu::Device` and the
-  preview borrows it — the rendered texture reaches the widget by id,
-  zero copy. Qt Quick renders through QRhi and cxx-qt exposes no handle
-  to it, so `launcher-qt` opens a *second*, windowless wgpu device
-  (~40 MB of VRAM and another driver context) and the frame reaches QML
-  through a **CPU readback written to a temp BMP**: ~3 ms readback plus
-  ~4 ms write per frame at 1280×960, on every slider drag. Doing it
-  properly means a `QQuickRhiItem` subclass in C++ importing the Vulkan
-  image — a real project, not a spike. **This is the one place the Qt
-  build is meaningfully worse, and it is fixable, in C++.**
-- **A runtime to ship.** The Qt binary is *smaller* — 24.4 MB release
-  against egui's 39.8 MB — because Qt is a shared library and egui,
-  wgpu and winit are statically linked into the launcher. But it then
-  needs ~25 MB of `libQt6{Core,Gui,Qml,Network,DBus}` plus the ~13 MB
-  QtQuick QML plugin tree present on the machine, where the egui build
-  needs nothing beyond the system's Vulkan and windowing libraries.
-  That is a packaging question, not a size question: on Linux it means
-  the Flatpak would move from `org.freedesktop.Sdk` to `org.kde.Platform`
-  (which ships Qt), and the AppImage/macOS/Windows builds would each
-  have to carry Qt themselves.
-- **Build time.** A clean release build is 4m08s here, against the egui
-  launcher's own (the C++ generation, `moc` and `qmltyperegistrar` steps
-  are additive, and every QML file recompiles the resource).
-- **C++ in the loop.** No C++ is written here, but `cargo build` now runs
-  a C++ compiler, `moc` and `qmltyperegistrar`, and the binary links
-  Qt 6 — LGPLv3, which is why `launcher-qt` is `GPL-2.0-or-later` like
-  `launcher` (ADR-009's reasoning carries over unchanged; GPL-2.0-only
-  could not take LGPLv3).
+Measured 2026-09-06, after the split; the figures in brackets are what
+they were when the Qt build was a spike with ten `#[path]`-included
+files.
 
-### Four traps, each of which cost real time
+| | lines |
+|---|---|
+| `launcher-core/`, shared by both | **4,435** (1,943) |
+| `launcher/` — egui views only | **1,735** (3,208) |
+| `launcher-qt/src/` — Qt bridges only | **2,132** (2,924) |
+| `launcher-qt/qml/` | **1,772** (1,678) |
+| dependencies beyond the shared set | `eframe`, `egui`, `rfd`, `image` (the icon) / `cxx-qt`, `cxx-qt-lib`, system Qt 6 |
+| release binary | 39.8 MB, self-contained / 24.4 MB **plus ~38 MB of Qt runtime** |
+
+The two front ends together lost 2,171 lines; the core gained 2,469 of
+new shared modules on top of the 1,966 that merely moved. It is
+**not** a net saving in lines and it was never going to be: what was
+duplicated is now written once, documented once, and given an API
+(`ram_note()`, `choose_family()`) where it used to be a field poked
+inline. The saving is that there is one place to change any of it.
+
+The Qt binary being *smaller* is not a size win: egui, wgpu and winit are
+statically linked into the egui build, while Qt is a shared library, so
+the Qt build then needs ~25 MB of `libQt6{Core,Gui,Qml,Network,DBus}`
+plus the ~13 MB QtQuick QML plugin tree present on the machine. That is a
+packaging question: on Linux the Flatpak would move from
+`org.freedesktop.Sdk` to `org.kde.Platform` (which ships Qt), and the
+AppImage/macOS/Windows builds would each have to carry Qt themselves.
+`launcher-qt` is not in the root workspace (`Cargo.toml` declares its
+own) precisely so that a plain `cargo build` never starts needing Qt 6
+development files on the Mac, in CI or in the Flatpak; the
+`launcher-core` path dependency crosses that boundary without dragging Qt
+back the other way. Build it from its own directory — that is the whole
+build command, no CMake.
+
+### Proving they agree
+
+Three checks, all of which run without a GUI click:
+
+- **`--preview-shader` on both binaries renders byte-identical PNGs.**
+  It is the same code now (`launcher_core::preview` on a headless
+  device), so this is a check that the two builds really are linking the
+  one implementation.
+- **The same debug verbs, from the same code.** `launcher_core::cli`
+  answers `--paths`, `--discs`, `--snapshots`, `--wizard-new`,
+  `--wizard-edit`, `--boot-disc`, `--insert-disc`, `--print-args` and the
+  rest for both binaries, where the Qt build used to reimplement two of
+  them and lack the other twenty. (`--pick-file` is the one exception: it
+  pops `rfd`'s dialog, and Qt's is declarative. The `--diag-*` screenshot
+  verbs are each toolkit's own, for the same reason.)
+- **A machine created through each front end's real window is the same
+  machine.** `--diag-wizard-frame` drives the egui form headlessly;
+  `LAUNCHER_QT_SCREEN=create LAUNCHER_QT_ARG=dos:<name>` drives the QML
+  one under `QT_QPA_PLATFORM=offscreen`. The two `machine.toml`s differ
+  only in the name and the disk path — `family`, `ram_mb = 64`,
+  `accel = "tcg"`, `network = false`, `boot`, `cpu_speed = "486dx2-66"`
+  all match. Before the split, four of those six were wrong on the Qt
+  side or absent.
+
+**The `#[path]` arrangement it replaced survived its own first test** —
+rebasing the spike onto `main` picked up 61 commits, including a
+`shader-chain` that had grown `parameter`/`has_parameter` and split
+`dump_texture`, and the Qt crate built with no edit. It was still the
+wrong shape: it proved the *file formats* were portable and left every
+window's state machine written twice, which is exactly where the
+divergences above came from.
+
+## A third front end: `launcher-core` as a library
+
+Because the core is a real library and not a pile of modules two binaries
+happen to include, a front end in another language is a view over it too.
+`launcher-capi/` is the C ABI that makes that concrete — a native macOS
+app in Swift is the case it was shaped for, since Swift imports a C
+header directly with no bridge crate, but anything that speaks C works.
+
+- `launcher-capi/include/launcher_core.h` is the header, hand-written and
+  kept beside the code.
+- Each window is an **opaque handle** (`lc_wizard_new` / `lc_wizard_free`
+  …) and rows are addressed by index, one field at a time — which is not
+  a compromise for C: it is exactly how the Qt build's
+  `QAbstractListModel::data` already reads them.
+- Strings out are owned by the caller (`lc_string_free`) and are never
+  `NULL` for "empty", so `NULL` means only "no such row".
+- Nothing blocks on a guest: the two long operations keep their polls
+  (`lc_snapshots_poll` while `lc_snapshots_job_pending`,
+  `lc_editor_preset_state` while a download runs).
+- It adds **no behaviour**. Every function is a thin wrapper, so a third
+  front end gets the same wizard rules, the same "`qemu-img` only when
+  the machine is stopped", the same "keep only the parameters the user
+  actually overrode".
+
+`launcher-capi` is a workspace member but **not a default one** — it
+builds a `cdylib` and a `staticlib` of the whole launcher, which nobody
+needs unless they are building such a front end. `cargo build -p
+launcher-capi`.
+
+`launcher-capi/examples/smoke.c` is a third front end in the smallest
+possible form, and it is a *test*: `scripts/test.sh host`'s `capi` check
+builds it and runs it against a scratch library, creating a DOS machine
+through the shared wizard and checking the answers (64 MB, a period
+processor, emulated, no network card), then the disc shelf, the library
+and the profile editor. A rename or a changed default in a model fails
+there as well as in the two GUIs.
+
+What a third front end still owes is what the other two own: a file
+dialog, when to redraw, how to confirm a destructive restore, and how to
+show a preview frame (`lc_editor_read_frame` hands over RGB8).
+
+### The recommendation, revisited
+
+The 2026-09-06 spike's finding was "nothing here justifies switching, and
+nothing here rules Qt out". Keeping both is the answer to a different
+question: **what does maintaining a second front end cost, once the
+launcher's logic is not the first one's?** About 3,900 lines of view code
+for the Qt build, no behaviour, and a build that is off the default path
+— and in exchange, four real divergences got found and closed, and the
+door to a native macOS front end is a C header rather than a rewrite.
+
+### Four Qt traps, each of which cost real time
 
 1. **cxx-qt's generated property setter skips the notify when the value
    already matches** — it compares first, to avoid binding loops. So
    writing `rust_mut().open = true` and then "publishing" it with
    `set_open(true)` emits *nothing*, and QML keeps showing the old
    value. Every window in the port opened once and then stopped
-   reacting. The fix is a discipline, written into each bridge's header:
-   build the new state as a *value* and hand it to an `apply` that
-   writes every property through its setter while the struct still holds
-   the old one.
+   reacting. Keeping the state in a core model *beside* the properties
+   is what closes this by construction: a `publish` reads the model and
+   writes every property through its setter, and the property fields are
+   never assigned anywhere else.
 2. **`grabToImage` only works on an item the QML engine created.** It
    starts with `qmlEngine(this)`, and a window's own `contentItem`,
    `Overlay.overlay` and a `Popup`'s default `contentItem` are all made
@@ -384,44 +473,6 @@ windows with fixed initial sizes is both the fix and the better shape.
    good) and not by assignment (which it may simply ignore, as it did
    here for the height but not the width). A window that wants two very
    different sizes should be two windows.
-
-### The numbers
-
-| | egui (`launcher/`) | Qt (`launcher-qt/`) |
-|---|---|---|
-| toolkit-free Rust, shared | 1,943 lines | the same 1,943, `#[path]`-included |
-| front-end code | 3,208 lines Rust | 2,924 Rust + 1,678 QML |
-| dependencies beyond the shared set | `eframe`, `egui`, `rfd` | `cxx-qt`, `cxx-qt-lib`, system Qt 6 |
-| release binary | 39.8 MB, self-contained | 24.4 MB, **plus ~38 MB of Qt runtime** |
-| shader preview | zero-copy texture id | CPU readback → temp BMP → `Image` |
-| file dialog | `rfd` (portal / NSOpenPanel / IFileDialog) | Qt's own, same three backends |
-| headless frame | ~150 lines of synthetic-input plumbing | `QT_QPA_PLATFORM=offscreen` + 4 lines of QML |
-| secondary screens | floating panels inside the one window | real top-level windows |
-
-**Equivalence check:** `launcher-qt --preview-shader` and `launcher
---preview-shader` render the same preset and image to **byte-identical**
-PNGs, so the shared `shader-chain` path is provably the same on both.
-
-**The `#[path]` arrangement survived its first real test.** Rebasing the
-spike onto `main` picked up 61 commits, including a `shader-chain` that
-had grown `parameter`/`has_parameter` and split `dump_texture` into
-`read_texture` + `write_png` — and the Qt crate built with no edit. The
-split then let the Qt preview delete its own 58-line readback and call
-`shader_chain::read_texture`, so row strides and BGRA handling live in
-one place for the player and both launchers.
-
-### The recommendation
-
-**Nothing here justifies switching, and nothing here rules Qt out.** The
-egui build stays: it is finished, it is pure Rust, it is one `cargo
-build` on every platform, and the shader preview — the launcher's one
-genuinely graphical feature — is a texture id there and a CPU round-trip
-here. What the spike does settle is that the *cost of the option* is
-known: the logic half is portable as-is, the port is a few thousand
-lines of view code, and the only hard part has a named fix. Keep
-`launcher-qt/` as a reference point; revisit if the launcher ever needs
-something egui is bad at — native menus, accessibility, or a Windows
-build that has to look like Windows.
 
 ## Out of scope for v1
 

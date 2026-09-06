@@ -1,21 +1,21 @@
-//! Shader profiles (doc 07), as two QML models.
+//! Shader profiles (doc 07), as two QML models over
+//! `launcher_core::editor`.
 //!
 //! `ProfileModel` is the profile list — New / Edit / Delete over
-//! `shader_library`. `ShaderEditor` is the editor, and it is *itself* the
-//! list model for the preset's parameters, which is the one place this
-//! port came out structurally nicer than the egui build: there, an
-//! `Editor` holds `params: Vec<ParamMeta>` and `overrides:
-//! Vec<Option<f32>>` in lockstep and a `for` loop zips them into
-//! sliders; here the two vectors are the model's rows and the slider is
-//! a delegate, so "the checkbox and the slider disagree about which
-//! parameter they belong to" stops being expressible.
+//! `shader_library`. `ShaderEditor` wraps `editor::Editor` and is
+//! *itself* the list model for the preset's parameters, which is the one
+//! place this port came out structurally nicer than the egui build:
+//! there, the parameter metadata and the overrides are two vectors a
+//! `for` loop zips into sliders; here they are the model's rows and the
+//! slider is a delegate, so "the checkbox and the slider disagree about
+//! which parameter they belong to" stops being expressible.
 //!
-//! Everything else is the same code: `shader_profile::parameter_meta` to
-//! read a preset, only-overridden parameters saved, the un-overridden
-//! ones left at the preset's own default (so a profile survives the
-//! preset gaining parameters later), and the "only a drag counts" guard
+//! Everything the editor *does* is the shared model: reading a preset,
+//! keeping only overridden parameters, the "only a drag counts" guard
 //! that stops a preset whose default sits off the step grid from
-//! silently acquiring an override just by being opened.
+//! silently acquiring an override just by being opened, and saving a new
+//! profile *with* its overrides. The preset collection and its download
+//! are `editor::Presets`.
 
 #[cxx_qt::bridge]
 pub mod ffi {
@@ -117,6 +117,13 @@ pub mod ffi {
         #[qproperty(QString, presets_dir)]
         /// "", "running:<MB>", "failed:<message>" — the download's state.
         #[qproperty(QString, download_state)]
+        /// Where the collection would be installed, for the offer.
+        #[qproperty(QString, presets_install_dir)]
+        #[qproperty(QString, presets_download_size)]
+        /// The file dialogs' name filters, from the same constants the
+        /// egui build hands `rfd`.
+        #[qproperty(QString, preset_filter)]
+        #[qproperty(QString, image_filter)]
         type ShaderEditor = super::ShaderEditorRust;
 
         #[qinvokable]
@@ -182,12 +189,13 @@ pub mod ffi {
     }
 }
 
-use crate::shader_profile::{self, ParamMeta, ShaderProfile};
-use crate::shader_source::{self, Download, Status};
-use crate::{preview, qs, shader_library};
+use crate::{preview, qs, qs_opt};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
-use std::path::{Path, PathBuf};
+use launcher_core::browse::name_filter;
+use launcher_core::editor::{Editor, PresetState, Presets, IMAGE_FILTER, PRESET_FILTER};
+use launcher_core::shader_library;
+use std::path::PathBuf;
 use std::pin::Pin;
 
 // --- the profile list ------------------------------------------------
@@ -263,7 +271,7 @@ impl ffi::ProfileModel {
             .unwrap_or(-1)
     }
 
-    fn delete_at(mut self: Pin<&mut Self>, row: i32) {
+    fn delete_at(self: Pin<&mut Self>, row: i32) {
         let Some(path) = self.entries.get(row as usize).map(|e| e.path.clone()) else { return };
         if let Err(e) = shader_library::delete(&path) {
             eprintln!("[shader-manager] deleting {}: {e}", path.display());
@@ -297,122 +305,34 @@ pub struct ShaderEditorRust {
     preview_height: i32,
     presets_dir: QString,
     download_state: QString,
+    presets_install_dir: QString,
+    presets_download_size: QString,
+    preset_filter: QString,
+    image_filter: QString,
 
-    /// `None` for a new profile; `Some(path)` to save back in place.
-    path: Option<PathBuf>,
-    /// The last preset successfully parsed, so parameters are only
-    /// re-read when the path actually changes.
-    parsed_preset: Option<PathBuf>,
-    params: Vec<ParamMeta>,
-    /// One entry per `params`, same order: `Some(value)` when overridden.
-    overrides: Vec<Option<f32>>,
+    /// The editor. Everything above is a projection of it (plus the
+    /// preview's own output).
+    model: Editor,
+    presets: Presets,
     preview: Option<preview::Preview>,
-    download: Option<Download>,
-    /// The preset collection is *cached*: finding it walks the
-    /// collection's top two levels, which is nothing once but not
-    /// something to repeat per frame.
-    looked_for_presets: bool,
-}
-
-
-impl ShaderEditorRust {
-    /// Re-read the preset's parameters if the path changed, and return
-    /// the parse error to publish (empty when it parsed). Deliberately
-    /// *returns* rather than assigning `self.parse_error`: that field is
-    /// a Q_PROPERTY, and writing it here would change what QML reads
-    /// without emitting its notify — see the header of `wizard.rs`.
-    fn reparse(&mut self, preset_path: &str) -> QString {
-        let trimmed = preset_path.trim();
-        if trimmed.is_empty() {
-            self.params.clear();
-            self.overrides.clear();
-            self.parsed_preset = None;
-            return QString::default();
-        }
-        let path = Path::new(trimmed);
-        if self.parsed_preset.as_deref() == Some(path) {
-            return self.parse_error.clone();
-        }
-        self.parsed_preset = Some(path.to_path_buf());
-        match shader_profile::parameter_meta(path) {
-            Ok(params) => {
-                self.overrides = vec![None; params.len()];
-                self.params = params;
-                QString::default()
-            }
-            Err(e) => {
-                self.params.clear();
-                self.overrides.clear();
-                qs(e)
-            }
-        }
-    }
-
-    fn build(&self, name: String, preset: PathBuf) -> ShaderProfile {
-        let mut profile = ShaderProfile::new(name, preset);
-        for (meta, over) in self.params.iter().zip(self.overrides.iter()) {
-            if let Some(v) = over {
-                profile.params.insert(meta.id.clone(), *v);
-            }
-        }
-        profile
-    }
-
-    /// The values the preview actually renders with: the override where
-    /// there is one, the preset's own default everywhere else.
-    fn effective(&self) -> Vec<(String, f32)> {
-        self.params
-            .iter()
-            .zip(&self.overrides)
-            .map(|(meta, over)| (meta.id.clone(), over.unwrap_or(meta.default)))
-            .collect()
-    }
-
-    /// Where the preset collection is, cached: finding it walks the
-    /// collection's top two levels, which is nothing once but not
-    /// something to repeat per frame. Returns the value to publish.
-    fn find_presets(&mut self) -> QString {
-        if self.looked_for_presets {
-            return self.presets_dir.clone();
-        }
-        self.looked_for_presets = true;
-        shader_source::presets_dir().map(|d| qs(d.display())).unwrap_or_default()
-    }
-
-    /// Forget the parsed preset, the sliders and the chain. The
-    /// Q_PROPERTY fields are *not* touched here; `reset` in the QObject
-    /// below clears those through their setters.
-    fn clear(&mut self) {
-        self.path = None;
-        self.parsed_preset = None;
-        self.params.clear();
-        self.overrides.clear();
-        self.preview = None;
-        self.download = None;
-    }
 }
 
 impl ffi::ShaderEditor {
     fn row_count(&self, _parent: &QModelIndex) -> i32 {
-        self.params.len() as i32
+        self.rust().model.params().len() as i32
     }
 
     fn data(&self, index: &QModelIndex, role: i32) -> QVariant {
+        let editor = &self.rust().model;
         let row = index.row() as usize;
-        let (Some(meta), Some(over)) = (self.params.get(row), self.overrides.get(row)) else {
+        let Some((meta, over)) = editor.param(row) else {
             return QVariant::default();
         };
         match role {
             E_ID => QVariant::from(&qs(&meta.id)),
-            E_DESCRIPTION => QVariant::from(&qs(
-                // The egui build hides a description that just repeats
-                // the id; same rule, decided here so QML needn't.
-                if meta.description.is_empty() || meta.description == meta.id {
-                    String::new()
-                } else {
-                    meta.description.clone()
-                },
-            )),
+            // The editor hides a description that just repeats the id;
+            // same rule for both front ends, decided there.
+            E_DESCRIPTION => QVariant::from(&qs_opt(editor.description(row))),
             E_MINIMUM => QVariant::from(&meta.minimum),
             E_MAXIMUM => QVariant::from(&meta.maximum),
             E_STEP => QVariant::from(&meta.step),
@@ -437,115 +357,66 @@ impl ffi::ShaderEditor {
     }
 
     fn new_profile(mut self: Pin<&mut Self>) {
-        self.as_mut().reset();
-        let presets = self.as_mut().rust_mut().find_presets();
-        self.as_mut().set_presets_dir(presets);
-        self.as_mut().set_open(true);
+        self.as_mut().with_rows(|e| e.new_profile());
+        self.as_mut().rust_mut().preview = None;
+        self.publish();
     }
 
     fn edit(mut self: Pin<&mut Self>, path: &QString) {
         let path = PathBuf::from(path.to_string());
-        let profile = ShaderProfile::load(&path);
-        self.as_mut().reset();
-        let presets = self.as_mut().rust_mut().find_presets();
-        self.as_mut().set_presets_dir(presets);
-        match profile {
-            Ok(profile) => {
-                let preset = qs(profile.preset.display());
-                // Safety: paired with `end_reset_model` below.
-                unsafe { self.as_mut().begin_reset_model() };
-                let parse_error = {
-                    let mut this = self.as_mut().rust_mut();
-                    this.path = Some(path);
-                    let parse_error = this.reparse(&preset.to_string());
-                    // Line the overrides up with the freshly parsed
-                    // parameters *after* reparse, so a preset that
-                    // dropped one since the profile was saved doesn't
-                    // leave a dangling override.
-                    for i in 0..this.params.len() {
-                        if let Some(&v) = profile.params.get(&this.params[i].id) {
-                            this.overrides[i] = Some(v);
-                        }
-                    }
-                    parse_error
-                };
-                unsafe { self.as_mut().end_reset_model() };
-                let count = self.params.len() as i32;
-                self.as_mut().set_name(qs(&profile.name));
-                self.as_mut().set_preset_path(preset);
-                self.as_mut().set_parse_error(parse_error);
-                self.as_mut().set_count(count);
-            }
-            Err(e) => self.as_mut().set_error(qs(format!("{}: {e}", path.display()))),
-        }
-        self.as_mut().set_open(true);
+        self.as_mut().with_rows(|e| e.edit_path(path));
+        self.as_mut().rust_mut().preview = None;
+        self.publish();
     }
 
     fn reparse(mut self: Pin<&mut Self>) {
+        // The property is where QML's committed text is; the model needs
+        // it before it can decide whether anything changed.
         let preset = self.preset_path.to_string();
-        let before = self.parsed_preset.clone();
-        // Safety: paired with `end_reset_model` below.
-        unsafe { self.as_mut().begin_reset_model() };
-        let parse_error = self.as_mut().rust_mut().reparse(&preset);
-        unsafe { self.as_mut().end_reset_model() };
-        if before != self.parsed_preset {
-            // A new preset means a new chain; drop the old one so the
-            // next render reloads it.
-            self.as_mut().rust_mut().preview = None;
-        }
-        let count = self.params.len() as i32;
-        self.as_mut().set_parse_error(parse_error);
-        self.as_mut().set_count(count);
+        let image = self.preview_image.to_string();
+        self.as_mut().with_rows(|e| {
+            e.preset_path = preset;
+            e.preview_image_path = image;
+            e.reparse();
+        });
+        self.publish();
     }
 
     fn set_override(mut self: Pin<&mut Self>, row: i32, enabled: bool) {
-        let row = row as usize;
-        // Safety: paired with `end_reset_model` below.
-        unsafe { self.as_mut().begin_reset_model() };
-        {
-            let mut this = self.as_mut().rust_mut();
-            if let (Some(meta), Some(over)) = (this.params.get(row), this.overrides.get(row)) {
-                let new = if enabled { Some(meta.default) } else { None };
-                if *over != new {
-                    this.overrides[row] = new;
-                }
-            }
+        if row < 0 {
+            return;
         }
-        unsafe { self.as_mut().end_reset_model() };
+        self.as_mut().with_rows(|e| e.set_override(row as usize, enabled));
     }
 
     fn set_value(mut self: Pin<&mut Self>, row: i32, value: f32) {
-        let mut this = self.as_mut().rust_mut();
-        let row = row as usize;
-        // Only an *overridden* row can move: a disabled slider still
-        // reports a value, and several presets have defaults off their
-        // own step grid (crt-lottes: warpX 0.031, step 0.01), so without
-        // this guard just opening such a preset would silently override
-        // them with the snapped value.
-        if this.overrides.get(row).map(Option::is_some).unwrap_or(false) {
-            this.overrides[row] = Some(value);
+        if row < 0 {
+            return;
         }
+        self.as_mut().rust_mut().model.set_value(row as usize, value);
     }
 
     fn render(mut self: Pin<&mut Self>, area_w: i32, area_h: i32) {
-        let preset = self.preset_path.to_string().trim().to_string();
-        let image = self.preview_image.to_string().trim().to_string();
-        if preset.is_empty() || image.is_empty() {
+        {
+            // The two path fields are two-way-bound properties; catch the
+            // model up before asking whether it can render.
+            let (preset, image) = (self.preset_path.to_string(), self.preview_image.to_string());
+            let mut this = self.as_mut().rust_mut();
+            this.model.preset_path = preset;
+            this.model.preview_image_path = image;
+        }
+        if !self.rust().model.renderable() {
             return;
         }
-        let params = self.rust().effective();
         let (source, w, h, err) = {
             let mut this = self.as_mut().rust_mut();
+            let params = this.model.effective();
+            let preset = PathBuf::from(this.model.preset_path.trim());
+            let image = PathBuf::from(this.model.preview_image_path.trim());
             let preview = this.preview.get_or_insert_with(preview::Preview::new);
-            preview.update(
-                Path::new(&preset),
-                &params,
-                Path::new(&image),
-                area_w.max(1) as u32,
-                area_h.max(1) as u32,
-            );
+            preview.update(&preset, &params, &image, area_w.max(1) as u32, area_h.max(1) as u32);
             let (w, h) = preview.viewport();
-            (qs(preview.source_url()), w as i32, h as i32, preview.error().map(qs).unwrap_or_default())
+            (qs(preview.source_url()), w as i32, h as i32, qs_opt(preview.error()))
         };
         self.as_mut().set_preview_source(source);
         self.as_mut().set_preview_width(w);
@@ -554,90 +425,96 @@ impl ffi::ShaderEditor {
     }
 
     fn save(mut self: Pin<&mut Self>, profiles_dir: &QString) -> bool {
-        let name = self.name.to_string();
-        let preset = self.preset_path.to_string();
-        if name.trim().is_empty() {
-            self.as_mut().set_error(QString::from("a name is required"));
-            return false;
-        }
-        if preset.trim().is_empty() {
-            self.as_mut().set_error(QString::from("a preset is required"));
-            return false;
-        }
         let dir = PathBuf::from(profiles_dir.to_string());
-        let profile = self.rust().build(name, PathBuf::from(preset));
-        let result = match &self.path {
-            Some(path) => profile.save(path),
-            // `create` reserves the `<slug>.toml` and writes a bare
-            // profile; the overrides the editor collected go into the
-            // same file straight after.
-            None => shader_library::create(&dir, profile.name.clone(), profile.preset.clone())
-                .and_then(|path| profile.save(&path)),
+        let (name, preset) = (self.name.to_string(), self.preset_path.to_string());
+        let ok = {
+            let mut this = self.as_mut().rust_mut();
+            this.model.name = name;
+            this.model.preset_path = preset;
+            this.model.save(&dir)
         };
-        match result {
-            Ok(()) => {
-                self.as_mut().set_error(QString::default());
-                self.as_mut().set_open(false);
-                true
-            }
-            Err(e) => {
-                self.as_mut().set_error(qs(e));
-                false
-            }
-        }
+        self.publish();
+        ok
     }
 
     fn download_presets(mut self: Pin<&mut Self>) {
-        let dest = shader_source::install_dir();
-        self.as_mut().rust_mut().download = Some(Download::start(dest));
-        self.as_mut().set_download_state(QString::from("running:0.0"));
+        self.as_mut().rust_mut().presets.start_download();
+        self.publish();
     }
 
-    fn poll_download(mut self: Pin<&mut Self>) {
-        let status = self.rust().download.as_ref().map(Download::status);
-        let Some(status) = status else { return };
-        match status {
-            Status::Running(bytes) => {
-                let mb = bytes as f64 / 1_000_000.0;
-                self.as_mut().set_download_state(qs(format!("running:{mb:.1}")));
-            }
-            Status::Done(dir) => {
-                {
-                    let mut this = self.as_mut().rust_mut();
-                    this.download = None;
-                    this.looked_for_presets = true;
-                }
-                let d = qs(dir.display());
-                self.as_mut().set_presets_dir(d);
-                self.as_mut().set_download_state(QString::default());
-            }
-            Status::Failed(e) => {
-                self.as_mut().rust_mut().download = None;
-                self.as_mut().set_download_state(qs(format!("failed:{e}")));
-            }
+    fn poll_download(self: Pin<&mut Self>) {
+        if !self.rust().presets.download_active() {
+            return;
         }
+        self.publish();
     }
 }
 
 impl ffi::ShaderEditor {
-    /// Back to an empty editor. Every Q_PROPERTY goes through its own
-    /// setter — clearing one by assigning the struct field would leave
-    /// QML showing the last profile's name with no notify to correct it
-    /// (see the header of `wizard.rs`).
-    fn reset(mut self: Pin<&mut Self>) {
-        // Safety: paired with `end_reset_model` below.
+    /// Run an editor operation that may change the parameter rows,
+    /// bracketed so attached views are told.
+    fn with_rows(mut self: Pin<&mut Self>, op: impl FnOnce(&mut Editor)) {
+        // Safety: paired with `end_reset_model` immediately below.
         unsafe { self.as_mut().begin_reset_model() };
-        self.as_mut().rust_mut().clear();
+        op(&mut self.as_mut().rust_mut().model);
         unsafe { self.as_mut().end_reset_model() };
-        self.as_mut().set_count(0);
-        self.as_mut().set_name(QString::default());
-        self.as_mut().set_preset_path(QString::default());
-        self.as_mut().set_preview_image(QString::default());
-        self.as_mut().set_preview_source(QString::default());
-        self.as_mut().set_preview_width(0);
-        self.as_mut().set_preview_height(0);
-        self.as_mut().set_parse_error(QString::default());
-        self.as_mut().set_error(QString::default());
-        self.as_mut().set_download_state(QString::default());
+        let count = self.rust().model.params().len() as i32;
+        self.as_mut().set_count(count);
+    }
+
+    /// The editor and the preset collection, onto the properties — every
+    /// one through its own setter (see the header of `main.rs`).
+    fn publish(mut self: Pin<&mut Self>) {
+        let (open, count, name, preset_path, preview_image, parse_error, error);
+        let (presets_dir, download_state, install_dir, size, preset_filter, image_filter);
+        {
+            // `Presets::state` advances a finished download into the
+            // cached directory, so it needs `&mut`.
+            let this = &mut *self.as_mut().rust_mut();
+            let state = this.presets.state();
+            let e = &this.model;
+            open = e.open;
+            count = e.params().len() as i32;
+            name = qs(&e.name);
+            preset_path = qs(&e.preset_path);
+            preview_image = qs(&e.preview_image_path);
+            parse_error = qs_opt(e.parse_error());
+            error = qs_opt(e.error.as_deref());
+            (presets_dir, download_state, install_dir, size) = match state {
+                PresetState::Ready(dir) => {
+                    (qs(dir.display()), QString::default(), QString::default(), QString::default())
+                }
+                PresetState::Downloading(mb) => (
+                    QString::default(),
+                    qs(format!("running:{mb:.1}")),
+                    QString::default(),
+                    QString::default(),
+                ),
+                PresetState::Failed(e) => {
+                    (QString::default(), qs(format!("failed:{e}")), QString::default(), QString::default())
+                }
+                PresetState::Missing { install_dir, size } => (
+                    QString::default(),
+                    QString::default(),
+                    qs(install_dir.display()),
+                    QString::from(size),
+                ),
+            };
+            preset_filter = qs(name_filter(PRESET_FILTER));
+            image_filter = qs(name_filter(IMAGE_FILTER));
+        }
+        self.as_mut().set_open(open);
+        self.as_mut().set_count(count);
+        self.as_mut().set_name(name);
+        self.as_mut().set_preset_path(preset_path);
+        self.as_mut().set_preview_image(preview_image);
+        self.as_mut().set_parse_error(parse_error);
+        self.as_mut().set_error(error);
+        self.as_mut().set_presets_dir(presets_dir);
+        self.as_mut().set_download_state(download_state);
+        self.as_mut().set_presets_install_dir(install_dir);
+        self.as_mut().set_presets_download_size(size);
+        self.as_mut().set_preset_filter(preset_filter);
+        self.as_mut().set_image_filter(image_filter);
     }
 }

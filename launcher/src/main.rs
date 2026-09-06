@@ -1,44 +1,32 @@
 //! Companion launcher (doc 07): machine library, guided creation, disc
-//! shelf. M6 skeleton: the library grid (`library.rs`) can spawn a player
-//! (`player.rs`) and create or edit machines through a wizard
-//! (`wizard.rs`) over the `machine.toml` bundle format (`bundle.rs`); no
-//! thumbnails yet.
+//! shelf, snapshots, shader profiles — the **egui/eframe** front end.
+//!
+//! Everything this program *decides* is `launcher-core`, which the Qt
+//! front end (`launcher-qt/`) drives too: the bundle format, the
+//! library, the disc shelf, the snapshot state machine, the wizard's
+//! form, the profile editor, the shader preview's render path, and every
+//! debug verb that needs no toolkit (`launcher_core::cli`). What is in
+//! this crate is egui: the grid, the windows, the widgets, an OS file
+//! dialog egui doesn't have (`filepicker.rs`), and the diagnostic verbs
+//! below that render real frames without a window.
 
-mod bundle;
-mod control;
-mod disc_library;
 mod discshelf;
 mod filepicker;
-mod library;
-mod paths;
-mod player;
-mod shader_library;
 mod shader_manager;
 mod shader_preview;
-mod shader_profile;
-mod shader_source;
-mod snapshots;
 mod snapshots_ui;
 mod wizard;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Child;
+// The shared half, reachable as `crate::…` from the modules above the
+// way it was when these were files in this crate.
+use launcher_core::machines::Machines;
+use launcher_core::{cli, disc_library, library, paths, shader_library};
+use std::path::{Path, PathBuf};
 
 struct LauncherApp {
-    library_dir: PathBuf,
-    entries: Vec<library::LibraryEntry>,
-    /// The shared disc shelf's file (`disc_library.rs`). The window
-    /// re-reads it whenever it opens, so nothing here caches the discs.
-    disc_library_path: PathBuf,
-    shader_profiles_dir: PathBuf,
-    shader_profiles: Vec<shader_library::ProfileEntry>,
-    /// Bundle directory -> its player process, while running. A bundle's
-    /// absence here means "not running" (never tracked as ended-but-kept:
-    /// `try_wait` removes it below the moment it exits).
-    running: HashMap<PathBuf, Child>,
-    wizard: wizard::Wizard,
-    disc_shelf: discshelf::DiscShelf,
+    machines: Machines,
+    wizard: launcher_core::wizard::Form,
+    disc_shelf: discshelf::DiscShelfWindow,
     snapshots: snapshots_ui::SnapshotWindow,
     shader_manager: shader_manager::ShaderManager,
     /// `None` on a non-wgpu eframe backend (not expected in practice —
@@ -48,29 +36,54 @@ struct LauncherApp {
     wgpu_render_state: Option<eframe::egui_wgpu::RenderState>,
 }
 
+/// One row of the grid, pulled out of the model before it is drawn: the
+/// row loop wants to call back into `Machines` (Play), and it cannot
+/// hold a borrow of the entries while doing that.
+struct Row {
+    name: String,
+    family: &'static str,
+    shader: String,
+    location: String,
+    running: bool,
+}
+
+/// What a click on a row asked for, applied after the grid has been laid
+/// out for the same reason.
+enum RowAction {
+    Play(usize),
+    Edit(usize),
+    Discs(usize),
+    Snapshots(usize),
+}
+
 impl eframe::App for LauncherApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // No push notification from a child exiting: poll for it instead.
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        self.running.retain(|dir, child| match child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(status)) => {
-                eprintln!("[launcher] {} exited: {status}", dir.display());
-                false
-            }
-            Err(e) => {
-                eprintln!("[launcher] {}: {e}", dir.display());
-                false
-            }
-        });
+        self.machines.reap();
+
+        let rows: Vec<Row> = self
+            .machines
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| Row {
+                name: entry.machine.name.clone(),
+                family: entry.machine.family.label(),
+                shader: self.machines.shader_label(entry),
+                location: entry.dir.display().to_string(),
+                running: self.machines.is_running(i),
+            })
+            .collect();
+        let mut action = None;
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading(paths::NAME);
             ui.add_space(8.0);
-            if self.entries.is_empty() {
+            if rows.is_empty() {
                 ui.label("No machines yet.");
-                ui.label(format!("Library: {}", self.library_dir.display()));
+                ui.label(format!("Library: {}", self.machines.library_dir.display()));
             } else {
                 egui::Grid::new("library").striped(true).show(ui, |ui| {
                     ui.strong("Name");
@@ -79,55 +92,25 @@ impl eframe::App for LauncherApp {
                     ui.strong("Location");
                     ui.strong("");
                     ui.end_row();
-                    for entry in &self.entries {
-                        ui.label(&entry.machine.name);
-                        ui.label(entry.machine.family.label());
-                        let shader_label = entry
-                            .machine
-                            .shader_profile
-                            .as_deref()
-                            .and_then(|id| self.shader_profiles.iter().find(|e| shader_library::id_of(&e.path) == id))
-                            .map(|e| e.profile.name.clone())
-                            .or_else(|| entry.machine.shader.as_ref().map(|p| p.display().to_string()))
-                            .unwrap_or_else(|| "(default)".to_string());
-                        ui.label(shader_label);
-                        ui.label(entry.dir.display().to_string());
+                    for (i, row) in rows.iter().enumerate() {
+                        ui.label(&row.name);
+                        ui.label(row.family);
+                        ui.label(&row.shader);
+                        ui.label(&row.location);
                         ui.horizontal(|ui| {
-                            if self.running.contains_key(&entry.dir) {
+                            if row.running {
                                 ui.label("Running");
                             } else if ui.button("Play").clicked() {
-                                // The monitor socket is derived from the
-                                // bundle directory, so every window that
-                                // wants live control can find it again
-                                // without the app carrying it around.
-                                let socket = control::socket_path(&entry.dir);
-                                // The shelf the guest's own CDSHELF
-                                // program will read, refreshed here so a
-                                // disc added since the last run is on it.
-                                let shelf = control::shelf_path(&entry.dir);
-                                publish_shelf(&self.disc_library_path, &shelf);
-                                match player::spawn(&entry.machine, Some(&socket), Some(&shelf)) {
-                                    Ok(child) => {
-                                        self.running.insert(entry.dir.clone(), child);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[launcher] spawning player for {}: {e}", entry.dir.display())
-                                    }
-                                }
+                                action = Some(RowAction::Play(i));
                             }
                             if ui.button("Edit…").clicked() {
-                                self.wizard.open_edit(&entry.machine, entry.dir.join(library::BUNDLE_FILE));
+                                action = Some(RowAction::Edit(i));
                             }
                             if ui.button("Discs…").clicked() {
-                                self.disc_shelf.open_for(
-                                    &entry.machine,
-                                    entry.dir.join(library::BUNDLE_FILE),
-                                    &self.disc_library_path,
-                                );
+                                action = Some(RowAction::Discs(i));
                             }
                             if ui.button("Snapshots…").clicked() {
-                                let running = self.running.contains_key(&entry.dir);
-                                self.snapshots.open_for(&entry.machine, entry.dir.clone(), running);
+                                action = Some(RowAction::Snapshots(i));
                             }
                         });
                         ui.end_row();
@@ -140,7 +123,7 @@ impl eframe::App for LauncherApp {
                     self.wizard.open_fresh();
                 }
                 if ui.button("Disc shelf…").clicked() {
-                    self.disc_shelf.open_library(&self.disc_library_path);
+                    self.disc_shelf.shelf.open_library(&self.machines.disc_library_path);
                 }
                 if ui.button("Shader profiles…").clicked() {
                     self.shader_manager.open_list();
@@ -148,53 +131,68 @@ impl eframe::App for LauncherApp {
             });
         });
 
-        if let Some(_bundle_path) = self.wizard.show(&ctx, &self.library_dir, &self.shader_profiles) {
-            self.entries = library::scan(&self.library_dir);
-        }
-        // The shelf window is per-machine but the app owns one: whether
-        // *that* machine is running decides the "applies to the next
-        // boot" note, so look it up by the bundle it has open.
-        let shelf_running = self
-            .disc_shelf
-            .bundle_dir()
-            .map(|dir| self.running.contains_key(dir))
-            .unwrap_or(false);
-        if self.disc_shelf.show(&ctx, shelf_running).is_some() {
-            self.entries = library::scan(&self.library_dir);
-        }
-        if self.disc_shelf.take_saved() {
-            // A disc added or renamed should show up in the guest's own
-            // CDSHELF listing without restarting the machine, so every
-            // running drive gets the new shelf file.
-            for dir in self.running.keys() {
-                publish_shelf(&self.disc_library_path, &control::shelf_path(dir));
-            }
-        }
-        let snapshots_running =
-            self.snapshots.bundle_dir().map(|dir| self.running.contains_key(dir)).unwrap_or(false);
-        self.snapshots.show(&ctx, snapshots_running);
-        if self
-            .shader_manager
-            .show(&ctx, &self.shader_profiles_dir, self.wgpu_render_state.as_ref())
-            .is_some()
-        {
-            self.shader_profiles = shader_library::scan(&self.shader_profiles_dir);
-        }
+        self.apply(action);
+        self.windows(&ctx);
     }
 }
 
-/// `PREVIEW_AREA=<w>x<h>` for the shader-preview debug verbs — the area
-/// the real editor's preview pane would have reserved, since headlessly
-/// there's no window to measure one from. Defaults to 800x600, a
-/// plausible non-fullscreen editor size.
-fn preview_area_env() -> egui::Vec2 {
-    std::env::var("PREVIEW_AREA")
-        .ok()
-        .and_then(|s| {
-            let (w, h) = s.split_once('x')?;
-            Some(egui::Vec2::new(w.parse().ok()?, h.parse().ok()?))
-        })
-        .unwrap_or(egui::Vec2::new(800.0, 600.0))
+impl LauncherApp {
+    fn apply(&mut self, action: Option<RowAction>) {
+        let Some(action) = action else { return };
+        match action {
+            RowAction::Play(row) => {
+                if let Err(e) = self.machines.play(row) {
+                    eprintln!("[launcher] {e}");
+                }
+            }
+            RowAction::Edit(row) => {
+                if let Some(path) = self.machines.bundle_path(row) {
+                    self.wizard.open_edit_path(path);
+                }
+            }
+            RowAction::Discs(row) => {
+                if let Some(path) = self.machines.bundle_path(row) {
+                    self.disc_shelf.shelf.open_for_path(path, &self.machines.disc_library_path);
+                }
+            }
+            RowAction::Snapshots(row) => {
+                if let Some(path) = self.machines.bundle_path(row) {
+                    let running = self.machines.is_running(row);
+                    self.snapshots.model.open_for_path(&path, running);
+                }
+            }
+        }
+    }
+
+    fn windows(&mut self, ctx: &egui::Context) {
+        if wizard::show(&mut self.wizard, ctx, &self.machines.library_dir.clone(), self.machines.profiles()).is_some() {
+            self.machines.refresh();
+        }
+        // Each per-machine window is one instance the app owns, so
+        // whether *that* machine is running is looked up by the bundle
+        // it has open rather than carried around with it.
+        let shelf_running =
+            self.disc_shelf.shelf.bundle_dir().map(|dir| self.machines.is_running_dir(dir)).unwrap_or(false);
+        if self.disc_shelf.show(ctx, shelf_running).is_some() {
+            self.machines.refresh();
+        }
+        if self.disc_shelf.shelf.take_saved() {
+            // A disc added or renamed should show up in the guest's own
+            // CDSHELF listing without restarting the machine, so every
+            // running drive gets the new shelf file.
+            self.machines.republish_shelf();
+        }
+        let snapshots_running =
+            self.snapshots.model.bundle_dir().map(|dir| self.machines.is_running_dir(dir)).unwrap_or(false);
+        self.snapshots.show(ctx, snapshots_running);
+        if self
+            .shader_manager
+            .show(ctx, &self.machines.profiles_dir.clone(), self.wgpu_render_state.as_ref())
+            .is_some()
+        {
+            self.machines.refresh_profiles();
+        }
+    }
 }
 
 /// A windowless wgpu device/queue, the same way eframe opens one at
@@ -291,18 +289,18 @@ enum DiagAction {
     Type(String),
     /// Wall-clock wait before the next step, for a window whose state is
     /// changed by something running off the UI thread — the shader
-    /// download is the one that needs it, since its "downloading…" row
-    /// only becomes the finished collection once the worker is done.
+    /// download is the one that needs it.
     Wait(std::time::Duration),
 }
 
 /// Drives one of the app's windows through egui headlessly with
-/// synthetic input and dumps the composited frame — the same trick
-/// `--diag-editor-frame` uses, generalized so a window whose whole
-/// content is buttons and fields (the disc shelf, the snapshot list) can
-/// have its wiring exercised in a session with no GUI click automation.
-/// Each action gets its own frames, because egui needs a frame to notice
-/// a widget was pressed and another to react.
+/// synthetic input and dumps the composited frame — the way this front
+/// end takes a screenshot without a window at all. (The Qt build gets
+/// the same thing from `QT_QPA_PLATFORM=offscreen` plus
+/// `Item.grabToImage()`: Qt separates "render" from "have a window" and
+/// egui does not, which is why this is ~150 lines here and four of QML
+/// there.) Each action gets its own frames, because egui needs a frame
+/// to notice a widget was pressed and another to react.
 fn diag_window_frames(
     render_state: &eframe::egui_wgpu::RenderState,
     screen: egui::Vec2,
@@ -353,7 +351,7 @@ fn diag_window_frames(
 }
 
 /// A `;`-separated input script for the diagnostic verbs: `x,y` clicks,
-/// `+text` types into whatever the preceding click focused.
+/// `+text` types into whatever the preceding click focused, `~ms` waits.
 fn parse_script(spec: &str) -> Vec<DiagAction> {
     spec.split(';')
         .filter_map(|s| {
@@ -369,85 +367,33 @@ fn parse_script(spec: &str) -> Vec<DiagAction> {
         .collect()
 }
 
-/// Bundles written before the disc shelf became shared carry their own
-/// per-machine `discs` list. Fold those onto the shared shelf so nothing
-/// the user added is lost — `DiscLibrary::add` deduplicates by path, so
-/// this is idempotent and can simply run at startup. The bundles
-/// themselves migrate the next time anything saves them
-/// (`Machine::save` writes `disc` and drops `discs`).
-/// Write the shared shelf out in the flat form a machine's ATAPI drive
-/// reads (`cdshelf/cdshelf_proto.h`), so the in-guest CDSHELF program
-/// sees the same discs the launcher does. Failing to publish it is not
-/// fatal: the machine still runs, its drive just reports an empty shelf.
-fn publish_shelf(library_path: &std::path::Path, shelf_path: &std::path::Path) {
-    match disc_library::DiscLibrary::load(library_path) {
-        Ok(library) => {
-            if let Err(e) = disc_library::write_shelf_file(&library, shelf_path) {
-                eprintln!("[discs] {}: {e}", shelf_path.display());
-            }
-        }
-        Err(e) => eprintln!("[discs] {}: {e}", library_path.display()),
-    }
-}
-
-fn import_legacy_discs(entries: &[library::LibraryEntry], library_path: &std::path::Path) {
-    match disc_library::DiscLibrary::load(library_path) {
-        Ok(mut discs) => {
-            let added = discs.import_legacy(entries);
-            if added > 0 {
-                match discs.save(library_path) {
-                    Ok(()) => eprintln!("[discs] moved {added} disc(s) from machine bundles onto the shared shelf"),
-                    Err(e) => eprintln!("[discs] {}: {e}", library_path.display()),
-                }
-            }
-        }
-        Err(e) => eprintln!("[discs] {}: {e}", library_path.display()),
-    }
-}
-
-fn parse_family(arg: Option<&str>, usage: &str) -> bundle::Family {
-    match arg {
-        Some("win98") => bundle::Family::Win98,
-        Some("xp") => bundle::Family::Xp,
-        Some("dos") => bundle::Family::Dos,
-        _ => panic!("{usage}"),
-    }
+fn screen_size(arg: Option<String>, default: egui::Vec2) -> egui::Vec2 {
+    arg.and_then(|s| {
+        let (w, h) = s.split_once('x')?;
+        Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+    })
+    .unwrap_or(default)
 }
 
 fn main() -> eframe::Result {
-    // Debug/advanced-drawer aids (doc 07), until the wizard exists:
-    // `--new` bootstraps a bundle into the library from the doc 06
-    // reference defaults, `--print-args` shows the qemu-system-i386
-    // command line a bundle translates to. Neither opens a window.
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("--print-args") => {
-            let path = args.next().expect("usage: launcher --print-args <machine.toml>");
-            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
-            println!("{}", machine.qemu_args(&player::pc_bios_dir(), None).join(" "));
-            return Ok(());
+    let verb = args.next();
+    // Every verb that needs no toolkit is `launcher_core::cli`, so this
+    // binary and `launcher-qt` answer them with the same code.
+    if let Some(verb) = verb.as_deref() {
+        if let Some(code) = cli::run(verb, &mut args) {
+            std::process::exit(code);
         }
-        Some("--play") => {
-            let path = PathBuf::from(args.next().expect("usage: launcher --play <machine.toml>"));
-            let machine = bundle::Machine::load(&path).expect("load bundle");
-            // Same monitor socket the grid's "Play" opens, so the live
-            // half of `--disc-shelf`/`--snapshots` can be scripted
-            // against a player started this way.
-            let dir = path.parent().unwrap_or(std::path::Path::new("."));
-            let socket = control::socket_path(dir);
-            let shelf = control::shelf_path(dir);
-            publish_shelf(&disc_library::default_path(), &shelf);
-            let child = player::spawn(&machine, Some(&socket), Some(&shelf)).expect("spawn player");
-            println!("pid {} qmp {} shelf {}", child.id(), socket.display(), shelf.display());
-            return Ok(());
-        }
+    }
+    match verb.as_deref() {
         Some("--pick-file") => {
             // Exercises the real OS file dialog (rfd) headlessly — proof
             // the portal/NSOpenPanel/IFileDialog wiring works, since this
             // session has no GUI click automation to drive the wizard's
             // "Browse…" button through an actual dialog. An optional arg
             // (a path field's current value, file or directory) exercises
-            // the same start-directory extraction path_field itself uses.
+            // the same start-directory extraction `path_field` uses. No
+            // Qt twin: that build's dialog is declarative, in QML.
             let start_dir = args.next().and_then(|v| filepicker::start_dir(&v));
             match filepicker::pick_file_headless(None, start_dir.as_deref()) {
                 Some(path) => println!("{}", path.display()),
@@ -455,281 +401,23 @@ fn main() -> eframe::Result {
             }
             return Ok(());
         }
-        Some("--wizard-new") => {
-            // Headless equivalent of the "New machine" window, for
-            // scripted testing of the wizard's actual submit() logic
-            // (disk creation via qemu-img included) without a GUI click.
-            let usage = "usage: launcher --wizard-new <win98|xp|dos> <name> <disk-size-gb>";
-            let family = parse_family(args.next().as_deref(), usage);
-            let name = args.next().expect(usage);
-            let size_gb: u32 = args.next().expect(usage).parse().expect("disk size must be a number");
-            let w = wizard::Wizard::with_new_disk(family, name, size_gb);
-            let path = w.submit(&library::default_dir()).expect("create bundle");
-            println!("{}", path.display());
-            return Ok(());
-        }
-        Some("--wizard-edit") => {
-            // Headless equivalent of clicking "Edit…" then "Save": loads
-            // a bundle, changes the fields given, saves it back in place,
-            // without a GUI click. `-` keeps a field as it is.
-            let usage = "usage: launcher --wizard-edit <machine.toml> <new-name|-> [ram-mb|-] [auto|kvm|tcg|-] [net|nonet]";
-            let path = args.next().expect(usage);
-            let new_name = args.next().expect(usage);
-            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
-            let mut w = wizard::Wizard::default();
-            w.open_edit(&machine, path.clone().into());
-            if new_name != "-" {
-                w.set_name(new_name);
-            }
-            match args.next().as_deref() {
-                None | Some("-") => {}
-                Some(ram) => w.set_ram_mb(ram.parse().expect("ram must be a number")),
-            }
-            match args.next().as_deref() {
-                None | Some("-") => {}
-                Some("auto") => w.set_accel(bundle::Accel::Auto),
-                Some("kvm") => w.set_accel(bundle::Accel::Kvm),
-                Some("tcg") => w.set_accel(bundle::Accel::Tcg),
-                Some(other) => panic!("unknown accelerator {other:?}; {usage}"),
-            }
-            match args.next().as_deref() {
-                None | Some("-") => {}
-                Some("net") => w.set_network(true),
-                Some("nonet") => w.set_network(false),
-                Some(other) => panic!("networking is net or nonet, not {other:?}; {usage}"),
-            }
-            let saved = w.submit(&library::default_dir()).expect("save bundle");
-            println!("{}", saved.display());
-            return Ok(());
-        }
-        Some("--browse-start") => {
-            // Where the shader editor's "Browse…" would open for a given
-            // field value: the value's own directory, or — for an empty
-            // field — the preset collection. The dialog itself is modal
-            // and needs a human, so this checks the decision, not the
-            // dialog (`--pick-file` exercises that).
-            let value = args.next().unwrap_or_default();
-            match filepicker::browse_start(&value, shader_source::presets_dir().as_deref()) {
-                Some(dir) => println!("{}", dir.display()),
-                None => println!("(OS default)"),
-            }
-            return Ok(());
-        }
-        Some("--shaders") => {
-            // What the shader manager's preset row reads: where this
-            // machine's `.slangp` collection is, or nothing — which is
-            // what puts the "Download presets" button on screen, and
-            // what "Browse…" opens on when the field is empty.
-            match shader_source::presets_dir() {
-                Some(dir) => println!("{}", dir.display()),
-                None => println!("(none; would install into {})", shader_source::install_dir().display()),
-            }
-            return Ok(());
-        }
-        Some("--download-shaders") => {
-            // The button's own work, without a window: fetch and unpack
-            // the collection, printing what arrived. Defaults to the
-            // same destination the button uses.
-            let dest = args.next().map(PathBuf::from).unwrap_or_else(shader_source::install_dir);
-            let bytes = std::sync::atomic::AtomicU64::new(0);
-            match shader_source::fetch(&dest, &bytes) {
-                Ok(()) => println!(
-                    "{:.1} MB -> {} ({})",
-                    bytes.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0,
-                    dest.display(),
-                    if shader_source::has_presets(&dest) { "presets found" } else { "NO PRESETS" }
-                ),
-                Err(e) => {
-                    eprintln!("[shaders] {e}");
-                    std::process::exit(1);
-                }
-            }
-            return Ok(());
-        }
-        Some("--paths") => {
-            // Every companion this launcher would reach for, and where it
-            // found it (`paths.rs`). This is what `scripts/package-linux.sh`
-            // checks a staged package with — a package whose launcher
-            // still answers with the checkout it was built from is not a
-            // package — and the first thing to ask of an installed build
-            // that says a file is missing.
-            match paths::install_prefix() {
-                Some(prefix) => println!("prefix       {}", prefix.display()),
-                None => println!("prefix       (not installed; a checkout build)"),
-            }
-            println!("checkout     {}", paths::checkout(".").display());
-            println!("player       {}", player::player_binary().display());
-            println!("qemu-img     {}", player::qemu_img_binary().display());
-            println!("pc-bios      {}", player::pc_bios_dir().display());
-            match disc_library::guest_tools_iso() {
-                Some(iso) => println!("guest-tools  {}", iso.display()),
-                None => println!("guest-tools  (none built or shipped)"),
-            }
-            match shader_source::presets_dir() {
-                Some(dir) => println!("shaders      {}", dir.display()),
-                None => println!("shaders      (none; downloadable into {})", shader_source::install_dir().display()),
-            }
-            println!("machines     {}", library::default_dir().display());
-            println!("discs        {}", disc_library::default_path().display());
-            println!("profiles     {}", shader_library::default_dir().display());
-            return Ok(());
-        }
-        Some("--kvm") => {
-            // What the wizard's acceleration hint reads, on its own: this
-            // host's answer, not the bundle's setting.
-            println!("{}", if player::kvm_available() { "available" } else { "not available" });
-            return Ok(());
-        }
-        Some("--discs") => {
-            // Headless equivalent of the shelf window: with no arguments
-            // it prints the shared shelf, otherwise it runs the same
-            // `add`/`remove` the buttons do. `+tools` stands for the
-            // "Add guest-tools ISO" button.
-            let library_path = disc_library::default_path();
-            import_legacy_discs(&library::scan(&library::default_dir()), &library_path);
-            let mut shelf = discshelf::DiscShelf::default();
-            shelf.open_library(&library_path);
-            let mut removing = false;
-            for arg in args {
-                match arg.as_str() {
-                    "add" => removing = false,
-                    "remove" => removing = true,
-                    "+tools" => shelf.add(disc_library::guest_tools_iso().expect("no guest-tools ISO built")),
-                    other if removing => shelf.remove(std::path::Path::new(other)),
-                    other => shelf.add(other.into()),
-                }
-            }
-            // The window saves at the end of the frame it was edited in;
-            // headlessly there is no frame, so flush explicitly.
-            shelf.flush().expect("save the shelf");
-            if let Err(e) = shelf.last_result() {
-                eprintln!("[discs] {e}");
-            }
-            for disc in shelf.discs() {
-                println!("{}\t{}", disc.label, disc.path.display());
-            }
-            return Ok(());
-        }
-        Some("--boot-disc") => {
-            // Headless equivalent of a row's "Boot" button: which disc
-            // is in the machine's drive when it starts.
-            let usage = "usage: launcher --boot-disc <machine.toml> <disc|none>";
-            let path: PathBuf = args.next().expect(usage).into();
-            let machine = bundle::Machine::load(&path).expect("load bundle");
-            let mut shelf = discshelf::DiscShelf::default();
-            shelf.open_for(&machine, path, &disc_library::default_path());
-            let disc = args.next().expect(usage);
-            shelf.set_boot(if disc == "none" { None } else { Some(disc.into()) });
-            match shelf.last_result() {
-                Ok(status) => println!("{}", status.unwrap_or("(nothing happened)")),
-                Err(e) => {
-                    eprintln!("[boot-disc] {e}");
-                    std::process::exit(1);
-                }
-            }
-            return Ok(());
-        }
-        Some("--new") => {
-            let usage = "usage: launcher --new <win98|xp|dos> <name> <disk.qcow2>";
-            let family = parse_family(args.next().as_deref(), usage);
-            let name = args.next().expect(usage);
-            let disk = args.next().expect(usage).into();
-            let path = library::create(&library::default_dir(), family, name, disk).expect("create bundle");
-            println!("{}", path.display());
-            return Ok(());
-        }
-        Some("--new-shader-profile") => {
-            let usage = "usage: launcher --new-shader-profile <name> <preset.slangp>";
-            let name = args.next().expect(usage);
-            let preset = args.next().expect(usage).into();
-            let path = shader_library::create(&shader_library::default_dir(), name, preset).expect("create profile");
-            println!("{}", path.display());
-            return Ok(());
-        }
-        Some("--set-shader-param") => {
-            let usage = "usage: launcher --set-shader-param <profile.toml> <param> <value>";
-            let path: PathBuf = args.next().expect(usage).into();
-            let param = args.next().expect(usage);
-            let value: f32 = args.next().expect(usage).parse().expect("value must be a number");
-            let mut profile = shader_profile::ShaderProfile::load(&path).expect("load profile");
-            profile.params.insert(param, value);
-            profile.save(&path).expect("save profile");
-            println!("{}", profile.params_arg().unwrap_or_default());
-            return Ok(());
-        }
-        Some("--list-shader-params") => {
-            let preset = args.next().expect("usage: launcher --list-shader-params <preset.slangp>");
-            let params = shader_profile::parameter_meta(std::path::Path::new(&preset)).expect("parse preset");
-            for p in params {
-                println!("{} [{}..{}] step {} = {} — {}", p.id, p.minimum, p.maximum, p.step, p.default, p.description);
-            }
-            return Ok(());
-        }
-        Some("--assign-shader") => {
-            let usage = "usage: launcher --assign-shader <machine.toml> <profile-id-or-(none)>";
-            let path: PathBuf = args.next().expect(usage).into();
-            let id = args.next().expect(usage);
-            let mut machine = bundle::Machine::load(&path).expect("load bundle");
-            machine.shader_profile = if id == "(none)" { None } else { Some(id) };
-            machine.save(&path).expect("save bundle");
-            return Ok(());
-        }
-        Some("--print-shader-args") => {
-            let path = args.next().expect("usage: launcher --print-shader-args <machine.toml>");
-            let machine = bundle::Machine::load(std::path::Path::new(&path)).expect("load bundle");
-            println!("{}", player::shader_args(&machine).join(" "));
-            return Ok(());
-        }
-        Some("--preview-shader") => {
-            // Headless equivalent of the shader manager's live preview
-            // pane: proves `shader_preview::Preview`'s image-decode and
-            // render path (not just `shader-chain`, already exercised by
-            // the player) without a GUI click or a visible window — a
-            // real (if windowless) wgpu adapter/device via
-            // `egui_wgpu::RenderState::create`, same as eframe itself
-            // uses at startup.
-            let usage = "usage: launcher --preview-shader <preset.slangp> <image> <out.png> [name=value,...]";
-            let preset: PathBuf = args.next().expect(usage).into();
-            let image_path: PathBuf = args.next().expect(usage).into();
-            let out = args.next().expect(usage);
-            let params = shader_profile::parse_params(&args.next().unwrap_or_default());
-            let area = preview_area_env(); // PREVIEW_AREA=WxH, default 800x600
-            let instance = eframe::wgpu::Instance::new(
-                eframe::wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-            );
-            let render_state = pollster::block_on(eframe::egui_wgpu::RenderState::create(
-                &eframe::egui_wgpu::WgpuConfiguration::default(),
-                &instance,
-                None,
-                eframe::egui_wgpu::RendererOptions::default(),
-            ))
-            .expect("create a headless wgpu render state");
-            let mut preview = shader_preview::Preview::new(render_state.clone());
-            preview.update(&preset, &params, &image_path, area);
-            if let Some(err) = preview.error() {
-                eprintln!("[preview] {err}");
-            }
-            let tex = preview.output_texture().expect("no frame rendered");
-            shader_chain::dump_texture(&render_state.device, &render_state.queue, tex, &out);
-            return Ok(());
-        }
         Some("--diag-preview-frame") => {
-            // Diagnostic only (not a documented debug verb): renders one
-            // full egui frame containing just `ui.image()` on the
-            // preview's texture, the same way eframe's own paint step
-            // would, and dumps the *composited* result — unlike
-            // `--preview-shader`, which reads the shader's own output
-            // texture directly and so can't see a bug in how that
-            // texture is displayed through egui (exactly what a report
-            // of "the preview shows solid black" needs to rule in or out).
+            // Diagnostic only: renders one full egui frame containing
+            // just `ui.image()` on the preview's texture, the way
+            // eframe's own paint step would, and dumps the *composited*
+            // result — unlike `--preview-shader`, which reads the
+            // shader's own output texture directly and so can't see a
+            // bug in how that texture is displayed through egui (exactly
+            // what a report of "the preview shows solid black" needs to
+            // rule in or out).
             let usage = "usage: launcher --diag-preview-frame <preset.slangp> <image> <out.png>";
             let preset: PathBuf = args.next().expect(usage).into();
             let image_path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
-            let area = preview_area_env();
+            let (aw, ah) = cli::preview_area_env();
             let render_state = headless_render_state();
             let mut preview = shader_preview::Preview::new(render_state.clone());
-            preview.update(&preset, &[], &image_path, area);
+            preview.update(&preset, &[], &image_path, egui::vec2(aw as f32, ah as f32));
             if let Some(err) = preview.error() {
                 eprintln!("[preview] {err}");
             }
@@ -743,81 +431,6 @@ fn main() -> eframe::Result {
             dump_egui_frame(&render_state, &ctx, full_output, [800, 600], &out);
             return Ok(());
         }
-        Some("--qmp-socket") => {
-            // Where a bundle's live-control monitor socket lives, so a
-            // script (or a hand-run QEMU standing in for the player) can
-            // put one there.
-            let path = PathBuf::from(args.next().expect("usage: launcher --qmp-socket <machine.toml>"));
-            println!("{}", control::socket_path(path.parent().unwrap_or(std::path::Path::new("."))).display());
-            return Ok(());
-        }
-        Some("--insert-disc") => {
-            // Headless equivalent of the disc shelf's live "Insert" /
-            // "Eject" buttons: the same `DiscShelf` calls, against the
-            // machine's running monitor.
-            let usage = "usage: launcher --insert-disc <machine.toml> <disc|eject>";
-            let path: PathBuf = args.next().expect(usage).into();
-            let machine = bundle::Machine::load(&path).expect("load bundle");
-            let what = args.next().expect(usage);
-            let mut shelf = discshelf::DiscShelf::default();
-            shelf.open_for(&machine, path, &disc_library::default_path());
-            if what == "eject" {
-                shelf.eject_live();
-            } else {
-                shelf.insert_live(std::path::Path::new(&what));
-            }
-            match shelf.last_result() {
-                Ok(status) => println!("{}", status.unwrap_or("(nothing happened)")),
-                Err(e) => {
-                    eprintln!("[disc-shelf] {e}");
-                    std::process::exit(1);
-                }
-            }
-            return Ok(());
-        }
-        Some("--snapshots") => {
-            // Headless equivalent of the "Snapshots…" window: the same
-            // `SnapshotWindow` operations its buttons run, over a
-            // bundle's disk, without a GUI click.
-            let usage = "usage: launcher --snapshots [--live] <machine.toml> [take|delete|restore <name>]";
-            let mut next = args.next();
-            // `--live` drives a *running* machine's monitor instead of
-            // qemu-img, the way the window does when its player is up.
-            let live = next.as_deref() == Some("--live");
-            if live {
-                next = args.next();
-            }
-            let path: PathBuf = next.expect(usage).into();
-            let machine = bundle::Machine::load(&path).expect("load bundle");
-            let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-            let mut window = snapshots_ui::SnapshotWindow::default();
-            window.open_for(&machine, dir, live);
-            match (args.next().as_deref(), args.next()) {
-                (Some("take"), Some(name)) => window.take(&name),
-                (Some("delete"), Some(name)) => window.drop_snapshot(&name),
-                (Some("restore"), Some(name)) => window.revert(&name),
-                (None, _) => {}
-                _ => panic!("{usage}"),
-            }
-            // A live operation is a QMP *job*: it returns as soon as the
-            // job exists and finishes later, so wait for it here the way
-            // the window's repaint tick does.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-            while window.job_pending() && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                window.poll_job_now();
-            }
-            if let Some(status) = window.status() {
-                println!("[snapshots] {status}");
-            }
-            if let Some(err) = window.error() {
-                eprintln!("[snapshots] {err}");
-            }
-            for snap in window.snapshots() {
-                println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
-            }
-            return Ok(());
-        }
         Some("--diag-snapshots-frame") => {
             // Diagnostic only: the real snapshot window through egui
             // headlessly with synthetic clicks, like --diag-shelf-frame.
@@ -825,39 +438,19 @@ fn main() -> eframe::Result {
                 "usage: launcher --diag-snapshots-frame <machine.toml> <out.png> [<screen WxH>] [<script: x,y click; +text type>] [running]";
             let path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
-            let screen = args
-                .next()
-                .and_then(|s| {
-                    let (w, h) = s.split_once('x')?;
-                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
-                })
-                .unwrap_or(egui::vec2(900.0, 600.0));
+            let screen = screen_size(args.next(), egui::vec2(900.0, 600.0));
             let script = parse_script(&args.next().unwrap_or_default());
             let running = args.next().as_deref() == Some("running");
 
-            let machine = bundle::Machine::load(&path).expect("load bundle");
-            let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
             let mut window = snapshots_ui::SnapshotWindow::default();
-            window.open_for(&machine, dir, running);
+            window.model.open_for_path(&path, running);
             let render_state = headless_render_state();
             diag_window_frames(&render_state, screen, &script, &out, |ctx| window.show(ctx, running));
             // A click that started a live snapshot job leaves it in
             // flight: the frames here run back to back, where the real
             // window would poll it over its repaint tick.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-            while window.job_pending() && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                window.poll_job_now();
-            }
-            if let Some(status) = window.status() {
-                println!("[snapshots] {status}");
-            }
-            if let Some(err) = window.error() {
-                eprintln!("[snapshots] {err}");
-            }
-            for snap in window.snapshots() {
-                println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
-            }
+            window.model.wait_for_job(std::time::Duration::from_secs(120));
+            cli::print_snapshots(&window.model);
             return Ok(());
         }
         Some("--diag-wizard-frame") => {
@@ -873,30 +466,23 @@ fn main() -> eframe::Result {
                 "usage: launcher --diag-wizard-frame new <win98|xp|dos> | edit <machine.toml> -- <out.png> [<screen WxH>] [<script>]";
             let mode = args.next().expect(usage);
             let arg = args.next().expect(usage);
-            let mut w = wizard::Wizard::default();
+            let mut form = launcher_core::wizard::Form::default();
             match mode.as_str() {
-                "new" => w.open_new(parse_family(Some(arg.as_str()), usage)),
-                "edit" => {
-                    let path: PathBuf = arg.into();
-                    let machine = bundle::Machine::load(&path).expect("load bundle");
-                    w.open_edit(&machine, path);
-                }
+                "new" => form.open_new(cli::parse_family(Some(arg.as_str()), usage)),
+                "edit" => form.open_edit_path(arg.into()),
                 _ => panic!("{usage}"),
             }
+            if let Some(e) = &form.error {
+                panic!("{e}");
+            }
             let out = args.next().expect(usage);
-            let screen = args
-                .next()
-                .and_then(|s| {
-                    let (w, h) = s.split_once('x')?;
-                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
-                })
-                .unwrap_or(egui::vec2(700.0, 600.0));
+            let screen = screen_size(args.next(), egui::vec2(700.0, 600.0));
             let script = parse_script(&args.next().unwrap_or_default());
             let library_dir = library::default_dir();
             let profiles = shader_library::scan(&shader_library::default_dir());
             let render_state = headless_render_state();
             diag_window_frames(&render_state, screen, &script, &out, |ctx| {
-                if let Some(saved) = w.show(ctx, &library_dir, &profiles) {
+                if let Some(saved) = wizard::show(&mut form, ctx, &library_dir, &profiles) {
                     println!("saved {}", saved.display());
                 }
             });
@@ -914,32 +500,25 @@ fn main() -> eframe::Result {
                 "usage: launcher --diag-shelf-frame <machine.toml|shelf> <out.png> [<screen WxH>] [<script: x,y click; +text type>] [running]";
             let path: PathBuf = args.next().expect(usage).into();
             let out = args.next().expect(usage);
-            let screen = args
-                .next()
-                .and_then(|s| {
-                    let (w, h) = s.split_once('x')?;
-                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
-                })
-                .unwrap_or(egui::vec2(900.0, 600.0));
+            let screen = screen_size(args.next(), egui::vec2(900.0, 600.0));
             let script = parse_script(&args.next().unwrap_or_default());
             let running = args.next().as_deref() == Some("running");
 
-            let mut shelf = discshelf::DiscShelf::default();
+            let mut window = discshelf::DiscShelfWindow::default();
             // `shelf` in place of a bundle opens the window on the
             // shared shelf alone, the way the bottom row's button does.
-            if path == std::path::Path::new("shelf") {
-                shelf.open_library(&disc_library::default_path());
+            if path == Path::new("shelf") {
+                window.shelf.open_library(&disc_library::default_path());
             } else {
-                let machine = bundle::Machine::load(&path).expect("load bundle");
-                shelf.open_for(&machine, path, &disc_library::default_path());
+                window.shelf.open_for_path(path, &disc_library::default_path());
             }
             let render_state = headless_render_state();
             diag_window_frames(&render_state, screen, &script, &out, |ctx| {
-                if let Some(saved) = shelf.show(ctx, running) {
+                if let Some(saved) = window.show(ctx, running) {
                     println!("saved {}", saved.display());
                 }
             });
-            for disc in shelf.discs() {
+            for disc in window.shelf.discs() {
                 println!("{}\t{}", disc.label, disc.path.display());
             }
             return Ok(());
@@ -951,26 +530,17 @@ fn main() -> eframe::Result {
             // screen positions (the "Fullscreen" checkbox, say) — and
             // dumps the composited frame, plus the window's rect per
             // frame. That's what proves the window resizes vertically
-            // and that its body (sliders and preview) grows with it, in
-            // a session with no GUI click automation to try it by hand.
+            // and that its body (sliders and preview) grows with it.
             let usage =
                 "usage: launcher --diag-editor-frame <preset.slangp> <image> <out.png> [<screen WxH>] [<drag dy>] [<x,y;x,y clicks>]";
             let preset = args.next().expect(usage);
             let image = args.next().expect(usage);
             let out = args.next().expect(usage);
-            let screen = args
-                .next()
-                .and_then(|s| {
-                    let (w, h) = s.split_once('x')?;
-                    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
-                })
-                .unwrap_or(egui::vec2(1400.0, 900.0));
+            let screen = screen_size(args.next(), egui::vec2(1400.0, 900.0));
             let drag_dy: f32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
             // This one drives its own frames (it also drags the window's
             // bottom edge and prints the rect per frame), so it runs the
-            // shared script's steps itself: clicks, and the `~<ms>` wait
-            // that lets a background worker (the shader download) finish
-            // between two frames.
+            // shared script's steps itself.
             let steps = parse_script(&args.next().unwrap_or_default());
 
             let render_state = headless_render_state();
@@ -1041,15 +611,14 @@ fn main() -> eframe::Result {
             run(Vec::new(), true);
             return Ok(());
         }
+        Some(other) if other.starts_with("--") => {
+            eprintln!("unknown option {other}");
+            std::process::exit(2);
+        }
         _ => {}
     }
 
-    let library_dir = library::default_dir();
-    let entries = library::scan(&library_dir);
-    let disc_library_path = disc_library::default_path();
-    import_legacy_discs(&entries, &disc_library_path);
-    let shader_profiles_dir = shader_library::default_dir();
-    let shader_profiles = shader_library::scan(&shader_profiles_dir);
+    let machines = Machines::load();
     // Debug hook: screenshot the real windowed editor (bypassing the
     // GUI click this session has no automation for) pre-filled from
     // `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset.slangp>;<image>[;fullscreen]`.
@@ -1088,14 +657,9 @@ fn main() -> eframe::Result {
                 }
             }
             Ok(Box::new(LauncherApp {
-                library_dir,
-                entries,
-                disc_library_path,
-                shader_profiles_dir,
-                shader_profiles,
-                running: HashMap::new(),
-                wizard: wizard::Wizard::default(),
-                disc_shelf: discshelf::DiscShelf::default(),
+                machines,
+                wizard: launcher_core::wizard::Form::default(),
+                disc_shelf: discshelf::DiscShelfWindow::default(),
                 snapshots: snapshots_ui::SnapshotWindow::default(),
                 shader_manager,
                 wgpu_render_state: cc.wgpu_render_state.clone(),

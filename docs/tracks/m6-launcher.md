@@ -1605,25 +1605,71 @@ in QML, secondary screens as **real top-level windows**.
    - 6e the shader-pack release and the docs site from these documents
      (doc 08's M6 line), which have no prerequisites in the code.
 
-**The track's wired-in check is `package`** (added 2026-09-05):
+- **Step 7 (two front ends, one core) landed 2026-09-06:** the Qt spike
+  became a maintained peer, and the sharing became a real crate. See
+  doc 07's "Two front ends, one core" for the findings; the shape is
+  `launcher-core/` (everything the launcher *decides*, including each
+  window's state machine, the notes it prints, the preview's render
+  path and every toolkit-free debug verb) with `launcher/` and
+  `launcher-qt/` as views, plus `launcher-capi/` for a front end in
+  another language.
+
+  What made it worth doing rather than leaving the `#[path]` includes
+  alone: the arrangement proved the *file formats* were portable while
+  every window's behaviour stayed written twice, and it had already
+  drifted. The Qt wizard had no processor, floppy or boot-order field
+  at all — so a DOS machine created there came out unthrottled, the one
+  setting that decides whether an era game is playable — its networking
+  checkbox didn't follow the family, the line under it named Windows on
+  machines that may run DOS, and saving a *new* shader profile dropped
+  its parameter overrides on the **egui** side while the Qt side kept
+  them. One implementation each now.
+
+  The mechanical part worth remembering for the next bridge: with the
+  state in a core model *beside* the Q_PROPERTYs, the cxx-qt trap
+  (doc 07's trap 1 — a setter that skips its notify when the field
+  already holds the value) closes by construction. `publish` reads the
+  model and writes every property through its setter; the property
+  fields are never assigned anywhere else; the `Clone`-and-`apply` dance
+  every bridge used to need is gone, and the Qt Rust dropped 792 lines.
+
+  Verified: `scripts/test.sh host` 12/12 (with the new `capi` check),
+  `tools/dos-guest-test.py` all green, `--preview-shader` byte-identical
+  across the two binaries, and a DOS machine created through each front
+  end's *real window* differing only in name and disk path.
+
+**The track's wired-in checks are `package` and `capi`.** `package`
+(added 2026-09-05):
 `scripts/test.sh`'s host stage runs `scripts/package-linux.sh --no-tar`,
 which stages the install layout and interrogates the staged launcher and
 player with a scrubbed environment — a real boundary (the binaries'
 compiled-in path resolution, which otherwise only breaks on someone
-else's machine), and it costs about a second in a ~3 s host stage. The
-rest of the launcher still has no wired-in check; CLAUDE.md's
-integration/e2e policy applies as more of it becomes worth guarding —
-don't add `#[cfg(test)]` modules.
-`launcher`'s debug verbs (`--new`, `--print-args`, `--play`, `--paths`,
+else's machine), and it costs about a second in a ~3 s host stage.
+`capi` (added 2026-09-06) builds `launcher-capi/examples/smoke.c`
+against the C ABI and runs it on a scratch library: a DOS machine
+created through the shared wizard, its answers checked (64 MB, a period
+processor, emulated, no network card), then the disc shelf, the library
+and the profile editor. It is the first check on the launcher's *models*
+rather than on its packaging, and because both GUIs are views over those
+models a changed default fails here too. CLAUDE.md's integration/e2e
+policy applies as more of the launcher becomes worth guarding — don't
+add `#[cfg(test)]` modules.
+The debug verbs are `launcher_core::cli`'s since step 7, so **`launcher`
+and `launcher-qt` answer all of them identically** — the two exceptions
+are `--pick-file` (it pops `rfd`'s dialog; Qt's is declarative, in QML)
+and the `--diag-*` screenshot verbs, which are each toolkit's own. The
+list (`--new`, `--print-args`, `--play`, `--paths`,
 `--wizard-new`, `--wizard-edit`, `--pick-file`, `--new-shader-profile`,
 `--set-shader-param`, `--list-shader-params`, `--assign-shader`,
 `--print-shader-args`, `--preview-shader`, `--diag-preview-frame`,
-`--diag-editor-frame`, `--disc-shelf`, `--diag-shelf-frame`,
+`--diag-editor-frame`, `--discs`, `--boot-disc`, `--diag-shelf-frame`,
 `--snapshots` (`--live` for a running machine), `--diag-snapshots-frame`,
 `--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`,
 `--shaders`, `--download-shaders`, `--browse-start`; and
-`--wizard-edit` now takes optional `[ram-mb] [auto|kvm|tcg] [net|nonet]`,
-`-` keeping a field, while a diag script step may now be `~<ms>`) are
+`--wizard-edit` now takes optional
+`[ram-mb] [auto|kvm|tcg] [net|nonet] [processor] [boot]`, `-` keeping a
+field — the last two added at step 7, since they are exactly what the Qt
+form had no widget for — while a diag script step may now be `~<ms>`) is
 otherwise exercised by hand (see the state notes above).
 
 This worktree now *does* have a real `build/qemu` (built here for patch

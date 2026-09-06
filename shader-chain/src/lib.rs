@@ -139,6 +139,14 @@ impl Chain {
     pub fn output_texture(&self) -> Option<&wgpu::Texture> {
         self.out.as_ref().map(|(tex, _, _, _)| tex)
     }
+
+    /// The view onto it. `run` returns this too, but only borrowed for
+    /// the length of that call; a consumer that hands the frame to a
+    /// toolkit *after* rendering (the launcher's shader preview, which
+    /// registers it with `egui_wgpu`) needs to ask for it separately.
+    pub fn output_view(&self) -> Option<&wgpu::TextureView> {
+        self.out.as_ref().map(|(_, view, _, _)| view)
+    }
 }
 
 /// Debug/tooling readback of a texture to PNG (the player's

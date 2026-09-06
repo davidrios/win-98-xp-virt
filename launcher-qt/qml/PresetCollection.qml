@@ -39,9 +39,20 @@ ColumnLayout {
     }
     Button {
         visible: editor.presetsDir === "" && !editor.downloadState.startsWith("running")
+        // The size and the destination are the model's
+        // (`editor::PresetState::Missing`), not this file's: the egui
+        // build offers the same two.
         text: editor.downloadState.startsWith("failed")
             ? qsTr("Try again")
-            : qsTr("Download presets (~50 MB)")
+            : qsTr("Download presets (%1)").arg(editor.presetsDownloadSize)
         onClicked: editor.downloadPresets()
+    }
+    Label {
+        visible: editor.presetsDir === "" && editor.downloadState === ""
+        text: qsTr("libretro's slang-shaders, into %1").arg(editor.presetsInstallDir)
+        opacity: 0.6
+        font.pixelSize: 11
+        wrapMode: Text.Wrap
+        Layout.fillWidth: true
     }
 }

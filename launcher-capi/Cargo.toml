@@ -1,0 +1,16 @@
+[package]
+name = "launcher-capi"
+version.workspace = true
+edition.workspace = true
+# Same reasoning as `launcher-core`, which is all this links.
+license = "GPL-2.0-or-later"
+description = "A C ABI over launcher-core, so a front end in another language (Swift/AppKit, GTK, C++) can drive the same models the egui and Qt builds do."
+
+# `staticlib` for a front end that links it in (an .app bundle, say),
+# `cdylib` for one that loads it. `lib` stays so `cargo test`/`clippy`
+# and any Rust consumer still work.
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+launcher-core = { path = "../launcher-core" }

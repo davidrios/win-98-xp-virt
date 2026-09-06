@@ -24,6 +24,10 @@
 #                  this build, and the staged launcher asked with a scrubbed
 #                  environment whether player/qemu-img/firmware/guest-tools all
 #                  resolve inside the package (doc 07's install layout)
+#   capi           launcher-capi/examples/smoke.c: a third front end, in C, over
+#                  the same models the egui and Qt builds use — the wizard's
+#                  DOS defaults, the disc shelf, snapshots and the profile
+#                  editor, driven through include/launcher_core.h (doc 07)
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
@@ -159,6 +163,34 @@ host_stage() {
     run_check package package.log scripts/package-linux.sh --no-tar --out "$OUT/package" || true
   else
     skip package "Linux with build/qemu (libqemu-embed, qemu-img) and qemu/pc-bios only"
+  fi
+
+  # the C ABI (doc 07): `launcher-core` is a library, and this proves it is
+  # usable as one — a C program creating a DOS machine through the shared
+  # wizard, putting a disc on the shelf and reading both back. It is the
+  # only check on the *third* front end's surface, so a rename or a
+  # changed default in a model shows up here as well as in the two GUIs.
+  # A scratch library and shelf, never the user's own.
+  if cargo build -p launcher-capi >"$OUT/capi-build.log" 2>&1; then
+    CAPI_LIB=""
+    for cand in target/debug/liblauncher_capi.a target/release/liblauncher_capi.a; do
+      [ -f "$cand" ] && CAPI_LIB="$cand" && break
+    done
+    if [ -n "$CAPI_LIB" ] && cc -O1 -std=gnu11 -Ilauncher-capi/include \
+         -o build/capi-smoke launcher-capi/examples/smoke.c "$CAPI_LIB" \
+         -lstdc++ -lm -ldl -lpthread >>"$OUT/capi-build.log" 2>&1; then
+      rm -rf "$OUT/capi"; mkdir -p "$OUT/capi/library"
+      : >"$OUT/capi/disc.iso"
+      run_check capi capi.log env \
+        LAUNCHER_LIBRARY_DIR="$OUT/capi/library" \
+        LAUNCHER_DISC_LIBRARY="$OUT/capi/discs.toml" \
+        LAUNCHER_SHADER_PROFILES_DIR="$OUT/capi/profiles" \
+        build/capi-smoke "$OUT/capi/library" "$OUT/capi/disc.iso" || true
+    else
+      FAIL+=(capi); echo "  FAIL capi (build)"
+    fi
+  else
+    FAIL+=(capi); echo "  FAIL capi (cargo build -p launcher-capi)"
   fi
 
   # the embed library's Mesa backend, Linux (EGL) only, one VM per process

@@ -37,7 +37,7 @@
 # `com.2ksbox.…` — so the leading digit is escaped, as `7-zip.org` gets
 # `org._7zip.…`). Everything else carries the same name since 2026-09-06:
 # the repository, the docs and the user's data directory (moved once by
-# `launcher/src/paths.rs::data_dir`).
+# `launcher-core/src/paths.rs::data_dir`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

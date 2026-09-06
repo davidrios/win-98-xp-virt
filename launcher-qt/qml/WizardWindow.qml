@@ -1,9 +1,17 @@
-// The guided creation wizard (doc 07). The same form doubles as "Edit
-// machine" for an existing bundle — `launcher/src/wizard.rs`'s `show`.
+// The guided creation wizard (doc 07), over the shared form
+// (`launcher_core::wizard::Form`). The same form doubles as "Edit
+// machine" for an existing bundle, and the egui build draws the same
+// fields from the same model.
 //
 // Every field with a *consequence* goes through an invokable
 // (`chooseFamily`, `chooseRam`, …) rather than assigning the property:
 // see the header of `src/qt/wizard.rs` for why.
+//
+// The combo boxes' labels and the file dialogs' name filters come from
+// the model too (`familyLabels()`, `diskFilter()`, …) rather than being
+// retyped here, so the two front ends cannot end up offering differently
+// worded choices — which they did, for the family combo, until the form
+// became shared.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -60,7 +68,7 @@ Window {
                 Label { text: qsTr("Family") }
                 ComboBox {
                     Layout.fillWidth: true
-                    model: ["Win98", "XP", "DOS"]
+                    model: root.wizard.familyLabels()
                     currentIndex: root.wizard.family
                     onActivated: root.wizard.chooseFamily(currentIndex)
                 }
@@ -106,6 +114,39 @@ Window {
                 opacity: 0.75
             }
 
+            // --- processor ----------------------------------------------
+            // Named machines rather than a number: "how many instructions
+            // per second" is not something anyone knows about their DOS
+            // game, while "it wants a 486" is written on the box. This is
+            // the field that decides whether an era game is playable at
+            // all (doc 06), and the Qt port had no widget for it until the
+            // form became shared.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Label { text: qsTr("Processor"); Layout.minimumWidth: 150 }
+                ComboBox {
+                    Layout.preferredWidth: 200
+                    model: root.wizard.cpuSpeedLabels()
+                    currentIndex: root.wizard.cpuSpeed
+                    onActivated: root.wizard.chooseCpuSpeed(currentIndex)
+                }
+                Button {
+                    text: qsTr("Default")
+                    enabled: !root.wizard.cpuIsDefault
+                    onClicked: root.wizard.resetCpuSpeed()
+                }
+                Item { Layout.fillWidth: true }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.wizard.cpuNote !== ""
+                text: root.wizard.cpuNote
+                wrapMode: Text.Wrap
+                font.pixelSize: 11
+                opacity: 0.75
+            }
+
             // --- acceleration -------------------------------------------
             RowLayout {
                 Layout.fillWidth: true
@@ -113,7 +154,7 @@ Window {
                 Label { text: qsTr("Acceleration"); Layout.minimumWidth: 150 }
                 ComboBox {
                     Layout.preferredWidth: 200
-                    model: [qsTr("Automatic"), qsTr("KVM (required)"), qsTr("Emulation")]
+                    model: root.wizard.accelLabels()
                     currentIndex: root.wizard.accel
                     onActivated: root.wizard.chooseAccel(currentIndex)
                 }
@@ -163,7 +204,7 @@ Window {
                 Layout.fillWidth: true
                 visible: root.wizard.editing || root.wizard.existingDisk
                 label: qsTr("Disk path")
-                nameFilter: qsTr("Disk images (*.qcow2 *.img *.raw)")
+                nameFilter: root.wizard.diskFilter()
                 value: root.wizard.diskPath
                 onValueChanged: root.wizard.diskPath = value
             }
@@ -184,9 +225,42 @@ Window {
             PathField {
                 Layout.fillWidth: true
                 label: qsTr("Install media (optional)")
-                nameFilter: qsTr("Disc images (*.iso *.cue *.ccd *.mds)")
+                nameFilter: root.wizard.mediaFilter()
                 value: root.wizard.installMedia
                 onValueChanged: root.wizard.installMedia = value
+            }
+            // A floppy in A:, and what the machine boots from — doc 06
+            // lists a floppy on the Win98 machine and doc 07 lists floppy
+            // images among the media the launcher handles. Two more
+            // fields this port did not have.
+            PathField {
+                Layout.fillWidth: true
+                label: qsTr("Floppy (optional)")
+                nameFilter: root.wizard.floppyFilter()
+                value: root.wizard.floppy
+                // Through an invokable, not the property: the boot note
+                // below depends on whether there is an image at all.
+                onValueChanged: root.wizard.setFloppyPath(value)
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Label { text: qsTr("Boot from"); Layout.minimumWidth: 150 }
+                ComboBox {
+                    Layout.preferredWidth: 200
+                    model: root.wizard.bootLabels()
+                    currentIndex: root.wizard.boot
+                    onActivated: root.wizard.chooseBoot(currentIndex)
+                }
+                Item { Layout.fillWidth: true }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: root.wizard.bootNote !== ""
+                text: root.wizard.bootNote
+                wrapMode: Text.Wrap
+                font.pixelSize: 11
+                opacity: 0.75
             }
 
             MenuSeparator { Layout.fillWidth: true }

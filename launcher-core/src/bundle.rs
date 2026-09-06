@@ -182,6 +182,21 @@ pub enum Accel {
     Tcg,
 }
 
+impl Accel {
+    pub const ALL: [Accel; 3] = [Accel::Auto, Accel::Kvm, Accel::Tcg];
+
+    /// The label both front ends show. Here rather than inline in a
+    /// combo box, like `Family::label` and `Boot::label`, so the two
+    /// cannot end up offering differently-worded choices.
+    pub fn label(self) -> &'static str {
+        match self {
+            Accel::Auto => "Automatic",
+            Accel::Kvm => "KVM (required)",
+            Accel::Tcg => "Emulation",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Machine {
     pub name: String,

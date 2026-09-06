@@ -541,3 +541,91 @@ non-zero when the device is unavailable. QEMU's own answer is unchanged
 and remains the backstop: `d3dpt_exec_load.c` already boots a machine
 normally and reports "no executor" when the library or the Vulkan device
 is missing.
+
+## ADR-014: two launcher front ends over one library; the toolkit gets only the widgets (2026-09-06)
+
+**Decision.** The launcher is **`launcher-core`** plus front ends that
+draw it. `launcher/` (egui/eframe) and `launcher-qt/` (Qt 6 / QML through
+cxx-qt) are both maintained; `launcher-capi/` is the same core as a C
+ABI, for a front end in another language. The line between core and front
+end is drawn at *behaviour*, not at data: a front end owns the widgets,
+when to redraw, the file dialog, and how it confirms something
+destructive. **Everything else is the core** — including each window's
+state machine, its derived labels, and the sentences it prints.
+
+**Why the line is there and not at the file formats.** It was at the file
+formats, from 2026-09-06 until later the same day: the Qt build
+`#[path]`-included ten toolkit-free modules from `launcher/src/` and
+rewrote everything else. That arrangement proves a real thing (the bundle
+format, the library, the shelf and the subprocess handling are portable —
+they compiled unchanged under a second toolkit) and it is not enough,
+because a window's *behaviour* is not a widget. Four divergences had
+already accumulated, none of which a compiler could see:
+
+- the Qt wizard had **no processor, floppy or boot-order field**, so a
+  DOS machine created there came out unthrottled — and a DOS machine's
+  processor is the setting that decides whether an era game runs at all
+  (doc 06);
+- its networking checkbox **did not follow the family**, so it and
+  `Machine::reference` disagreed about a new DOS machine;
+- the line under that checkbox said `Windows won't see a card`, on
+  machines that may run DOS;
+- and saving a *new* shader profile **dropped the parameter overrides**
+  in the egui build and kept them in the Qt build. Exactly one of those
+  was correct, and it was not the older one.
+
+Each is the same shape: a rule that lived in a `show()` function, copied
+once and then maintained in one copy. The fix is not discipline, it is
+having nowhere to put the second copy.
+
+**What it costs.** Not fewer lines: the two front ends together lost
+2,171 while the core gained 2,469 of new shared modules on top of the
+1,966 that merely moved. The core is bigger than the sum of what it
+replaced because it is documented once and has an API — `ram_note()`,
+`choose_family()` — where the duplicated versions poked fields inline.
+The saving is that there is one place to change any of it, and one place
+to read it.
+
+**What it buys beyond that.** Every toolkit-free debug verb is
+`launcher_core::cli`, so both binaries answer `--paths`, `--discs`,
+`--snapshots`, `--wizard-new`, `--preview-shader` and the rest with the
+same code — where the Qt build previously reimplemented two of them and
+lacked twenty. And `--preview-shader` on the two binaries renders
+byte-identical PNGs, which is a check that they really are linking one
+implementation rather than two that agree today.
+
+**Rejected: pick one toolkit.** The 2026-09-06 spike's finding stands —
+nothing justifies switching to Qt (egui is pure Rust, one `cargo build`
+on every platform, and its shader preview is a texture id where Qt needs
+a CPU readback), and nothing rules it out (real windows, native file
+dialogs, and a headless screenshot that is four lines of QML against
+~150 of synthetic-input plumbing). Keeping both is what makes the core's
+boundary *testable* instead of aspirational: a rule that only one front
+end can express is a rule in the wrong place, and with a second front end
+that shows up as a missing widget rather than as a design opinion.
+
+**Rejected: a Rust-only core.** A front end that is not Rust would
+otherwise need a bridge crate per language. `launcher-capi` is a thin C
+ABI — opaque handles, index-addressed rows, caller-owned strings — and
+Swift imports a C header directly, so a native macOS front end is a view
+over the same models rather than a third implementation of the launcher.
+It adds no behaviour, and `launcher-capi/examples/smoke.c` (the `capi`
+check in `scripts/test.sh`) is a working miniature front end that fails
+when a model's defaults change, exactly as the two GUIs would.
+
+**Consequences.**
+
+- Nothing that a second front end could get differently goes in a front
+  end: not a default that follows the family, not a note under a
+  checkbox, not a combo box's labels.
+- `launcher-qt` declares its own workspace, so `cargo build` at the root
+  never needs Qt 6 development files (the Mac, CI, the Flatpak). The
+  `launcher-core` path dependency crosses that boundary; Qt does not come
+  back the other way.
+- `launcher-capi` is a workspace member but not a *default* one: it
+  builds a cdylib and a staticlib of the whole launcher, which nobody
+  needs unless they are writing such a front end.
+- Packaging still ships the egui build (ADR-011's `bin/2ksbox`). Shipping
+  the Qt one would mean moving the Flatpak from `org.freedesktop.Sdk` to
+  `org.kde.Platform` and carrying Qt in the AppImage/macOS/Windows
+  builds — a packaging decision, not a code one, and not taken here.

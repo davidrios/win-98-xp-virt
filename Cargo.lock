@@ -2029,20 +2029,38 @@ dependencies = [
 name = "launcher"
 version = "0.0.1"
 dependencies = [
- "directories",
  "eframe",
  "egui",
+ "image",
+ "launcher-core",
+ "pollster 1.0.1",
+ "rfd",
+ "shader-chain",
+]
+
+[[package]]
+name = "launcher-capi"
+version = "0.0.1"
+dependencies = [
+ "launcher-core",
+]
+
+[[package]]
+name = "launcher-core"
+version = "0.0.1"
+dependencies = [
+ "directories",
  "flate2",
  "image",
  "librashader",
  "pollster 1.0.1",
- "rfd",
  "serde",
  "serde_json",
  "shader-chain",
  "tar",
  "toml",
  "ureq",
+ "wgpu",
 ]
 
 [[package]]

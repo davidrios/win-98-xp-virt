@@ -1,13 +1,19 @@
 [workspace]
 resolver = "2"
-members = ["player", "libdisc", "launcher", "qemu-embed", "shader-chain"]
+members = ["player", "libdisc", "launcher", "launcher-core", "launcher-capi", "qemu-embed", "shader-chain"]
+# `launcher-capi` is a member (so `cargo check --workspace` covers it and
+# it cannot rot) but not a *default* one: it builds a `cdylib` and a
+# `staticlib` of the whole launcher, which nobody needs unless they are
+# building a front end in another language. `cargo build -p launcher-capi`.
+default-members = ["player", "libdisc", "launcher", "launcher-core", "qemu-embed", "shader-chain"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
 # The default for crates that link QEMU (`player`, `qemu-embed`) or its
-# device model (`libdisc`). `launcher` and `shader-chain` opt out with
-# `GPL-2.0-or-later` — see ADR-009 in docs/10-decisions.md.
+# device model (`libdisc`). `launcher`, `launcher-core` and
+# `shader-chain` opt out with `GPL-2.0-or-later` — see ADR-009 in
+# docs/10-decisions.md.
 license = "GPL-2.0-only"
 repository = "https://github.com/davidrios/2ksbox"
 

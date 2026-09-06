@@ -1,46 +1,35 @@
-//! The guided creation wizard (doc 07), as a QObject.
+//! The guided creation wizard (doc 07), as a QObject over
+//! `launcher_core::wizard::Form`.
 //!
-//! `launcher/src/wizard.rs` is 453 lines, of which roughly 150 are
-//! `egui::ComboBox`/`DragValue`/`checkbox` calls and the rest is the
-//! form's *behaviour*: which defaults follow the family until someone
-//! chooses otherwise (`ram_chosen`, `accel_chosen`), the per-family RAM
-//! clamp, what `build_machine` writes, what `submit` does differently
-//! when editing. All of that behaviour is here, near enough line for
-//! line; the widgets are `qml/WizardDialog.qml`.
+//! The form is the shared one: which defaults follow the family until
+//! someone chooses otherwise, the per-family memory clamp, what
+//! `build_machine` writes, what `submit` does differently when editing,
+//! and the sentences under each row. None of that is here. What is here
+//! is the projection onto Q_PROPERTYs, in both directions:
 //!
-//! The one shape change Qt forces: egui reads a widget's new value and
-//! then compares it to the old one in the same frame (`if self.family !=
-//! was { … }`), which is how "changing the family moves the memory
-//! default with it" is written there. A QML property setter has no such
-//! before/after pair, so every field that has a *consequence* gets an
-//! explicit invokable (`choose_family`, `choose_ram`, `choose_accel`,
-//! `choose_network`) and the plain fields stay two-way-bound properties.
-//! This is more code in the bridge and much less in the view, and it
-//! makes the "…_chosen" logic impossible to forget in a new widget.
+//! * **`publish`** reads the form and writes every property through its
+//!   generated setter. Never a direct field assignment — see the header
+//!   of `main.rs` for the trap that closes.
+//! * **`pull`** copies the plain, two-way-bound text fields back into
+//!   the form. A QML `TextField` writes its property and nothing else,
+//!   so the form is caught up before anything reads it (`submit`,
+//!   `fill_advanced`). The fields with a *consequence* never go this
+//!   way: they have no writable property at all, only `choose_*`, which
+//!   is what makes the "…_chosen" rule impossible to forget in a new
+//!   widget.
 //!
-//! **The trap this file exists to encode:** cxx-qt stores a Q_PROPERTY
-//! *in* the Rust struct, and the generated setter is
-//!
-//! ```ignore
-//! if self.field == value { return; }   // no binding loops
-//! self.as_mut().rust_mut().field = value;
-//! self.field_changed();
-//! ```
-//!
-//! So writing `rust_mut().open = true` and then "publishing" it with
-//! `set_open(true)` emits **nothing** — the setter sees the value it is
-//! being asked for is already there. Every window in this port opened
-//! once and then stopped reacting because of exactly that. The rule
-//! here, and in `discs.rs` / `snaps.rs` / `shaders.rs`: a whole-form
-//! change is built as a *value* and handed to `apply`, which writes
-//! every property through its setter while the struct still holds the
-//! old one.
+//! The combo boxes' labels come from the form's own enums
+//! (`family_labels`, `accel_labels`, …) rather than being retyped in
+//! QML, and so do the file dialog's name filters — the egui build gets
+//! the same strings from the same constants.
 
 #[cxx_qt::bridge]
 pub mod ffi {
     unsafe extern "C++" {
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+        include!("cxx-qt-lib/qstringlist.h");
+        type QStringList = cxx_qt_lib::QStringList;
     }
 
     #[auto_cxx_name]
@@ -50,8 +39,8 @@ pub mod ffi {
         #[qproperty(bool, open)]
         #[qproperty(bool, editing)]
         #[qproperty(QString, title)]
-        /// 0 = Win98, 1 = XP — an index, because that is what a QML
-        /// `ComboBox` deals in.
+        /// An index into `family_labels()`, because that is what a QML
+        /// `ComboBox` deals in. Same for `accel`, `cpu_speed` and `boot`.
         #[qproperty(i32, family)]
         #[qproperty(QString, name)]
         #[qproperty(i32, ram_mb)]
@@ -59,7 +48,9 @@ pub mod ffi {
         #[qproperty(i32, ram_max)]
         #[qproperty(QString, ram_note)]
         #[qproperty(bool, ram_is_default)]
-        /// 0 = Automatic, 1 = KVM (required), 2 = Emulation.
+        #[qproperty(i32, cpu_speed)]
+        #[qproperty(QString, cpu_note)]
+        #[qproperty(bool, cpu_is_default)]
         #[qproperty(i32, accel)]
         #[qproperty(QString, accel_note)]
         #[qproperty(bool, accel_warning)]
@@ -70,6 +61,9 @@ pub mod ffi {
         #[qproperty(QString, disk_path)]
         #[qproperty(i32, disk_size_gb)]
         #[qproperty(QString, install_media)]
+        #[qproperty(QString, floppy)]
+        #[qproperty(i32, boot)]
+        #[qproperty(QString, boot_note)]
         /// The chosen shader profile's id, or "" for the app default.
         #[qproperty(QString, shader_profile)]
         #[qproperty(bool, advanced)]
@@ -87,7 +81,8 @@ pub mod ffi {
         fn open_edit(self: Pin<&mut Wizard>, bundle_path: &QString);
 
         /// Pick the family, moving whatever nobody has chosen (memory,
-        /// acceleration) to that family's own default with it.
+        /// the accelerator, the processor, the NIC) to that family's own
+        /// default with it.
         #[qinvokable]
         fn choose_family(self: Pin<&mut Wizard>, family: i32);
 
@@ -101,6 +96,12 @@ pub mod ffi {
         fn reset_ram(self: Pin<&mut Wizard>);
 
         #[qinvokable]
+        fn choose_cpu_speed(self: Pin<&mut Wizard>, cpu_speed: i32);
+
+        #[qinvokable]
+        fn reset_cpu_speed(self: Pin<&mut Wizard>);
+
+        #[qinvokable]
         fn choose_accel(self: Pin<&mut Wizard>, accel: i32);
 
         #[qinvokable]
@@ -108,6 +109,17 @@ pub mod ffi {
 
         #[qinvokable]
         fn choose_network(self: Pin<&mut Wizard>, network: bool);
+
+        /// The boot order. A plain field with no consequence beyond its
+        /// own note, but an index like the other combos.
+        #[qinvokable]
+        fn choose_boot(self: Pin<&mut Wizard>, boot: i32);
+
+        /// A floppy image was typed or browsed to: the boot note depends
+        /// on it ("boot from floppy" with no image falls through to the
+        /// hard disk), so this is the one text field with a consequence.
+        #[qinvokable]
+        fn set_floppy_path(self: Pin<&mut Wizard>, floppy: &QString);
 
         /// Fill the advanced box with the TOML this form currently
         /// describes (or, when editing, the file's exact current text).
@@ -123,19 +135,45 @@ pub mod ffi {
         /// for the caller to rescan around.
         #[qinvokable]
         fn saved_path(self: &Wizard) -> QString;
+
+        /// The combo boxes' labels, from the bundle's own enums rather
+        /// than retyped in QML.
+        #[qinvokable]
+        fn family_labels(self: &Wizard) -> QStringList;
+
+        #[qinvokable]
+        fn accel_labels(self: &Wizard) -> QStringList;
+
+        #[qinvokable]
+        fn cpu_speed_labels(self: &Wizard) -> QStringList;
+
+        #[qinvokable]
+        fn boot_labels(self: &Wizard) -> QStringList;
+
+        /// The file dialog's name filters, from the same constants the
+        /// egui build hands `rfd`.
+        #[qinvokable]
+        fn disk_filter(self: &Wizard) -> QString;
+
+        #[qinvokable]
+        fn media_filter(self: &Wizard) -> QString;
+
+        #[qinvokable]
+        fn floppy_filter(self: &Wizard) -> QString;
     }
 }
 
-use crate::bundle::{self, Accel, Family, Machine};
-use crate::{library, player, qs};
+use crate::{qs, qs_opt};
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::QString;
+use cxx_qt_lib::{QString, QStringList};
+use launcher_core::browse::name_filter;
+use launcher_core::bundle::{Accel, Boot, CpuSpeed, Family};
+use launcher_core::library;
+use launcher_core::wizard::{Form, DISK_FILTER, FLOPPY_FILTER, MEDIA_FILTER};
 use std::path::PathBuf;
 use std::pin::Pin;
 
-/// `Clone` so a mutation can be made on a copy and applied through the
-/// setters — see this module's header.
-#[derive(Clone)]
+#[derive(Default)]
 pub struct WizardRust {
     open: bool,
     editing: bool,
@@ -147,6 +185,9 @@ pub struct WizardRust {
     ram_max: i32,
     ram_note: QString,
     ram_is_default: bool,
+    cpu_speed: i32,
+    cpu_note: QString,
+    cpu_is_default: bool,
     accel: i32,
     accel_note: QString,
     accel_warning: bool,
@@ -157,405 +198,261 @@ pub struct WizardRust {
     disk_path: QString,
     disk_size_gb: i32,
     install_media: QString,
+    floppy: QString,
+    boot: i32,
+    boot_note: QString,
     shader_profile: QString,
     advanced: bool,
     advanced_toml: QString,
     error: QString,
 
-    /// Whether the memory field holds a value someone chose — until it
-    /// does, switching family moves it to that family's default.
-    ram_chosen: bool,
-    /// The same, for the accelerator.
-    accel_chosen: bool,
-    library_dir: PathBuf,
-    /// When editing: the bundle being written back, the raw `shader`
-    /// override this form doesn't expose (so a quick edit can't silently
-    /// discard it), and the file's exact current text for the advanced
-    /// box. `launcher/src/wizard.rs`'s `EditTarget`.
-    edit_path: Option<PathBuf>,
-    edit_shader: Option<PathBuf>,
-    /// The three fields this port's form does not show (it is doc 07's
-    /// costed comparison, not a second product). Carried through an edit
-    /// verbatim, so editing a DOS machine here cannot silently take its
-    /// processor away.
-    edit_floppy: Option<PathBuf>,
-    edit_boot: Option<bundle::Boot>,
-    edit_cpu_speed: Option<bundle::CpuSpeed>,
-    edit_toml: String,
-    saved_path: PathBuf,
+    /// The form. Everything above is a projection of it.
+    form: Form,
 }
 
-impl Default for WizardRust {
-    fn default() -> Self {
-        let mut w = WizardRust {
-            open: false,
-            editing: false,
-            title: QString::from("New machine"),
-            family: 0,
-            name: QString::default(),
-            ram_mb: bundle::default_ram_mb(Family::Win98) as i32,
-            ram_min: 0,
-            ram_max: 0,
-            ram_note: QString::default(),
-            ram_is_default: true,
-            accel: accel_index(bundle::default_accel(Family::Win98)),
-            accel_note: QString::default(),
-            accel_warning: false,
-            accel_is_default: true,
-            network: true,
-            network_note: QString::default(),
-            existing_disk: false,
-            disk_path: QString::default(),
-            disk_size_gb: 2,
-            install_media: QString::default(),
-            shader_profile: QString::default(),
-            advanced: false,
-            advanced_toml: QString::default(),
-            error: QString::default(),
-            ram_chosen: false,
-            accel_chosen: false,
-            library_dir: library::default_dir(),
-            edit_path: None,
-            edit_shader: None,
-            edit_floppy: None,
-            edit_boot: None,
-            edit_cpu_speed: None,
-            edit_toml: String::new(),
-            saved_path: PathBuf::new(),
-        };
-        w.recompute();
-        w
-    }
+/// Index <-> enum, in the order each enum's own `ALL` lists it, which is
+/// also the order `*_labels()` hands QML.
+fn index_of<T: PartialEq + Copy>(all: &[T], value: T) -> i32 {
+    all.iter().position(|v| *v == value).unwrap_or(0) as i32
 }
 
-fn family_of(index: i32) -> Family {
-    *Family::ALL.get(index as usize).unwrap_or(&Family::Win98)
+fn at<T: Copy>(all: &[T], index: i32) -> T {
+    all[(index.max(0) as usize).min(all.len() - 1)]
 }
 
-fn family_index(family: Family) -> i32 {
-    Family::ALL.iter().position(|f| *f == family).unwrap_or(0) as i32
-}
-
-fn accel_of(index: i32) -> Accel {
-    match index {
-        1 => Accel::Kvm,
-        2 => Accel::Tcg,
-        _ => Accel::Auto,
+fn labels(items: impl IntoIterator<Item = &'static str>) -> QStringList {
+    let mut list = QStringList::default();
+    for item in items {
+        list.append(QString::from(item));
     }
-}
-
-fn accel_index(accel: Accel) -> i32 {
-    match accel {
-        Accel::Auto => 0,
-        Accel::Kvm => 1,
-        Accel::Tcg => 2,
-    }
-}
-
-impl WizardRust {
-    /// Everything derived from the current field values: the range the
-    /// memory field is clamped to, and the three explanatory lines the
-    /// egui build computes inline while drawing. Called after every
-    /// change that could move one of them, so QML's bindings see a
-    /// notify signal instead of having to poll.
-    fn recompute(&mut self) {
-        let family = family_of(self.family);
-        let range = bundle::ram_mb_range(family);
-        let (min, max) = (*range.start() as i32, *range.end() as i32);
-        self.ram_min = min;
-        self.ram_max = max;
-        self.ram_mb = self.ram_mb.clamp(min, max);
-        self.ram_is_default = self.ram_mb == bundle::default_ram_mb(family) as i32;
-        self.ram_note = QString::from(if family == Family::Win98 && self.ram_mb >= max {
-            "512 MB is Win98's ceiling (doc 06): more and it does not boot."
-        } else {
-            ""
-        });
-
-        let have_kvm = player::kvm_available();
-        let accel = accel_of(self.accel);
-        self.accel_is_default = accel == bundle::default_accel(family);
-        self.accel_warning = matches!((accel, have_kvm), (Accel::Kvm, false));
-        let mut note = match (accel, have_kvm) {
-            (Accel::Auto, true) => "KVM is available on this host and will be used.".to_string(),
-            (Accel::Auto, false) => "No KVM on this host: this machine will be emulated.".to_string(),
-            (Accel::Kvm, true) => "KVM is available on this host.".to_string(),
-            (Accel::Kvm, false) => "No KVM on this host: this machine will refuse to start.".to_string(),
-            (Accel::Tcg, _) => "Emulated: the era-CPU behaviour everything here is tuned for.".to_string(),
-        };
-        if family == Family::Win98 && accel != Accel::Tcg && have_kvm {
-            note.push_str("\nWin98 runs at host speed under KVM, which its own fast-CPU bugs dislike.");
-        }
-        self.accel_note = qs(note);
-
-        self.network_note = QString::from(if self.network {
-            "Outbound only, through the host (user-mode NAT): nothing on the network can reach the guest.\nThese are unpatched systems — don't browse the web on one."
-        } else {
-            "No network adapter at all: Windows won't see a card or ask for its driver."
-        });
-    }
-
-    /// The `Machine` the current fields describe, given the disk to use
-    /// (a fresh disk's path isn't known until it's created). Shared by
-    /// the advanced box's default and `submit`, so the two cannot
-    /// disagree — `launcher/src/wizard.rs`'s `build_machine`.
-    fn build_machine(&self, disk: PathBuf) -> Machine {
-        let family = family_of(self.family);
-        let name = self.name.to_string();
-        let mut machine = match &self.edit_path {
-            Some(_) => Machine {
-                name,
-                family,
-                ram_mb: self.ram_mb as u32,
-                accel: Some(accel_of(self.accel)),
-                network: self.network,
-                disk,
-                disc: None,
-                discs: Vec::new(),
-                shader_profile: None,
-                shader: self.edit_shader.clone(),
-                floppy: self.edit_floppy.clone(),
-                boot: self.edit_boot,
-                cpu_speed: self.edit_cpu_speed,
-            },
-            None => Machine::reference(family, name, disk),
-        };
-        // `ram_chosen` decides, not the field's contents: a form that
-        // never went through the family picker never had the chance to
-        // move the default along with it.
-        machine.ram_mb =
-            if self.ram_chosen { self.ram_mb as u32 } else { bundle::default_ram_mb(family) };
-        machine.accel =
-            Some(if self.accel_chosen { accel_of(self.accel) } else { bundle::default_accel(family) });
-        machine.network = self.network;
-        let profile = self.shader_profile.to_string();
-        machine.shader_profile = Some(profile).filter(|p| !p.is_empty());
-        // The single slot this form has is the machine's *boot* disc;
-        // everything else lives on the shared shelf.
-        machine.disc = Some(self.install_media.to_string())
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty())
-            .map(PathBuf::from);
-        machine
-    }
-
-    fn preview_toml(&self) -> String {
-        if self.edit_path.is_some() {
-            return self.edit_toml.clone();
-        }
-        let disk: PathBuf =
-            if self.existing_disk { self.disk_path.to_string().into() } else { "disk.qcow2".into() };
-        toml::to_string_pretty(&self.build_machine(disk)).unwrap_or_default()
-    }
-
-    /// `launcher/src/wizard.rs`'s `submit`, unchanged in substance.
-    fn write(&self) -> std::io::Result<PathBuf> {
-        let name = self.name.to_string();
-        if name.trim().is_empty() {
-            return Err(std::io::Error::other("a name is required"));
-        }
-        let advanced_toml = self.advanced_toml.to_string();
-        if let Some(bundle_path) = &self.edit_path {
-            if self.advanced {
-                // Validate before writing: a bad hand-edit shouldn't
-                // silently corrupt the library with an unreadable bundle.
-                toml::from_str::<Machine>(&advanced_toml).map_err(std::io::Error::other)?;
-                std::fs::write(bundle_path, &advanced_toml)?;
-                return Ok(bundle_path.clone());
-            }
-            let disk = PathBuf::from(self.disk_path.to_string());
-            self.build_machine(disk).save(bundle_path)?;
-            return Ok(bundle_path.clone());
-        }
-        let dir = library::reserve_dir(&self.library_dir, &name)?;
-        let bundle_path = dir.join(library::BUNDLE_FILE);
-        if self.advanced {
-            toml::from_str::<Machine>(&advanced_toml).map_err(std::io::Error::other)?;
-            std::fs::write(&bundle_path, &advanced_toml)?;
-            return Ok(bundle_path);
-        }
-        let disk_path = if self.existing_disk {
-            PathBuf::from(self.disk_path.to_string())
-        } else {
-            let disk_path = dir.join("disk.qcow2");
-            player::create_disk(&disk_path, self.disk_size_gb as u32)?;
-            disk_path
-        };
-        self.build_machine(disk_path).save(&bundle_path)?;
-        Ok(bundle_path)
-    }
+    list
 }
 
 impl ffi::Wizard {
-    fn open_fresh(self: Pin<&mut Self>) {
-        let mut fresh = WizardRust::default();
-        fresh.open = true;
-        self.apply(fresh);
+    fn open_fresh(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().form.open_fresh();
+        self.publish();
     }
 
     fn open_edit(mut self: Pin<&mut Self>, bundle_path: &QString) {
         let path = PathBuf::from(bundle_path.to_string());
-        let machine = match Machine::load(&path) {
-            Ok(m) => m,
-            Err(e) => {
-                self.as_mut().set_error(qs(format!("{}: {e}", path.display())));
-                return;
-            }
-        };
-        let original_toml = std::fs::read_to_string(&path).unwrap_or_default();
-        let mut state = WizardRust {
-            open: true,
-            editing: true,
-            title: QString::from("Edit machine"),
-            family: family_index(machine.family),
-            name: qs(&machine.name),
-            ram_mb: machine.ram_mb as i32,
-            // An existing machine's memory is a chosen value whatever it
-            // came from: changing family must not rewrite it.
-            ram_chosen: true,
-            accel: accel_index(machine.effective_accel()),
-            accel_chosen: true,
-            network: machine.network,
-            existing_disk: true,
-            disk_path: qs(machine.disk.display()),
-            install_media: machine.boot_disc().map(|d| qs(d.display())).unwrap_or_default(),
-            shader_profile: machine.shader_profile.as_deref().map(qs).unwrap_or_default(),
-            edit_path: Some(path),
-            edit_shader: machine.shader.clone(),
-            edit_floppy: machine.floppy.clone(),
-            edit_boot: machine.boot,
-            edit_cpu_speed: machine.cpu_speed,
-            edit_toml: original_toml,
-            ..WizardRust::default()
-        };
-        state.recompute();
-        self.apply(state);
+        self.as_mut().rust_mut().form.open_edit_path(path);
+        self.publish();
     }
 
-    fn choose_family(self: Pin<&mut Self>, family: i32) {
-        let mut state = self.rust().clone();
-        state.family = family;
-        // Whatever nobody has chosen follows the family.
-        let f = family_of(family);
-        if !state.ram_chosen {
-            state.ram_mb = bundle::default_ram_mb(f) as i32;
-        }
-        if !state.accel_chosen {
-            state.accel = accel_index(bundle::default_accel(f));
-        }
-        state.recompute();
-        self.apply(state);
+    fn choose_family(mut self: Pin<&mut Self>, family: i32) {
+        let f = at(&Family::ALL, family);
+        self.as_mut().rust_mut().form.choose_family(f);
+        self.publish();
     }
 
-    fn choose_ram(self: Pin<&mut Self>, ram_mb: i32) {
-        let mut state = self.rust().clone();
-        state.ram_mb = ram_mb;
-        state.ram_chosen = true;
-        state.recompute();
-        self.apply(state);
+    fn choose_ram(mut self: Pin<&mut Self>, ram_mb: i32) {
+        self.as_mut().rust_mut().form.choose_ram_mb(ram_mb.max(0) as u32);
+        self.publish();
     }
 
-    fn reset_ram(self: Pin<&mut Self>) {
-        let mut state = self.rust().clone();
-        state.ram_mb = bundle::default_ram_mb(family_of(state.family)) as i32;
-        state.ram_chosen = false;
-        state.recompute();
-        self.apply(state);
+    fn reset_ram(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().form.reset_ram();
+        self.publish();
     }
 
-    fn choose_accel(self: Pin<&mut Self>, accel: i32) {
-        let mut state = self.rust().clone();
-        state.accel = accel;
-        state.accel_chosen = true;
-        state.recompute();
-        self.apply(state);
+    fn choose_cpu_speed(mut self: Pin<&mut Self>, cpu_speed: i32) {
+        let s = at(&CpuSpeed::ALL, cpu_speed);
+        self.as_mut().rust_mut().form.choose_cpu_speed(s);
+        self.publish();
     }
 
-    fn reset_accel(self: Pin<&mut Self>) {
-        let mut state = self.rust().clone();
-        state.accel = accel_index(bundle::default_accel(family_of(state.family)));
-        state.accel_chosen = false;
-        state.recompute();
-        self.apply(state);
+    fn reset_cpu_speed(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().form.reset_cpu_speed();
+        self.publish();
     }
 
-    fn choose_network(self: Pin<&mut Self>, network: bool) {
-        let mut state = self.rust().clone();
-        state.network = network;
-        state.recompute();
-        self.apply(state);
+    fn choose_accel(mut self: Pin<&mut Self>, accel: i32) {
+        let a = at(&Accel::ALL, accel);
+        self.as_mut().rust_mut().form.choose_accel(a);
+        self.publish();
+    }
+
+    fn reset_accel(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().form.reset_accel();
+        self.publish();
+    }
+
+    fn choose_network(mut self: Pin<&mut Self>, network: bool) {
+        self.as_mut().rust_mut().form.choose_network(network);
+        self.publish();
+    }
+
+    fn choose_boot(mut self: Pin<&mut Self>, boot: i32) {
+        let b = at(&Boot::ALL, boot);
+        self.as_mut().rust_mut().form.boot = b;
+        self.publish();
+    }
+
+    fn set_floppy_path(mut self: Pin<&mut Self>, floppy: &QString) {
+        self.as_mut().rust_mut().form.floppy = floppy.to_string();
+        self.publish();
     }
 
     fn fill_advanced(mut self: Pin<&mut Self>) {
-        if !self.advanced_toml.is_empty() {
-            return;
-        }
-        let toml = self.rust().preview_toml();
-        self.as_mut().set_advanced_toml(qs(toml));
+        self.as_mut().pull();
+        self.as_mut().rust_mut().form.fill_advanced();
+        self.publish();
     }
 
     fn submit(mut self: Pin<&mut Self>) -> bool {
-        match self.rust().write() {
-            Ok(path) => {
-                self.as_mut().rust_mut().saved_path = path; // not a property
-                self.as_mut().set_error(QString::default());
-                self.as_mut().set_open(false);
-                true
-            }
-            Err(e) => {
-                self.as_mut().set_error(qs(e));
-                false
-            }
-        }
+        self.as_mut().pull();
+        let library_dir = library::default_dir();
+        let ok = self.as_mut().rust_mut().form.submit(&library_dir).is_some();
+        self.publish();
+        ok
     }
 
     fn saved_path(&self) -> QString {
-        qs(self.rust().saved_path.display())
+        self.rust().form.saved_path().map(|p| qs(p.display())).unwrap_or_default()
     }
 
-    /// Write a whole new form state in, every Q_PROPERTY through its own
-    /// generated setter so each one's notify fires for the values that
-    /// actually moved. See this module's header for why a direct
-    /// `rust_mut()` assignment here would be silent.
-    fn apply(mut self: Pin<&mut Self>, state: WizardRust) {
-        // The fields that are not properties: nothing observes them, so
-        // they go straight in.
+    fn family_labels(&self) -> QStringList {
+        labels(Family::ALL.iter().map(|f| f.label()))
+    }
+
+    fn accel_labels(&self) -> QStringList {
+        labels(Accel::ALL.iter().map(|a| a.label()))
+    }
+
+    fn cpu_speed_labels(&self) -> QStringList {
+        labels(CpuSpeed::ALL.iter().map(|s| s.label()))
+    }
+
+    fn boot_labels(&self) -> QStringList {
+        labels(Boot::ALL.iter().map(|b| b.label()))
+    }
+
+    fn disk_filter(&self) -> QString {
+        qs(name_filter(DISK_FILTER))
+    }
+
+    fn media_filter(&self) -> QString {
+        qs(name_filter(MEDIA_FILTER))
+    }
+
+    fn floppy_filter(&self) -> QString {
+        qs(name_filter(FLOPPY_FILTER))
+    }
+}
+
+impl ffi::Wizard {
+    /// The plain, two-way-bound text fields, back into the form. A QML
+    /// `TextField` writes its property and nothing else, so this catches
+    /// the form up before anything reads it.
+    fn pull(mut self: Pin<&mut Self>) {
+        let (name, disk_path, install_media, floppy, advanced_toml, shader_profile) = (
+            self.name.to_string(),
+            self.disk_path.to_string(),
+            self.install_media.to_string(),
+            self.floppy.to_string(),
+            self.advanced_toml.to_string(),
+            self.shader_profile.to_string(),
+        );
+        let (existing_disk, disk_size_gb, advanced) = (self.existing_disk, self.disk_size_gb, self.advanced);
+        let form = &mut self.as_mut().rust_mut().form;
+        form.name = name;
+        form.disk_path = disk_path;
+        form.install_media = install_media;
+        form.floppy = floppy;
+        form.advanced_toml = advanced_toml;
+        form.shader_profile = Some(shader_profile).filter(|p| !p.is_empty());
+        form.existing_disk = existing_disk;
+        form.disk_size_gb = disk_size_gb.max(1) as u32;
+        form.advanced = advanced;
+    }
+
+    /// The form, onto the properties — every one through its own setter,
+    /// so each notify fires for the values that actually moved. Read
+    /// out first, written after: the setters take `&mut self`.
+    fn publish(mut self: Pin<&mut Self>) {
+        let (
+            open,
+            editing,
+            title,
+            family,
+            name,
+            ram_mb,
+            ram_min,
+            ram_max,
+            ram_note,
+            ram_is_default,
+            cpu_speed,
+            cpu_note,
+            cpu_is_default,
+        );
+        let (accel, accel_note, accel_warning, accel_is_default, network, network_note);
+        let (existing_disk, disk_path, disk_size_gb, install_media, floppy, boot, boot_note);
+        let (shader_profile, advanced, advanced_toml, error);
         {
-            let mut this = self.as_mut().rust_mut();
-            this.ram_chosen = state.ram_chosen;
-            this.accel_chosen = state.accel_chosen;
-            this.library_dir = state.library_dir.clone();
-            this.edit_path = state.edit_path.clone();
-            this.edit_shader = state.edit_shader.clone();
-            this.edit_floppy = state.edit_floppy.clone();
-            this.edit_boot = state.edit_boot;
-            this.edit_cpu_speed = state.edit_cpu_speed;
-            this.edit_toml = state.edit_toml.clone();
-            this.saved_path = state.saved_path.clone();
+            let f = &self.rust().form;
+            let range = f.ram_range();
+            let note = f.accel_note();
+            open = f.open;
+            editing = f.is_editing();
+            title = QString::from(f.title());
+            family = index_of(&Family::ALL, f.family());
+            name = qs(&f.name);
+            ram_mb = f.ram_mb() as i32;
+            ram_min = *range.start() as i32;
+            ram_max = *range.end() as i32;
+            ram_note = qs_opt(f.ram_note());
+            ram_is_default = f.ram_is_default();
+            cpu_speed = index_of(&CpuSpeed::ALL, f.cpu_speed());
+            cpu_note = qs(f.cpu_speed_notes().join("\n"));
+            cpu_is_default = f.cpu_speed_is_default();
+            accel = index_of(&Accel::ALL, f.accel());
+            accel_warning = note.warning;
+            accel_note = qs(note.text);
+            accel_is_default = f.accel_is_default();
+            network = f.network();
+            network_note = qs(f.network_notes().join("\n"));
+            existing_disk = f.existing_disk;
+            disk_path = qs(&f.disk_path);
+            disk_size_gb = f.disk_size_gb as i32;
+            install_media = qs(&f.install_media);
+            floppy = qs(&f.floppy);
+            boot = index_of(&Boot::ALL, f.boot);
+            boot_note = qs_opt(f.boot_note());
+            shader_profile = f.shader_profile.as_deref().map(qs).unwrap_or_default();
+            advanced = f.advanced;
+            advanced_toml = qs(&f.advanced_toml);
+            error = qs_opt(f.error.as_deref());
         }
-        self.as_mut().set_open(state.open);
-        self.as_mut().set_editing(state.editing);
-        self.as_mut().set_title(state.title);
-        self.as_mut().set_family(state.family);
-        self.as_mut().set_name(state.name);
-        self.as_mut().set_ram_mb(state.ram_mb);
-        self.as_mut().set_ram_min(state.ram_min);
-        self.as_mut().set_ram_max(state.ram_max);
-        self.as_mut().set_ram_note(state.ram_note);
-        self.as_mut().set_ram_is_default(state.ram_is_default);
-        self.as_mut().set_accel(state.accel);
-        self.as_mut().set_accel_note(state.accel_note);
-        self.as_mut().set_accel_warning(state.accel_warning);
-        self.as_mut().set_accel_is_default(state.accel_is_default);
-        self.as_mut().set_network(state.network);
-        self.as_mut().set_network_note(state.network_note);
-        self.as_mut().set_existing_disk(state.existing_disk);
-        self.as_mut().set_disk_path(state.disk_path);
-        self.as_mut().set_disk_size_gb(state.disk_size_gb);
-        self.as_mut().set_install_media(state.install_media);
-        self.as_mut().set_shader_profile(state.shader_profile);
-        self.as_mut().set_advanced(state.advanced);
-        self.as_mut().set_advanced_toml(state.advanced_toml);
-        self.as_mut().set_error(state.error);
+        self.as_mut().set_open(open);
+        self.as_mut().set_editing(editing);
+        self.as_mut().set_title(title);
+        self.as_mut().set_family(family);
+        self.as_mut().set_name(name);
+        self.as_mut().set_ram_mb(ram_mb);
+        self.as_mut().set_ram_min(ram_min);
+        self.as_mut().set_ram_max(ram_max);
+        self.as_mut().set_ram_note(ram_note);
+        self.as_mut().set_ram_is_default(ram_is_default);
+        self.as_mut().set_cpu_speed(cpu_speed);
+        self.as_mut().set_cpu_note(cpu_note);
+        self.as_mut().set_cpu_is_default(cpu_is_default);
+        self.as_mut().set_accel(accel);
+        self.as_mut().set_accel_note(accel_note);
+        self.as_mut().set_accel_warning(accel_warning);
+        self.as_mut().set_accel_is_default(accel_is_default);
+        self.as_mut().set_network(network);
+        self.as_mut().set_network_note(network_note);
+        self.as_mut().set_existing_disk(existing_disk);
+        self.as_mut().set_disk_path(disk_path);
+        self.as_mut().set_disk_size_gb(disk_size_gb);
+        self.as_mut().set_install_media(install_media);
+        self.as_mut().set_floppy(floppy);
+        self.as_mut().set_boot(boot);
+        self.as_mut().set_boot_note(boot_note);
+        self.as_mut().set_shader_profile(shader_profile);
+        self.as_mut().set_advanced(advanced);
+        self.as_mut().set_advanced_toml(advanced_toml);
+        self.as_mut().set_error(error);
     }
 }

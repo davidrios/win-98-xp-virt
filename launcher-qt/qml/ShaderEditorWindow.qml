@@ -103,7 +103,7 @@ Window {
             PathField {
                 Layout.fillWidth: true
                 label: qsTr("Preset (.slangp)")
-                nameFilter: qsTr("Shader presets (*.slangp)")
+                nameFilter: root.editor.presetFilter
                 // "Browse…" on an empty field opens in the preset collection
                 // rather than the OS default: a `.slangp` lives in a
                 // checkout's `third_party/` or in a downloaded copy under a
@@ -237,7 +237,7 @@ Window {
                     PathField {
                         Layout.fillWidth: true
                         label: qsTr("Preview image")
-                        nameFilter: qsTr("Images (*.png *.jpg *.jpeg *.bmp)")
+                        nameFilter: root.editor.imageFilter
                         value: root.editor.previewImage
                         onValueChanged: {
                             root.editor.previewImage = value

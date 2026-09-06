@@ -26,7 +26,7 @@ backend later.
   commands `2ksbox` / `2ksbox-player`, the resource dirs `share/2ksbox`
   etc., and the user's data directory `~/.local/share/2ksbox` — moved
   from the old `win98-xp-virt` one exactly once by
-  `launcher/src/paths.rs::data_dir()`, an atomic rename that only
+  `launcher-core/src/paths.rs::data_dir()`, an atomic rename that only
   happens when the new name is absent. The application ID is
   `com._2ksbox.Launcher` (the underscore is required: a name segment may
   not start with a digit).
@@ -35,6 +35,19 @@ backend later.
 - QEMU runs **in-process** (`libqemu-embed-<target>`, `embed/`) for latency.
 - **Standalone Rust player + launcher.** RetroArch/libretro was tried and
   rejected — never propose it again.
+- **The launcher is two front ends over one library** (ADR-014,
+  2026-09-06, doc 07): `launcher-core/` holds everything it *decides* — the bundle
+  format, the machine library, the disc shelf, snapshots, shader
+  profiles, the preview's render path, **and every window's own state
+  machine and the sentences it shows** — while `launcher/` (egui) and
+  `launcher-qt/` (Qt 6 / QML) are views over it, both maintained.
+  Nothing that a second front end could get differently goes in a front
+  end: not a default that follows the family, not a note under a
+  checkbox, not a combo box's labels. Every toolkit-free debug verb is
+  `launcher_core::cli`, so both binaries answer them identically.
+  `launcher-capi/` is the same thing as a C ABI, for a front end in
+  another language. `launcher-qt` is not in the root workspace, so
+  `cargo build` never needs Qt 6.
 - Rust wherever possible; C only inside QEMU/qemu-3dfx and guest-side
   era code. Python is uv-managed (3.12; 3.14 breaks QEMU's venv).
 - Everything open source; Apple Silicon must work (TCG), not just x86 hosts.
@@ -151,6 +164,7 @@ GPU); don't propose wiring it in.
 | `scripts/test.sh [host\|guest\|all]` | the whole suite below, PASS/FAIL/SKIP per check, outputs in `build/test/`; `TEST_KEEP=1` leaves XP running on failure |
 | `SETUP.EXE` (guest-tools ISO root; `guest-tools/src/setup.c`) | installs the guest tools from inside the machine, and the reason the ISO's folders are what they are: one folder per role, one copy of every file, and SETUP knows which of them *this* Windows wants (98/Me: Glide + `FXMEMMAP.VXD`; 2000/XP: Glide + `FXPTL.SYS` with the MAPMEM service, and the `d3dpt-vga` display driver). A console program, so a guest test drives it: `SETUP /ALL` installs everything applicable, `SETUP /LIST` prints the lists, `SETUP /GAME <n> <dir>` copies one per-game file set next to a game's EXE (that is where WineD3D's `WINED9.DLL` → `D3D9.DLL` renames happen, so the disc carries no second copy). Writes `SETUP.LOG` |
 | `tools/setup-guest-test.sh <image> [xp\|win98]` | `SETUP.EXE` in a real guest, headless, on both families: `/LIST`, `/ALL`, `/GAME 3 C:\2KSBOX`, then **Windows' own `dir`** on everything that should now exist (and `net start MAPMEM` on NT) over COM1 — the installer's own exit code is not the evidence. XP boots on `-vga none -device d3dpt-vga` so the display-driver component has a device to bind to, and the QEMU log's `d3dptvid: adapter found` is checked too; Win98 boots on cirrus and the run fails if that component is even offered. Overlay only, never the image. Local only (needs a guest image), not in `scripts/test.sh` |
+| `launcher-capi/examples/smoke.c` | a third front end, in C, over the same models the egui and Qt builds use (`launcher-capi/include/launcher_core.h`): creates a DOS machine through the shared wizard and checks its answers (64 MB, a period processor, emulated, no network card), then the disc shelf, the library and the profile editor. The `capi` check in `scripts/test.sh`; a scratch library, never the user's own. A changed default in a model fails here as well as in the two GUIs |
 | `tools/x87-fast-test.c` | patch 05's x87 fast path equals the real x87 (x86-64 host oracle) |
 | `scripts/package-flatpak.sh` | the Flatpak (doc 07's primary Linux target; manifest in `packaging/flatpak/`): a from-source build against `org.freedesktop.Sdk` — host binaries cannot be reused, the runtime's glibc is older than this host's — reusing the install layout via `package-linux.sh --prefix /app`, plus libslirp (absent from the runtime, and `-netdev user` needs it) and a build-only `distlib`. Then asks the *installed* app, in its own sandbox, whether every companion resolves under `/app` and the library under `~/.var/app`. The build is **offline** (Flathub's rule): `packaging/flatpak/cargo-sources.json` declares all 513 crates with checksums — regenerate with `scripts/gen-flatpak-cargo-sources.sh` after any dependency change. `FLATPAK_BUILD_DIR` moves the build tree off a full root filesystem |
 | `scripts/package-linux.sh` | the Linux package (doc 07's install layout, ADR-011's names — product `2ksbox`, application ID `com._2ksbox.Launcher`): stages launcher + player + embed library + `qemu-img` + firmware + guest-tools ISO into one relocatable prefix (`--with-shaders` adds the presets), then asks the **staged** launcher with `env -i` from `/` whether every companion resolves inside the package (`launcher --paths`), that the staged player `ldd`s to the package's own `libqemu-embed`, that the packaged `qemu-img` creates a disk and `--print-args` points `-L` at the packaged firmware, and that the desktop entry and the AppStream metainfo validate (`appstreamcli --no-net`, errors only); rolls a `.tar.zst` unless `--no-tar` (the `package` check in `scripts/test.sh`). `packaging/linux/install.sh` inside it copies a tree into a prefix |

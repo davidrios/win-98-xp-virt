@@ -1,0 +1,45 @@
+[package]
+name = "launcher-core"
+version.workspace = true
+edition.workspace = true
+# The launcher's half that no toolkit can see, so it carries the
+# launcher's own licence rather than the workspace's `GPL-2.0-only`
+# (ADR-009): it links no QEMU code — it *spawns* the player — and it does
+# link Apache-2.0 crates (`ring` under `ureq`'s rustls, `wgpu`'s tree),
+# which GPLv2 cannot take and GPLv3 can.
+license = "GPL-2.0-or-later"
+description = "Everything the launcher does that is not drawing: bundles, the library, the disc shelf, snapshots, shader profiles, the window models and the debug verbs (doc 07)."
+
+[dependencies]
+directories = "6.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
+# `qemu-img info --output=json` for the snapshot list (a stable interface;
+# `qemu-img snapshot -l`'s table is formatted for humans and doesn't
+# escape a tag with a space in it). Same crate the player uses for QMP.
+serde_json = "1"
+toml = "1.1.5"
+# Preset/parameter introspection only (no runtime backend) — the profile
+# editor lists a `.slangp`'s parameters to draw sliders from. Actually
+# running the filter chain (the live preview) goes through `shader-chain`.
+librashader = { version = "0.12", default-features = false, features = ["presets", "preprocess"] }
+shader-chain = { path = "../shader-chain" }
+# Decodes a preview screenshot (PNG/JPEG/BMP) into RGBA8 for the shader
+# preview's input texture.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Fetching the upstream shader collection when it isn't on disk
+# (`shader_source.rs`): a ~50 MB tarball over HTTPS, streamed through the
+# gzip/tar decoders straight onto disk rather than held in memory. `ureq`
+# is blocking, which suits front ends with no async runtime (both of
+# them) — the download runs on its own thread. Its default TLS is
+# rustls, so no system OpenSSL.
+ureq = "3"
+flate2 = "1"
+tar = "0.4"
+# `preview.rs` renders on whatever device it is handed (eframe's, for the
+# egui build) or opens a windowless one itself (`Preview::headless`, for
+# the Qt build and the `--preview-shader` verb), which is what these two
+# are for. Must stay on the version `shader-chain` pins, or the two see
+# different `wgpu::Device` types; eframe's own is unified with it by
+# Cargo.
+wgpu = "30"
+pollster = "1"

@@ -187,7 +187,7 @@ Window {
                 id: adder
                 Layout.fillWidth: true
                 label: qsTr("Add disc")
-                nameFilter: qsTr("Disc images (*.iso *.cue *.ccd *.mds)")
+                nameFilter: root.discs.discFilter
             }
 
             RowLayout {

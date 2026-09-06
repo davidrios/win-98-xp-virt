@@ -998,13 +998,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "launcher-qt"
+name = "launcher-core"
 version = "0.0.1"
 dependencies = [
- "cxx",
- "cxx-qt",
- "cxx-qt-build",
- "cxx-qt-lib",
  "directories",
  "flate2",
  "image",
@@ -1017,6 +1013,18 @@ dependencies = [
  "toml",
  "ureq",
  "wgpu",
+]
+
+[[package]]
+name = "launcher-qt"
+version = "0.0.1"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "image",
+ "launcher-core",
 ]
 
 [[package]]

@@ -18,7 +18,7 @@ first-class target.
 | Win9x guest GPU drivers | Exists — SoftGPU + qemu-3dfx guest wrappers (package) |
 | CRT shader ecosystem | Exists — libretro slang shaders via librashader (library, not RetroArch) |
 | **Player: in-process QEMU + pixel-accurate CRT-shaded display** | **We build** (Rust, wgpu + librashader) |
-| **Companion launcher (machine library, guided creation)** | **We build** (Rust) |
+| **Companion launcher (machine library, guided creation)** | **We build** (Rust: `launcher-core` + an egui and a Qt front end) |
 | **Raw CD-ROM backend (cue/bin, subchannel, C2, CD-DA)** | **We build** (Rust "libdisc"; libmirage as reference) |
 
 Authentic-hardware Win98 emulation (real Voodoo, real S3) is 86Box's territory
@@ -68,7 +68,7 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- ...
 # --shader-params <name=value,...> (or PLAYER_SHADER_PARAMS=) overrides the preset's own
 #   parameter defaults by name, e.g. --shader-params BRIGHTBOOST=1.4,GAMMA_INPUT=2.4 — this is
-#   what a launcher shader profile (launcher/src/shader_profile.rs) resolves to
+#   what a launcher shader profile (launcher-core/src/shader_profile.rs) resolves to
 # PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
 # PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test);
 #   each press is held PLAYER_KEYS_HOLD frames (default 6 ≈ 100 ms) — a down+up in one flush is a
@@ -107,6 +107,38 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 ```
 
 macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
+
+## The launcher's front ends
+
+Everything the launcher *decides* — the `machine.toml` format, the
+machine library, the disc shelf, snapshots, shader profiles, the
+preview's render path, and every window's own state machine and the
+sentences it shows — lives in one crate, **`launcher-core`**. There are
+two maintained front ends over it, and both are views: they draw and
+forward events, and nothing else (doc 07).
+
+```sh
+cargo build --release -p launcher       # egui/eframe; what scripts/build.sh builds
+cd launcher-qt && cargo build --release # Qt 6 / QML through cxx-qt
+```
+
+`launcher-qt` declares its own workspace, so a plain `cargo build` at the
+root never needs Qt 6 development files. Building it is the whole build
+command — no CMake; `cxx-qt-build` finds Qt through `qmake6`.
+
+Because the core is a real library, a front end in another language is a
+view over it too. **`launcher-capi`** is a C ABI over the same models —
+opaque handles, index-addressed rows, caller-owned strings — for a native
+macOS app in Swift, or anything that speaks C:
+
+```sh
+cargo build -p launcher-capi            # liblauncher_capi.{a,so}; not a default member
+cc -Ilauncher-capi/include my_frontend.c target/debug/liblauncher_capi.a -lstdc++ -lm -ldl -lpthread
+```
+
+`launcher-capi/include/launcher_core.h` is the header;
+`launcher-capi/examples/smoke.c` is a working miniature front end, and is
+the `capi` check in `scripts/test.sh`.
 
 ## Packaging (Linux)
 
@@ -161,11 +193,14 @@ GPL-2.0, non-negotiable in practice for everything that links QEMU
 (GPL-2.0) in-process: the `player`, `qemu-embed`, and `libdisc`, which is
 compiled into QEMU itself.
 
-The **launcher** and the `shader-chain` crate it shares with the player are
-**GPL-2.0-or-later** (ADR-009). The launcher links no QEMU code — it spawns
-the player as a separate process — and it does link Apache-2.0 crates
-(egui's `ab_glyph`, winit's `dpi`, `ring` under `ureq`'s rustls) that GPLv2
-cannot take and GPLv3 can.
+The **launcher** — `launcher-core` and the front ends over it
+(`launcher`, `launcher-qt`, `launcher-capi`) — and the `shader-chain`
+crate it shares with the player are **GPL-2.0-or-later** (ADR-009). None
+of them links QEMU code, since the launcher spawns the player as a
+separate process, and they do link Apache-2.0 crates (egui's `ab_glyph`,
+winit's `dpi`, `ring` under `ureq`'s rustls) that GPLv2 cannot take and
+GPLv3 can. `launcher-qt` links Qt 6 under the LGPLv3, which is the same
+reason.
 
 Original code is Rust wherever possible (see ADR-004 in
 [decision records](docs/10-decisions.md)); C only inside QEMU/qemu-3dfx and

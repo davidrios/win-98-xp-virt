@@ -286,11 +286,8 @@ ApplicationWindow {
             // *running* drive gets the new shelf file — the egui build's
             // `take_saved` loop, moved out here where the running set
             // lives.
-            if (discs.takeSaved()) {
-                for (let i = 0; i < machines.count; i++)
-                    if (machines.isRunning(i))
-                        discs.publishTo(machines.bundlePath(i).replace(/\/[^\/]*$/, ""))
-            }
+            if (discs.takeSaved())
+                machines.republishShelf()
         }
     }
 
@@ -337,20 +334,32 @@ ApplicationWindow {
             switch (diag.screen) {
             case "wizard":
                 wizard.openFresh(); profiles.refresh(); wizardWindow.show()
-                // `LAUNCHER_QT_ARG=xp` exercises the one piece of form
-                // behaviour a screenshot can actually prove: switching
-                // family moves the memory and acceleration defaults with
-                // it, but only while nobody has chosen them.
-                if (diag.arg === "xp")
-                    wizard.chooseFamily(1)
+                // `LAUNCHER_QT_ARG=<win98|xp|dos>` exercises the one piece
+                // of form behaviour a screenshot can actually prove:
+                // switching family moves the memory, processor,
+                // acceleration and networking defaults with it, but only
+                // while nobody has chosen them. The order is the shared
+                // form's own (`bundle::Family::ALL`), which is also the
+                // order `familyLabels()` hands the combo box, so the two
+                // cannot get out of step.
+                const families = ["win98", "xp", "dos"]
+                if (families.indexOf(diag.arg) >= 0)
+                    wizard.chooseFamily(families.indexOf(diag.arg))
                 break
             case "create":
-                // `LAUNCHER_QT_ARG=<name>` — the whole create path, ending
-                // on the refreshed grid, so the run is only a pass if the
-                // bundle really landed in the library.
+                // `LAUNCHER_QT_ARG=[<family>:]<name>` — the whole create
+                // path, ending on the refreshed grid, so the run is only a
+                // pass if the bundle really landed in the library. The
+                // family is worth naming: a bundle written through this
+                // window has to come out the same as one written by the
+                // egui build or by `--wizard-new`, and DOS is the family
+                // where that used to be false.
                 wizard.openFresh()
-                wizard.chooseFamily(1)
-                wizard.name = diag.arg
+                const spec = diag.arg.split(":")
+                const named = spec.length > 1
+                const family = named ? ["win98", "xp", "dos"].indexOf(spec[0]) : 1
+                wizard.chooseFamily(family < 0 ? 1 : family)
+                wizard.name = named ? spec[1] : diag.arg
                 wizard.existingDisk = true
                 wizard.diskPath = "/dev/null"
                 diag.note("submit -> " + wizard.submit() + " " + wizard.savedPath())
