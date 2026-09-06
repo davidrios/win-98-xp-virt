@@ -18,12 +18,20 @@ Branch `track/m10-win98-driver`, worktree
   work is all on `main` (its branch was fully merged), so there is no
   live conflict, but any M7 session that reopens must rebase on this
   split rather than edit around it.
-- The 9x half once it exists: the 16-bit display driver, its VxD, its INF
-  and its installer, plus whatever the DDK-header vendoring needs.
+- The 9x half, which exists now:
+  - `guest-tools/src/d3dptvid/w9x/` — `d3dpt9x.c` (the 16-bit DIB Engine
+    display driver), `dibthunk.asm` (its drawing exports, all jumps into
+    the Engine), `res/` (the `oembin` resource blobs GDI requires),
+    `d3dptvxd.c` (the ring-0 mini-VDD), `d3dpt9x.h` / `d3dpt9v.h` (what
+    the two halves share), `d3dpt9x.inf`;
+  - `guest-tools/src/d3dptvid/ddk9x/` — the vendored 9x interface headers
+    (MIT, provenance in its README); `guest-tools/build-driver9x.sh`.
 - `guest-tools/src/setup.c` — the display-driver component for the 98/Me
   role — and `tools/setup-guest-test.sh`'s Win98 expectations.
-- Tests: a `tools/win98-driver-test.sh` mirroring `tools/xp-driver-test.sh`,
-  and the Win98 side of whatever guest checks land in `scripts/test.sh`.
+- Tests: `tools/win98-driver-test.sh` (the 9x counterpart of
+  `tools/xp-driver-test.sh`), and the Win98 side of whatever guest checks
+  land in `scripts/test.sh`. Not wired into `scripts/test.sh` — it needs a
+  guest image, like the other guest harnesses.
 - Docs: `docs/19-win9x-display-driver.md`, this file, ADR-012 in doc 10,
   the M10 row of the state table and the M10 line of "Next steps" in
   `docs/00-status.md`.
@@ -84,7 +92,18 @@ load the 16-bit driver — a load failure, not a run-time one (doc 19
   the line when it re-detects the adapter.
 
 `vmdisp9x` and `vmhal9x` are cloned to `build/ref/` (gitignored) for
-reading; nothing from them is vendored.
+reading. Nothing of their *code* is vendored; their `ddk/` headers are,
+under `ddk9x/`, for the reason in the bullet above.
+
+**Where a new session starts.** Everything is committed and pushed; the
+open item is doc 19 §13, and it is a single question — why GDI refuses to
+load `d3dpt9x.drv`. The evidence is already gathered, so do not re-derive
+it: the module's first instruction never runs (the mini-VDD, which logs
+reliably, is never called from `DriverInit`), naming the driver directly
+in `SYSTEM.INI` changes nothing, and the NE now matches the guest's own
+`CIRRUSMM.DRV` on resources, header, segment attributes and heap. Doc 19
+§13 lists what is left to try, in order, and the cheapest thing that would
+turn inference into a message is getting `BOOTLOG.TXT` to write.
 
 What the track starts from:
 
@@ -168,48 +187,106 @@ What the track starts from:
 
 ## Build / test loop
 
+The 9x half, which is what this track is actually building right now:
+
 ```sh
-guest-tools/build-driver.sh                 # the driver + DRIVER\ ISO (both OSes once step 1 lands)
-guest-tools/build-wrappers.sh               # the big guest-tools ISO
-scripts/test.sh                             # host stage (~30 s); `all` adds the guest stage
-tools/setup-guest-test.sh ~/vms/win98.qcow2 win98    # SETUP in a real 98, headless
+# QEMU comes from the main checkout: this worktree has no build/ and does
+# not need one until the split (step 5) touches XP.
+export QEMU_BIN=$HOME/work/2ksbox/build/qemu/qemu-system-i386
+export QEMU_IMG=$HOME/work/2ksbox/build/qemu/qemu-img
+
+WATCOM=$HOME/.local/opt/open-watcom guest-tools/build-driver9x.sh   # d3dpt9x.drv + d3dpt9v.vxd + INF
+tools/win98-driver-test.sh ~/vms/win98.qcow2 install                # fresh raw copy, PnP installs, reboot prompt
+tools/win98-driver-test.sh ~/vms/win98.qcow2 boot                   # every run after that (~4 min)
+```
+
+`install` throws the scratch image away and converts a fresh raw from the
+user's qcow2, so it is also the reset button. `boot` re-stages only the two
+binaries, which is what an edit-build-test cycle wants. `BOOT_WAIT=190`
+buys more time on a slow run; `OUT=` moves the outputs.
+
+**The scratch image (`build/w98/win98-m10.raw`) is hand-edited** and a new
+session should know what is in it, or run `install` to start clean:
+`MSDOS.SYS` has `BootLog=1` and `Logo=0`; `SYSTEM.INI` has `[386Enh]
+device=C:\WINDOWS\SYSTEM\D3DPT9V.VXD` (loading the mini-VDD explicitly,
+which is how it was first proven — the `minivdd=` registry path has not
+been tested on its own since) and `[boot] display.drv=d3dpt9x.drv` (naming
+the display driver directly, part of ruling out the selection path in doc
+19 §13).
+
+The XP side, for when the split lands:
+
+```sh
+guest-tools/build-driver.sh                          # the XP driver + DRIVER\ ISO
+scripts/test.sh                                      # host stage (~30 s); `all` adds the guest stage
 tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7   # XP's regression oracle across the split
 ```
 
-This worktree has its own submodules but no `build/`. It needs
-`scripts/build.sh` once (~15 min for QEMU from scratch on the Linux box);
-`build/dxvk` may be symlinked from the main checkout rather than rebuilt.
+That needs a built `build/qemu` in this worktree — `scripts/build.sh` once,
+~15 min from scratch on the Linux box; `build/dxvk` may be symlinked from
+the main checkout rather than rebuilt.
 
-The 9x binaries need a second toolchain: **Open Watcom** (`wcc`, `wcc386`,
-`wasm`, `wlink`) for the 16-bit `.drv` and the ring-0 `.vxd`; mingw cannot
-stand in for it, though the ring-3 HAL DLL — the half that links our core —
-builds with the `i686-w64-mingw32` toolchain we already use. Installed on
-the Linux box at `~/.local/opt/open-watcom` from the Open Watcom v2
-`Last-CI-build` release's `ow-snapshot.tar.xz` (no sudo, nothing on the
-system path):
+### The second toolchain
+
+The 16-bit `.drv` and the ring-0 `.vxd` need **Open Watcom** (`wcc`,
+`wcc386`, `wasm`, `wlink`); mingw can make neither format, though the
+ring-3 HAL DLL — the half that will link our core — builds with the
+`i686-w64-mingw32` toolchain we already use. Installed on the Linux box at
+`~/.local/opt/open-watcom`, no sudo and nothing on the system path:
 
 ```sh
 curl -L -o ow.tar.xz https://github.com/open-watcom/open-watcom-v2/releases/download/Last-CI-build/ow-snapshot.tar.xz
 mkdir -p ~/.local/opt/open-watcom && tar xJf ow.tar.xz -C ~/.local/opt/open-watcom
-WATCOM=~/.local/opt/open-watcom guest-tools/build-driver9x.sh
-tools/win98-driver-test.sh ~/vms/win98.qcow2 install   # then `boot` on later runs
 ```
 
-The reference trees read in step 0 are cloned (gitignored, not vendored):
+`build-driver9x.sh` takes `WATCOM=` and says where to get it when missing.
+It also carries the post-link fixes both formats need — doc 19 §12 for the
+VxD's three, and the NE's expected-Windows-version and zero local heap —
+because `wlink` gets them wrong and nothing downstream complains.
+
+### The reference trees
+
+Read, never vendored; gitignored under `build/ref/`:
 
 ```sh
-git clone --depth 1 https://github.com/JHRobotics/vmdisp9x build/ref/vmdisp9x   # the .drv + VxD
-git clone --depth 1 https://github.com/JHRobotics/vmhal9x  build/ref/vmhal9x    # the ring-3 DirectDraw/D3D HAL
+git clone --depth 1 https://github.com/JHRobotics/vmdisp9x build/ref/vmdisp9x  # the .drv + VxD
+git clone --depth 1 https://github.com/JHRobotics/vmhal9x  build/ref/vmhal9x   # the ring-3 DirectDraw/D3D HAL
+curl -L -o build/ref/fixlink.c https://raw.githubusercontent.com/JHRobotics/fixlink/master/fixlink.c
 ```
 
-Notes that cost time if forgotten (CLAUDE.md has them, they bite here):
+`fixlink.c` is the one that says what `wlink`'s VxD output gets wrong; its
+`fix_wlink_vxd` is 40 lines and was worth reading in full.
+
+## Traps
+
+From CLAUDE.md, and they bite here:
 
 - **Win98 runs under TCG, not KVM** — under KVM the image loses Explorer
   at startup and there is no way to drive the guest.
 - **End every scripted Win98 run with a Start-menu shutdown**, never a
   kill: a killed VM leaves the FAT dirty and the next boot runs ScanDisk.
+  `win98-driver-test.sh` does this; a modal dialog can swallow it.
 - Win98 must be an ACPI install (`SETUP /p j`) or PCI hot-adds are never
   seen — which is exactly how the adapter arrives.
-- Never write the user's own images: run on overlays or on the m10 copies.
-- Kernel-mode debugging is the device's DEBUG register into the QEMU log,
-  never a debugger.
+- Never write the user's own images: `win98-driver-test.sh` works on a raw
+  copy, because mtools cannot write into a qcow2 and there is no in-guest
+  shell to drive before the display works.
+
+Learned here, each at the cost of a boot or three:
+
+- **A VxD the VMM dislikes is simply not loaded**: no `BOOTLOG.TXT` entry,
+  nothing on any debug channel, no error. Doc 19 §12 has the three
+  reasons; suspect the linker before the code.
+- **`BootLog=1` in `MSDOS.SYS` did not produce a fresh `BOOTLOG.TXT`** on
+  this image. Check the file's date (`mdir -a`) before believing a word of
+  it — a four-day-old log sent this session after the wrong thing.
+- **Edit `SYSTEM.INI` in binary or not at all.** Python's text mode strips
+  its CRLFs on read and the rewrite ate a section header, which then looks
+  exactly like Windows having rejected the setting.
+- **Ring-3 port 0xE9 output has never been seen from this guest**, so the
+  display driver's own debug channel is unproven; in ring 0 it works
+  (the VxD's lines arrive). Until the `.drv` runs, the mini-VDD's log is
+  the only reliable witness for it — `DriverInit` calls the VxD for
+  exactly that reason.
+- `-debugcon file:x` was verified end to end by pointing it at 0x402 and
+  watching SeaBIOS write 4 KB to it; the plumbing is not the suspect.
