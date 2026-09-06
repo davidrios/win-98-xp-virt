@@ -1390,13 +1390,31 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   `--diag-wizard-frame` dumped a correct 700×600 egui frame from inside
   the Flatpak — including its own "KVM is available on this host" hint.
 
+  **The build is now offline** (user request, same day), which is what
+  Flathub requires and the last structural gap in the manifest.
+  `packaging/flatpak/cargo-sources.json` declares all **513 crates** of
+  `Cargo.lock` as sources with checksums, unpacked into `cargo/vendor`
+  with a `cargo/config` redirecting crates-io at them — `CARGO_HOME`
+  already pointed there. `scripts/gen-flatpak-cargo-sources.sh`
+  regenerates it after any dependency change: it fetches upstream's
+  `flatpak-cargo-generator` **pinned to a commit and checked against its
+  sha256** (it is a third-party script this repo executes, so it is not
+  taken from a moving branch), runs it under `uv` with `aiohttp`/`tomlkit`
+  so nothing is installed on the host, and asserts the result is shaped
+  right (every archive has an https URL and a checksum, exactly one cargo
+  config). The lockfile has **no git dependencies**, which is the case
+  that would have needed more than this.
+
+  With that, `--share=network` is gone from the module: cargo runs
+  `--locked --offline`, QEMU gets `--disable-download` with its meson
+  wheel and softfloat subprojects vendored in the submodule, and distlib
+  is the module above. The build now proves its own offline-ness — if
+  anything reached for the network it would fail rather than quietly
+  work.
+
   Not done: **screenshots** for the metainfo (they need hosting, so this
-  waits on 2ksbox.com), and **offline sources** for a Flathub submission —
-  the manifest currently builds the 2ksbox module with `--share=network`
-  so cargo can fetch crates, which Flathub forbids;
-  `flatpak-cargo-generator` is the standard answer and QEMU's own
-  `--disable-download` already works (its softfloat subprojects are
-  checked out in the submodule rather than fetched by a wrap).
+  waits on 2ksbox.com), and the Flathub submission itself, which also
+  wants the sources as git rather than a local `type: dir`.
 
 ## Next steps, in order
 
