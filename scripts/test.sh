@@ -126,6 +126,24 @@ fi
 PASS=(); FAIL=(); SKIP=()
 log() { printf '\n==> %s\n' "$*"; }
 skip() { SKIP+=("$1: $2"); printf '  SKIP %s (%s)\n' "$1" "$2"; }
+# GNU coreutils' timeout(1) is not on a Mac (nor is gtimeout unless
+# someone installed coreutils), and a check that hangs is worse than one
+# that fails, so stand one in.
+if ! command -v timeout >/dev/null; then
+  if command -v gtimeout >/dev/null; then
+    timeout() { gtimeout "$@"; }
+  else
+    timeout() { # seconds, command...
+      local s="$1" p w rc; shift
+      "$@" & p=$!
+      ( sleep "$s"; kill -9 "$p" 2>/dev/null ) & w=$!
+      wait "$p"; rc=$?
+      kill "$w" 2>/dev/null
+      return $rc
+    }
+  fi
+fi
+
 run_check() { # name, log file, command...
   local name="$1" lf="$OUT/$2"; shift 2
   "$@" >"$lf" 2>&1; local rc=$?
