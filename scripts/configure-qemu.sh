@@ -5,17 +5,32 @@
 # host 3.14s broke mkvenv/distlib).
 #
 # Usage: scripts/configure-qemu.sh [extra configure flags...]
+#
+# QEMU_PYTHON=<interpreter> uses that one and never consults uv — for a
+# build inside a sandbox that has a suitable Python already and cannot
+# fetch one (the Flatpak, M6 step 6b: no uv in org.freedesktop.Sdk, and no
+# network during the build). It is checked for version rather than
+# trusted, because the failure it prevents (3.14 breaking mkvenv) is
+# obscure at the point it bites.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build/qemu"
 
-command -v uv >/dev/null || { echo "uv not found — install it (https://docs.astral.sh/uv/)"; exit 1; }
-
 PYVER="$(cat "$ROOT/.python-version")"
-uv python install "$PYVER" --quiet
-PYTHON="$(uv python find "$PYVER")"
-echo "==> python: $PYTHON"
+if [ -n "${QEMU_PYTHON:-}" ]; then
+  PYTHON="$QEMU_PYTHON"
+  command -v "$PYTHON" >/dev/null || { echo "QEMU_PYTHON=$PYTHON is not executable"; exit 1; }
+  # QEMU 9.2.x supports 3.8 … 3.13; anything newer breaks mkvenv/distlib.
+  "$PYTHON" -c 'import sys; sys.exit(0 if (3,8) <= sys.version_info[:2] <= (3,13) else 1)' || {
+    echo "QEMU_PYTHON=$PYTHON is $("$PYTHON" -V 2>&1); QEMU 9.2.x needs 3.8–3.13"; exit 1; }
+else
+  command -v uv >/dev/null || {
+    echo "uv not found — install it (https://docs.astral.sh/uv/), or set QEMU_PYTHON to a 3.8–3.13 interpreter"; exit 1; }
+  uv python install "$PYVER" --quiet
+  PYTHON="$(uv python find "$PYVER")"
+fi
+echo "==> python: $PYTHON ($("$PYTHON" -V 2>&1))"
 
 # libdisc (the CD-ROM image model, libdisc/): a Rust staticlib linked into
 # qemu-system-* and libqemu-embed-* for block/cdimage.c (patch 50). The crate

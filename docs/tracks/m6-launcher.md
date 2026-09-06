@@ -1371,16 +1371,56 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
    - ~~6a the install layout + the Linux tarball~~ — done above
      (`launcher/src/paths.rs`, `scripts/package-linux.sh`,
      `packaging/linux/`).
-   - 6b **Flatpak** (doc 07's primary Linux target): a manifest building
-     QEMU + both binaries against `org.freedesktop.Sdk`, so the ~190
-     system libraries the tarball assumes come from the runtime. The
-     application ID is settled (**`com._2ksbox.Launcher`**, ADR-011), and
-     the desktop entry, the icon and the **AppStream metainfo** (homepage
-     `https://2ksbox.com`, empty OARS content rating) are already there
-     and validated. What is left: the manifest itself, **screenshots**
-     (the one validation warning — they need a URL to live at, so this
-     waits on 2ksbox.com having a page), and `flatpak-builder`, which is
-     **not installed on this box**.
+   - 6b **Flatpak** — **and then an AppImage** (user decision, 2026-09-05,
+     after asking why Flatpak at all: doc 07's one line was never argued).
+     The honest case for it is **bundling and distribution, not
+     sandboxing**: our QEMU is a patch queue, so no distro's `qemu` can
+     ever be linked, and `libqemu-embed-i386.so` pulls **191 shared
+     libraries** the tarball ships none of — a runtime supplies exactly
+     that set on every distro, and Flathub is where a stranger finds a
+     Linux app (the M6 exit criterion). Against it: the sandbox will be
+     mostly nominal (`/dev/kvm`, the GPU, the network, and `--filesystem`
+     wide enough for disc images and qcow2s wherever a person keeps them,
+     since bundles store absolute paths), and it moves the data directory
+     under `~/.var/app/…`, which the still-open data-dir migration has to
+     account for. The AppImage gets the bundling win without either, so
+     both, Flatpak first.
+
+     **Prerequisite landed 2026-09-05:** `scripts/configure-qemu.sh` takes
+     `QEMU_PYTHON=<interpreter>` and then never consults uv — there is no
+     uv in `org.freedesktop.Sdk` and no network during a Flathub build,
+     while the host's own Python here is 3.14, which breaks QEMU's mkvenv
+     (hence uv in the first place). It version-checks what it is handed
+     (3.8–3.13) rather than trusting it, because that failure is obscure
+     where it bites. Verified: the host's 3.14 and a nonexistent path are
+     both refused with a plain message; an explicit 3.12 configures the
+     real tree; and — with a booby-trapped `uv` first on `PATH` that fails
+     loudly — the uv branch is provably not taken. `ninja` relinks and
+     `scripts/test.sh host` still passes 5/5 afterwards.
+
+     **Two things this box needs before the build can run at all:**
+     `flatpak-builder` is not installed, and `/` has 14 GB free at 97 %
+     full, so the Flatpak installation (`FLATPAK_USER_DIR`) and
+     flatpak-builder's state/build directories have to live on
+     `/mnt/data2` (40 GB free).
+
+     The manifest itself builds QEMU and both binaries against
+     `org.freedesktop.Sdk` (+ the `rust-stable` SDK extension), so the 191
+     libraries come from the runtime. It can reuse the staged layout
+     wholesale — `<prefix>` *is* `/app`, so `scripts/package-linux.sh
+     --out` already produces the tree a Flatpak wants. Identity is
+     settled: the application ID (ADR-011), the desktop entry, the icon
+     and the validated **AppStream metainfo** (homepage
+     `https://2ksbox.com`, empty OARS rating) all exist. What is left:
+     the manifest, **screenshots** (the one validation warning — they need
+     a URL to live at, so this waits on 2ksbox.com having a page), and,
+     for a Flathub submission rather than a local build, offline sources
+     (cargo vendoring via `flatpak-cargo-generator`, and QEMU's
+     `--disable-download`, which its configure already supports and whose
+     subprojects — berkeley-softfloat/testfloat — are checked out in the
+     submodule rather than fetched by a wrap).
+   - 6b′ **AppImage**, after the Flatpak: same staged tree, the ~191
+     libraries bundled with it, no sandbox and no data-directory move.
    - 6c **macOS**: the same layout as a `.app`
      (`Contents/MacOS` + `Contents/Resources`, a third candidate in
      `paths.rs`), signed with the JIT entitlement and notarized. The Mac

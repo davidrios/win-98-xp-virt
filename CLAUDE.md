@@ -88,7 +88,10 @@ stale copy links the player against an old library (`undefined symbol
 _qemu_embed_…`; `qemu-embed/build.rs` warns). Run `configure-qemu.sh`
 again whenever meson files changed (keeps `werror` off). On macOS export
 `MACOSX_DEPLOYMENT_TARGET` to the running OS before both configure and
-cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
+cargo. `QEMU_PYTHON=<interpreter>` makes `configure-qemu.sh` use that one
+and never consult uv (3.8–3.13 enforced) — for a sandboxed build that has
+a Python already and cannot fetch one, i.e. the Flatpak. Player env knobs
+(`PLAYER_*`) are listed in `README.md`.
 
 ## The QEMU patch queue
 
