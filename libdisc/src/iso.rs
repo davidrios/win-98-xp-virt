@@ -22,7 +22,7 @@ pub fn open(path: &Path) -> Result<Disc> {
             indices: vec![(1, 0)],
             start_lba: 0,
             end_lba: count as i32,
-            extents: vec![Extent { lba: 0, count, source: Source::File { file, offset: 0, layout: Layout::Cooked2048, swap: false }, sub: None }],
+            extents: vec![Extent { lba: 0, count, source: Source::File { file, offset: 0, layout: Layout::Cooked2048, swap: false, eof_pad: false }, sub: None }],
         }],
         leadout_lba: count as i32,
     });

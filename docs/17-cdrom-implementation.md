@@ -76,7 +76,7 @@ staticlib is linked into QEMU). Layout after M5a:
 | `src/subq.rs` | Q-channel synthesis + CRC-16 (§2.6), P-channel |
 | `src/mmc.rs` | responders: READ TOC formats 0/1/2, READ SUB-CHANNEL, READ CD sector layout, READ DISC INFORMATION (§4) |
 | `src/capi.rs` | `#[no_mangle] extern "C"` functions matching `libdisc/libdisc.h` exactly (§3) |
-| `src/bin/discx.rs` | the exerciser (§6.1): synthetic images, self-test through the C API, `dump`, `convert` |
+| `src/bin/discx.rs` | the exerciser (§6.1): synthetic images, self-test through the C API, `dump`, `convert`, `export`, `mktree` |
 | `qemu/cdimage.c`, `qemu/cdimage.h` | the QEMU block driver, overlaid into the tree by `prepare-qemu.sh` (§5) |
 | `libdisc.h` | the one C header (§3), overlaid next to it |
 
@@ -961,6 +961,17 @@ Subcommands:
 - `discx convert <in.iso> <out.cue>` — cooked ISO → MODE1/2352 cue/bin
   with synthesized EDC/ECC and, with `--audio tone.wav …`, appended audio
   tracks: the way to make guest test discs from the guest-tools ISO.
+- `discx export <image> <out.iso>` — the cooked 2048-byte view written
+  out sector by sector. For a folder disc (`isodir:<dir>`, M5g) this is
+  what an ISO 9660 reader that is not ours gets handed: the `dirdisc`
+  check exports the fixture tree's volume and has xorriso (or bsdtar)
+  extract the folder back out.
+- `discx mktree <dir>` — writes that fixture tree: an empty file, a file
+  of exactly one sector and one of a sector plus a byte, 3 MB of
+  pseudo-random data, names with spaces / accents / characters Joliet
+  forbids / a pair that mangles to one 8.3 name / one at Joliet's
+  64-character limit, nine directory levels, an empty directory, and 300
+  files in one directory (more records than a sector holds).
 
 `scripts/test.sh` host stage: `run_check libdisc libdisc.log
 target/release/discx selftest build/test/disc`, and `run_check cdimage

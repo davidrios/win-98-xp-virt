@@ -4,8 +4,13 @@
  * The one header for the Rust crate (libdisc/src/capi.rs implements it),
  * QEMU's cdimage block driver (libdisc/qemu/cdimage.c) and hw/ide/atapi.c
  * (patch 51). Bump LIBDISC_API_VERSION on any change; cdimage_open refuses
- * a mismatch. Every function is thread-safe on the same handle: a disc is
- * immutable once opened and carries no per-handle mutable state.
+ * a mismatch. Every function is thread-safe on the same handle: a disc's
+ * layout is immutable once opened, and the one piece of mutable state —
+ * the cache of open payload handles, which a folder disc needs because it
+ * names one file per shared file — is behind a lock.
+ *
+ * libdisc_open also takes a *directory*: it is then served as a generated
+ * ISO 9660 + Joliet volume over that tree (isodir, docs/tracks/m5-dirdisc.md).
  */
 #ifndef LIBDISC_H
 #define LIBDISC_H

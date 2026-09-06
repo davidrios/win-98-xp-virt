@@ -186,7 +186,7 @@ pub fn parse(text: &str, ccd_path: &Path) -> Result<Disc> {
             let extents = vec![Extent {
                 lba: first,
                 count: (end - first) as u32,
-                source: Source::File { file: img, offset: first as u64 * 2352, layout: Layout::Raw2352, swap: false },
+                source: Source::File { file: img, offset: first as u64 * 2352, layout: Layout::Raw2352, swap: false, eof_pad: false },
                 sub: sub.map(|f| SubSource::File { file: f, offset: first as u64 * 96 }),
             }];
             tracks.push(Track { number: e.point, mode, control: e.control, isrc, indices, start_lba: start, end_lba: end, extents });

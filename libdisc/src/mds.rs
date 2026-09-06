@@ -219,7 +219,7 @@ pub fn parse(mds: &[u8], mds_path: &Path) -> Result<Disc> {
             }
             indices.push((1, start));
             if in_file > 0 {
-                extents.push(Extent { lba: start, count: in_file as u32, source: Source::File { file, offset: e.start_offset, layout, swap: false }, sub: None });
+                extents.push(Extent { lba: start, count: in_file as u32, source: Source::File { file, offset: e.start_offset, layout, swap: false, eof_pad: false }, sub: None });
             }
             if start + in_file < end {
                 // the dump stops short of the next track: the rest reads as a gap of this track's kind

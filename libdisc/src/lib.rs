@@ -14,6 +14,7 @@ pub mod ccd;
 pub mod cue;
 pub mod ecc;
 pub mod iso;
+pub mod isodir;
 pub mod mds;
 pub mod mmc;
 pub mod msf;
@@ -190,6 +191,19 @@ pub enum Source {
         layout: Layout,
         /// Audio stored big-endian (`MOTOROLA`): swap sample bytes.
         swap: bool,
+        /// The extent's last sector may run past the end of the file:
+        /// zero-fill the remainder instead of failing. Set only by
+        /// `isodir`, where a shared file is whatever length it is and
+        /// the sector it ends in is padded, as on a burned disc; for an
+        /// image file a short read is a truncated image and stays an error.
+        eof_pad: bool,
+    },
+    /// Sectors of a generated volume held in memory: `blob` indexes the
+    /// disc's blobs, `offset` is the byte offset of this extent's first
+    /// sector (`isodir`'s descriptors, path tables and directory records).
+    Mem {
+        blob: usize,
+        offset: u64,
     },
     /// Audio pregap / postgap: digital silence.
     Silence,
@@ -263,40 +277,27 @@ pub struct Session {
     pub leadout_lba: i32,
 }
 
-/// An opened payload file (bin / img / sub / wav), read by offset.
+/// A payload file named by an image (bin / img / sub / wav) or by a
+/// shared folder (`isodir`), read by offset.
+///
+/// The handle is **not** kept: a folder disc names one payload per file
+/// and a shared tree can hold thousands, where macOS' default limit is
+/// 256 descriptors. `Disc` opens on demand into a small cache instead
+/// (`payload_handle`), and re-checks length and mtime every time it
+/// opens: a payload that changed underneath us is `Error::Medium` — the
+/// read error a drive reports for a damaged sector — rather than a
+/// silently torn read. A disc is a snapshot of the tree it was opened on.
 pub struct Payload {
     pub path: PathBuf,
-    file: File,
     pub len: u64,
+    mtime: Option<std::time::SystemTime>,
 }
 
-impl Payload {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::FileExt;
-            self.file
-                .read_exact_at(buf, offset)
-                .map_err(|e| Error::Io(format!("{}: {} bytes at {}: {}", self.path.display(), buf.len(), offset, e)))
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::FileExt;
-            let mut done = 0;
-            while done < buf.len() {
-                let n = self
-                    .file
-                    .seek_read(&mut buf[done..], offset + done as u64)
-                    .map_err(|e| Error::Io(format!("{}: {}", self.path.display(), e)))?;
-                if n == 0 {
-                    return Err(Error::Io(format!("{}: short read at {}", self.path.display(), offset)));
-                }
-                done += n;
-            }
-            Ok(())
-        }
-    }
-}
+/// How many payload handles a disc keeps open, most recently used first.
+/// One is enough for an image (a `.bin` and its `.sub`); a folder reads
+/// its files one after another, so a handful covers the interleaving
+/// with the metadata blob.
+const FD_CACHE: usize = 8;
 
 /// The disc.
 pub struct Disc {
@@ -307,6 +308,13 @@ pub struct Disc {
     /// CloneCD `[Entry]` records verbatim; `None` = synthesize the raw TOC.
     pub raw_toc: Option<Vec<TocEntry>>,
     files: Vec<Payload>,
+    /// Generated sectors held in memory (`Source::Mem`): `isodir`'s
+    /// volume descriptors, path tables and directory records.
+    blobs: Vec<Vec<u8>>,
+    /// Open handles for `files`, most recently used first. The lock is
+    /// the only mutable state on a disc; it is held to take a handle,
+    /// never across the read itself.
+    fds: std::sync::Mutex<Vec<(usize, std::sync::Arc<File>)>>,
 }
 
 impl fmt::Debug for Disc {
@@ -322,15 +330,100 @@ impl fmt::Debug for Disc {
 
 impl Disc {
     pub(crate) fn new() -> Disc {
-        Disc { sessions: Vec::new(), mcn: None, raw_toc: None, files: Vec::new() }
+        Disc {
+            sessions: Vec::new(),
+            mcn: None,
+            raw_toc: None,
+            files: Vec::new(),
+            blobs: Vec::new(),
+            fds: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
-    /// Open `path` as a payload file; returns its index for `Source::File`.
+    /// Register `path` as a payload file; returns its index for
+    /// `Source::File`. The file is opened once here so that a missing or
+    /// unreadable payload is an error at open time, as it always was,
+    /// and its length and mtime are recorded for `payload_handle`; the
+    /// handle itself is dropped (see `Payload`).
     pub(crate) fn add_file(&mut self, path: &Path) -> Result<usize> {
         let file = File::open(path).map_err(|e| Error::Invalid(format!("{}: {}", path.display(), e)))?;
-        let len = file.metadata()?.len();
-        self.files.push(Payload { path: path.to_path_buf(), file, len });
+        let md = file.metadata()?;
+        if md.is_dir() {
+            return Err(Error::Invalid(format!("{}: is a directory, not a payload file", path.display())));
+        }
+        self.files.push(Payload { path: path.to_path_buf(), len: md.len(), mtime: md.modified().ok() });
         Ok(self.files.len() - 1)
+    }
+
+    /// Register generated sectors; returns their index for `Source::Mem`.
+    pub(crate) fn add_blob(&mut self, data: Vec<u8>) -> usize {
+        self.blobs.push(data);
+        self.blobs.len() - 1
+    }
+
+    /// A handle for payload `index`, from the cache or freshly opened.
+    /// The `Arc` keeps it alive for the caller's read even if another
+    /// thread evicts it meanwhile.
+    fn payload_handle(&self, index: usize) -> Result<std::sync::Arc<File>> {
+        let mut cache = self.fds.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = cache.iter().position(|(i, _)| *i == index) {
+            let entry = cache.remove(at);
+            let file = entry.1.clone();
+            cache.insert(0, entry);
+            return Ok(file);
+        }
+        let p = &self.files[index];
+        let file = File::open(&p.path).map_err(|e| Error::Io(format!("{}: {}", p.path.display(), e)))?;
+        let md = file.metadata().map_err(|e| Error::Io(format!("{}: {}", p.path.display(), e)))?;
+        if md.len() != p.len || md.modified().ok() != p.mtime {
+            /* The disc was laid out over what this file was; serving the
+               new bytes at the old offsets would hand the guest a torn
+               file with no sign that anything happened. */
+            return Err(Error::Medium);
+        }
+        let file = std::sync::Arc::new(file);
+        cache.insert(0, (index, file.clone()));
+        cache.truncate(FD_CACHE);
+        Ok(file)
+    }
+
+    /// `buf.len()` bytes of payload `index` at `offset`. With `eof_pad`
+    /// a read that runs past the end of the file zero-fills the rest
+    /// (the sector a shared file ends in); without it that is an error.
+    fn read_payload(&self, index: usize, offset: u64, buf: &mut [u8], eof_pad: bool) -> Result<()> {
+        let path = &self.files[index].path;
+        let mut want = buf.len();
+        if eof_pad {
+            let have = self.files[index].len.saturating_sub(offset);
+            want = want.min(have as usize);
+            buf[want..].fill(0);
+            if want == 0 {
+                return Ok(());
+            }
+        }
+        let file = self.payload_handle(index)?;
+        let buf = &mut buf[..want];
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            file.read_exact_at(buf, offset)
+                .map_err(|e| Error::Io(format!("{}: {} bytes at {}: {}", path.display(), buf.len(), offset, e)))
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileExt;
+            let mut done = 0;
+            while done < buf.len() {
+                let n = file
+                    .seek_read(&mut buf[done..], offset + done as u64)
+                    .map_err(|e| Error::Io(format!("{}: {}", path.display(), e)))?;
+                if n == 0 {
+                    return Err(Error::Io(format!("{}: short read at {}", path.display(), offset)));
+                }
+                done += n;
+            }
+            Ok(())
+        }
     }
 
     pub fn file(&self, index: usize) -> &Payload {
@@ -343,9 +436,19 @@ impl Disc {
         self.files.len()
     }
 
-    /// Open an image: `.cue`, `.ccd`, `.iso`, dispatching on the
-    /// extension first and on the content when the extension says nothing.
+    /// Open an image: `.cue`, `.ccd`, `.mds`, `.iso`, dispatching on the
+    /// extension first and on the content when the extension says
+    /// nothing — or a **host directory**, with or without the `isodir:`
+    /// prefix the QEMU block driver strips, as a generated ISO 9660 +
+    /// Joliet volume over the tree (`isodir`, doc `m5-dirdisc`).
     pub fn open(path: &Path) -> Result<Disc> {
+        let path = match path.to_str().and_then(|p| p.strip_prefix("isodir:")) {
+            Some(dir) => Path::new(dir),
+            None => path,
+        };
+        if path.is_dir() {
+            return isodir::open(path);
+        }
         let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
         match ext.as_str() {
             "cue" => cue::open(path),
@@ -431,8 +534,13 @@ impl Disc {
         it.next().map(|(_, t)| t)
     }
 
+    /// The extent covering `lba`. Extents are ascending and
+    /// non-overlapping in every builder, so this is a binary search: a
+    /// folder disc has one extent per shared file, and a linear scan
+    /// would cost a comparison per file on every sector read.
     fn extent_at<'a>(&self, t: &'a Track, lba: i32) -> Option<&'a Extent> {
-        t.extents.iter().find(|e| lba >= e.lba && lba < e.end())
+        let at = t.extents.partition_point(|e| e.lba <= lba);
+        t.extents.get(at.checked_sub(1)?).filter(|e| lba < e.end())
     }
 
     /// The 2352 raw bytes of the sector at `lba`: stored, or synthesized
@@ -447,12 +555,22 @@ impl Disc {
         match e.source {
             Source::Silence => out.fill(0),
             Source::ZeroData => synth_from_cooked(t.mode, lba, &[0u8; 2048], out),
-            Source::File { file, offset, layout, swap } => {
+            Source::Mem { blob, offset } => {
+                let off = (offset + (lba - e.lba) as u64 * 2048) as usize;
+                let blob = &self.blobs[blob];
+                let mut data = [0u8; 2048];
+                let end = (off + 2048).min(blob.len());
+                if off < end {
+                    data[..end - off].copy_from_slice(&blob[off..end]);
+                }
+                synth_from_cooked(t.mode, lba, &data, out);
+            }
+            Source::File { file, offset, layout, swap, eof_pad } => {
                 let stride = layout.stride();
                 let off = offset + (lba - e.lba) as u64 * stride as u64;
                 match layout {
                     Layout::Raw2352 | Layout::Raw2352Sub96 => {
-                        self.files[file].read_at(off, out)?;
+                        self.read_payload(file, off, out, eof_pad)?;
                         if swap {
                             for p in out.chunks_exact_mut(2) {
                                 p.swap(0, 1);
@@ -461,12 +579,12 @@ impl Disc {
                     }
                     Layout::Cooked2048 => {
                         let mut data = [0u8; 2048];
-                        self.files[file].read_at(off, &mut data)?;
+                        self.read_payload(file, off, &mut data, eof_pad)?;
                         synth_from_cooked(t.mode, lba, &data, out);
                     }
                     Layout::Mode2_2336 => {
                         let mut body = [0u8; 2336];
-                        self.files[file].read_at(off, &mut body)?;
+                        self.read_payload(file, off, &mut body, eof_pad)?;
                         sector::build_mode2_2336(lba, &body, out);
                     }
                 }
@@ -540,14 +658,14 @@ impl Disc {
                     Some(SubSource::File { file, offset }) => {
                         let off = offset + (lba - e.lba) as u64 * 96;
                         if off + 96 <= self.files[file].len {
-                            return self.files[file].read_at(off, out);
+                            return self.read_payload(file, off, out, false);
                         }
                     }
                     None => {
                         if let Source::File { file, offset, layout: Layout::Raw2352Sub96, .. } = e.source {
                             let off = offset + (lba - e.lba) as u64 * 2448 + 2352;
                             let mut inter = [0u8; 96];
-                            self.files[file].read_at(off, &mut inter)?;
+                            self.read_payload(file, off, &mut inter, false)?;
                             subq::deinterleave(&inter, out);
                             return Ok(());
                         }

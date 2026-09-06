@@ -16,6 +16,9 @@
 #   libdisc        discx selftest (doc 17 §6.1): synthetic cue/bin, CCD and ISO
 #                  images, the CD model's reads, EDC/ECC, Q synthesis and the
 #                  MMC responders checked through libdisc's C API
+#   dirdisc        a host directory served as a disc (isodir, M5g): discx generates
+#                  the ISO 9660 + Joliet volume over a fixture tree, exports it and
+#                  xorriso (or bsdtar) reads the folder back out identical
 #   cdimage        the cdimage block driver (patch 50) through QEMU's block layer:
 #                  qemu-img probes the cue and the ccd to "cdimage" with the
 #                  lead-out × 2048 as the size, the data track dd'd out equals the
@@ -125,6 +128,34 @@ run_check() { # name, log file, command...
   if [ $rc = 77 ]; then skip "$name" "$(tail -1 "$lf")"; return 0; fi
   FAIL+=("$name"); printf '  FAIL %s (exit %d) — %s\n' "$name" $rc "$lf"; tail -5 "$lf" | sed 's/^/       /'; return 1
 }
+dirdisc_check() { # a host directory served as a disc, read back by someone else's ISO 9660 reader
+  # discx's own dirdisc case (the libdisc check) proves the model reads
+  # the tree back; this one proves the *volume* is one, by handing it to
+  # a reader that is not ours and diffing the result against the folder.
+  local src="$OUT/dirsrc" ext="$OUT/dirsrc-out" iso="$OUT/dirsrc.iso" rc=0
+  target/release/discx mktree "$src" || { echo "mktree failed"; return 1; }
+  target/release/discx export "isodir:$src" "$iso" >/dev/null || { echo "export failed"; return 1; }
+  [ -d "$ext" ] && chmod -R u+w "$ext"; rm -rf "$ext"; mkdir -p "$ext"
+  # Both readers are independent of us; xorriso is preferred only because
+  # libarchive rewrites names to NFD on macOS, which no guest does.
+  local extra=()
+  if command -v xorriso >/dev/null; then
+    xorriso -osirrox on -indev "$iso" -extract / "$ext" >"$OUT/dirdisc-extract.log" 2>&1 || { echo "xorriso could not read the volume"; return 1; }
+  elif command -v bsdtar >/dev/null; then
+    bsdtar -xf "$iso" -C "$ext" >"$OUT/dirdisc-extract.log" 2>&1 || { echo "bsdtar could not read the volume"; return 1; }
+    [ "$OS" = Darwin ] && extra=(-x 'caf*')
+  else
+    echo "needs xorriso or bsdtar"; return 77
+  fi
+  chmod -R u+w "$ext"
+  # The two names Joliet cannot hold are excluded here and checked below:
+  # everything else must come back exactly as it went in.
+  diff -r -x 'semi*' -x 'star*' "${extra[@]}" "$src" "$ext" || { echo "the folder did not come back identical"; rc=1; }
+  cmp -s "$src/semi;colon.txt" "$ext/semi_colon.txt" || { echo "semi;colon.txt is not there as semi_colon.txt"; rc=1; }
+  cmp -s "$src/star*name.txt" "$ext/star_name.txt" || { echo "star*name.txt is not there as star_name.txt"; rc=1; }
+  return $rc
+}
+
 cdimage_check() { # the block driver through qemu-img / qemu-io on the selftest images
   local d="$OUT/disc" want=$((6800 * 2048)) rc=0
   for f in mixed.cue mixed.ccd cooked.cue; do
@@ -281,6 +312,9 @@ host_stage() {
   if [ -x build/qemu/qemu-img ] && [ -f "$OUT/disc/mixed.cue" ]; then
     run_check cdimage cdimage.log cdimage_check || true
   else skip cdimage "needs build/qemu/qemu-img and the libdisc check's images"; fi
+  if [ -x target/release/discx ]; then
+    run_check dirdisc dirdisc.log dirdisc_check || true
+  else skip dirdisc "needs target/release/discx"; fi
 
   # the host GPU probe (ADR-013): what the launcher tells someone about 3D
   # before a machine exists. The verdict itself is a property of the box,

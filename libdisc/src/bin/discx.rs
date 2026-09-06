@@ -11,6 +11,9 @@
 //!   discx repair <image> <outdir>      a copy whose failing sectors verify: the negative control for a
 //!                                      protection check (user data untouched, only EDC/ECC regenerated)
 //!   discx convert <in.iso> <out.cue> [--audio a.wav ...]   cooked ISO → MODE1/2352 cue/bin (+ audio tracks)
+//!   discx export <image> <out.iso>     the cooked 2048-byte view, sector by sector: what a folder disc
+//!                                      (`isodir:<dir>`) looks like to an ISO 9660 reader
+//!   discx mktree <dir>                 write the fixture tree the `dirdisc` check and scripts/test.sh share
 //!
 //! Every check prints PASS/FAIL with a name; the exit code is 1 on any FAIL.
 
@@ -895,6 +898,7 @@ fn selftest(dir: &Path) -> i32 {
     ck.report("ccd", check_ccd(dir));
     ck.report("read-cd-length", check_read_cd_lengths());
     ck.report("read-cd-fill", check_read_cd_fill(dir));
+    ck.report("dirdisc", check_dirdisc(dir));
     ck.report("panic-safety", check_panic_safety(dir));
     println!("{} passed, {} failed", ck.passes, ck.fails);
     if ck.fails > 0 {
@@ -1064,7 +1068,7 @@ fn repair(disc: &Disc, image: &Path, outdir: &Path) -> Result<Repaired, String> 
             return Err(format!("{lba}: no extent"));
         };
         match e.source {
-            libdisc::Source::File { file, offset, layout, swap } => {
+            libdisc::Source::File { file, offset, layout, swap, .. } => {
                 if swap {
                     return Err(format!("{lba}: byte-swapped data track, refusing"));
                 }
@@ -1418,6 +1422,196 @@ fn usage() -> i32 {
     2
 }
 
+/// The cooked view of a disc, sector by sector, as a file. For a folder
+/// disc this is the oracle's input: an ISO 9660 reader that is not ours
+/// (`bsdtar`) has to find the tree we laid out.
+fn export(disc: &Disc, out: &Path) -> Result<(), String> {
+    let mut f = fs::File::create(out).map_err(|e| format!("{}: {}", out.display(), e))?;
+    let mut buf = [0u8; 2048];
+    for lba in 0..disc.sector_count() as i32 {
+        disc.read_cooked(lba, &mut buf).map_err(|e| format!("sector {lba}: {e}"))?;
+        f.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The fixture tree for the folder-disc checks: everything that makes an
+/// ISO 9660 layout awkward, in one directory. Deterministic, and
+/// rewritten from scratch on every run.
+fn mktree(dir: &Path) -> Result<(), String> {
+    let _ = fs::remove_dir_all(dir);
+    let mkdir = |p: &Path| fs::create_dir_all(p).map_err(|e| format!("{}: {}", p.display(), e));
+    let write = |p: &Path, b: &[u8]| fs::write(p, b).map_err(|e| format!("{}: {}", p.display(), e));
+    mkdir(dir)?;
+
+    write(&dir.join("readme.txt"), b"a folder in the drive\r\n")?;
+    // Empty file: a directory record with no extent at all.
+    write(&dir.join("EMPTY.BIN"), b"")?;
+    // Exactly a sector, and one byte past one: the extent arithmetic and
+    // the zero-filled tail sector.
+    write(&dir.join("exact2048.bin"), &vec![0xA5u8; 2048])?;
+    write(&dir.join("odd2049.bin"), &vec![0x5Au8; 2049])?;
+    // Big enough to cross many extents, with content no zero-fill could fake.
+    let mut st = 0x1234_5678u32;
+    let mut big = vec![0u8; 3 << 20];
+    for b in big.iter_mut() {
+        *b = (xorshift(&mut st) >> 13) as u8;
+    }
+    write(&dir.join("big.bin"), &big)?;
+
+    // Names an ISO 9660 identifier cannot hold, and a pair that mangles
+    // to the same 8.3 name.
+    write(&dir.join("Program Files.txt"), b"space")?;
+    write(&dir.join("caf\u{e9}.txt"), b"accent")?;
+    write(&dir.join("star*name.txt"), b"forbidden in joliet")?;
+    write(&dir.join("semi;colon.txt"), b"forbidden in joliet")?;
+    write(&dir.join("collision-one.txt"), b"one")?;
+    write(&dir.join("collision-two.txt"), b"two")?;
+    // 62 characters plus ";1" is exactly Joliet's 64.
+    let long: String = std::iter::repeat('L').take(58).collect();
+    write(&dir.join(format!("{long}.txt")), b"long")?;
+
+    // Nine levels: one past ISO 9660's limit, which is a warning and not
+    // a refusal, and Windows reads it through the Joliet tree.
+    let mut deep = dir.join("deep");
+    for i in 1..=8 {
+        deep = deep.join(format!("d{i}"));
+    }
+    mkdir(&deep)?;
+    write(&deep.join("bottom.txt"), b"nine levels down")?;
+    // An empty directory still needs its own extent.
+    mkdir(&dir.join("empty-dir"))?;
+    // More records than fit in one sector.
+    let many = dir.join("many");
+    mkdir(&many)?;
+    for i in 0..300 {
+        write(&many.join(format!("f{i:04}.dat")), format!("{i}\n").as_bytes())?;
+    }
+    Ok(())
+}
+
+/// The folder disc, through the C API: the layout is deterministic, the
+/// volume describes itself, every file reads back exactly as it is on
+/// the host, the padding is there, and a file that changes underneath an
+/// open disc is a read error rather than a torn read.
+fn check_dirdisc(dir: &Path) -> Result<(), String> {
+    let src = dir.join("dirsrc");
+    mktree(&src)?;
+    let arg = format!("isodir:{}", src.display());
+    let disc = Disc::open(Path::new(&arg)).map_err(|e| e.to_string())?;
+    let c = CDisc::open(Path::new(&arg))?;
+    expect("sector count", c.sector_count(), disc.sector_count())?;
+    expect("tracks", c.track_count(), 1)?;
+    let rd = |lba: u32| c.read_cooked(lba).map_err(|rc| format!("read_cooked {lba}: rc {rc}"));
+
+    // The primary volume descriptor describes the disc the drive reports.
+    let pvd = rd(16)?;
+    expect("pvd type", pvd[0], 1)?;
+    expect("pvd id", &pvd[1..6], b"CD001".as_slice())?;
+    let space = u32::from_le_bytes([pvd[80], pvd[81], pvd[82], pvd[83]]);
+    expect("volume space size", space, c.sector_count())?;
+    expect("volume space size (be)", u32::from_be_bytes([pvd[84], pvd[85], pvd[86], pvd[87]]), space)?;
+    expect("logical block size", u16::from_le_bytes([pvd[128], pvd[129]]), 2048)?;
+    let svd = rd(17)?;
+    expect("svd type", svd[0], 2)?;
+    expect("joliet escape", &svd[88..91], b"%/E".as_slice())?;
+    expect("terminator", rd(18)?[0], 255)?;
+
+    // The names: one mangling of each kind, in the tree that carries it.
+    let first_file = disc
+        .tracks()
+        .flat_map(|(_, t)| t.extents.iter())
+        .find(|e| matches!(e.source, libdisc::Source::File { .. }))
+        .map(|e| e.lba)
+        .ok_or("no file extents")?;
+    let meta: Vec<u8> = (16..first_file as u32).flat_map(|lba| c.read_cooked(lba).unwrap_or([0; 2048]).to_vec()).collect();
+    for want in [b"COLLISIO.TXT;1".as_slice(), b"COLLIS~1.TXT;1".as_slice(), b"PROGRAM_.TXT;1".as_slice()] {
+        if !meta.windows(want.len()).any(|w| w == want) {
+            return Err(format!("primary tree has no {}", String::from_utf8_lossy(want)));
+        }
+    }
+    let joliet: Vec<u8> = "café.txt;1".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+    if !meta.windows(joliet.len()).any(|w| w == joliet) {
+        return Err("joliet tree has no café.txt".into());
+    }
+    let starred: Vec<u8> = "star_name.txt;1".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+    if !meta.windows(starred.len()).any(|w| w == starred) {
+        return Err("joliet tree kept the * in star*name.txt".into());
+    }
+
+    // Every file extent, read through the C API, is the host file.
+    let mut files = 0;
+    for (_, t) in disc.tracks() {
+        for e in &t.extents {
+            let libdisc::Source::File { file, .. } = e.source else { continue };
+            let p = disc.file(file);
+            let want = fs::read(&p.path).map_err(|e| format!("{}: {}", p.path.display(), e))?;
+            let mut got = Vec::with_capacity(want.len());
+            for lba in e.lba..e.end() {
+                got.extend_from_slice(&rd(lba as u32)?);
+            }
+            got.truncate(want.len());
+            if got != want {
+                return Err(format!("{}: content differs through the disc", p.path.display()));
+            }
+            files += 1;
+        }
+    }
+    if files < 300 {
+        return Err(format!("only {files} file extents; the fixture tree has more"));
+    }
+
+    // The tail padding a guest's read-ahead runs into.
+    let last = c.sector_count() - 1;
+    if rd(last)? != [0u8; 2048] {
+        return Err("the last sector is not padding".into());
+    }
+
+    // Two opens of an unchanged tree are the same image, byte for byte.
+    let iso1 = dir.join("dirsrc-1.iso");
+    let iso2 = dir.join("dirsrc-2.iso");
+    export(&disc, &iso1)?;
+    let again = Disc::open(Path::new(&arg)).map_err(|e| e.to_string())?;
+    export(&again, &iso2)?;
+    let (a, b) = (fs::read(&iso1).map_err(|e| e.to_string())?, fs::read(&iso2).map_err(|e| e.to_string())?);
+    if a != b {
+        return Err("two opens of the same tree produced different images".into());
+    }
+
+    // A file that changes under an open disc: a read error, not a torn read.
+    let victim = src.join("readme.txt");
+    let victim_lba = disc
+        .tracks()
+        .flat_map(|(_, t)| t.extents.iter())
+        .find_map(|e| match e.source {
+            libdisc::Source::File { file, .. } if disc.file(file).path == victim => Some(e.lba),
+            _ => None,
+        })
+        .ok_or("readme.txt has no extent")?;
+    fs::write(&victim, b"changed underneath the drive, and longer than it was\r\n").map_err(|e| e.to_string())?;
+    match c.read_cooked(victim_lba as u32) {
+        Err(capi::LIBDISC_EMEDIUM) => {}
+        Err(rc) => return Err(format!("changed file: rc {rc}, wanted EMEDIUM")),
+        Ok(_) => return Err("a file changed under the disc was served anyway".into()),
+    }
+
+    // A symlink loop is refused rather than walked.
+    let loopdir = dir.join("dirloop");
+    let _ = fs::remove_dir_all(&loopdir);
+    fs::create_dir_all(loopdir.join("sub")).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        let link = loopdir.join("sub").join("up");
+        let _ = std::os::unix::fs::symlink("..", &link);
+        match Disc::open(&loopdir) {
+            Err(e) if e.to_string().contains("symlink loop") => {}
+            Err(e) => return Err(format!("symlink loop: {e}")),
+            Ok(_) => return Err("a symlink loop was walked".into()),
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
@@ -1507,6 +1701,29 @@ fn main() {
                     1
                 }
             },
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        },
+        "export" if args.len() >= 4 => match Disc::open(Path::new(&args[2])) {
+            Ok(d) => match export(&d, Path::new(&args[3])) {
+                Ok(()) => {
+                    outln!("{}: {} sectors", args[3], d.sector_count());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            },
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        },
+        "mktree" => match mktree(Path::new(&args[2])) {
+            Ok(()) => 0,
             Err(e) => {
                 eprintln!("{e}");
                 1

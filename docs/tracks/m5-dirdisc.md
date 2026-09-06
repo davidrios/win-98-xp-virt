@@ -12,9 +12,49 @@ and the M5 track doc `docs/tracks/m5-cdrom-backend.md`, whose code this
 extends. This file is the *plan and the ISO 9660 spec* for the new
 source; if it outgrows the track, its §"The layout" moves to doc 17 §8.
 
-Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`; nothing
-written yet — this doc is the whole of it. Rebase on `main` before
-each step and keep the shared files (§Scope) to minimal edits.
+Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`. Rebase on
+`main` before each step and keep the shared files (§Scope) to minimal
+edits.
+
+## State (2026-09-06: step 1 landed)
+
+`libdisc/src/isodir.rs` generates the volume, `discx` exercises it, and
+`scripts/test.sh`'s new **`dirdisc`** check hands the result to an ISO
+9660 reader that is not ours. On this Mac: `discx selftest` 12 passed 0
+failed (the new `dirdisc` case among them), `scripts/test.sh host` 9
+passed 0 failed 3 skipped, and `xorriso` extracts the fixture tree back
+out of the generated volume identical to the folder it was served from —
+`diff -r` clean but for the two names Joliet cannot hold, which come back
+mangled as designed. `qemu-img` was relinked against the new staticlib
+and the existing `cdimage` check still passes, so the payload change did
+not disturb the image path.
+
+What is in place:
+
+- **`isodir.rs`** — the walk, the two name trees, path tables, directory
+  records, both volume descriptors, the layout and the extents. No
+  dependencies (UCS-2, the civil-date conversion and the sort are all
+  hand-written; the crate links into QEMU and keeps none).
+- **`Source::Mem`** for the metadata blob and **`eof_pad`** on
+  `Source::File`, the flag that says an extent's last sector may run past
+  the end of its file — set only here, so a short read on an image file
+  is still the error it always was.
+- **Lazy payload handles** with an 8-entry MRU cache and a re-`stat` on
+  every open: a changed file is `Error::Medium`, the read error a drive
+  gives for a damaged sector, not a torn read. `add_file` still opens
+  once so a missing payload fails at open time as before.
+- **`extent_at` is a binary search** now. It was a linear scan, which
+  costs a comparison per shared file on every sector read once a disc has
+  thousands of extents rather than a handful.
+- **`discx export` / `discx mktree`**, and the `dirdisc` case in
+  `discx selftest`: the volume describes itself (PVD/SVD/terminator,
+  space size, block size, the Joliet escape), the mangled identifiers are
+  in the tree that should carry them, every file extent read through the
+  **C API** equals the host file, the tail padding is there, two opens of
+  an unchanged tree are byte-identical, a file changed under an open disc
+  reads as `EMEDIUM`, and a symlink loop is refused.
+
+Next: step 2, the `isodir` BlockDriver in `libdisc/qemu/cdimage.c`.
 
 ## Why it is small
 
@@ -229,7 +269,7 @@ Every step names its acceptance; do not move on with a failing check,
 and do not skip the docs part (this file's state, the status row) — that
 is the handoff.
 
-1. **The layout generator + the model additions.** `isodir.rs`,
+1. **The layout generator + the model additions** — *done 2026-09-06*. `isodir.rs`,
    `Source::Mem`, lazy payloads, `Disc::open` dispatching a directory
    path (and `isodir:` stripped if present) to it, `discx` accepting a
    directory for `info` / `dump` / `convert`.
@@ -287,3 +327,22 @@ is the handoff.
   is decision 2's job, not a bug report: eject and re-insert.
 - Never `git checkout` inside `qemu/` between `prepare-qemu.sh` runs;
   `block/cdimage.c` comes from `libdisc/qemu/`, not from a patch.
+
+Learned in step 1:
+
+- **libarchive normalizes names to NFD on macOS.** `bsdtar` extracting
+  our volume turns `café.txt` into `café.txt` and `diff -r` then
+  reports the file as missing from both sides. The volume carries the
+  host's own bytes and `xorriso` round-trips them exactly, so the
+  `dirdisc` check prefers xorriso and, when it falls back to bsdtar on a
+  Mac, excludes that one name. No guest does this.
+- **libarchive walks an ISO in extent order**, not directory order, so
+  its listing is the order files were laid out — which is how the layout
+  order was confirmed, and why an entry can appear far from its
+  neighbours in a listing without anything being wrong.
+- **An empty file needs a plausible extent.** Addressed at LBA 0, inside
+  the system area, it is the kind of thing a reader drops; it gets the
+  first file extent's LBA with a length of 0 instead.
+- The 8.3 mangling has to be decided from a **sorted** directory listing,
+  or which of two colliding names gets `~1` depends on the order the
+  filesystem happened to hand back and two runs stop agreeing.

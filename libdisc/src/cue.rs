@@ -311,7 +311,7 @@ pub fn parse(text: &str, cue_path: &Path) -> Result<Disc> {
                 extents.push(Extent {
                     lba: in_file_lba,
                     count,
-                    source: Source::File { file: f.payload, offset: byte_off, layout: t.layout, swap: f.swap },
+                    source: Source::File { file: f.payload, offset: byte_off, layout: t.layout, swap: f.swap, eof_pad: false },
                     sub: None,
                 });
             }
