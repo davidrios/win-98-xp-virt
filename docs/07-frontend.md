@@ -170,6 +170,15 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   property of the person, not of the machine that installed it first. A
   machine keeps only which disc is in its drive at boot; the rest are
   swapped in while it runs. One-click guest-tools ISO attach.
+- **A host folder is a disc too** ("Add folder…", both front ends): the
+  shelf takes a directory, and the machine's drive is given
+  `isodir:<path>`, which generates an ISO 9660 + Joliet volume over the
+  tree as the guest reads it (M5g, `docs/tracks/m5-dirdisc.md`). It is
+  how a pile of files — a patch, a save game, a folder of installers —
+  reaches a guest of an era whose networking nobody should trust, without
+  mastering an image first. Read-only, and a snapshot of the tree as the
+  tray closed: what changes on the host afterwards appears on the next
+  insert, which is what "Insert" already does.
 - **The shelf from inside the guest** (`CDSHELF`, guest-tools ISO): the
   same shelf, listed and swapped from a program running in the guest — a
   disc-2 prompt in a game is answered without leaving it. It is a

@@ -159,6 +159,21 @@ impl DiscShelfWindow {
                 self.shelf.add(PathBuf::from(self.add_path.trim()));
                 self.add_path.clear();
             }
+            // A folder is a disc as well (M5g): `isodir` generates a
+            // volume over it as the guest reads it, which is how a pile
+            // of files reaches a machine whose networking nobody wants to
+            // trust. No file filter can express "a folder", so it is its
+            // own dialog and its own button rather than a mode of the
+            // field above.
+            if ui
+                .button("Add folder…")
+                .on_hover_text("share a host directory with the guest as a generated disc")
+                .clicked()
+            {
+                if let Some(dir) = filepicker::pick_folder_headless(filepicker::start_dir(&self.add_path).as_deref()) {
+                    self.shelf.add(dir);
+                }
+            }
             // Doc 07's one-click guest-tools attach: no path to find, no
             // browsing — the driver/test ISO this checkout last built.
             match disc_library::guest_tools_iso() {

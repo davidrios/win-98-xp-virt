@@ -24,6 +24,10 @@
 #                  qemu-img reads the same bytes through the block layer and
 #                  SeaBIOS probing the drive proves the ATAPI path finds the disc
 #                  model (a plain .iso on the raw driver is the control)
+#   dirshelf       a shared folder as a disc from the launcher's side: on the shelf
+#                  under its own name, in the flat shelf file and on the boot
+#                  drive as `isodir:`, commas in the path doubled, and our QEMU
+#                  opening both folders
 #   cdimage        the cdimage block driver (patch 50) through QEMU's block layer:
 #                  qemu-img probes the cue and the ccd to "cdimage" with the
 #                  lead-out × 2048 as the size, the data track dd'd out equals the
@@ -274,6 +278,72 @@ host_check_probe() { # `launcher --host-check` (ADR-013), on any host
   fi
   return $rc
 }
+dirshelf_check() { # a shared folder as a disc, from the shelf to a real QEMU (M5g)
+  local rc=0 dir="$OUT/dirshelf" bundle args o spaced comma plain shelf_file
+  rm -rf "$dir"; mkdir -p "$dir/library"
+  export LAUNCHER_LIBRARY_DIR="$dir/library" LAUNCHER_DISC_LIBRARY="$dir/discs.toml"
+  export LAUNCHER_SHADER_PROFILES_DIR="$dir/profiles"
+  # Three folders, because the awkward parts of a folder name are what
+  # this is about: a space, a comma (which is what separates options in a
+  # QEMU option string), and one plain one to compare against. They go
+  # through the launcher's own headless verbs — the code the shelf
+  # window's buttons run.
+  spaced="$dir/Shared Files"; mkdir -p "$spaced"; echo hello > "$spaced/README.TXT"
+  comma="$dir/Doom,Quake"; mkdir -p "$comma"; echo hi > "$comma/GAME.TXT"
+  plain="$dir/patch13"; mkdir -p "$plain"; echo p > "$plain/PATCH.TXT"
+  : >"$dir/disk.qcow2"
+  bundle="$(target/release/launcher --new xp folders "$dir/disk.qcow2")" || { echo "--new failed"; return 1; }
+
+  # On the shelf a folder is labelled by its own name, extension and all
+  # (`patch13` would lose its .3 to a file stem).
+  o="$(target/release/launcher --discs add "$spaced" "$comma" "$plain")" || { echo "--discs add failed"; rc=1; }
+  for want in "Shared Files	$spaced" "Doom,Quake	$comma" "patch13	$plain"; do
+    case "$o" in *"$want"*) ;; *) echo "not on the shelf under its own name: $want"; echo "$o"; rc=1;; esac
+  done
+
+  # The flat file the guest's own CDSHELF program reads (patch 52) names a
+  # folder the way QEMU has to be told to open one, and only that way.
+  shelf_file="$(target/release/launcher --discs publish "$(dirname "$bundle")" \
+                | sed -n 's/^shelf published to //p')"
+  if [ -n "$shelf_file" ] && [ -f "$shelf_file" ]; then
+    grep -q "	isodir:$spaced\$" "$shelf_file" || { echo "the shelf file does not name the folder as isodir:"; cat "$shelf_file"; rc=1; }
+    grep -q "	$spaced\$" "$shelf_file" && { echo "the shelf file names the folder as a plain path too"; rc=1; }
+  else
+    echo "no shelf file was published"; rc=1
+  fi
+
+  # The boot drive: the prefix, and a comma written twice so that the
+  # option string survives being parsed.
+  target/release/launcher --boot-disc "$bundle" "$spaced" >/dev/null || { echo "--boot-disc failed"; rc=1; }
+  args="$(target/release/launcher --print-args "$bundle")"
+  case "$args" in *"file=isodir:$spaced "*) ;; *) echo "the boot drive does not name the folder as isodir:"; echo "$args"; rc=1;; esac
+  target/release/launcher --boot-disc "$bundle" "$comma" >/dev/null || { echo "--boot-disc (comma) failed"; rc=1; }
+  args="$(target/release/launcher --print-args "$bundle")"
+  case "$args" in *"file=isodir:$dir/Doom,,Quake "*) ;; *) echo "the comma in the path is not doubled"; echo "$args"; rc=1;; esac
+
+  # And the point of all of it: our QEMU opens a folder as a disc, and the
+  # doubled comma reaches it as one path rather than an unknown option.
+  # Only the space-free folders are run: this check has to re-split a flat
+  # command line in the shell, which the launcher itself never does (it
+  # spawns an argv), so a space in a path is the harness's limit and not
+  # the product's.
+  if [ -x build/qemu/qemu-system-i386 ] && [ -x build/qemu/qemu-img ]; then
+    build/qemu/qemu-img create -f qcow2 "$dir/disk.qcow2" 64M >/dev/null || rc=1
+    for d in "$plain" "$comma"; do
+      target/release/launcher --boot-disc "$bundle" "$d" >/dev/null || rc=1
+      args="$(target/release/launcher --print-args "$bundle")"
+      # shellcheck disable=SC2086
+      o="$(printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' \
+           | timeout 30 build/qemu/qemu-system-i386 $args \
+               -audiodev none,id=embed0 -display none -S -qmp stdio -serial none 2>&1)" \
+        || { echo "our QEMU refused the folder $d"; echo "$o" | tail -3; rc=1; }
+    done
+  else
+    echo "  (no build/qemu: the command line was checked but not run)"
+  fi
+  return $rc
+}
+
 optimizations_check() { # the wizard's fast-path switches, all the way to a real QEMU
   local rc=0 dir="$OUT/opt-switches" bundle args o
   rm -rf "$dir"; mkdir -p "$dir/library"
@@ -388,6 +458,9 @@ host_stage() {
   if [ -x target/release/discx ]; then
     run_check dirdisc dirdisc.log dirdisc_check || true
   else skip dirdisc "needs target/release/discx"; fi
+  if [ -x target/release/launcher ]; then
+    run_check dirshelf dirshelf.log dirshelf_check || true
+  else skip dirshelf "needs target/release/launcher"; fi
 
   # the host GPU probe (ADR-013): what the launcher tells someone about 3D
   # before a machine exists. The verdict itself is a property of the box,

@@ -23,6 +23,28 @@ use std::path::{Path, PathBuf};
 /// file picker — this module is shared, and a picker is not.
 pub const DISC_FILTER: (&str, &[&str]) = ("Disc images", &["iso", "cue", "ccd", "mds"]);
 
+/// How QEMU is told to open a shelf entry.
+///
+/// A **directory** is a disc too: `isodir` generates an ISO 9660 + Joliet
+/// volume over the tree as the guest reads it (M5g,
+/// `docs/tracks/m5-dirdisc.md`), which is how someone hands a pile of
+/// files to a machine that has no networking worth the name. It is
+/// reached by prefix because a directory can be neither probed nor opened
+/// as a file, so the choice has to be made here, once, by everything that
+/// names a medium to QEMU: the boot drive (`bundle.rs`), a live insert
+/// (`control.rs`) and the flat shelf file the guest's own CDSHELF reads.
+///
+/// Decided from the path each time rather than remembered: a folder that
+/// has since been deleted is then a missing file, which is what it is,
+/// rather than a folder disc QEMU cannot generate.
+pub fn qemu_medium(path: &Path) -> String {
+    if path.is_dir() {
+        format!("isodir:{}", path.display())
+    } else {
+        path.display().to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Disc {
     /// What to call it in a list. Defaults to the file name.
@@ -49,9 +71,12 @@ pub fn default_path() -> PathBuf {
 }
 
 /// A label for a disc that has none: the file name without its
-/// extension, which is what a rip is usually named after.
+/// extension, which is what a rip is usually named after — or, for a
+/// shared folder, the folder's own name, extension and all (`Patch 1.3`
+/// is a name, `Patch 1` is a mangling of one).
 pub fn default_label(path: &Path) -> String {
-    path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+    let name = if path.is_dir() { path.file_name() } else { path.file_stem() };
+    name.map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
 impl DiscLibrary {
@@ -123,7 +148,7 @@ pub fn write_shelf_file(library: &DiscLibrary, path: &Path) -> std::io::Result<(
     }
     let mut out = String::new();
     for disc in library.discs.iter().take(crate::disc_library::MAX_SHELF_ENTRIES) {
-        let path_str = disc.path.display().to_string();
+        let path_str = qemu_medium(&disc.path);
         if path_str.contains('\n') {
             eprintln!("[discs] skipping {path_str:?}: a newline in a path can't be written to the shelf file");
             continue;

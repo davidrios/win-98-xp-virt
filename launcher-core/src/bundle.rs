@@ -545,6 +545,15 @@ pub fn default_ram_mb(family: Family) -> u32 {
     }
 }
 
+/// A value inside a QEMU option string. Options are separated by commas
+/// there, so a comma in a value is written twice — otherwise a disk in
+/// `~/Games/Doom, Quake and friends/` silently becomes an unknown option
+/// and QEMU refuses the whole line. Paths come from a file picker, and a
+/// comma in a directory name is entirely ordinary.
+fn opt_value(s: &str) -> String {
+    s.replace(',', ",,")
+}
+
 /// What the UI lets a user ask for. The Win98 ceiling is doc 06's hard
 /// cap, not a guess: Win9x fails to boot with much more than 512 MB (its
 /// VCACHE sizing overflows), so offering 2 GB there would only produce a
@@ -697,7 +706,7 @@ impl Machine {
             "-cpu".into(),
             format!("pentium3{}", self.optimization_props(Knob::Cpu)),
             "-drive".into(),
-            format!("file={},if=ide,index=0,media=disk", self.disk.display()),
+            format!("file={},if=ide,index=0,media=disk", opt_value(&self.disk.display().to_string())),
             "-usb".into(),
             "-device".into(),
             "usb-tablet".into(),
@@ -716,7 +725,7 @@ impl Machine {
         // to probe and QEMU otherwise both warns and refuses writes to
         // the boot sector.
         if let Some(floppy) = &self.floppy {
-            args.extend(["-drive".into(), format!("file={},if=floppy,index=0,format=raw", floppy.display())]);
+            args.extend(["-drive".into(), format!("file={},if=floppy,index=0,format=raw", opt_value(&floppy.display().to_string()))]);
         }
         if let Some(order) = self.effective_boot().order() {
             args.extend(["-boot".into(), format!("order={order}")]);
@@ -787,7 +796,9 @@ impl Machine {
         // addresses (`control::CDROM_ID`).
         let mut drive = "if=none,id=cd0,media=cdrom".to_string();
         if let Some(disc) = self.boot_disc() {
-            drive.push_str(&format!(",file={}", disc.display()));
+            // `qemu_medium`, not the path: a shared folder is a disc too,
+            // and it is named to QEMU with the `isodir:` prefix (M5g).
+            drive.push_str(&format!(",file={}", opt_value(&crate::disc_library::qemu_medium(disc))));
         }
         let mut cd = format!("ide-cd,bus=ide.1,id={},drive=cd0,audiodev=embed0", crate::control::CDROM_ID);
         if let Some(shelf) = shelf {
@@ -796,7 +807,7 @@ impl Machine {
             // "no shelf" and the drive is an ordinary CD-ROM — which is
             // also what a hand-written bundle run straight through
             // `player` gets.
-            cd.push_str(&format!(",shelf={}", shelf.display()));
+            cd.push_str(&format!(",shelf={}", opt_value(&shelf.display().to_string())));
         }
         args.extend(["-drive".into(), drive, "-device".into(), cd]);
         args

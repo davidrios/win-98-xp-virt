@@ -198,7 +198,11 @@ impl Control {
         // the command line.
         self.execute(
             "blockdev-change-medium",
-            serde_json::json!({"id": CDROM_ID, "filename": disc.display().to_string()}),
+            // A folder goes in the drive the same way an image does, under
+            // the prefix that makes it one (`disc_library::qemu_medium`).
+            // No comma doubling here: this is a JSON string, not a QEMU
+            // option string.
+            serde_json::json!({"id": CDROM_ID, "filename": crate::disc_library::qemu_medium(disc)}),
         )
         .map(|_| ())
     }

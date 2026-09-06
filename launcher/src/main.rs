@@ -414,6 +414,17 @@ fn main() -> eframe::Result {
             }
             return Ok(());
         }
+        Some("--pick-folder") => {
+            // The same for the folder dialog behind "Add folder…": a
+            // shared directory is a disc too (M5g), and it is a different
+            // OS dialog, so it gets its own headless exercise.
+            let start_dir = args.next().and_then(|v| filepicker::start_dir(&v));
+            match filepicker::pick_folder_headless(start_dir.as_deref()) {
+                Some(path) => println!("{}", path.display()),
+                None => println!("(cancelled)"),
+            }
+            return Ok(());
+        }
         Some("--diag-preview-frame") => {
             // Diagnostic only: renders one full egui frame containing
             // just `ui.image()` on the preview's texture, the way

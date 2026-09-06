@@ -8,6 +8,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import com._2ksbox.launcher
 
 // A real top-level window — see `WizardWindow.qml`. Non-modal on
@@ -198,6 +199,19 @@ Window {
                     onClicked: { root.discs.add(adder.value); adder.value = "" }
                 }
                 Button {
+                    // A folder is a disc as well (M5g): `isodir` generates
+                    // a volume over it as the guest reads it, which is how
+                    // a pile of files reaches a machine whose networking
+                    // nobody wants to trust. No name filter can express "a
+                    // folder", so it is its own dialog — Qt's FolderDialog,
+                    // the same portal/NSOpenPanel/IFileDialog backends
+                    // PathField's FileDialog reaches.
+                    text: qsTr("Add folder…")
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("share a host directory with the guest as a generated disc")
+                    onClicked: folderDialog.open()
+                }
+                Button {
                     // Doc 07's one-click guest-tools attach: no path to find,
                     // no browsing — the driver/test ISO this checkout last
                     // built.
@@ -210,6 +224,13 @@ Window {
                     onClicked: root.discs.addGuestTools()
                 }
                 Item { Layout.fillWidth: true }
+            }
+
+            FolderDialog {
+                id: folderDialog
+                title: qsTr("Share a folder with the guest")
+                currentFolder: adder.value !== "" ? "file://" + adder.value : ""
+                onAccepted: root.discs.add(selectedFolder.toString().replace(/^file:\/\//, ""))
             }
 
             Label {

@@ -278,17 +278,33 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
             // Headless equivalent of the shelf window: with no arguments
             // it prints the shared shelf, otherwise it runs the same
             // `add`/`remove` the buttons do. `+tools` stands for the
-            // "Add guest-tools ISO" button.
+            // "Add guest-tools ISO" button, and `publish <bundle dir>`
+            // for what the GUI does on its own when a machine is running.
+            // A directory can be added like any other entry: it goes in
+            // the drive as a generated disc (`disc_library::qemu_medium`).
             let library_path = disc_library::default_path();
             machines::import_legacy_discs(&library::scan(&library::default_dir()), &library_path);
             let mut shelf = shelf::Shelf::default();
             shelf.open_library(&library_path);
             let mut removing = false;
+            let mut publish_to: Option<PathBuf> = None;
+            let mut expecting_dir = false;
             for arg in args.by_ref() {
                 match arg.as_str() {
+                    _ if expecting_dir => {
+                        publish_to = Some(arg.into());
+                        expecting_dir = false;
+                    }
                     "add" => removing = false,
                     "remove" => removing = true,
                     "+tools" => shelf.add_guest_tools(),
+                    // What a running machine's drive is given (patch 52):
+                    // the flat `<label>\t<path>` file the in-guest CDSHELF
+                    // program lists. The GUI does it whenever the shelf
+                    // changes under a machine that is up (`republish_shelf`);
+                    // headlessly there is no such moment, so name the
+                    // bundle directory to write it now.
+                    "publish" => expecting_dir = true,
                     other if removing => shelf.remove(Path::new(other)),
                     other => shelf.add(other.into()),
                 }
@@ -298,6 +314,11 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
             shelf.flush().expect("save the shelf");
             if let Err(e) = shelf.last_result() {
                 eprintln!("[discs] {e}");
+            }
+            if let Some(dir) = publish_to {
+                let path = control::shelf_path(&dir);
+                machines::publish_shelf(&library_path, &path);
+                println!("shelf published to {}", path.display());
             }
             for disc in shelf.discs() {
                 println!("{}\t{}", disc.label, disc.path.display());

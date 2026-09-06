@@ -37,6 +37,17 @@ pub fn pick_file_headless(filter: Option<Filter>, start_dir: Option<&std::path::
     dialog.pick_file()
 }
 
+/// The same for a *directory*: a shared folder goes on the shelf as a
+/// disc of its own (`disc_library::qemu_medium`), and no file filter can
+/// express "a folder", so the dialog has to be a different one.
+pub fn pick_folder_headless(start_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(dir) = start_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder()
+}
+
 /// A labeled text field with a "Browse…" button. Typing directly is still
 /// allowed (a path the user already knows, or one on a mount the picker
 /// can't reach); the button is a convenience, not the only way in.

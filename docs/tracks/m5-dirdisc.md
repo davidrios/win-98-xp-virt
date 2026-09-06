@@ -16,7 +16,7 @@ Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`. Rebase on
 `main` before each step and keep the shared files (§Scope) to minimal
 edits.
 
-## State (2026-09-06: steps 1–3 landed)
+## State (2026-09-06: steps 1–4 landed)
 
 `libdisc/src/isodir.rs` generates the volume, `discx` exercises it, and
 `scripts/test.sh`'s new **`dirdisc`** check hands the result to an ISO
@@ -103,7 +103,39 @@ with mtools where `sfdisk`/`mkfs.fat` are absent, the wait watches COM1
 rather than the guest's unflushed FAT writes, and `tr` runs in the C
 locale.
 
-Next: step 4, the launcher and the shelf.
+Step 4 put it in the launcher. The whole choice is one function —
+`disc_library::qemu_medium(path)`, `isodir:<path>` for a directory and
+the plain path for a file — and everything that names a medium to QEMU
+goes through it: the boot drive (`bundle.rs`), a live insert
+(`control.rs`) and the flat shelf file the in-guest CDSHELF reads. It is
+decided from the path each time rather than remembered, so a folder that
+has since been deleted is a missing file, which is what it is.
+
+Both front ends grew an **"Add folder…"** button (egui through `rfd`'s
+folder dialog, Qt through `FolderDialog` — the same backends `PathField`
+already reaches), because no name filter can express "a folder". A
+folder's shelf label is its own name, extension and all: `patch13` would
+otherwise lose its `.3` to a file stem. New headless verbs to match:
+`--pick-folder`, next to the existing `--pick-file`, and `--discs publish
+<bundle dir>`, which is what the GUI does by itself when the shelf
+changes under a running machine.
+
+**The comma bug the track doc predicted was real and older than this
+track**: QEMU option strings separate on commas, so a disk in
+`~/Games/Doom, Quake and friends/` silently became an unknown option and
+QEMU refused the whole line. `bundle.rs` doubles them now — for the disk,
+the floppy, the disc and the shelf path, not only the one this track
+touched.
+
+The suite's new **`dirshelf`** check runs the launcher's own headless
+verbs over three folders (one with a space, one with a comma, one plain):
+each is on the shelf under its own name, the shelf file names it as
+`isodir:` and only that way, `--print-args` puts the prefix on the boot
+drive with the comma doubled, and our QEMU is handed the result and opens
+it. `scripts/test.sh host`: 14 passed, 0 failed, 3 skipped.
+
+Next: step 5 — Win98 and DOS legs, the refusals and warnings each with a
+case, and the stale-file rule watched in a guest.
 
 ## Why it is small
 
@@ -159,11 +191,11 @@ for the ISO 9660 metadata. Everything downstream — `read_cooked` /
   `docs/00-status.md`, a pointer from doc 17 §5.1 and doc 05.
 - Tests: the `dirdisc` case in `scripts/test.sh`, a folder run of
   `tools/xp-cdimage-test.sh`.
-- Shared (rebase first, edit minimally, name the track in the commit):
-  `launcher/src/disc_library.rs`, `launcher/src/discshelf.rs`,
-  `launcher/src/bundle.rs` (the `-drive …,file=` line, `bundle.rs:523`),
-  `launcher/src/control.rs` (live insert) — all M6's files; `CLAUDE.md`'s
-  tools table.
+- Shared (rebase first, edit minimally, name the track in the commit) —
+  all M6's files, and all moved by main's launcher split on 2026-09-06:
+  `launcher-core/src/{disc_library,bundle,control,cli,shelf}.rs`, the two
+  front ends (`launcher/src/{discshelf,filepicker,main}.rs`,
+  `launcher-qt/qml/DiscShelfWindow.qml`); `CLAUDE.md`'s tools table.
 
 ## The layout (what step 1 must produce)
 
@@ -282,20 +314,12 @@ The shelf needs nothing: patch 52's `LOAD` passes the filename to
 resolve it (`52-atapi-disc-shelf.patch:159`), which is precisely what a
 protocol prefix does.
 
-## The launcher side (M6's files, small)
+## The launcher side (M6's files, small) — done, see State
 
-- `disc_library.rs`: a shelf entry may be a directory. `DISC_FILTER`
-  (`:24`) stays for files; add an "Add folder…" button next to
-  "Add disc…" (`rfd`'s folder picker). `default_label` for a directory
-  is the folder's name.
-- `write_shelf_file` (`:120`) writes `isodir:<path>` for a directory —
-  the shelf line file is what the drive reads, so the prefix belongs
-  there, not in the C.
-- `bundle.rs:523` (`,file={}`) and `control.rs`'s live insert take the
-  same prefixed string. **While there:** a path containing a comma
-  breaks a QEMU option string and needs its commas doubled; that bug is
-  already live for disc paths and a folder picked out of a user's
-  Documents is exactly how someone finds it.
+One function decides it (`disc_library::qemu_medium`), three callers use
+it (the boot drive, the live insert, the flat shelf file), and both front
+ends grew an "Add folder…" button because no name filter can express "a
+folder". The comma doubling landed with it.
 
 ## Build / test loop
 
@@ -348,7 +372,9 @@ is the handoff.
    guest-tools folder (`guest-tools/out/iso`) served as a disc installs
    through `SETUP /ALL` exactly like the burned ISO does. Wire the run
    into `scripts/test.sh`'s guest stage next to `guest-cdimage`.
-4. **The launcher and the shelf.** The four edits above.
+4. **The launcher and the shelf** — *done 2026-09-06*, against the
+   post-split layout (`launcher-core` + two front ends, not the single
+   `launcher/` this doc was written for).
    *Acceptance:* a folder added to the shelf, inserted into a running XP
    from the launcher, listed and read by `CDSHELF LIST` / `CDSHELF <n>`
    in the guest (`tools/cdshelf-guest-test.sh`'s pattern), ejected; a
@@ -442,3 +468,14 @@ both systems):
   they are on. BSD `tr` also refuses the guest's CP-850 bytes in a UTF-8
   locale — one accented filename in the listing is enough — so it runs
   under `LC_ALL=C`.
+
+Learned in step 4:
+
+- A check that re-splits `--print-args`' flat line in the shell **cannot
+  carry a path with a space** — the launcher spawns an argv and never
+  has this problem, so it is the harness's limit, not the product's. The
+  space case is asserted on the string; the comma case, which is what an
+  option parser actually cares about, is the one handed to QEMU.
+- `--print-args` puts `file=` last in the `-drive` value, so a pattern
+  that expects a trailing comma after it never matches. Two of the first
+  three failures in the new check were the check, not the code.
