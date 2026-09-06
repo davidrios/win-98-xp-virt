@@ -12,6 +12,14 @@
  * Overlaid into qemu/block/ by scripts/prepare-qemu.sh from libdisc/qemu/;
  * built when meson found liblibdisc.a (-Dlibdisc_dir, patch 50).
  *
+ * The same file also registers `isodir`, which serves a host *directory*
+ * as a generated ISO 9660 + Joliet volume (M5g, docs/tracks/m5-dirdisc.md).
+ * It is a protocol driver, `isodir:/path/to/folder`, because a directory
+ * can be neither probed nor opened as a `file` child — the shape vvfat's
+ * `fat:` prefix has for the same reason. Everything else is shared with
+ * cdimage: the same state, the same reads, the same disc handle reaching
+ * hw/ide/atapi.c, so a folder is a disc in the drive like any other.
+ *
  * Copyright (c) 2026 the win98-xp-virt authors. GPL-2.0-only, like QEMU.
  */
 #include "qemu/osdep.h"
@@ -20,10 +28,14 @@
 #include "block/block_int.h"
 #include "qemu/module.h"
 #include "qemu/error-report.h"
+#include "qemu/option.h"
+#include "qemu/cutils.h"
+#include "qapi/qmp/qdict.h"
 #include "block/cdimage.h"
 #include "block/libdisc.h"
 
 #define CDIMAGE_SECTOR 2048
+#define ISODIR_PREFIX  "isodir:"
 
 typedef struct BDRVCdimageState {
     libdisc *disc;
@@ -31,6 +43,40 @@ typedef struct BDRVCdimageState {
 } BDRVCdimageState;
 
 static BlockDriver bdrv_cdimage;
+static BlockDriver bdrv_isodir;
+
+/*
+ * Open the medium at `path` (an image file, or a directory for isodir)
+ * and take its size. Shared by both drivers: everything that differs is
+ * how they got hold of the path.
+ */
+static int cdimage_open_disc(BlockDriverState *bs, const char *path, Error **errp)
+{
+    BDRVCdimageState *s = bs->opaque;
+    char err[512];
+
+    if (libdisc_api_version() != LIBDISC_API_VERSION) {
+        error_setg(errp, "libdisc API version %u, cdimage was built for %u",
+                   libdisc_api_version(), LIBDISC_API_VERSION);
+        return -EINVAL;
+    }
+    err[0] = 0;
+    s->disc = libdisc_open(path, err, sizeof(err));
+    if (!s->disc) {
+        error_setg(errp, "%s: %s", bs->drv->format_name,
+                   err[0] ? err : "cannot open the medium");
+        return -EINVAL;
+    }
+    s->sectors = libdisc_sector_count(s->disc);
+    if (s->sectors == 0) {
+        libdisc_close(s->disc);
+        s->disc = NULL;
+        error_setg(errp, "%s: %s: empty disc", bs->drv->format_name, path);
+        return -EINVAL;
+    }
+    bs->total_sectors = (int64_t)s->sectors * CDIMAGE_SECTOR / BDRV_SECTOR_SIZE;
+    return 0;
+}
 
 static int cdimage_probe(const uint8_t *buf, int buf_size, const char *filename)
 {
@@ -76,21 +122,76 @@ static int cdimage_open(BlockDriverState *bs, QDict *options, int flags,
     if (!path[0]) {
         path = bs->filename;
     }
-    err[0] = 0;
-    s->disc = libdisc_open(path, err, sizeof(err));
-    if (!s->disc) {
-        error_setg(errp, "cdimage: %s", err[0] ? err : "cannot open the image");
+    return cdimage_open_disc(bs, path, errp);
+}
+
+/*
+ * isodir:/path/to/folder -> options["dir"]. The prefix is the whole
+ * syntax: a shared folder has no options to parse, and anything after
+ * the prefix is a path, colons and all.
+ */
+static void isodir_parse_filename(const char *filename, QDict *options,
+                                  Error **errp)
+{
+    const char *dir;
+
+    if (!strstart(filename, ISODIR_PREFIX, &dir) || !dir[0]) {
+        error_setg(errp, "isodir: expected " ISODIR_PREFIX "<directory>");
+        return;
+    }
+    qdict_put_str(options, "dir", dir);
+}
+
+static QemuOptsList isodir_runtime_opts = {
+    .name = "isodir",
+    .head = QTAILQ_HEAD_INITIALIZER(isodir_runtime_opts.head),
+    .desc = {
+        {
+            .name = "dir",
+            .type = QEMU_OPT_STRING,
+            .help = "Host directory to serve as an ISO 9660 disc",
+        },
+        { /* end of list */ }
+    },
+};
+
+static int isodir_open(BlockDriverState *bs, QDict *options, int flags,
+                       Error **errp)
+{
+    QemuOpts *opts;
+    const char *dir;
+    int ret;
+
+    GLOBAL_STATE_CODE();
+
+    /* A folder is a disc: read-only, whatever the caller asked for. */
+    bdrv_graph_rdlock_main_loop();
+    ret = bdrv_apply_auto_read_only(bs, "isodir discs are read-only", errp);
+    bdrv_graph_rdunlock_main_loop();
+    if (ret < 0) {
+        return ret;
+    }
+
+    opts = qemu_opts_create(&isodir_runtime_opts, NULL, 0, &error_abort);
+    if (!qemu_opts_absorb_qdict(opts, options, errp)) {
+        qemu_opts_del(opts);
         return -EINVAL;
     }
-    s->sectors = libdisc_sector_count(s->disc);
-    if (s->sectors == 0) {
-        libdisc_close(s->disc);
-        s->disc = NULL;
-        error_setg(errp, "cdimage: %s: empty disc", path);
+    dir = qemu_opt_get(opts, "dir");
+    if (!dir) {
+        error_setg(errp, "isodir needs a 'dir' option (or an "
+                   ISODIR_PREFIX "<directory> filename)");
+        qemu_opts_del(opts);
         return -EINVAL;
     }
-    bs->total_sectors = (int64_t)s->sectors * CDIMAGE_SECTOR / BDRV_SECTOR_SIZE;
-    return 0;
+    /*
+     * No bdrv_open_file_child: there is no file to open, and the block
+     * layer would not know what to do with a directory if there were.
+     * That also means this node has no children, so no bdrv_child_perm.
+     */
+    ret = cdimage_open_disc(bs, dir, errp);
+    qemu_opts_del(opts);
+    return ret;
 }
 
 static void cdimage_refresh_limits(BlockDriverState *bs, Error **errp)
@@ -147,7 +248,16 @@ libdisc *cdimage_disc(BlockDriverState *bs)
         return NULL;
     }
     bs = bdrv_skip_filters(bs);
-    if (!bs || bs->drv != &bdrv_cdimage) {
+    /*
+     * A protocol driver reached through its filename prefix can end up
+     * with a format node above it, so walk down through those too: a
+     * disc handle that is not found here is not an error anywhere, it
+     * silently drops the drive back to QEMU's stock ATAPI answers.
+     */
+    while (bs && bs->drv && bs->drv->is_format && bs->drv != &bdrv_cdimage && bs->file) {
+        bs = bdrv_skip_filters(bs->file->bs);
+    }
+    if (!bs || (bs->drv != &bdrv_cdimage && bs->drv != &bdrv_isodir)) {
         return NULL;
     }
     return ((BDRVCdimageState *)bs->opaque)->disc;
@@ -165,9 +275,27 @@ static BlockDriver bdrv_cdimage = {
     .is_format           = true,
 };
 
+static const char *const isodir_strong_runtime_opts[] = {
+    "dir",
+    NULL
+};
+
+static BlockDriver bdrv_isodir = {
+    .format_name         = "isodir",
+    .protocol_name       = "isodir",
+    .instance_size       = sizeof(BDRVCdimageState),
+    .bdrv_parse_filename = isodir_parse_filename,
+    .bdrv_open           = isodir_open,
+    .bdrv_refresh_limits = cdimage_refresh_limits,
+    .bdrv_co_preadv      = cdimage_co_preadv,
+    .bdrv_close          = cdimage_close,
+    .strong_runtime_opts = isodir_strong_runtime_opts,
+};
+
 static void bdrv_cdimage_init(void)
 {
     bdrv_register(&bdrv_cdimage);
+    bdrv_register(&bdrv_isodir);
 }
 
 block_init(bdrv_cdimage_init);

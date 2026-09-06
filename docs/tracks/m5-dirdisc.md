@@ -16,7 +16,7 @@ Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`. Rebase on
 `main` before each step and keep the shared files (§Scope) to minimal
 edits.
 
-## State (2026-09-06: step 1 landed)
+## State (2026-09-06: steps 1 and 2 landed)
 
 `libdisc/src/isodir.rs` generates the volume, `discx` exercises it, and
 `scripts/test.sh`'s new **`dirdisc`** check hands the result to an ISO
@@ -54,7 +54,31 @@ What is in place:
   an unchanged tree are byte-identical, a file changed under an open disc
   reads as `EMEDIUM`, and a symlink loop is refused.
 
-Next: step 2, the `isodir` BlockDriver in `libdisc/qemu/cdimage.c`.
+Step 2 added the `isodir` BlockDriver to `libdisc/qemu/cdimage.c` — a
+protocol driver with `bdrv_parse_filename`, no `file` child, and
+everything else shared with `cdimage` (the same state, reads, close, and
+the same `cdimage_disc()` handle reaching `hw/ide/atapi.c`). No QEMU
+patch changed: that file is ours.
+
+**The unknown resolved the way the doc feared.** `qemu-img info` on
+`isodir:<dir>` reports a **`raw` format node above the `isodir` one**:
+the block layer probes for a format on top of a protocol driver it found
+by filename prefix, and `raw` matches anything. vvfat lives with the
+same. `cdimage_disc()` therefore walks down through format nodes as well
+as filters, and the check below is what proves it rather than a reading
+of `block.c`.
+
+Measured here: `qemu-img info` names `isodir`, `qemu-img convert -O raw`
+is byte-identical to `discx export`, and **SeaBIOS probing the drive
+issues 4 packets that reach the disc model** (TEST UNIT READY and a
+READ(10) of LBA 17) with `CDIMAGE_TRACE=1`, where the same run on a
+plain `.iso` — the raw driver, no model — issues none. Both are in the
+suite's `dirdisc` check now; the boot ends on SeaBIOS' own "No bootable
+device" through `-debugcon`, so it costs about a second each.
+
+Next: step 3, XP end to end on Linux (`tools/xp-cdimage-test.sh` with
+`isodir:<dir>` and that directory as its own reference). The guest stage
+does not run on macOS, so that step needs the Linux box.
 
 ## Why it is small
 
@@ -282,7 +306,7 @@ is the handoff.
    against the expected mangling table; a second run produces the same
    image byte for byte. `cargo build --release -p libdisc` warning-free.
    Add the check to `scripts/test.sh` (`dirdisc`, host stage) in this step.
-2. **The QEMU driver.** `bdrv_isodir` in `libdisc/qemu/cdimage.c`,
+2. **The QEMU driver** — *done 2026-09-06*. `bdrv_isodir` in `libdisc/qemu/cdimage.c`,
    `cdimage_disc()` taught both drivers.
    *Acceptance:* `qemu-img info isodir:<dir>` says `file format: isodir`
    and `qemu-img convert -f isodir isodir:<dir> out.iso` is byte-identical
@@ -346,3 +370,19 @@ Learned in step 1:
 - The 8.3 mangling has to be decided from a **sorted** directory listing,
   or which of two colliding names gets `~1` depends on the order the
   filesystem happened to hand back and two runs stop agreeing.
+
+Learned in step 2:
+
+- **A `raw` format node does end up above the protocol node**, exactly as
+  the risk note said, and nothing about it is visible from the guest: a
+  `cdimage_disc()` that stops there returns NULL, the ATAPI path falls
+  back to QEMU's stock answers, and the guest still reads files fine. It
+  is only the commands the model answers — READ CD, the TOC, the sense of
+  a bad sector — that would quietly go missing. `CDIMAGE_TRACE=1` plus a
+  SeaBIOS probe is the cheapest proof that the handle is found, and it
+  needs no guest image.
+- macOS has no `timeout(1)`; the suite's probe waits for SeaBIOS' "No
+  bootable device" on `-debugcon` and kills the machine itself.
+- `$OUT` in `scripts/test.sh` is already absolute; a `"$PWD/$OUT/…"`
+  built for QEMU is a path that does not exist, and `qemu-img` says only
+  that it could not open it.

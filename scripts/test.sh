@@ -18,7 +18,10 @@
 #                  MMC responders checked through libdisc's C API
 #   dirdisc        a host directory served as a disc (isodir, M5g): discx generates
 #                  the ISO 9660 + Joliet volume over a fixture tree, exports it and
-#                  xorriso (or bsdtar) reads the folder back out identical
+#                  xorriso (or bsdtar) reads the folder back out identical; then
+#                  qemu-img reads the same bytes through the block layer and
+#                  SeaBIOS probing the drive proves the ATAPI path finds the disc
+#                  model (a plain .iso on the raw driver is the control)
 #   cdimage        the cdimage block driver (patch 50) through QEMU's block layer:
 #                  qemu-img probes the cue and the ccd to "cdimage" with the
 #                  lead-out × 2048 as the size, the data track dd'd out equals the
@@ -133,6 +136,10 @@ dirdisc_check() { # a host directory served as a disc, read back by someone else
   # the tree back; this one proves the *volume* is one, by handing it to
   # a reader that is not ours and diffing the result against the folder.
   local src="$OUT/dirsrc" ext="$OUT/dirsrc-out" iso="$OUT/dirsrc.iso" rc=0
+  # QEMU is given absolute paths: it does not run from here, and $OUT may
+  # or may not be absolute already.
+  local abs="$src" absiso="$iso"
+  case "$abs" in /*) ;; *) abs="$PWD/$abs"; absiso="$PWD/$absiso";; esac
   target/release/discx mktree "$src" || { echo "mktree failed"; return 1; }
   target/release/discx export "isodir:$src" "$iso" >/dev/null || { echo "export failed"; return 1; }
   [ -d "$ext" ] && chmod -R u+w "$ext"; rm -rf "$ext"; mkdir -p "$ext"
@@ -153,7 +160,49 @@ dirdisc_check() { # a host directory served as a disc, read back by someone else
   diff -r -x 'semi*' -x 'star*' "${extra[@]}" "$src" "$ext" || { echo "the folder did not come back identical"; rc=1; }
   cmp -s "$src/semi;colon.txt" "$ext/semi_colon.txt" || { echo "semi;colon.txt is not there as semi_colon.txt"; rc=1; }
   cmp -s "$src/star*name.txt" "$ext/star_name.txt" || { echo "star*name.txt is not there as star_name.txt"; rc=1; }
+
+  # The block layer: the same bytes through QEMU's own read path.
+  if [ -x build/qemu/qemu-img ]; then
+    local info; info="$(build/qemu/qemu-img info --output=json "isodir:$abs" 2>/dev/null)"
+    echo "$info" | grep -q '"format": "isodir"' || { echo "not opened by the isodir driver"; echo "$info"; rc=1; }
+    build/qemu/qemu-img convert -O raw "isodir:$abs" "$OUT/dirsrc-qemu.iso" 2>/dev/null \
+      && cmp -s "$OUT/dirsrc-qemu.iso" "$iso" || { echo "qemu-img read the folder differently from discx"; rc=1; }
+  fi
+
+  # The drive: the ATAPI path has to find the disc model through whatever
+  # node graph the block layer built — a protocol driver reached by its
+  # filename prefix ends up under a probed `raw` format node, and a
+  # cdimage_disc() that misses it fails silently, leaving the guest with
+  # QEMU's stock answers. CDIMAGE_TRACE prints a line per packet only
+  # when the model is there, so SeaBIOS probing the drive is the proof;
+  # the same run on a plain .iso (the raw driver, no model) is the control.
+  if [ -x build/qemu/qemu-system-i386 ]; then
+    local n c
+    n="$(atapi_disc_packets "isodir:$abs" "$OUT/dirdisc-probe.log")"
+    c="$(atapi_disc_packets "$absiso" "$OUT/dirdisc-control.log")"
+    [ "${n:-0}" -gt 0 ] || { echo "the drive saw no disc model for the folder (cdimage_disc found nothing)"; rc=1; }
+    [ "${c:-0}" = 0 ] || { echo "the trace fired for a plain .iso on the raw driver: it proves nothing"; rc=1; }
+  fi
   return $rc
+}
+
+atapi_disc_packets() { # disc, log -> packets the cdimage disc path saw while SeaBIOS probed the drive
+  local disc="$1" out="$2" pid i
+  CDIMAGE_TRACE=1 build/qemu/qemu-system-i386 -L qemu/pc-bios -machine pc -m 64 \
+    -display none -net none -boot d -no-reboot \
+    -debugcon "file:$out.bios" -global isa-debugcon.iobase=0x402 \
+    -drive "if=none,id=cd0,media=cdrom,file=$disc" \
+    -device ide-cd,bus=ide.1,id=ide1-cd0,drive=cd0 >"$out" 2>&1 &
+  pid=$!
+  # SeaBIOS says this once it has probed every drive; it takes well under
+  # a second, and the machine would otherwise sit there with no disk.
+  for i in $(seq 1 40); do
+    grep -q "No bootable device" "$out.bios" 2>/dev/null && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  grep -c "atapi-disc:" "$out" 2>/dev/null || true
 }
 
 cdimage_check() { # the block driver through qemu-img / qemu-io on the selftest images

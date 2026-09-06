@@ -690,11 +690,22 @@ no-disc path.
 
 ### 5.1 `block/cdimage.c` (in the repo: `libdisc/qemu/cdimage.c`)
 
-It is also where the `isodir` protocol driver goes — a host *directory*
-served as a disc (M5g, opened 2026-09-06, not written yet;
-`docs/tracks/m5-dirdisc.md`): the same state and the same read path, no
-`file` child, and `isodir:/path` instead of a probe, because a directory
-cannot be probed. It needs no QEMU patch: this file is ours.
+It is also where the `isodir` protocol driver lives — a host *directory*
+served as a disc (M5g, landed 2026-09-06, `docs/tracks/m5-dirdisc.md`):
+the same state and the same read path, no `file` child, and
+`isodir:/path` instead of a probe, because a directory cannot be probed.
+It needed no QEMU patch: this file is ours.
+
+One consequence worth knowing before debugging anything here: the block
+layer probes for a **format** on top of a protocol driver it resolved
+from a filename prefix, so an `isodir` node is normally opened under a
+`raw` one (vvfat has the same shape). `cdimage_disc()` walks down through
+format nodes for that reason. When it fails to, nothing breaks visibly —
+the guest still reads files through the block layer, and only the
+commands answered from the model go missing. `CDIMAGE_TRACE=1` prints a
+line per packet **only** when the model was found, which is what the
+suite's `dirdisc` check uses (SeaBIOS probing the drive, against a plain
+`.iso` on the raw driver as the control).
 
 Model it on `block/bochs.c` (format driver, read-only). Members:
 
