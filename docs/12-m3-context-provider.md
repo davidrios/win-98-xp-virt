@@ -35,9 +35,17 @@ on both platforms.**
 (OpenGLide, `third_party/openglide` + `patches/openglide`, built by
 `scripts/build-glide.sh`), it renders into the same window-less context as
 the Mesa path, and `tools/glide-host-test.cpp` drives the whole thing
-without a guest. Refinement still open: fence-based sync on both platforms
-instead of `glFinish`; macOS and Windows builds of the wrapper; a Glide
-guest.
+without a guest. **A Glide guest ran the same day:** `GLIDETEST.EXE`
+(`guest-tools/src/glidetest.c`, on the guest-tools ISO) in Win98 in the
+player, headless through `tools/glide-guest-test.sh` — the whole chain, and
+the guest checks its own pixels back through `grLfbLock` rather than
+trusting the host to look at them: `glidetest: 4 cases, 0 failed` (clear,
+triangle, re-clear, close/reopen). It paid for itself immediately with
+patch `04-lfb-origin`: OpenGLide's `grLfbLock` never filled the caller's
+`lfbInfo->origin`, which the dispatcher caches and answers a Glide 2.11
+title's `grLfbBegin` from. Refinement still open: fence-based sync on both
+platforms instead of `glFinish`; macOS and Windows builds of the wrapper;
+a Glide *title* rather than our own program.
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
@@ -174,5 +182,6 @@ refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
 ## Order
 
 vtable patch -> embed provider on Linux with readback -> dma-buf import ->
-macOS CGL/IOSurface -> Glide. All done on Linux; the wrapper still has to
-be built for macOS and Windows, and no Glide guest has run yet.
+macOS CGL/IOSurface -> Glide. All done on Linux, guest included
+(`tools/glide-guest-test.sh`); the wrapper still has to be built for macOS
+and Windows, and no Glide *title* has run yet.

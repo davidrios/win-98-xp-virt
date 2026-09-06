@@ -1,0 +1,33 @@
+diff --git a/sdk2_3dfx.h b/sdk2_3dfx.h
+index 2e8373e..0a366d7 100644
+--- a/sdk2_3dfx.h
++++ b/sdk2_3dfx.h
+@@ -20,7 +20,13 @@
+ #ifndef __3DFX_H__
+ #define __3DFX_H__
+ 
++/* 2ksbox: this is the public Glide SDK header, and a C program includes it
++ * too (guest-tools/src/glidetest.c) -- <cstdint> is C++ only. */
++#ifdef __cplusplus
+ #include <cstdint>
++#else
++#include <stdint.h>
++#endif
+ 
+ /*
+ ** basic data types
+@@ -74,7 +80,13 @@ typedef struct { float r, g, b, a; } FxColor4;
+ #    define FX_CALL  __stdcall
+ #  endif
+ #elif defined(__MINGW32__)
+-#  define FX_ENTRY extern "C"
++/* 2ksbox: `extern "C"` is not C. A C program including this header (the
++ * guest-side glidetest) got a syntax error on every declaration. */
++#  ifdef __cplusplus
++#    define FX_ENTRY extern "C"
++#  else
++#    define FX_ENTRY extern
++#  endif
+ #  define FX_CALL  __stdcall
+ #elif defined(__WATCOMC__)
+ #  define FX_ENTRY extern

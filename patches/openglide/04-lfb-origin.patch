@@ -1,0 +1,19 @@
+diff --git a/grguLfb.cpp b/grguLfb.cpp
+index 1458432..791f2a0 100644
+--- a/grguLfb.cpp
++++ b/grguLfb.cpp
+@@ -135,6 +135,14 @@ grLfbLock( GrLock_t dwType,
+ 
+     lfbInfo->writeMode = GR_LFBWRITEMODE_565;
+     lfbInfo->strideInBytes = Glide.WindowWidth * 2;
++    // 2ksbox: origin is an out field of GrLfbInfo_t and upstream leaves it
++    // untouched, so the caller reads back whatever was in its own struct.
++    // The rows above were laid out for the origin that was asked for, so
++    // that is the answer. qemu-3dfx's dispatcher checks this field against
++    // the guest's request ("LFB origin mismatch" in the QEMU log) and
++    // caches it for grLfbBegin, which is a Glide 2.11 title's only way of
++    // saying which way up its buffer is.
++    lfbInfo->origin = dwOrigin;
+ 
+     return FXTRUE;
+ }

@@ -210,6 +210,14 @@ i686-w64-mingw32-gcc -O2 -o "$T/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c"
 # Display-mode probe (guest-tools/src/modetest.c): current mode, mode list,
 # ChangeDisplaySettingsEx results for the switches ddraw/wined3d make.
 i686-w64-mingw32-gcc -O2 -o "$T/modetest.exe" "$ROOT/guest-tools/src/modetest.c" -luser32
+# GLIDETEST.EXE: Glide 2.x through the pass-through device (doc 12 §5) from
+# inside the guest — the guest half of tools/glide-host-test.cpp, drawing the
+# same scene and checking its own pixels back through grLfbLock. Links
+# against qemu-3dfx's own GLIDE2X import library; the SDK header is
+# OpenGLide's copy of the 3Dfx Glide 2.4 one, which is what both wrappers
+# implement. Run it next to (or with) the installed GLIDE2X.DLL.
+i686-w64-mingw32-gcc -O2 -o "$T/glidetest.exe" "$ROOT/guest-tools/src/glidetest.c" \
+  -I"$ROOT/third_party/openglide" -L"$G" -lglide2x -luser32
 # GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
 # OPENGL32.DLL inside the guest; the title/console shows the renderer.
 i686-w64-mingw32-gcc -O2 -o "$T/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
