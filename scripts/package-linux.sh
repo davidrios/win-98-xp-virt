@@ -35,9 +35,9 @@
 # application ID the desktop entry, the icon and the Wayland app_id carry
 # (a name segment may not start with a digit — flatpak rejects
 # `com.2ksbox.…` — so the leading digit is escaped, as `7-zip.org` gets
-# `org._7zip.…`). The repository, the docs and the user's data directory
-# still say `win98-xp-virt`; renaming the data directory needs a
-# migration and is deliberately deferred.
+# `org._7zip.…`). Everything else carries the same name since 2026-09-06:
+# the repository, the docs and the user's data directory (moved once by
+# `launcher/src/paths.rs::data_dir`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

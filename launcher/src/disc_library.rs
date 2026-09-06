@@ -42,9 +42,7 @@ pub fn default_path() -> PathBuf {
     if let Ok(path) = std::env::var("LAUNCHER_DISC_LIBRARY") {
         return path.into();
     }
-    directories::ProjectDirs::from("", "", "win98-xp-virt")
-        .map(|d| d.data_dir().join("discs.toml"))
-        .unwrap_or_else(|| PathBuf::from("discs.toml"))
+    crate::paths::data_dir().map(|d| d.join("discs.toml")).unwrap_or_else(|| PathBuf::from("discs.toml"))
 }
 
 /// A label for a disc that has none: the file name without its

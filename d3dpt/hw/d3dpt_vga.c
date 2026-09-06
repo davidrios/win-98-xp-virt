@@ -745,7 +745,7 @@ static void d3dpt_vga_class_init(ObjectClass *klass, void *data)
     k->subsystem_vendor_id = D3DPT_FB_PCI_VENDOR;
     k->subsystem_id = D3DPT_FB_PCI_DEVICE;
     k->class_id = PCI_CLASS_DISPLAY_VGA;
-    dc->desc = "paravirtual framebuffer VGA (win98-xp-virt, doc 15)";
+    dc->desc = "paravirtual framebuffer VGA (2ksbox, doc 15)";
     dc->hotpluggable = false;
     device_class_set_props(dc, d3dpt_vga_properties);
     device_class_set_legacy_reset(dc, d3dpt_vga_reset);

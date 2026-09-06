@@ -9,7 +9,7 @@ edition = "2021"
 # device model (`libdisc`). `launcher` and `shader-chain` opt out with
 # `GPL-2.0-or-later` — see ADR-009 in docs/10-decisions.md.
 license = "GPL-2.0-only"
-repository = "https://example.invalid/win98-xp-virt"
+repository = "https://github.com/davidrios/2ksbox"
 
 [profile.release]
 lto = "thin"

@@ -21,15 +21,13 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// Where a machine's monitor socket lives: the platform runtime dir
-/// (`/run/user/<uid>/win98-xp-virt` on Linux) or the temp dir, plus a
+/// (`/run/user/<uid>/2ksbox` on Linux) or the temp dir, plus a
 /// name derived from the bundle directory. Unix socket paths are capped
 /// around 108 bytes, so the name is the bundle's own directory name cut
 /// short plus a hash of its full path — short, readable, and still
 /// unique across two libraries holding a same-named bundle.
 pub fn socket_path(bundle_dir: &Path) -> PathBuf {
-    let dir = directories::ProjectDirs::from("", "", "win98-xp-virt")
-        .and_then(|d| d.runtime_dir().map(Path::to_path_buf))
-        .unwrap_or_else(std::env::temp_dir);
+    let dir = crate::paths::runtime_dir();
     // FNV-1a over the full path: not security, just collision avoidance.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bundle_dir.as_os_str().as_encoded_bytes() {

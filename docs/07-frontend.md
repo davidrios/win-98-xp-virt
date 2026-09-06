@@ -132,15 +132,17 @@ QEMU has open corrupts it.
   "acceleration: …" indicator and TCG fallback.
 - Linux: Flatpak primary (bundles our patched QEMU cleanly) + distro builds.
 
-### The names (ADR-011, 2026-09-05)
+### The names (ADR-011, 2026-09-05; amended 2026-09-06)
 
 The product is **2ksbox** (`2ksbox.com`), and the application ID is
 **`com._2ksbox.Launcher`** — the desktop entry's filename, the icon's
 name, the Wayland `app_id` matching the two, and the future Flatpak /
 AppStream ID. The leading digit is escaped because no segment of such a
 name may start with one (`flatpak build-init` rejects `com.2ksbox.…`).
-`win98-xp-virt` remains the repository's working name, the docs' name and
-the user's data directory; only the packaged identity has moved so far.
+Since 2026-09-06 nothing is called `win98-xp-virt` any more: the
+repository is `davidrios/2ksbox`, the docs say 2ksbox, and the user's data
+directory is `~/.local/share/2ksbox` — moved once, on the first run that
+looks for it (`launcher/src/paths.rs::data_dir`).
 
 ### The install layout (decided at M6 step 6, 2026-09-05)
 

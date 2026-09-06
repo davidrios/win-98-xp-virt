@@ -13,8 +13,19 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 opts=(--buildtype release -Denable_dxgi=false -Denable_d3d8=false -Denable_d3d10=false -Denable_d3d11=false
       -Dnative_sdl2=enabled -Dnative_glfw=disabled -Dnative_sdl3=disabled)
+# A meson build directory holds absolute paths and cannot be relocated, so
+# a renamed or moved checkout (2ksbox, 2026-09-06) leaves one whose
+# --reconfigure walks into directories that no longer exist: "[Errno 2] No
+# such file or directory: <old checkout>/build/dxvk/meson-private/tmp…".
+# Wipe and configure from scratch when the reconfigure fails, whatever the
+# reason — a real error (a missing Vulkan header, say) simply fails again
+# on the fresh configure, with its own message.
 if [ -f "$BUILD/build.ninja" ]; then
-  meson setup --reconfigure "$BUILD" "$ROOT/third_party/dxvk" "${opts[@]}"
+  meson setup --reconfigure "$BUILD" "$ROOT/third_party/dxvk" "${opts[@]}" || {
+    echo "==> reconfigure failed; configuring $BUILD from scratch"
+    rm -rf "$BUILD"
+    meson setup "$BUILD" "$ROOT/third_party/dxvk" "${opts[@]}"
+  }
 else
   meson setup "$BUILD" "$ROOT/third_party/dxvk" "${opts[@]}"
 fi

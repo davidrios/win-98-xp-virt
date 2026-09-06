@@ -1,4 +1,4 @@
-//! win98-xp-virt player (doc 02): one running machine per process.
+//! 2ksbox player (doc 02): one running machine per process.
 //!
 //! M1 state: `player -- <qemu-system args>` boots QEMU in-process and
 //! presents the guest framebuffer through wgpu (integer-scaled 4:3);
@@ -945,11 +945,11 @@ impl App {
             }
             gpu.window.set_cursor_visible(false);
             gpu.window
-                .set_title("win98-xp-virt player — mouse grabbed (Ctrl+Alt+G releases)");
+                .set_title("2ksbox player — mouse grabbed (Ctrl+Alt+G releases)");
         } else {
             let _ = gpu.window.set_cursor_grab(CursorGrabMode::None);
             gpu.window.set_cursor_visible(true);
-            gpu.window.set_title("win98-xp-virt player");
+            gpu.window.set_title("2ksbox player");
         }
         self.grabbed = on;
     }
@@ -1051,7 +1051,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("win98-xp-virt player")
+            .with_title("2ksbox player")
             .with_inner_size(LogicalSize::new(1280.0, 960.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 

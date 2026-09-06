@@ -86,7 +86,7 @@ for 6b′ onwards, so rebase on `main` before the next push.
   exists; see the testing note below.
 - **Step 2 (library grid) landed:** `launcher/src/library.rs` —
   `default_dir()` (the platform data dir via the `directories` crate,
-  `~/.local/share/win98-xp-virt/machines` on Linux; `LAUNCHER_LIBRARY_DIR`
+  `~/.local/share/2ksbox/machines` on Linux; `LAUNCHER_LIBRARY_DIR`
   overrides it, matching the project's `PLAYER_*` env-knob convention),
   `slug()` (a directory name from a machine name, deduplicated against
   what's already there — "XP test box" twice became `xp-test-box` and
@@ -1282,7 +1282,7 @@ for 6b′ onwards, so rebase on `main` before the next push.
 
   **Not done here:** the Flatpak (needs `flatpak-builder`, not installed
   on this box, and a reverse-DNS app ID the project can't pick until it
-  has a home — `Cargo.toml`'s `repository` is still `example.invalid`),
+  had a home — `Cargo.toml`'s `repository` was still `example.invalid`),
   the macOS .app and notarization, the Windows installer/zip. The tarball
   is also only as portable as its system libraries: the embed library
   links ~190 of them (GTK, SDL, gnutls, …) and the package ships none, so
@@ -1291,9 +1291,8 @@ for 6b′ onwards, so rebase on `main` before the next push.
 
 - **The project has a name: 2ksbox** (user decision, 2026-09-05, **ADR-011**,
   taken the moment step 6a put an application ID on the table). The user
-  registered `2ksbox.com`, and chose to move **the packaged identity only**
-  for now — the repository, the docs and the user's data directory keep
-  `win98-xp-virt`.
+  registered `2ksbox.com`, and moved **the packaged identity only** that
+  day; the working name went the day after (see the rename below).
 
   - **`2ksbox`** (`paths::NAME`) is the product: `bin/2ksbox` and
     `bin/2ksbox-player`, `lib/2ksbox`, `libexec/2ksbox`, `share/2ksbox`,
@@ -1308,12 +1307,20 @@ for 6b′ onwards, so rebase on `main` before the next push.
     `appstreamcli validate` accepting the escaped form); `7-zip.org` gets
     `org._7zip.…` for the same reason.
 
-  Deliberately **not** renamed: `~/.local/share/win98-xp-virt` (machines,
+  Not renamed that day: `~/.local/share/win98-xp-virt` (machines,
   `discs.toml`, shader profiles) and the runtime sockets under
   `$XDG_RUNTIME_DIR/win98-xp-virt`. Moving a real user's library needs a
   migration that survives being interrupted; that is its own change, not
-  a side effect of a packaging rename. `Cargo.toml`'s `repository` is
-  still the placeholder for the same reason.
+  a side effect of a packaging rename. **It landed 2026-09-06**, when the
+  user renamed the repository to `davidrios/2ksbox` and the working name
+  went with it: `paths::data_dir()` moves the old directory to the new
+  one exactly once, as an atomic rename inside the same parent, only when
+  the new name doesn't exist (two versions run side by side keep both,
+  and are told which is in use), and warns rather than refusing to start
+  if it can't. The runtime directory is not migrated — a socket belongs
+  to a running process. `Cargo.toml`'s `repository` is the real URL now,
+  and the checkout itself moved to `~/work/2ksbox`, which forces a
+  reconfigure of the meson build directories (they hold absolute paths).
 
   **The AppStream metadata landed with it** (`packaging/linux/com._2ksbox.
   Launcher.metainfo.xml`, installed into `share/metainfo`): what a

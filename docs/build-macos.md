@@ -62,8 +62,8 @@ the two native DXVK checks fail with `Direct3DCreate9 failed` (2026-09-04).
 ## Clone
 
 ```sh
-git clone --recurse-submodules --shallow-submodules git@github.com:davidrios/win-98-xp-virt.git
-cd win-98-xp-virt
+git clone --recurse-submodules --shallow-submodules git@github.com:davidrios/2ksbox.git
+cd 2ksbox
 ```
 
 ## Rust side (player, libdisc, launcher) — ~1 min

@@ -1,4 +1,4 @@
-; d3dptvid.inf - win98-xp-virt paravirtual display adapter (d3dpt-vga), Windows 2000/XP
+; d3dptvid.inf - 2ksbox paravirtual display adapter (d3dpt-vga), Windows 2000/XP
 ; doc 15 (ADR-008 / M7a). Miniport d3dptvid.sys + display driver d3dptdisp.dll.
 ; Install: DRVINST.EXE next to this file (or Device Manager > Update Driver).
 
@@ -58,9 +58,9 @@ MaximumDeviceMemoryConfiguration=32
 KeepExistingDriverEnabled=1
 
 [Strings]
-Provider="win98-xp-virt"
-Mfg="win98-xp-virt"
-DiskId="win98-xp-virt guest tools"
-d3dpt.DeviceDesc="win98-xp-virt paravirtual display adapter (d3dpt-vga)"
+Provider="2ksbox"
+Mfg="2ksbox"
+DiskId="2ksbox guest tools"
+d3dpt.DeviceDesc="2ksbox paravirtual display adapter (d3dpt-vga)"
 REG_MULTI_SZ=0x00010000
 REG_DWORD=0x00010001

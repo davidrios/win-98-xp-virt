@@ -1,4 +1,4 @@
-# win98-xp-virt (working name)
+# 2ksbox
 
 An open-source, cross-platform stack for running Windows 98 and Windows XP as
 "native vintage boxes": hardware-accelerated period 3D (Direct3D / Glide /
@@ -43,8 +43,9 @@ and explicitly **out of scope** — we don't duplicate that work.
 ## Building
 
 ```sh
-git clone --recurse-submodules <repo-url>   # submodules: qemu (gitlab.com, pinned v9.2.4),
-cd win98-xp-virt                            #             third_party/qemu-3dfx (github.com)
+git clone --recurse-submodules https://github.com/davidrios/2ksbox
+cd 2ksbox                    # submodules: qemu (gitlab.com, pinned v9.2.4),
+                             #             third_party/qemu-3dfx (github.com)
 # already cloned without submodules? → git submodule update --init --depth 1
 
 scripts/build.sh             # everything, in order: qemu, rust, dxvk, the D3D
@@ -109,8 +110,8 @@ macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
 
 ## Packaging (Linux)
 
-The shipped product is named **2ksbox** (ADR-011); `win98-xp-virt` stays
-the repository's working name, and so does the user's data directory.
+Everything is named **2ksbox** (ADR-011): the repository, the installed
+commands, the user's data directory.
 
 ```sh
 scripts/package-linux.sh              # build/package/2ksbox-<version>-linux-<arch>.tar.zst

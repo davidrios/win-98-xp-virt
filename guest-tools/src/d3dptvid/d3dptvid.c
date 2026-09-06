@@ -311,7 +311,7 @@ static VP_STATUS NTAPI HwFindAdapter(PVOID ext, PVOID ctx, PWSTR args,
     /* what the display driver sees in the registry; the chip strings are
      * cosmetic (Display Properties' Adapter tab) */
     {
-        static WCHAR chip[] = L"win98-xp-virt d3dpt-vga";
+        static WCHAR chip[] = L"2ksbox d3dpt-vga";
         static WCHAR dac[] = L"paravirtual";
         static WCHAR adapter[] = L"d3dpt-vga paravirtual framebuffer";
         ULONG mem = d->vram_len;

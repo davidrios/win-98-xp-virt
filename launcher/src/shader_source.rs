@@ -45,9 +45,7 @@ pub fn install_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LAUNCHER_SHADERS_DIR") {
         return dir.into();
     }
-    directories::ProjectDirs::from("", "", "win98-xp-virt")
-        .map(|d| d.data_dir().join("shaders"))
-        .unwrap_or_else(|| PathBuf::from("shaders"))
+    crate::paths::data_dir().map(|d| d.join("shaders")).unwrap_or_else(|| PathBuf::from("shaders"))
 }
 
 /// The preset collection on this machine, or `None` if there isn't one —

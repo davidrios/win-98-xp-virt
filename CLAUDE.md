@@ -1,4 +1,4 @@
-# win98-xp-virt — working notes for Claude (and anyone else)
+# 2ksbox — working notes for Claude (and anyone else)
 
 Open-source, cross-platform stack that runs Windows 98 / XP as "native
 vintage boxes": a patched QEMU (qemu-3dfx for 3D) embedded **in-process**
@@ -20,14 +20,16 @@ backend later.
 
 ## Locked decisions (do not reopen)
 
-- **The project is named `2ksbox`** (`2ksbox.com`, ADR-011, 2026-09-05).
-  `win98-xp-virt` is the repository's working name and still names this
-  checkout, the docs and the user's data directory; only the *packaged*
-  identity moved — installed commands `2ksbox` / `2ksbox-player`,
-  resource dirs `share/2ksbox` etc., application ID
+- **The project is named `2ksbox`** (`2ksbox.com`, ADR-011, 2026-09-05;
+  the rename finished 2026-09-06). It names everything: the repository
+  (`github.com/davidrios/2ksbox`), this checkout, the docs, the installed
+  commands `2ksbox` / `2ksbox-player`, the resource dirs `share/2ksbox`
+  etc., and the user's data directory `~/.local/share/2ksbox` — moved
+  from the old `win98-xp-virt` one exactly once by
+  `launcher/src/paths.rs::data_dir()`, an atomic rename that only
+  happens when the new name is absent. The application ID is
   `com._2ksbox.Launcher` (the underscore is required: a name segment may
-  not start with a digit). Renaming the data directory needs a migration
-  and is deliberately still open.
+  not start with a digit).
 - QEMU base, our own fork as a **patch queue** on the pinned submodule
   (v9.2.4 + qemu-3dfx). Not VMware/VirtualBox/86Box.
 - QEMU runs **in-process** (`libqemu-embed-<target>`, `embed/`) for latency.

@@ -14,9 +14,7 @@ pub fn default_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LAUNCHER_SHADER_PROFILES_DIR") {
         return dir.into();
     }
-    directories::ProjectDirs::from("", "", "win98-xp-virt")
-        .map(|d| d.data_dir().join("shader-profiles"))
-        .unwrap_or_else(|| PathBuf::from("shader-profiles"))
+    crate::paths::data_dir().map(|d| d.join("shader-profiles")).unwrap_or_else(|| PathBuf::from("shader-profiles"))
 }
 
 pub struct ProfileEntry {

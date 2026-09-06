@@ -407,13 +407,15 @@ stays open.
 `shader-chain`, which is what keeps the launcher's Apache-2.0 dependencies
 permissible; only the QEMU-linking crates need `GPL-2.0-only`.
 
-## ADR-011: the product is 2ksbox; the application ID is `com._2ksbox.Launcher` (2026-09-05)
+## ADR-011: the product is 2ksbox; the application ID is `com._2ksbox.Launcher` (2026-09-05, amended 2026-09-06)
 
 **Decision.** The project's name is **2ksbox** (the user registered
 `2ksbox.com`), and the application ID everything desktop-facing keys off
 is **`com._2ksbox.Launcher`**. `win98-xp-virt` was always a working name;
-it stays for now as the repository, the docs and the user's data
-directory, and only the *packaged identity* moved (M6 step 6a).
+when the decision was first written only the *packaged identity* had
+moved (M6 step 6a). **Amended 2026-09-06:** the working name is gone
+entirely — the repository is `github.com/davidrios/2ksbox`, the checkout
+directory, the docs and the user's data directory all say 2ksbox.
 
 **Why the underscore.** `com.2ksbox.Launcher` is not a legal application
 ID: no segment of a D-Bus-style name may start with a digit, and
@@ -435,12 +437,24 @@ same one that gives `7-zip.org` `org._7zip.…`.
   launcher's window reports `app_id: com._2ksbox.Launcher`, exactly the
   basename of the installed `com._2ksbox.Launcher.desktop`.
 
-**Deliberately not renamed yet.** The user's data directory is still
-`~/.local/share/win98-xp-virt` (machines, `discs.toml`, shader
-profiles), as are the QMP/shelf runtime files under
-`$XDG_RUNTIME_DIR/win98-xp-virt`. Renaming the data directory means
-moving a real user's library, so it needs a migration that reads the old
-location, moves it, and leaves nothing stranded if it is interrupted —
-worth doing on its own, not as a side effect of a packaging change. The
-repository, `Cargo.toml`'s placeholder `repository` URL, and the docs
-keep the working name until then.
+**The data directory (the 2026-09-06 amendment).** The user's library —
+machines, `discs.toml`, shader profiles, a downloaded preset collection —
+is `~/.local/share/2ksbox`, and the runtime files are under
+`$XDG_RUNTIME_DIR/2ksbox`. Moving a real user's library is the reason
+this waited for a decision of its own rather than riding along with a
+packaging change; it is done by `launcher/src/paths.rs::data_dir`, once,
+the first time anything asks for the directory:
+
+- a **rename inside the same parent**, so it is atomic — there is no
+  window in which half a library exists in each place, which is what a
+  copy-then-delete migration would have to defend against;
+- **only when the new name does not exist**. Someone running two versions
+  side by side has both directories; they are told which one is in use
+  (a stderr line) and neither is touched, because merging two libraries
+  behind the user's back is not a thing a rename should decide;
+- **never fatal**. A failed move is a warning and an empty library, which
+  the user can fix with one `mv`; refusing to start would leave them with
+  no way to reach the UI that explains it.
+
+The runtime directory is not migrated: what lives there belongs to a
+running process, and a stale socket path outlives nothing.

@@ -6,7 +6,7 @@ index a87fa492..19e62786 100644
    if lib_glfw.found()
      compiler_args += ['-DDXVK_WSI_GLFW']
    endif
-+  # win98-xp-virt: window-less driver (src/wsi/headless), always built native
++  # 2ksbox: window-less driver (src/wsi/headless), always built native
 +  compiler_args += ['-DDXVK_WSI_HEADLESS']
    if (not lib_sdl3.found() and not lib_sdl2.found() and not lib_glfw.found())
      error('SDL3, SDL2, or GLFW are required to build dxvk-native')
@@ -174,7 +174,7 @@ index 00000000..3cfd4f30
 +  /**
 +   * \brief Window-less WSI driver
 +   *
-+   * For hosts that consume the D3D9 backbuffer themselves (win98-xp-virt's
++   * For hosts that consume the D3D9 backbuffer themselves (2ksbox's
 +   * paravirtual Direct3D device reads it back / exports it) and never
 +   * present through Vulkan WSI. One fake monitor with a fixed mode list;
 +   * no window is ever valid, so D3D9SwapChainEx never creates a presenter

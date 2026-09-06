@@ -187,7 +187,7 @@ static void d3dpt_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, d3dpt_reset);
-    dc->desc = "paravirtual Direct3D device (win98-xp-virt)";
+    dc->desc = "paravirtual Direct3D device (2ksbox)";
     dc->user_creatable = false;
 }
 

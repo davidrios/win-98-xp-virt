@@ -1,6 +1,6 @@
 /*
  * QEMU MESA GL Pass-Through — window-less context backend for the embed
- * library (win98-xp-virt, M3; docs/12-m3-context-provider.md).
+ * library (2ksbox, M3; docs/12-m3-context-provider.md).
  *
  * Port of hw/mesa/mglcntx_linux.c (GLX on an X11 window) to run without a
  * window or display server. Everything the guest wrapper needs (WGL

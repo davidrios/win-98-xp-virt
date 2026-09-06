@@ -33,10 +33,9 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// The product name: the resource directories inside a prefix
-/// (`share/2ksbox`, `lib/2ksbox`, …) and the launcher's installed
-/// executable. `win98-xp-virt` is the repository's working name and still
-/// names the checkout, the docs and the user's data directory (renaming
-/// that one needs a migration, deliberately deferred — 2026-09-05).
+/// (`share/2ksbox`, `lib/2ksbox`, …), the launcher's installed executable
+/// and the user's own data directory. `win98-xp-virt` was the working
+/// name until 2026-09-06 and survives only in `migrate_data_dir` below.
 pub const NAME: &str = "2ksbox";
 
 /// The application ID: the desktop entry's filename, the icon's name, the
@@ -76,4 +75,60 @@ pub fn resource(installed: &str, checkout_rel: &str) -> PathBuf {
 /// `rel` in the workspace checkout this binary was built from.
 pub fn checkout(rel: &str) -> PathBuf {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join(rel)
+}
+
+/// The user's own directory: `machines/`, `discs.toml`, `shader-profiles/`
+/// and a downloaded preset collection (`~/.local/share/2ksbox` on Linux,
+/// `~/Library/Application Support/2ksbox` on macOS, `%APPDATA%\2ksbox` on
+/// Windows). `None` only where the platform has no home directory at all,
+/// which every caller answers with a bare relative path.
+///
+/// It was `win98-xp-virt` until the repository took the product's name
+/// (ADR-011, amended 2026-09-06), so an existing library is **moved once**
+/// here, the first time anything asks: a plain rename inside the same
+/// parent directory, atomic, and only when the new name does not exist
+/// yet. A user who upgrades finds their machines where they left them
+/// without knowing any of this happened; one who has both directories
+/// (two versions run side by side) keeps them both, and is told which one
+/// is now being used rather than having them merged behind their back.
+pub fn data_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = directories::ProjectDirs::from("", "", NAME)?.data_dir().to_path_buf();
+        migrate_data_dir(&dir);
+        Some(dir)
+    })
+    .as_deref()
+}
+
+/// The `win98-xp-virt` → `2ksbox` move, done once. Every failure is a
+/// warning and nothing else: the launcher still starts, on an empty
+/// library, which is recoverable by hand — refusing to run would not be.
+fn migrate_data_dir(new: &Path) {
+    let Some(old) = directories::ProjectDirs::from("", "", "win98-xp-virt").map(|d| d.data_dir().to_path_buf()) else {
+        return;
+    };
+    if old == new || !old.is_dir() {
+        return;
+    }
+    if new.exists() {
+        eprintln!("launcher: both {} and {} exist; using the latter", old.display(), new.display());
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(&old, new) {
+        Ok(()) => eprintln!("launcher: moved {} to {}", old.display(), new.display()),
+        Err(e) => eprintln!("launcher: cannot move {} to {}: {e}", old.display(), new.display()),
+    }
+}
+
+/// The platform runtime directory (`/run/user/<uid>/2ksbox` on Linux) for
+/// this machine's monitor socket, or the temp dir where there is none.
+/// Nothing is migrated: what lives here belongs to a running process.
+pub fn runtime_dir() -> PathBuf {
+    directories::ProjectDirs::from("", "", NAME)
+        .and_then(|d| d.runtime_dir().map(Path::to_path_buf))
+        .unwrap_or_else(std::env::temp_dir)
 }

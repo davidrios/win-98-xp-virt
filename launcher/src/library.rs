@@ -16,9 +16,7 @@ pub fn default_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LAUNCHER_LIBRARY_DIR") {
         return dir.into();
     }
-    directories::ProjectDirs::from("", "", "win98-xp-virt")
-        .map(|d| d.data_dir().join("machines"))
-        .unwrap_or_else(|| PathBuf::from("machines"))
+    crate::paths::data_dir().map(|d| d.join("machines")).unwrap_or_else(|| PathBuf::from("machines"))
 }
 
 pub struct LibraryEntry {

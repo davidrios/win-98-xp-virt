@@ -92,7 +92,7 @@ done
 
 crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }'; }
 crlf > "$OUT/README.TXT" <<'TXT'
-win98-xp-virt paravirtual display adapter driver (d3dpt-vga), Windows 2000/XP.
+2ksbox paravirtual display adapter driver (d3dpt-vga), Windows 2000/XP.
 
 Boot XP with:  -vga none -device d3dpt-vga
 Install (as Administrator):  DRVINST.EXE -reboot
