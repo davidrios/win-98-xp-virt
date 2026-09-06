@@ -72,9 +72,16 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 
 ## M2 — Pixel accuracy + input polish
 
-- Mode analysis table (doc 03): pixel aspect, double-scan shader params, text
-  modes; geometry updates on mode change; golden-image tests; curated preset
-  pack v1 calibrated against rig CRT photos.
+- ~~Mode analysis table (doc 03): pixel aspect, double-scan shader params, text
+  modes~~ ✅ 2026-09-05 (`player/src/mode.rs`, doc 03 "Mode analysis"): the
+  geometry stage takes the display aspect from the table, and the scanline
+  count reaches the preset through `vga_mode` / `inter` — 320×200 draws its
+  400 scanlines instead of 200, 640×480 its 480 instead of the 240 the
+  preset's interlace guess gave it. `player --mode-sweep` is the check
+  (`scripts/test.sh`), `PLAYER_MODE_PARAMS=0` the control. Left: presets with
+  no resolution override (crt-lottes, crt-royale) cannot be told — see doc 03.
+- Geometry updates driven off the QEMU surface change; golden-image tests;
+  overscan crop; curated preset pack v1 calibrated against rig CRT photos.
 - Relative-mouse grab, fullscreen, hotkeys, overlay basics.
 - **Exit:** mode-sweep test passes; a DOS game under Win98 looks right and
   mouselook feels right.

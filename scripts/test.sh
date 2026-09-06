@@ -163,6 +163,18 @@ host_stage() {
     skip d3dpt-dp2 "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
   fi
 
+  # the player's display path without a guest: mode analysis, the geometry
+  # stage and the CRT preset over every mode in the table (doc 03, M2)
+  local preset=third_party/slang-shaders/crt/crt-guest-advanced.slangp
+  if have_display && [ -f "$preset" ]; then
+    if cargo build --release -p player -q 2>"$OUT/player-build.log"; then
+      run_check mode-sweep mode-sweep.log \
+        target/release/player --shader "$preset" --mode-sweep "$OUT/mode-sweep" || true
+    else FAIL+=(mode-sweep); echo "  FAIL mode-sweep (build)"; tail -5 "$OUT/player-build.log"; fi
+  else
+    skip mode-sweep "needs a display and the slang-shaders submodule"
+  fi
+
   # the reference scene and the feature test natively over DXVK (SDL2 needs a display)
   if [ -f "$D3DPT_DXVK_LIB" ] && have_display && pkg-config --exists sdl2; then
     local flags=(-I"$DX" -I"$DX/windows" -I"$DX/directx" -Lbuild/dxvk/src/d3d9 -ldxvk_d3d9 \

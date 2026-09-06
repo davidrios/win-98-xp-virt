@@ -70,6 +70,10 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   thread: the output latency, and how late QEMU's main loop may run (TCG, the D3D
 #   executor) before a gap is heard. `qemu-embed: audio:` lines on stderr count gaps
 #   and dropped audio when they happen; raise it if they do, lower it under KVM.
+# --mode-sweep <dir> runs doc 03's mode sweep instead of a guest: every mode in the
+#   table, the geometry stage and the preset checked, a PNG of each dumped there
+# PLAYER_MODE_PARAMS=0 is the A/B control for mode analysis — the preset is left to
+#   guess the scanline count from the framebuffer height, as it did before M2
 # PLAYER_LATENCY=1 prints publish→present latency percentiles every 240 guest frames
 # PLAYER_REFRESH_MS=16 (default) is the guest frame pull interval (QEMU's own default is 30)
 # QMP: the player always attaches a control monitor over a socketpair (no socket file).

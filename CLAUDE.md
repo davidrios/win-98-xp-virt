@@ -126,6 +126,7 @@ GPU); don't propose wiring it in.
 | `tools/embed-3d-test.c` | drives the window-less Mesa backend without a guest: context, frame, orientation, dma-buf ring (Linux) |
 | `tools/qmpc.py` | drives a guest over an extra `-qmp unix:…,server,nowait` socket: keys, typing, screendumps |
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
+| `target/release/player --mode-sweep <dir>` | the display path without a guest (doc 03, M2): every mode in the table through mode analysis, the geometry stage and a real CRT preset — on-screen aspect, integer vertical scale, the parameters reaching the preset, and the scanline count counted in the frame it drew; a PNG per mode in `<dir>` (the `mode-sweep` check in `scripts/test.sh`, ~2 s). `PLAYER_MODE_PARAMS=0` is the control: the preset left to guess from the framebuffer height |
 | `PLAYER_DUMP_OUT=x.png` | dumps the shaded frame headlessly, works while the window is occluded |
 | `DRIVER\SETMODE.EXE` (guest-tools ISO) | lists / switches XP display modes from a script; the QEMU log shows the device side (`d3dpt-vga: linear mode on …`, `guest: …` = the driver's debug register) |
 | `DRIVER\DDTEST.EXE` (guest-tools ISO) | DirectDraw 7 through our driver: HAL caps, VRAM flip chain, windowed blit, fps, `ddtest.log`/`.bmp`; at 8 bpp a palette on the primary rotated every frame (the 2D titles' palette animation); `scanout offset` lines in the QEMU log are the page flips |
