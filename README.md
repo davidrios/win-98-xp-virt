@@ -190,7 +190,12 @@ The Flatpak builds with no network, as Flathub requires: every crate is a
 declared source with a checksum in `packaging/flatpak/cargo-sources.json`.
 Run `scripts/gen-flatpak-cargo-sources.sh` and commit the result whenever
 a dependency changes. `launcher --paths` prints where a given build looks for each
-companion — the first thing to ask when something says a file is missing.
+companion — the first thing to ask when something says a file is missing;
+`launcher --diagnose` prints the same plus this host's 3D and *files* it
+in the launcher's own log (`launcher.log`, beside the machine library),
+which is what to send when the launcher itself did not come up. On
+Windows, where the launcher is a windowed program with no stdout at all,
+`2ksbox-debug.bat` in the package does that for you.
 
 CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
 Actions tab (`workflow_dispatch`).

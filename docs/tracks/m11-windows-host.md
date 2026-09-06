@@ -20,6 +20,7 @@ one. Windows had been "untested" since M1 (doc 08).
 - The package: `scripts/package-windows.sh`.
 - Windows branches of shared code: `embed/mglcntx_embed.c` (the WGL
   backend) and `tools/wgl-probe.c`, `launcher-core/src/console.rs`,
+  `launcher-core/src/fatal.rs`,
   `player/src/qmp.rs`,
   `launcher/src/paths.rs` + `player.rs` + `wizard.rs` + `bundle.rs`
   (the layout and the WHPX naming), `d3dpt/hw/d3dpt_exec_load.c`,
@@ -114,6 +115,56 @@ an fd is already an fd and it returns the value unchanged, so
 Anyone pulling this must rebuild the embed library before the player
 links (the API version moved).
 
+### The third run: nothing at all (2026-09-06)
+
+The report was "didn't work on windows, didn't start, no error messages
+nor anything". That sentence is a bug in this track, not a fact about the
+user's machine: since the first run's fix both front ends are
+`windows_subsystem = "windows"`, and a windowed program has no stderr. A
+panic on the way to the first window — or an `eframe::run_native` that
+returns `Err` — printed into nothing and the process vanished. The
+terminal that was removed took with it the only place a start-up failure
+could be read.
+
+So the launcher has two mouths now that need no toolkit
+(`launcher-core/src/fatal.rs`, called from the first line of both
+`main`s):
+
+- **A log**, `%APPDATA%\2ksbox\data\launcher.log`, beside the
+  `player.log` that was already there: a header per run, then one
+  milestone per start-up step (`exe`, `data dir`, `library: N machines`,
+  `opening the window`). The *last* line in the file is the answer — a
+  run that ends after `data dir` died loading the library — so no
+  particular failure had to be guessed at in advance.
+- **A message box**, because someone who double-clicked an icon will not
+  go looking for a log file. The panic hook writes the message, the
+  location and a backtrace to the log and then says so in a
+  `MessageBoxW`; `run_native`'s `Err` goes the same way.
+
+Then the case no Rust of ours can catch: a process that dies in the
+**loader** (a DLL that is not there) or in a **static initialiser** never
+reaches `main` and writes no log at all. So the package carries
+**`2ksbox-debug.bat`**, which runs the launcher from a console and keeps
+what it says in `2ksbox-debug.log`. Two things it has to do that are not
+obvious: every run goes through `start "" /b /wait`, because cmd does not
+wait for a windows-subsystem program and would otherwise record no exit
+code; and the launcher's *answers* come out of its own log rather than
+that console, because `start /b` does not hand the child the console's
+redirection — which is what `--diagnose` is for (`--paths` and
+`--host-check`, filed into the log instead of printed into nowhere).
+
+**The absence of `launcher.log` is itself the reading**: nothing of ours
+ran, and the exit code beside it names the loader failure (`0xC0000135` a
+missing DLL, `0xC0000142` an initialiser that failed, `0xC0000005` a
+fault — which is what the Qt binary does under wine). One .bat therefore
+asks both packages the same question and tells the two cases apart.
+
+Verified under wine: the packaged `2ksbox.exe` with no display reaches
+`[start] opening the window` and stops there — the winevulkan hang from
+the first run — which is the log doing exactly its job; and the panic
+hook's message, location and backtrace land in the log on the native
+build.
+
 ### Both front ends (2026-09-06)
 
 `scripts/package-windows.sh --qt` rolls a second, complete package whose
@@ -136,16 +187,25 @@ cxx-qt's cargo-only build wants. Two things had to be said:
   every binary anywhere in the package.
 
 **Open: the Qt binary does not start under wine.** It faults on a call to
-address 0 before `main` prints anything, with either subsystem, and with
-no display attached wine logs a window-creation attempt first. The egui
-binary in the same folder, with the same DLLs, answers `--paths` fine, so
-the package is not the problem, and the backtrace is one unwalkable frame
-at address 0 (which is what a jump through a null thunk looks like). Two
+address 0 before `main` runs, with either subsystem. The egui binary in
+the same folder, with the same DLLs, answers `--paths` fine, so the
+package is not the problem, and the backtrace is one unwalkable frame at
+address 0 (which is what a jump through a null thunk looks like). Two
 candidates, in order: cxx-qt's whole-archive static initialisers (the QML
 type registration that runs before `main`, which would break on real
-Windows too), and wine's own Qt 6 support. The next real Windows run
-decides which — the packaging checks report rather than fail for `--qt`
-so the artefact exists to try.
+Windows too), and wine's own Qt 6 support.
+
+Two things narrow it, both from 2026-09-06's instrumentation. With
+`WINEDEBUG=+loaddll` the loader gets **all the way through** the DLL set
+— `Qt6Core`, `Qt6Gui`, `Qt6Network`, `Qt6Qml` and the system libraries
+after them — and only then faults on the main thread, so nothing is
+missing and it is initialiser code that runs. And `launcher.log` is
+**never created**, although the first statement in that binary's `main`
+is what opens it (`fatal::install("qt")`): the process does not reach
+`main` at all. That is a static initialiser, not anything the launcher
+does — the first candidate, and ours to fix if real Windows agrees. The
+packaging checks report rather than fail for `--qt` so the artefact
+exists to try there.
 
 ### OpenGL in the embed library
 
@@ -231,12 +291,15 @@ images and a GPU, and now a Windows host too. The Windows evidence is
 
 ## Next steps, in order
 
-1. **Try both packages on the user's Windows PC**, the Qt one first —
-   if it faults there too, it is cxx-qt's static initialisers and not
-   wine, and the fix is ours.
-2. **Boot a machine on the user's Windows PC.** The launcher runs there
-   and Play now starts the player; what a guest does under WHPX is the
-   next unknown.
+1. **`2ksbox-debug.bat` from both packages on the PC**, and read the
+   `2ksbox-debug.log` it writes. It answers the run that said nothing: a
+   `launcher.log` with milestones names the step that failed, no
+   `launcher.log` at all plus an exit code names a loader failure, and
+   for the Qt package that is also the experiment that decides between
+   cxx-qt's static initialisers (ours to fix) and wine (not).
+2. **Boot a machine on the user's Windows PC.** The QMP monitor's `fd=`
+   is a CRT descriptor now, which is where the second run stopped; what
+   a guest does under WHPX is the next unknown.
 3. **A Win98 guest with 3D on real Windows.** The WGL backend is written
    and its sequence passes under wine (`tools/wgl-probe.exe`), but no
    guest has used it.
@@ -270,7 +333,16 @@ images and a GPU, and now a Windows host too. The Windows evidence is
   closure walked from those alone is not a closure. Fedora's SDL2 is
   sdl2-compat and loads SDL3 that way; `package-windows.sh` has a
   strings-based second pass for the next one.
+- **cmd does not wait for a windows-subsystem program**, and `start ""
+  /b /wait` (which does) does not pass the console's redirection to the
+  child: a `.bat` that runs a windowed program gets neither its output
+  nor its exit code by writing the obvious thing. Take the exit code
+  from `start /b /wait` and the output from a file the program writes
+  itself (`--diagnose`).
 - `windows_subsystem = "windows"` is what stops the terminal window, and
   it costs a console for the debug verbs and a place to put a child's
   output. Both are in `launcher-core/src/console.rs`; neither is
-  optional once the attribute is set.
+  optional once the attribute is set. It costs a third thing that took
+  a whole run on the user's PC to notice: there is nowhere for a
+  *failure* to go either, so `launcher-core/src/fatal.rs` is not
+  optional either.

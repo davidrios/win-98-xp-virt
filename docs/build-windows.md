@@ -73,6 +73,7 @@ under it:
 2ksbox.exe  2ksbox-player.exe  qemu-img.exe
 libqemu-embed-i386.dll  d3dpt_exec.dll  <the mingw runtime>
 pc-bios\  guest-tools\  shaders\  tools\  doc\
+2ksbox-debug.bat
 ```
 
 `launcher-core/src/paths.rs` knows both shapes: on Windows the prefix is
@@ -87,6 +88,25 @@ there is one, and every subprocess the launcher starts (the player,
 `qemu-img`) is given none, so nothing flashes. With no console to inherit
 the player's output would be lost, which is exactly when it matters, so
 it goes to `%APPDATA%\2ksbox\data\player.log` instead.
+
+Neither has anywhere to put a *failure* either, which is what the third
+run on a real machine came back as — "it didn't start, no error messages
+nor anything". `launcher-core/src/fatal.rs` is what both front ends call
+from the first line of `main`: `launcher.log` beside `player.log`, a
+milestone per start-up step (the last line in the file names the step
+that died), a panic hook that files message, location and backtrace and
+then says so in a message box, and `eframe`'s own error through the same
+door. `--diagnose` writes `--paths` and `--host-check` in there too,
+rather than printing them where a double-clicked program has no stdout.
+
+`2ksbox-debug.bat` at the top of the package is the double-click for all
+of it: it runs the launcher from a console — through `start "" /b /wait`,
+because cmd does not wait for a windows-subsystem program and would
+record no exit code — and writes `2ksbox-debug.log` with the exit codes
+and a copy of `launcher.log`. **A missing `launcher.log` is itself the
+answer**: nothing of ours ever ran, so the failure is in the loader or a
+static initialiser, and the exit code says which (`0xC0000135` a DLL that
+is not there, `0xC0000142` an initialiser, `0xC0000005` a fault).
 
 The DLLs beside them are a **closure walked from the import tables** with
 `objdump`, not a hand-kept list — start from the four binaries, follow

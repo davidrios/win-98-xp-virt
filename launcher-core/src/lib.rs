@@ -44,6 +44,9 @@ pub mod console;
 pub mod control;
 pub mod disc_library;
 pub mod editor;
+// The launcher's own last words: a start-up log and, on Windows, a
+// message box — a windowed program has no stderr to die into.
+pub mod fatal;
 // What this host's GPU can do for the Direct3D executor (ADR-013).
 pub mod host_gpu;
 pub mod library;

@@ -383,6 +383,11 @@ fn screen_size(arg: Option<String>, default: egui::Vec2) -> egui::Vec2 {
 }
 
 fn main() -> eframe::Result {
+    // First, before anything that can fail: a windowed program on
+    // Windows has no stderr, so a panic on the way to the window is
+    // otherwise a process that vanishes with nothing said anywhere
+    // (`launcher_core::fatal`).
+    launcher_core::fatal::install("egui");
     let mut args = std::env::args().skip(1);
     let verb = args.next();
     // Anything on the command line is a verb that answers in text, so
@@ -646,7 +651,12 @@ fn main() -> eframe::Result {
         _ => {}
     }
 
+    launcher_core::fatal::note(&format!(
+        "data dir = {}",
+        paths::data_dir().map(|d| d.display().to_string()).unwrap_or_else(|| "(none)".into())
+    ));
     let machines = Machines::load();
+    launcher_core::fatal::note(&format!("library: {} machines", machines.entries().len()));
     // Debug hook: screenshot the real windowed editor (bypassing the
     // GUI click this session has no automation for) pre-filled from
     // `LAUNCHER_DEBUG_SHADER_PREVIEW=<preset.slangp>;<image>[;fullscreen]`.
@@ -672,7 +682,8 @@ fn main() -> eframe::Result {
         // A broken icon is not a reason to refuse to start.
         Err(e) => eprintln!("[launcher] window icon: {e}"),
     }
-    eframe::run_native(
+    launcher_core::fatal::note("opening the window");
+    let started = eframe::run_native(
         paths::NAME,
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
@@ -693,5 +704,11 @@ fn main() -> eframe::Result {
                 wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
         }),
-    )
+    );
+    // eframe's error goes to a `stderr` a windowed program has not got —
+    // "no window and no message" is precisely the report this catches.
+    if let Err(e) = &started {
+        launcher_core::fatal::fatal(&format!("the window could not be opened: {e}"));
+    }
+    started
 }

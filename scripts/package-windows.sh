@@ -33,6 +33,9 @@
 #   guest-tools\                the guest-tools ISO
 #   shaders\                    presets, with --with-shaders
 #   doc\                        COPYING, notices, README
+#   2ksbox-debug.bat            runs the launcher from a console and
+#                               keeps its exit code -- the one thing
+#                               a silent start-up failure still has
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -113,6 +116,54 @@ if [ "$SHADERS" = 1 ]; then
 fi
 
 install -m644 COPYING THIRD-PARTY-NOTICES.md README.md "$STAGE/doc/"
+
+# --- what to double-click when nothing happens ------------------------
+# A windowed program that dies before `main` -- a DLL the loader cannot
+# find, a static initialiser that faults -- says nothing anywhere: no
+# window, no console, and not even the launcher's own log, because no
+# code of ours has run yet (launcher-core/src/fatal.rs writes that log
+# from the first line of `main` onwards). The one thing that still
+# distinguishes those cases is the **exit code**, and only a console has
+# it, so the package carries a console to run the launcher from. It is
+# the first thing to ask for when a report is "it didn't start".
+cat > "$STAGE/2ksbox-debug.bat" <<'BAT'
+@echo off
+rem  Run the launcher from a console and keep what it says.  Send the
+rem  developers the 2ksbox-debug.log this writes: when no window ever
+rem  appeared, its exit codes and the launcher's own log are the whole
+rem  of the evidence.
+rem
+rem  Every run goes through `start "" /b /wait`, because cmd does not
+rem  wait for a windows-subsystem program and would otherwise record no
+rem  exit code at all.  The launcher's *output* comes from its own log
+rem  rather than this console: a program started by double-click has no
+rem  stdout, so `--diagnose` files its answers instead of printing them.
+setlocal
+cd /d "%~dp0"
+set LOG=%APPDATA%\2ksbox\data\launcher.log
+set OUT=%~dp02ksbox-debug.log
+echo === 2ksbox debug run, %DATE% %TIME% === > "%OUT%"
+echo Asking the launcher what it can see ...
+start "" /b /wait 2ksbox.exe --diagnose
+echo [--diagnose exit %ERRORLEVEL%] >> "%OUT%"
+echo.
+echo Starting the launcher.  Close its window when you have seen enough.
+start "" /b /wait 2ksbox.exe
+echo [launcher exit %ERRORLEVEL%] >> "%OUT%"
+echo. >> "%OUT%"
+if exist "%LOG%" (
+  echo --- %%APPDATA%%\2ksbox\data\launcher.log --- >> "%OUT%"
+  type "%LOG%" >> "%OUT%"
+) else (
+  echo (no launcher.log: nothing of ours ran, so it died in the loader^) >> "%OUT%"
+)
+echo.
+type "%OUT%"
+echo.
+echo Send this file: "%OUT%"
+pause
+BAT
+chmod 644 "$STAGE/2ksbox-debug.bat"
 
 # --- the Qt runtime ---------------------------------------------------
 # Qt needs more than its DLLs: a platform plugin (there is no window
@@ -271,11 +322,14 @@ if command -v wine >/dev/null; then
   resolved=$(runw 2ksbox.exe --paths || true)
   if [ -z "$resolved" ]; then
     # The Qt front end does not start under wine at all: it faults on a
-    # null call before main prints anything, with either subsystem, while
-    # the egui binary in the same folder answers perfectly (M11, tracked
-    # in docs/tracks/m11-windows-host.md). Whether that is wine's Qt 6 or
-    # ours is a question only a real Windows machine can answer, so it is
-    # reported here rather than failing a package nobody can yet check.
+    # null call before main runs, while the egui binary in the same
+    # folder answers perfectly (M11, tracked in
+    # docs/tracks/m11-windows-host.md; the loader gets all the way
+    # through Qt6Qml first, and the launcher's own log -- opened by the
+    # first statement in `main` -- is never created, so it is a static
+    # initialiser and not a missing DLL). Whether real Windows does the
+    # same is a question only that machine can answer, so it is reported
+    # here rather than failing a package nobody can yet check.
     if [ "$QT" = 1 ]; then
       echo "launcher       the Qt front end does not run under wine (unverified; try it on Windows)"
     else
@@ -295,6 +349,27 @@ if command -v wine >/dev/null; then
         *) echo "package-windows.sh: $what resolved outside the package: $path" >&2; fail=1 ;;
       esac
     done <<< "$resolved"
+  fi
+
+  # The package has to be able to say why it failed, which is the whole
+  # of `launcher-core/src/fatal.rs`: a windowed program's start-up
+  # failure has no stdout, so it goes into a log instead. Here that log
+  # is written by the staged binary in its own prefix -- the one file a
+  # user is asked for when nothing at all appeared on screen -- and it
+  # must hold both the start-up milestones and `--diagnose`'s answers.
+  runw 2ksbox.exe --diagnose >/dev/null 2>&1 || true
+  llog=$(find "$WINEPREFIX/drive_c/users" -name launcher.log 2>/dev/null | head -1)
+  if [ -n "$llog" ] && grep -q -- '--- --diagnose ---' "$llog" && grep -q '\[start\] exe = ' "$llog"; then
+    echo "launcher.log   start-up milestones and --diagnose, written by the staged launcher"
+  elif [ "$QT" = 1 ]; then
+    # No log at all is the sharpest thing known about this binary: the
+    # first statement in its `main` is what opens that file, so it is
+    # dying before `main` -- in the loader or a static initialiser, not
+    # in anything the launcher itself does.
+    echo "launcher.log   (none: the Qt launcher never reaches main under wine)"
+  else
+    echo "package-windows.sh: the staged launcher wrote no launcher.log" >&2
+    fail=1
   fi
 
   # The bundle-creating path end to end: the staged launcher runs the

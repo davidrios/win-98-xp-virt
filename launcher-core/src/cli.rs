@@ -109,25 +109,21 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
             // still answers with the checkout it was built from is not a
             // package — and the first thing to ask of an installed build
             // that says a file is missing.
-            match crate::paths::install_prefix() {
-                Some(prefix) => println!("prefix       {}", prefix.display()),
-                None => println!("prefix       (not installed; a checkout build)"),
-            }
-            println!("checkout     {}", crate::paths::checkout(".").display());
-            println!("player       {}", player::player_binary().display());
-            println!("qemu-img     {}", player::qemu_img_binary().display());
-            println!("pc-bios      {}", player::pc_bios_dir().display());
-            match disc_library::guest_tools_iso() {
-                Some(iso) => println!("guest-tools  {}", iso.display()),
-                None => println!("guest-tools  (none built or shipped)"),
-            }
-            match shader_source::presets_dir() {
-                Some(dir) => println!("shaders      {}", dir.display()),
-                None => println!("shaders      (none; downloadable into {})", shader_source::install_dir().display()),
-            }
-            println!("machines     {}", library::default_dir().display());
-            println!("discs        {}", disc_library::default_path().display());
-            println!("profiles     {}", shader_library::default_dir().display());
+            print!("{}", paths_text());
+        }
+        "--diagnose" => {
+            // The same answers, plus the host's 3D, written **into the
+            // launcher's log** as well as printed — because on Windows
+            // the launcher is a windowed program, and a windowed program
+            // started by double-click has no stdout for anyone to read.
+            // A user who is asked "what does it say?" can send one file
+            // (`fatal::log_path()`), which is also where the start-up
+            // milestones and any panic have gone. `2ksbox-debug.bat` in
+            // the Windows package is a double-click for exactly this.
+            let probe = crate::host_gpu::probe();
+            let text = format!("{}\n{}", paths_text(), crate::host_gpu::report_text(&probe));
+            print!("{text}");
+            crate::fatal::record("--diagnose", &text);
         }
         "--new" => {
             let usage = "usage: --new <win98|xp|dos> <name> <disk.qcow2>";
@@ -488,4 +484,40 @@ pub fn print_snapshots(window: &snaps::Snapshots) {
     for snap in window.snapshots() {
         println!("{}\t{}\t{}\t{}", snap.id, snap.name, snap.date_label(), snap.size_label());
     }
+}
+
+/// Where every companion resolved, as text — one line each, the format
+/// `scripts/package-linux.sh` and `scripts/package-windows.sh` read.
+/// Shared by `--paths`, which prints it, and `--diagnose`, which also
+/// files it where a windowed program's user can find it.
+fn paths_text() -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    match crate::paths::install_prefix() {
+        Some(prefix) => writeln!(s, "prefix       {}", prefix.display()),
+        None => writeln!(s, "prefix       (not installed; a checkout build)"),
+    }
+    .ok();
+    writeln!(s, "checkout     {}", crate::paths::checkout(".").display()).ok();
+    writeln!(s, "player       {}", player::player_binary().display()).ok();
+    writeln!(s, "qemu-img     {}", player::qemu_img_binary().display()).ok();
+    writeln!(s, "pc-bios      {}", player::pc_bios_dir().display()).ok();
+    match disc_library::guest_tools_iso() {
+        Some(iso) => writeln!(s, "guest-tools  {}", iso.display()),
+        None => writeln!(s, "guest-tools  (none built or shipped)"),
+    }
+    .ok();
+    match shader_source::presets_dir() {
+        Some(dir) => writeln!(s, "shaders      {}", dir.display()),
+        None => writeln!(
+            s,
+            "shaders      (none; downloadable into {})",
+            shader_source::install_dir().display()
+        ),
+    }
+    .ok();
+    writeln!(s, "machines     {}", library::default_dir().display()).ok();
+    writeln!(s, "discs        {}", disc_library::default_path().display()).ok();
+    writeln!(s, "profiles     {}", shader_library::default_dir().display()).ok();
+    s
 }

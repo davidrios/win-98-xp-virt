@@ -62,6 +62,13 @@ use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 const QML_MAIN: &str = "qrc:/qt/qml/com/_2ksbox/launcher/qml/Main.qml";
 
 fn main() {
+    // First of all: a windowed program on Windows has no stderr, so
+    // anything that goes wrong on the way to the first window would
+    // otherwise be a process that vanishes without a word. The log's
+    // milestones say how far this got — and *no* log at all says it
+    // never reached `main`, which is its own answer
+    // (`launcher_core::fatal`).
+    launcher_core::fatal::install("qt");
     // Debug verbs first, before a GUI exists. They are
     // `launcher_core::cli`'s, so this binary answers every one the egui
     // launcher does, identically — `--paths`, `--discs`, `--snapshots`,
@@ -87,7 +94,9 @@ fn main() {
         }
     }
 
+    launcher_core::fatal::note("QGuiApplication");
     let mut app = QGuiApplication::new();
+    launcher_core::fatal::note("QML engine");
     let mut engine = QQmlApplicationEngine::new();
     if let Some(mut engine) = engine.as_mut() {
         // A QML error otherwise leaves the engine with no root object and
@@ -96,12 +105,14 @@ fn main() {
         engine
             .as_mut()
             .on_object_creation_failed(|_, url| {
-                eprintln!("[launcher-qt] {url} failed to load");
+                launcher_core::fatal::fatal(&format!("{url} failed to load"));
                 std::process::exit(1);
             })
             .release();
+        launcher_core::fatal::note(&format!("loading {QML_MAIN}"));
         engine.load(&QUrl::from(QML_MAIN));
     }
+    launcher_core::fatal::note("the event loop");
     if let Some(app) = app.as_mut() {
         app.exec();
     }
