@@ -22,7 +22,6 @@
 
 use crate::player;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -75,7 +74,7 @@ impl Snapshot {
 
 fn qemu_img(args: &[&str], disk: &Path) -> std::io::Result<std::process::Output> {
     let bin = player::qemu_img_binary();
-    Command::new(&bin)
+    crate::console::command(&bin)
         .args(args)
         .arg(disk)
         .output()

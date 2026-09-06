@@ -19,7 +19,8 @@ one. Windows had been "untested" since M1 (doc 08).
   `scripts/configure-qemu.sh` and of `scripts/build-d3dpt-exec.sh`.
 - The package: `scripts/package-windows.sh`.
 - Windows branches of shared code: `embed/mglcntx_embed.c` (the WGL
-  backend) and `tools/wgl-probe.c`, `player/src/qmp.rs`,
+  backend) and `tools/wgl-probe.c`, `launcher-core/src/console.rs`,
+  `player/src/qmp.rs`,
   `launcher/src/paths.rs` + `player.rs` + `wizard.rs` + `bundle.rs`
   (the layout and the WHPX naming), `d3dpt/hw/d3dpt_exec_load.c`,
   `d3dpt/exec/*.cpp`, `libdisc/src/bin/discx.rs`.
@@ -57,8 +58,39 @@ What has actually been *run*, all under wine on the build host:
   wine is not the target, and the answer costs less on a real Windows
   machine than in a wine debugger.
 
-Nothing has run on real Windows yet. That is the next thing, and it needs
-the user's PC.
+### First run on real Windows (2026-09-06)
+
+The user ran the package on their PC. It starts, and two things were
+wrong — both of them things only a real Windows could show:
+
+1. **A terminal window.** The launcher was a console-subsystem binary, so
+   double-clicking it opened a black console and kept it for the session.
+   Both front ends are `windows_subsystem = "windows"` now, with
+   `launcher-core/src/console.rs` paying back what that costs: the debug
+   verbs borrow the console they were launched from when there is one
+   (`AttachConsole(ATTACH_PARENT_PROCESS)`, and only when nothing has
+   already handed us a stdout — a redirection or a test harness's pipe
+   must be left alone), and every subprocess the launcher starts is given
+   `CREATE_NO_WINDOW`, so `qemu-img` no longer flashes a console per call
+   and the player no longer sits behind one. Verified under wine both
+   ways: `package-windows.sh`'s `--paths` check still reads its pipe, and
+   `2ksbox.exe --host-check` from a `.bat` under `cmd` prints into that
+   console.
+2. **"Failed loading SDL3 library" on Play.** Fedora's `mingw64-SDL2` is
+   *sdl2-compat*: an `SDL2.dll` that `LoadLibrary`s `SDL3.dll`. The DLL
+   closure walks import tables, and a runtime load is not in one, so
+   SDL3 was never shipped and the player could not start on a machine
+   without its own. `package-windows.sh` now has a second pass over the
+   staged binaries' strings for sysroot DLL names that are not staged
+   yet (`SDL3.dll`, and ANGLE's `libEGL`/`libGLESv2` behind it).
+
+A windowless launcher has nowhere to put the player's output, which is
+precisely when a start-up failure needs reading, so `player::spawn`
+redirects it to `%APPDATA%\2ksbox\data\player.log` in that case —
+appended, with a header per run.
+
+Still open from that first run: whether a machine actually boots, and
+what WHPX does with it.
 
 ### OpenGL in the embed library
 
@@ -144,8 +176,9 @@ images and a GPU, and now a Windows host too. The Windows evidence is
 
 ## Next steps, in order
 
-1. **Run it on the user's Windows PC.** A machine created in the wizard,
-   booted, with WHPX. Everything below is guesswork until this happens.
+1. **Boot a machine on the user's Windows PC.** The launcher runs there
+   and Play now starts the player; what a guest does under WHPX is the
+   next unknown.
 2. **A Win98 guest with 3D on real Windows.** The WGL backend is written
    and its sequence passes under wine (`tools/wgl-probe.exe`), but no
    guest has used it.
@@ -168,3 +201,11 @@ images and a GPU, and now a Windows host too. The Windows evidence is
   redirect to a file.
 - The launcher's Windows data directory is `%APPDATA%\2ksbox\data`
   (`directories`' own convention), not `%APPDATA%\2ksbox`.
+- A DLL loaded with `LoadLibrary` is not in any import table, so a
+  closure walked from those alone is not a closure. Fedora's SDL2 is
+  sdl2-compat and loads SDL3 that way; `package-windows.sh` has a
+  strings-based second pass for the next one.
+- `windows_subsystem = "windows"` is what stops the terminal window, and
+  it costs a console for the debug verbs and a place to put a child's
+  output. Both are in `launcher-core/src/console.rs`; neither is
+  optional once the attribute is set.

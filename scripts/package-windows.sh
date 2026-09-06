@@ -144,6 +144,42 @@ while [ ${#queue[@]} -gt 0 ]; do
     queue+=("$STAGE/$dll")
   done < <(imports "$file")
 done
+
+# A DLL that is *loaded* rather than imported is invisible to the walk
+# above, and one of ours is: Fedora's mingw64-SDL2 is **sdl2-compat**, an
+# SDL2.dll that LoadLibrary's SDL3.dll at run time. Shipping only what the
+# import tables named gave a package whose player died with "Failed
+# loading SDL3 library" on a machine that had no SDL of its own (found on
+# a real Windows PC, 2026-09-06).
+#
+# So: every staged binary is searched for names of DLLs that exist in the
+# mingw sysroot and are not staged yet, and those are shipped too. It is
+# broader than reading an import table and that is the point — the next
+# runtime load will be caught by the same pass instead of by a user.
+runtime_deps() { strings -a "$1" | grep -oiE '[A-Za-z0-9_.+-]+\.dll' | sort -u; }
+if command -v strings >/dev/null; then
+  again=1
+  while [ "$again" = 1 ]; do
+    again=0
+    for file in "$STAGE"/*.dll "$STAGE"/*.exe; do
+      [ -e "$file" ] || continue
+      while read -r dll; do
+        [ -n "$dll" ] || continue
+        key=$(printf '%s' "$dll" | tr 'A-Z' 'a-z')
+        [ -n "${seen[$key]:-}" ] && continue
+        seen[$key]=1
+        src=$(ls "$SYSROOT/$dll" 2>/dev/null || ls "$SYSROOT"/"$key" 2>/dev/null || true)
+        [ -n "$src" ] || continue        # Windows' own, or not a real name
+        install -m755 "$src" "$STAGE/$(basename "$src")"
+        echo "               + $(basename "$src") (loaded at run time, not imported)"
+        copied=$((copied + 1))
+        again=1
+      done < <(runtime_deps "$file")
+    done
+  done
+else
+  echo "package-windows.sh: no strings(1); run-time-loaded DLLs not checked for" >&2
+fi
 echo "runtime DLLs   $copied copied from $(basename "$SYSROOT")"
 
 # --- the check --------------------------------------------------------

@@ -9,7 +9,7 @@ use crate::bundle::Machine;
 use crate::shader_library;
 use crate::shader_profile::ShaderProfile;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Child;
 
 /// The `player` binary: `bin/2ksbox-player` in an installed tree
 /// (`paths.rs`), otherwise alongside the launcher's own executable, where
@@ -141,8 +141,14 @@ pub fn shader_args(machine: &Machine) -> Vec<String> {
     args
 }
 
-/// Spawn `player` on `machine`. Inherits the launcher's stdout/stderr for
-/// now (dev convenience); a real log file is a packaging-time concern.
+/// Spawn `player` on `machine`. Inherits the launcher's stdout/stderr
+/// when there is a terminal to inherit — and when there is not (a
+/// double-clicked launcher on Windows, which has no console at all and
+/// gives its children none either, so that nothing flashes up) writes
+/// them to [`log_path`] instead. A player that dies during start-up says
+/// why on its stderr, and the one platform where that stream had nowhere
+/// to go is also the one where nobody can rerun it from a terminal to
+/// find out.
 ///
 /// `qmp_socket`, when given, makes QEMU listen on that path for a second
 /// monitor the launcher drives for live media/snapshot control
@@ -160,12 +166,40 @@ pub fn spawn(
         args.extend(extra);
     }
     let bin = player_binary();
-    Command::new(&bin)
-        .args(shader_args(machine))
-        .arg("--")
-        .args(args)
-        .spawn()
-        .map_err(|e| std::io::Error::other(format!("running {}: {e}", bin.display())))
+    let mut cmd = crate::console::command(&bin);
+    cmd.args(shader_args(machine)).arg("--").args(args);
+    if !crate::console::inherits_output() {
+        if let Some(log) = open_log(&machine.name) {
+            let dup = log.try_clone();
+            cmd.stdout(log);
+            if let Ok(dup) = dup {
+                cmd.stderr(dup);
+            }
+        }
+    }
+    cmd.spawn().map_err(|e| std::io::Error::other(format!("running {}: {e}", bin.display())))
+}
+
+/// Where a windowless launcher puts the player's output: one file beside
+/// the machine library, appended to, so the run before last is still
+/// there when someone thinks to look.
+pub fn log_path() -> Option<PathBuf> {
+    crate::paths::data_dir().map(|d| d.join("player.log"))
+}
+
+fn open_log(machine: &str) -> Option<std::fs::File> {
+    use std::io::Write;
+    let path = log_path()?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(f, "\n=== {machine} — player started, unix time {secs} ===");
+    Some(f)
 }
 
 /// `qemu-img`, a QEMU build product rather than a workspace binary, so it
@@ -189,7 +223,7 @@ pub fn qemu_img_binary() -> PathBuf {
 /// Create a new qcow2 disk image for the wizard's "new disk" path.
 pub fn create_disk(path: &std::path::Path, size_gb: u32) -> std::io::Result<()> {
     let bin = qemu_img_binary();
-    let status = Command::new(&bin)
+    let status = crate::console::command(&bin)
         .args(["create", "-f", "qcow2"])
         .arg(path)
         .arg(format!("{size_gb}G"))

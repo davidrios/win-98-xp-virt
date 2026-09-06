@@ -10,6 +10,13 @@
 //! dialog egui doesn't have (`filepicker.rs`), and the diagnostic verbs
 //! below that render real frames without a window.
 
+// A windowed program on Windows: a console-subsystem binary opens a
+// black terminal the moment someone double-clicks it and keeps it there
+// for the whole session. The debug verbs still print — `main` borrows
+// the console it was launched from when there is one
+// (`launcher_core::console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod discshelf;
 mod filepicker;
 mod shader_manager;
@@ -378,6 +385,12 @@ fn screen_size(arg: Option<String>, default: egui::Vec2) -> egui::Vec2 {
 fn main() -> eframe::Result {
     let mut args = std::env::args().skip(1);
     let verb = args.next();
+    // Anything on the command line is a verb that answers in text, so
+    // this is where a Windows build goes looking for a console to print
+    // into; a plain double-click never gets one (console.rs).
+    if verb.is_some() {
+        launcher_core::console::attach_parent();
+    }
     // Every verb that needs no toolkit is `launcher_core::cli`, so this
     // binary and `launcher-qt` answer them with the same code.
     if let Some(verb) = verb.as_deref() {

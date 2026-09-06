@@ -40,6 +40,7 @@
 pub mod browse;
 pub mod bundle;
 pub mod cli;
+pub mod console;
 pub mod control;
 pub mod disc_library;
 pub mod editor;

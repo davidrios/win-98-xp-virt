@@ -73,8 +73,18 @@ libqemu-embed-i386.dll  d3dpt_exec.dll  <the mingw runtime>
 pc-bios\  guest-tools\  shaders\  tools\  doc\
 ```
 
-`launcher/src/paths.rs` knows both shapes: on Windows the prefix is the
-executable's own directory and `pc-bios\` is the marker.
+`launcher-core/src/paths.rs` knows both shapes: on Windows the prefix is
+the executable's own directory and `pc-bios\` is the marker.
+
+Both front ends are **windowed** programs there
+(`windows_subsystem = "windows"`): a console-subsystem binary opens a
+black terminal the moment someone double-clicks it and keeps it for the
+session. `launcher-core/src/console.rs` pays that back on both sides —
+`--paths` and friends borrow the console they were launched from when
+there is one, and every subprocess the launcher starts (the player,
+`qemu-img`) is given none, so nothing flashes. With no console to inherit
+the player's output would be lost, which is exactly when it matters, so
+it goes to `%APPDATA%\2ksbox\data\player.log` instead.
 
 The DLLs beside them are a **closure walked from the import tables** with
 `objdump`, not a hand-kept list — start from the four binaries, follow
@@ -82,6 +92,17 @@ every import, ship what is in the mingw sysroot and never what is
 Windows' own (`kernel32`, `opengl32`, `d3d9`, the `api-ms-win-*` API
 sets). Copying a system DLL into the folder is how an app ends up running
 only on the machine that built it.
+
+An import table does not name what a DLL **loads at run time**, and one
+of ours does: Fedora's `mingw64-SDL2` is *sdl2-compat*, an `SDL2.dll`
+that `LoadLibrary`s `SDL3.dll`. The first package therefore died on a
+real Windows PC with "Failed loading SDL3 library". So a second pass
+searches every staged binary for the name of any DLL that exists in the
+sysroot and is not staged yet, and ships that too — deliberately broader
+than the import tables, so the next runtime load is caught by the pass
+instead of by a user. (It is why `SDL3.dll`, `libEGL.dll` and
+`libGLESv2.dll` are in the folder; QEMU's SDL front end is the reason SDL
+is there at all, and the qemu-3dfx patch makes it mandatory.)
 
 `scripts/package-windows.sh` then **runs the staged package under wine**,
 from outside the checkout with an empty environment: the launcher must
