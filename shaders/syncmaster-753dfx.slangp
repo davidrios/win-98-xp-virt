@@ -1,0 +1,62 @@
+# Samsung SyncMaster 753DFX — the rig's CRT (doc 09), approximated.
+#
+# DERIVED FROM THE TUBE'S GEOMETRY, NOT CALIBRATED AGAINST IT. Doc 09's photo
+# pass (macro shots of the mask and scanlines, full-screen shots of known test
+# content) is what turns this into a calibrated preset; until then the beam
+# shape especially is a defensible guess, not a measurement. What *is* derived
+# here is written next to each value.
+#
+# The tube: 17" (≈16" viewable, ≈320×240 mm picture), Samsung DynaFlat — flat
+# glass, delta dot-trio shadow mask, ≈0.20 mm horizontal dot pitch. Not an
+# aperture grille: no damper wires, no Trinitron vertical stripe.
+#
+# Verify against the monitor before trusting the numbers: the dot pitch and
+# the viewable width are the two that drive everything below.
+
+#reference "../third_party/slang-shaders/crt/crt-guest-advanced.slangp"
+
+# ---------------------------------------------------------------- the mask
+# 320 mm of picture at 0.20 mm pitch is ≈1600 triads across, so the tube put
+# 5.0 triads under each pixel of a 320×200 mode, 2.5 under each pixel at
+# 640×480 and 1.6 at 1024×768. Mask 4 needs 6 output pixels per triad, so
+# showing that honestly would want a 9600-pixel-wide viewport — see the note
+# at the bottom. What we can be faithful about is the *kind* of mask.
+shadowMask = "4.000000"   # VGA-style delta dot trio (2 would be the grille)
+masksize = "1.000000"     # finest pitch the shader offers
+maskstr = "0.220000"      # softer than the 0.3 default: the mask stands in
+                          # for one 5× finer than itself, so a strong one
+                          # reads as a pattern the tube never showed
+maskDark = "0.700000"     # 0.5/1.5 defaults are TV-like; a PC monitor's mask
+maskLight = "1.300000"    # mostly costs brightness rather than banding
+slotmask = "0.000000"     # a dot trio has no slots
+slotmask1 = "0.000000"
+
+# ------------------------------------------------------------ the geometry
+# DynaFlat: the glass is flat, so the picture is not barrel-shaped.
+warpX = "0.000000"
+warpY = "0.000000"
+
+# ----------------------------------------------------------- the bandwidth
+# The video amplifier has to be good for ≈110 MHz to reach this monitor's top
+# mode. At 640×480 the pixel clock is ≈36 MHz — a third of that — so the tube
+# is horizontally crisp for everything of the era; softness only appears near
+# 1280×1024, where the clock approaches the amplifier's limit.
+h_sharp = "6.500000"
+
+# ---------------------------------------------------------------- the beam
+# 240 mm over 480 lines is a 0.50 mm scanline pitch against a 0.17 mm vertical
+# triad pitch, so at 640×480 the scanlines are the coarse structure and the
+# mask the fine one — scanlines carry this monitor's look, and the shader is
+# told their true count by the player's mode analysis (doc 03), not by these.
+# At 768 lines the pitch falls to 0.31 mm and they nearly vanish, which is why
+# a Win98 desktop at 1024×768 on this tube shows no scanlining to speak of.
+# A well-focused PC monitor blooms far less than a TV: the beam stays near its
+# nominal width as it brightens.
+beam_min = "1.300000"
+beam_max = "1.000000"
+glow = "0.080000"
+halation = "0.100000"     # the anti-glare coating scatters a little
+
+# vga_mode and inter are deliberately absent: the player sets them per mode
+# from the mode table (doc 03 rule 3). Setting them here would freeze the
+# scanline count at whatever mode this file was written for.

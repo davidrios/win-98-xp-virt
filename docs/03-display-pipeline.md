@@ -20,9 +20,14 @@ guest VGA/SVGA device
 The librashader chain follows RetroArch shader semantics (original-resolution
 input, final viewport params, per-pass scaling), so the existing slang
 presets — `crt-royale`, `crt-guest-advanced`, `crt-lottes` — work unmodified.
-We ship a curated pack with 3–4 defaults ("Trinitron" calibrated against the
-reference CRT per doc 09, "shadow mask consumer", "clean sharp", "off") and
-accept any `.slangp`.
+We ship a curated pack with 3–4 defaults and accept any `.slangp`. The one
+calibrated against the reference CRT is a **shadow-mask** preset, not a
+Trinitron: the rig's monitor is a Samsung SyncMaster 753DFX, a 17" DynaFlat
+with a delta dot trio at ≈0.20 mm (doc 09), so it has no grille to imitate.
+`shaders/syncmaster-753dfx.slangp` is that preset, derived from the tube's
+geometry and awaiting doc 09's photo pass. A Trinitron preset is still worth
+having in the pack as a *style*, alongside "clean sharp" and "off" — it just
+is not what this rig's tube looked like.
 
 Implementation status (2026-09-05): the chain runs in `player/src/shader.rs`
 — guest texture in, viewport-sized output texture out, then the blit pass;

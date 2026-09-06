@@ -5,6 +5,18 @@ Windows 98 / Windows XP, CRT monitor, real optical drive.** This is the
 ground truth the emulated stack is judged against. Each pillar gets concrete
 comparisons instead of guesses.
 
+The monitor is a **Samsung SyncMaster 753DFX**: 17" (≈16" viewable, ≈320×240 mm
+of picture), Samsung DynaFlat — flat glass, and a **delta dot-trio shadow mask
+at ≈0.20 mm horizontal pitch**, not an aperture grille. That matters for the
+preset pack: this tube has no damper wires and no vertical stripe, so a
+Trinitron-style grille preset is the wrong default for it (doc 03's pack names
+are corrected accordingly). `shaders/syncmaster-753dfx.slangp` approximates it
+from that geometry; the photo set below is what would turn the approximation
+into a calibration. **Unverified:** the dot pitch and the viewable width are
+recalled from the model's class, not read off the monitor, and everything
+derived scales with them — measure the picture width and check the pitch in
+the manual before treating the numbers as fixtures.
+
 ## What it validates, per pillar
 
 ### Display pipeline (doc 03) — the biggest win
