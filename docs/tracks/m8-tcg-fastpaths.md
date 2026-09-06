@@ -5,7 +5,9 @@ floating-point code: the x87 shadow-double translator (patch 06, doc 13),
 the SSE inline path (patch 11, doc 16), the TCG float opcodes they added
 to both backends, and their tests and benchmarks. Read `docs/00-status.md`
 first for the global picture and the track rules, then this file, then
-docs 13 and 16. Branch: `track/m8-tcg-fp`.
+docs 13 and 16. Branch: `track/m8-tcg-fp` was merged to `main`
+2026-09-04 and **deleted 2026-09-06** (local, worktree and remote);
+branch fresh off `main` for the next M8 item.
 
 ## Scope and files (this track owns them)
 

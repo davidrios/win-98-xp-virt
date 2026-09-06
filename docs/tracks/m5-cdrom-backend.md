@@ -8,8 +8,11 @@ Read `docs/00-status.md` first for the global picture and the track
 rules, then this file, then doc 17 (the implementation spec: every byte
 layout, function name and QEMU hook is there — this file is the *plan*,
 doc 17 is the *spec*; do not re-derive what doc 17 fixes). Doc 05 is the
-problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
-2026-09-04 off `main`).
+problem statement and acceptance table. Branch: `track/m5-cdrom` was
+opened 2026-09-04 off `main`, merged, and **deleted 2026-09-06** (local,
+worktree and remote) — everything below is on `main`. The items still
+open in the status doc's M5 row are small enough to do there; branch
+fresh off `main` if one grows.
 
 ## Scope and files (this track owns them)
 
@@ -405,9 +408,10 @@ problem statement and acceptance table. Branch: `track/m5-cdrom` (opened
   subchannel, see step 5 above): unprotected mixed-mode discs. **No
   SafeDisc / SecuROM dump yet** (step 7): the L-EC path is proven on
   synthetic bad sectors and clean real discs only.
-- This track's worktree (`.claude/worktrees/m5-cdrom`) has its own
-  submodules (`git submodule update --init --depth 1 …`) and QEMU build
-  (`build/qemu` there, ~15 min from scratch on the Linux box).
+- This track's worktree is gone (2026-09-06); the work is in the main
+  checkout. A new worktree for it would again need its own submodules
+  (`git submodule update --init --depth 1 …`) and QEMU build (`build/qemu`
+  there, ~15 min from scratch on the Linux box).
 
 ## Build / test loop
 
