@@ -22,7 +22,7 @@ driver.
 | Glide (2x/3x) | qemu-3dfx guest stubs → host translation | same (fewer titles care) |
 | OpenGL | qemu-3dfx MESA GL pass-through | same |
 | Direct3D 5–7 | SoftGPU (DDraw/D3D → wrapper stack) | rarely needed; wrappers exist |
-| Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | **our paravirtual D3D device (doc 14, ADR-006)**; WineD3D (wine9x build, guest-tools ISO) as fallback |
+| Direct3D 8/9 | WineD3D-based wrapper DLLs → GL pass-through | **our paravirtual D3D device (doc 14, ADR-006)**; WineD3D (wine9x build, guest-tools ISO) as fallback — permanently so on hosts below Vulkan 1.3 (ADR-013) |
 | 2D/desktop | SoftGPU display driver (QEMU std VGA path) | XP inbox Cirrus GD5446 driver (`-vga cirrus`, as Win98); std VGA (Bochs VBE) has no XP driver and leaves the desktop at 640×480×16 |
 
 Known qemu-3dfx constraints we design around:

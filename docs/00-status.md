@@ -133,6 +133,19 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
 
 ## Known issues / open threads
 
+- **Hosts below Vulkan 1.3 get no Direct3D device** (ADR-013, 2026-09-06).
+  DXVK 3.1 asks for `VK_API_VERSION_1_3` at instance creation and rejects
+  every adapter below it, so pre-Broadwell Intel, Nvidia Kepler and older,
+  AMD TeraScale, and macOS before 26 (every Intel Mac) cannot run the
+  executor — several of which are otherwise *good* hosts, being x86 boxes
+  of about the right speed. They keep the OpenGL pass-through with
+  WineD3D-in-guest, **which is therefore not retired when M10 lands**.
+  `launcher --host-check` (`launcher-core/src/host_gpu.rs`) reports the
+  verdict and every device behind it; software Vulkan (lavapipe) is
+  deliberately refused. Open: nobody has measured how many real users are
+  behind the bar, and doc 14 P0b's GL/wgpu executor stays unbuilt until
+  someone has.
+
 - 3D sync is `glFinish` before every hand-off (both platforms); a shared
   fence would let the vCPU continue while the blit drains. Glide (doc 12
   §5) is the last M3 item.

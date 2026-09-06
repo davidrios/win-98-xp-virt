@@ -458,3 +458,86 @@ the first time anything asks for the directory:
 
 The runtime directory is not migrated: what lives there belongs to a
 running process, and a stale socket path outlives nothing.
+
+## ADR-013: hosts without Vulkan 1.3 keep the GL path; no second executor (2026-09-06)
+
+*(ADR-012 is the Win98 display driver, on `track/m10-win98-driver`.)*
+
+**Decision.** The paravirtual Direct3D device (ADR-006) requires a
+**hardware Vulkan 1.3 device** on the host, because its executor is DXVK
+(ADR-007) and DXVK asks for exactly that. Hosts that fail the bar are
+still supported machines — they simply do not get the device. What they
+get is the path that predates it: qemu-3dfx's OpenGL pass-through with
+the Glide wrappers and **WineD3D-in-guest**, which needs no Vulkan at
+all. Three things follow, and they are the decision:
+
+1. **WineD3D is not retired by M10.** Doc 04's fallback row and doc 08's
+   "WineD3D-in-guest stays the fallback and the DX7 path" stand *after*
+   Win98 has its own display driver (ADR-012). M10 step 5 compares the
+   two stacks and picks a default per host; it does not delete one.
+   The ISO keeps `WINED3D\`, and `SETUP /GAME`'s renames stay the
+   supported way to install it next to a game.
+2. **The launcher probes and says so** rather than letting a machine
+   have no 3D in silence.
+3. **No second executor is built** on the strength of this. Doc 14 P0b's
+   escape hatch — "the executor becomes host WineD3D-over-GL or a wgpu
+   translator; the guest side is unchanged either way" — stays open and
+   stays unbuilt.
+
+**What the bar actually is.** Not "supports Vulkan": `third_party/dxvk`
+(v3.1) sets `DxvkVulkanApiVersion = VK_API_VERSION_1_3`
+(`src/dxvk/dxvk_instance.h`) and enforces it twice — as
+`VkApplicationInfo::apiVersion` at instance creation, which a pre-1.3
+loader answers with `ERROR_INCOMPATIBLE_DRIVER`, and per adapter in
+`DxvkDeviceCapabilities` (`dxvk_device_info.cpp`), which returns early on
+`properties.apiVersion < DxvkVulkanApiVersion` and leaves the adapter
+with no capabilities. Its own diagnosis for the second case is *"No
+adapters found … A Vulkan 1.3 capable setup is required."*
+
+**Why it is worth a decision.** The hosts that miss the bar are not
+antiques we can wave off; several of them are *good* boxes for this
+project, because a 2012-era x86 laptop runs KVM and is the right speed
+for the guests we target:
+
+| Host | Vulkan | Why it misses |
+|---|---|---|
+| Intel pre-Broadwell (HD 3000/4000, Sandy/Ivy Bridge) | none | Mesa's `anv` starts at Gen8 |
+| Nvidia Kepler (GTX 600/700) | 1.2 | stuck on the 470 legacy branch; NVK starts at Turing |
+| Nvidia Fermi, AMD TeraScale (HD 5000/6000) | none | no driver, either vendor's or Mesa's |
+| **macOS before 26; every Intel Mac** | none usable | ADR-007: MoltenVK is not a supported configuration and KosmicKrisp needs macOS 26 on Apple Silicon |
+
+The last row is the one that makes this concrete rather than
+hypothetical: it is the Air before it was upgraded, and it is every Intel
+Mac permanently. Each of these hosts has OpenGL 2.1 or better, which is
+all the GL pass-through has ever wanted.
+
+**Alternatives rejected.** *Software Vulkan (Mesa's lavapipe)*: it is
+1.3-conformant on any CPU and would cost us no code, and it was
+considered on exactly that basis — but a software rasteriser spends the
+host CPU that TCG needs for the guest, on the very hosts that have the
+least of it, and the acceptance titles are DX8 with hardware T&L and
+shaders rather than a 640×480 DX7 scene. Not a route this project takes
+(user decision, 2026-09-06); the probe below therefore refuses a
+`VK_PHYSICAL_DEVICE_TYPE_CPU` device instead of counting it. *Pinning an
+older DXVK for old hosts*: 1.10.3 was the last Vulkan-1.1 release, so
+this means carrying a second DXVK branch and its own patch queue for
+strictly fewer d3d9 features — the patch-queue discipline of ADR-007 is
+affordable once, not twice. *Lowering DXVK's own bar*: the 1.3 features
+are load-bearing in current DXVK, unlike the one-line geometry-shader
+patch KosmicKrisp needed. *Building the GL executor now*: it is a second
+implementation of D3D9 semantics, and nothing yet says how many users
+are behind the bar — build it when that is measured, not on a guess.
+
+**Consequences.** The Win98 3D matrix stays two-stacked for as long as
+M10 runs, which is also what gives M10 its control measurement.
+`launcher-core/src/host_gpu.rs` is the probe: it loads the Vulkan loader
+dynamically (no link-time dependency, an absent `libvulkan` is a report
+and not a crash), asks for the loader version, creates an instance at
+`min(loader, 1.3)` with `VK_KHR_portability_enumeration` when it is
+offered — the same opt-in DXVK makes, without which a Vulkan-on-Metal
+driver is invisible — and classifies every physical device by type and
+`apiVersion`. `launcher --host-check` prints the report and exits
+non-zero when the device is unavailable. QEMU's own answer is unchanged
+and remains the backstop: `d3dpt_exec_load.c` already boots a machine
+normally and reports "no executor" when the library or the Vulkan device
+is missing.

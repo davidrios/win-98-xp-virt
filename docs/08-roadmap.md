@@ -98,7 +98,8 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 - P0 spike: DXVK d3d9 native over MoltenVK / Vulkan off-screen — decides
   the host executor. P1 transport + device + D3D9TEST triangle. P2
   resources and fixed function. P3 shaders and queries. P4 D3D8 over d3d9.
-- WineD3D-in-guest (guest-tools ISO) stays the fallback and the DX7 path;
+- WineD3D-in-guest (guest-tools ISO) stays the fallback and the DX7 path
+  (ADR-013: and stays it after M10, for hosts below Vulkan 1.3);
   FIFA 2000 findings parked in doc 14.
 - XP reference machine tuned; real-GPU screenshot diffs against the rig's
   GeForce 6200.

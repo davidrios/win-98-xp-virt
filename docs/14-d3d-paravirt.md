@@ -95,7 +95,10 @@ guest (XP)                                  host (QEMU process, embed lib)
   MoltenVK cannot (five hard-required features missing, two of them
   unimplementable on Metal); Mesa's KosmicKrisp on macOS 26 can, with a
   one-line DXVK patch (geometry shaders optional). DXVK is the executor
-  everywhere; `third_party/dxvk` + `patches/dxvk/`. The off-screen test
+  everywhere; `third_party/dxvk` + `patches/dxvk/`. **ADR-013 (2026-09-06)**
+  keeps this escape hatch open and unbuilt, and settles what a host that
+  cannot reach DXVK's Vulkan 1.3 gets instead: the GL pass-through with
+  WineD3D in the guest, and `launcher --host-check` to say so. The off-screen test
   (`tools/dxvk-d3d9-test.cpp`) and the native build of the reference scene
   (`tools/d3dgame9-native.cpp`, unmodified `d3dgame9.c` over a Win32-on-SDL2
   shim) both run to DXVK's refusal on MoltenVK today and produce BMPs once
