@@ -3,7 +3,10 @@
 The handoff for a session that makes the emulated CPU run faster on the
 Air (aarch64 host, TCG only — there is no accelerator for an x86 guest on
 Apple Silicon). Read `docs/00-status.md` first for the global picture and
-the track rules, then this file. Branch: `track/m9-tcg-aarch64`.
+the track rules, then this file. Branch: `track/m9-tcg-aarch64` was
+merged to `main` and **deleted 2026-09-06** — the work is on `main`;
+branch fresh off it for the next M9 item (patch 21's two open bugs
+first).
 
 Where M8 (docs 13 and 16) attacked floating point — x87 and SSE on the
 host FPU, the biggest single win so far — this track is data-first: a
