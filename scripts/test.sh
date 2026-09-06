@@ -434,9 +434,17 @@ host_stage() {
     for cand in target/debug/liblauncher_capi.a target/release/liblauncher_capi.a; do
       [ -f "$cand" ] && CAPI_LIB="$cand" && break
     done
+    # Which native libraries a Rust staticlib needs is the toolchain's
+    # to know, not ours to guess: on macOS this one wants objc, iconv and
+    # half a dozen frameworks, and the Linux list is not a subset of it.
+    # rustc will say; the old list stays as the fallback.
+    CAPI_LIBS="$(cargo rustc -q -p launcher-capi -- --print native-static-libs 2>&1 \
+                 | sed -n 's/^note: native-static-libs: //p' | tail -1)"
+    [ -n "$CAPI_LIBS" ] || CAPI_LIBS="-lstdc++ -lm -ldl -lpthread"
+    # shellcheck disable=SC2086
     if [ -n "$CAPI_LIB" ] && cc -O1 -std=gnu11 -Ilauncher-capi/include \
          -o build/capi-smoke launcher-capi/examples/smoke.c "$CAPI_LIB" \
-         -lstdc++ -lm -ldl -lpthread >>"$OUT/capi-build.log" 2>&1; then
+         $CAPI_LIBS >>"$OUT/capi-build.log" 2>&1; then
       rm -rf "$OUT/capi"; mkdir -p "$OUT/capi/library"
       : >"$OUT/capi/disc.iso"
       run_check capi capi.log env \
