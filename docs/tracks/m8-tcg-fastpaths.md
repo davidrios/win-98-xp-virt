@@ -164,7 +164,7 @@ tools/xp-ssebench.sh ~/vms/winxp.qcow2   # SSEBENCH.EXE in XP: default, sse-fast
 
 `guest-tools/build-wrappers.sh` on the Air stops at the M7 driver step
 (`build-driver.sh`: no mingw DDK headers here); everything before it,
-including `GAMEDIR/SSEBENCH.EXE`, is staged in `guest-tools/out/iso`, and
+including `TESTS/SSEBENCH.EXE`, is staged in `guest-tools/out/iso`, and
 `xorriso -as mkisofs -o guest-tools/out/guest-tools-3dfx-<rev>.iso -V GUESTTOOLS -J -r guest-tools/out/iso`
 makes the ISO (2026-09-04).
 

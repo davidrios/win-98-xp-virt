@@ -991,7 +991,7 @@ Wired into the guest stage as `atapi-guest`.
   (XP: `RUN.BAT` addition; Win98: by hand), hash on the host against the
   ISO's files. Proves cooked reads through the real OS driver, DMA
   included.
-- `guest-tools/src/cdtest.c` (`GAMEDIR\CDTEST.EXE`, msvcrt-linked like the
+- `guest-tools/src/cdtest.c` (`TESTS\CDTEST.EXE`, msvcrt-linked like the
   rest): `mciSendString("open cdaudio alias cd")`, `status cd number of
   tracks`, `play cd from 2 to 3` (TMSF), poll `status cd position` for
   3 s, print everything to `cdtest.log`. Run on the mixed test disc with

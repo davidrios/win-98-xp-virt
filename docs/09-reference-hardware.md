@@ -71,7 +71,7 @@ the manual before treating the numbers as fixtures.
 ## The CRT photo set (what to shoot, and how)
 
 The patterns are `guest-tools/src/crtcal.h`, one definition compiled into both
-sides: `GAMEDIR\CRTCAL.EXE` on the guest-tools ISO puts them on the tube at the
+sides: `TESTS\CRTCAL.EXE` on the guest-tools ISO puts them on the tube at the
 exact mode through an exclusive full-screen DirectDraw primary — no blit, no
 stretch, because a scaler is what would otherwise be measured — and
 `tools/crtcal-render` writes the same pixels as BMPs, which
@@ -97,7 +97,7 @@ for the next mode, `L` to take the legend away, ESC to quit.
 Windows 98 cannot put its desktop at 720×400 — no display driver offers it and
 it is not a VESA graphics mode. 720×400 is the VGA *text* mode, and the tube is
 already in it whenever the machine sits at a DOS prompt: 80×25 cells of 9×16
-pixels, 400 lines, 70 Hz. So `GAMEDIR\TEXTCAL.COM` is a DOS `.COM` — run it
+pixels, 400 lines, 70 Hz. So `TESTS\TEXTCAL.COM` is a DOS `.COM` — run it
 from FreeDOS on the rig, or from a "Restart in MS-DOS mode" screen. Its
 patterns are built from a custom character generator, which is enough because
 a calibration pattern is periodic and 256 glyphs of 9×16 tile one exactly.

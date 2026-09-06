@@ -71,7 +71,6 @@ echo "==> ebtest.exe (the DirectX 3 path: execute buffers and texture handles on
 echo "==> shtest.exe (vertex / pixel shaders 1.x through d3d8.dll on the DX8 DDI)"
 "$CC" -O2 -Wall -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os -march=pentium3 -mtune=generic \
   -o "$OUT/shtest.exe" "$SRC/shtest.c" -ld3d8 -lgdi32 -luser32
-cp "$SRC/d3dptvid.inf" "$OUT/d3dptvid.inf"
 
 # sanity: the kernel modules import only from their port driver, and nothing
 # links the CRT (no import at all is the expected answer for the .sys/.dll)
@@ -91,47 +90,7 @@ for f in "$OUT"/*.sys "$OUT"/*.dll "$OUT"/*.exe; do
 done
 
 crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }'; }
-crlf > "$OUT/README.TXT" <<'TXT'
-2ksbox paravirtual display adapter driver (d3dpt-vga), Windows 2000/XP.
-
-Boot XP with:  -vga none -device d3dpt-vga
-Install (as Administrator):  DRVINST.EXE -reboot
-  (or Device Manager > Video Controller (VGA Compatible) > Update Driver
-   > Install from a specific location > this folder)
-Then Display Properties offers the host's mode table (640x480 .. 1600x1200,
-8/16/32 bpp, 60/75/85 Hz; 8 bpp is palettized); the desktop lives in the adapter's VRAM and the
-player shows it without copies.
-
-Files: D3DPTVID.SYS (video miniport), D3DPTDISP.DLL (display driver),
-D3DPTVID.INF, DRVINST.EXE (scripted installer: sets the driver-signing
-policy to ignore, UpdateDriverForPlugAndPlayDevices, optional reboot),
-SETMODE.EXE (lists the modes; SETMODE 1024 768 32 85 switches and saves),
-DDTEST.EXE (DirectDraw 7: HAL caps, exclusive flip chain, Lock/Blt/Flip,
-fps, at 8 bpp a palette on the primary rotated every frame; DDTEST [w h bpp]
-[frames]; log in ddtest.log),
-DITEST.EXE (DirectInput keyboard under load: DITEST [seconds] [busy-ms]
-[-window] [-nonexcl]; what DirectInput / GetAsyncKeyState / WM_KEYDOWN
-each see of the keys, log in ditest.log),
-DXTTEST.EXE (Direct3D 8 texture formats: CheckDeviceFormat, CreateTexture,
-Lock, a textured quad for every format x pool, CreateImageSurface; every
-HRESULT in dxttest.log, the driver's surface lines in the QEMU log),
-SHTEST.EXE (vertex / pixel shaders 1.x through d3d8.dll with hardware
-vertex processing: vs 1.1 through a declaration and its constants, from
-user memory and from a vertex + index buffer, a declaration-only shader,
-D3DVSD_CONST, ps 1.1 with a constant and with a texture, the FVF path
-again; every draw read back and compared, shtest.log ends with
-"shtest: N cases, M failed"),
-CKTEST.EXE (Direct3D 7: an 8-bit palettized texture with its own palette,
-SetEntries changing it, a colour-keyed R5G6B5 texture with COLORKEYENABLE
-on and off; every draw read back from the back buffer and compared,
-cktest.log ends with "cktest: N cases, M failed"),
-EBTEST.EXE (the DirectX 3 path a 1997 title takes: IDirect3D v1 on the
-back buffer, the viewport's Clear through a background material, execute
-buffers with PROCESSVERTICES_COPY / _TRANSFORM and D3DOP_TRIANGLE, textures
-loaded with IDirect3DTexture::Load and bound by TEXTUREHANDLE, a
-colour-keyed one; every case read back, ebtest.log ends with
-"ebtest: N cases, M failed").
-TXT
+crlf < "$ROOT/guest-tools/README-DRIVER.txt" > "$OUT/README.TXT"
 crlf < "$SRC/d3dptvid.inf" > "$OUT/d3dptvid.inf"
 
 # 8.3 upper-case names for the ISO folder

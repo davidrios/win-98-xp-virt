@@ -56,12 +56,12 @@ if [ "$MODE" = ddtest ]; then
   stage_bat "$OUT/ddtest.bat"
 fi
 if [ "$MODE" = d3dgame8 ]; then
-  # the reference scene's DX8 build from the guest-tools ISO (D3DPT\), copied out alone so no
+  # the reference scene's DX8 build from the guest-tools ISO (TESTS\), copied out alone so no
   # D3DPT\D3D8.DLL sits next to it: XP's own d3d8.dll, our DX8 DDI
   FULL_ISO="$(ls -t "$ROOT"/guest-tools/out/guest-tools-*.iso 2>/dev/null | head -1)"
-  [ -f "$FULL_ISO" ] || { echo "no guest-tools ISO (D3DPT\\D3DGAME8.EXE): run guest-tools/build-wrappers.sh"; exit 1; }
+  [ -f "$FULL_ISO" ] || { echo "no guest-tools ISO (TESTS\\D3DGAME8.EXE): run guest-tools/build-wrappers.sh"; exit 1; }
   ISO="$FULL_ISO"
-  printf '%s\n' '@echo off' 'mkdir E:\G8' 'copy D:\D3DPT\D3DGAME8.EXE E:\G8\ > nul' 'cd /d E:\G8' \
+  printf '%s\n' '@echo off' 'mkdir E:\G8' 'copy D:\TESTS\D3DGAME8.EXE E:\G8\ > nul' 'cd /d E:\G8' \
     'D3DGAME8.EXE -frames 600 -dump 300 E:\G8.BMP' 'copy d3dgame8.log E:\g8.log > nul' 'echo done > E:\G8DONE.TXT' > "$OUT/g8.bat"
   stage_bat "$OUT/g8.bat"
 fi

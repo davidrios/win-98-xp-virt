@@ -79,7 +79,7 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   executor) before a gap is heard. `qemu-embed: audio:` lines on stderr count gaps
 #   and dropped audio when they happen; raise it if they do, lower it under KVM.
 # --calib <bmp|dir> shades doc 09's CRT calibration patterns (tools/crtcal-render
-#   writes them; GAMEDIR\CRTCAL.EXE puts the same ones on a real tube) and exits
+#   writes them; TESTS\CRTCAL.EXE puts the same ones on a real tube) and exits
 # --mode-sweep <dir> runs doc 03's mode sweep instead of a guest: every mode in the
 #   table, the geometry stage and the preset checked, a PNG of each dumped there
 # PLAYER_MODE_PARAMS=0 is the A/B control for mode analysis — the preset is left to

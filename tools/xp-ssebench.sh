@@ -45,7 +45,7 @@ for cfg in "${CONFIGS[@]}"; do
   Q json '{"execute":"human-monitor-command","arguments":{"command-line":"info registers"}}' | grep -o 'SSE-fast[^\\]*' > "$OUT/stat-$tag-before.txt" || true
   # two passes per boot: macOS may park the vCPU thread on an efficiency core
   # for a whole run (uniform ~2x), so take the better of two
-  Q type "cmd /k D:\\GAMEDIR\\SSEBENCH.EXE -iter ${ITER:-1} ${ARGS:-} > A:\\SSEBENCH.TXT & D:\\GAMEDIR\\SSEBENCH.EXE -iter ${ITER:-1} ${ARGS:-} > A:\\SSEBENC2.TXT"; Q keys ret
+  Q type "cmd /k D:\\TESTS\\SSEBENCH.EXE -iter ${ITER:-1} ${ARGS:-} > A:\\SSEBENCH.TXT & D:\\TESTS\\SSEBENCH.EXE -iter ${ITER:-1} ${ARGS:-} > A:\\SSEBENC2.TXT"; Q keys ret
   t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -lt "${BENCH_WAIT:-900}" ]; do
     sleep 15

@@ -10,15 +10,37 @@ commit the host QEMU is signed with** (the host verifies the stamp; a
 mismatch = no acceleration), and stages a `guest-tools-3dfx-<rev>.iso`:
 
 ```
-WIN9X\    GLIDE.DLL GLIDE2X.DLL GLIDE3X.DLL FXMEMMAP.VXD   → C:\WINDOWS\SYSTEM
-WIN2KXP\  GLIDE*.DLL FXPTL.SYS INSTDRV.EXE                 → system32 (+drivers), run INSTDRV as admin — needed for OPENGL32.DLL too (NT maps the device via FXPTL.SYS)
-GAMEDIR\  OPENGL32.DLL WGLGEARS.EXE                        → next to each OpenGL game's EXE
-          D3D9.DLL D3D8.DLL WINED3D.DLL D3D9TEST.EXE       → next to each Direct3D 8/9 game's EXE (WineD3D)
-          DDRAW.DLL WINED3D.DLL                            → next to a DirectX 5–7 game's EXE (DirectDraw / Direct3D ≤7 via WineD3D)
-WINED3D\  the full WineD3D set + per-OS switcher DLLs       → system-wide install, see WINE9X.TXT
-D3DPT\    D3D9.DLL D3D8.DLL + D3D9TEST D3DGAME9 D3DFEAT9 D3DGAME8 → paravirtual Direct3D 8/9 (our device, doc 14): D3D9.DLL or D3D8.DLL next to the game's EXE; needs FXPTL.SYS / FXMEMMAP.VXD like OPENGL32.DLL. Never together with WINED3D's D3D9.DLL. Log in d3dpt.log next to the EXE (C:\d3dpt.log from the CD)
-CDSHELF\  CDSHELF.EXE (98/2000/XP) CDSHELF.COM (DOS)       → the host's disc shelf from inside the machine; copy anywhere and run
+SETUP.EXE   the installer: the components this guest's Windows can use,
+            the per-game file sets, and a log. `SETUP /ALL` is the
+            scriptable form (guest-tools/src/setup.c)
+README.TXT  guest-tools/README-ISO.txt with the commit stamped in
+GLIDE\      the device mapper + Glide: GLIDE*.DLL, FXMEMMAP.VXD (9x),
+            FXPTL.SYS + INSTDRV.EXE (2000/XP). Not optional for
+            OPENGL32.DLL or D3DPT\ — both reach the device through it
+DRIVER\     the 2000/XP display driver for d3dpt-vga and its own test
+            programs; also shipped alone as d3dpt-driver.iso
+D3DPT\      per game: D3D8.DLL D3D9.DLL DDRAW.DLL DINPUT.DLL over our
+            paravirtual device (doc 14)
+OPENGL\     per game: OPENGL32.DLL, the GL pass-through wrapper
+WINED3D\    the wine9x set under wine9x's own names, plus the switcher
+            DLLs for a system-wide install (WINE9X.TXT)
+TESTS\      every test / benchmark / calibration program, one copy each
+CDSHELF\    CDSHELF.EXE (98/2000/XP) CDSHELF.COM (DOS)
 ```
+
+**One folder per role, one copy of every file** (2026-09-06). It used to
+be organized by history instead: `GAMEDIR\` held three unrelated stacks,
+the WineD3D interfaces sat there under *our* DLLs' names (`D3D9.DLL` was
+Wine's in one folder and ours in another, and "copy D3D9.DLL next to the
+game" could mean either), the test EXEs were duplicated into `D3DPT\`
+because a DLL has to sit next to them, and the Glide DLLs existed twice
+for the two OS folders. Now nothing on the disc appears twice — 20.1 MB
+became 15.4 MB — and which stack you get is decided by which folder you
+copy from. What a test needs beside it is copied there by `SETUP /GAME`,
+which is also where WineD3D's renames happen (`WINED9.DLL` → `D3D9.DLL`),
+so the disc need not carry a second copy of those DLLs under Microsoft
+names.
+
 
 **WineD3D (Direct3D 8/9 → OpenGL → pass-through):** built from
 [JHRobotics/wine9x](https://github.com/JHRobotics/wine9x) (Wine 1.7.55
@@ -26,10 +48,10 @@ with 9x/XP fixes, LGPL; the same author as SoftGPU), pinned by commit in
 the script. `wined3d.dll` renders through whatever `opengl32.dll` the
 loader finds first, i.e. the qemu-3dfx wrapper in the game folder; XP
 needs OpenGL 2.1 with BGRA from the host, which the Air's Metal GL 2.1
-provides. The per-game copies in `GAMEDIR\` are the Wine DX interfaces
-under their real names (`wined9.dll` → `D3D9.DLL`), which is the
-low-risk way to use them: nothing in system32 changes. The `WINED3D\`
-folder has the system-wide variant (switcher DLLs that route each EXE to
+provides. A per-game install (`SETUP /GAME`, or by hand) is the Wine DX
+interfaces under the names a game loads — `wined9.dll` → `D3D9.DLL` —
+which is the low-risk way to use them: nothing in system32 changes. The
+switcher DLLs are the system-wide variant (they route each EXE to
 Wine or to Microsoft's DLLs by registry, `HKLM\Software\DDSwitcher`)
 for games that load D3D from elsewhere; that install replaces system32
 files and needs safe mode + dllcache on XP, wine9x's README (`WINE9X.TXT`

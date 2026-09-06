@@ -200,8 +200,11 @@ macOS. Without it, `-display sdl,grab-mod=rctrl` works as a fallback.
 qemu-3dfx's `fxui_grab` re-grabs on focus while 3D is active.
 `QEMU_SDL_KEYDEBUG=1` logs keydown/modifier state if this ever regresses.
 
-In the guest: copy `D:\WIN9X\*` to `C:\WINDOWS\SYSTEM`, copy `D:\GAMEDIR\*`
-to a folder like `C:\GLTEST`, reboot, run `C:\GLTEST\WGLGEARS.EXE`.
+In the guest: run `D:\SETUP.EXE` — it installs the device mapper and the
+Glide wrappers for whichever Windows this is, and its "Test programs"
+component puts `WGLGEARS.EXE` in `C:\2KSBOX`. Then copy `D:\OPENGL\OPENGL32.DLL`
+next to it (`SETUP /GAME 3 C:\2KSBOX`), reboot, and run
+`C:\2KSBOX\WGLGEARS.EXE`.
 Accelerated = a smooth gears window and a Mesa/host renderer string (not
 "GDI Generic"); qemu-3dfx also prints context messages on the host
 terminal (`mesapt: DLL loaded`, `glcntx: …`). For Glide, any Glide title

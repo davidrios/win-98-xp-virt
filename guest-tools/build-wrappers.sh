@@ -137,66 +137,52 @@ build_wrapper 3dfx
 build_wrapper mesa
 build_wined3d
 
-rm -rf "$OUT/iso" && mkdir -p "$OUT/iso/WIN9X" "$OUT/iso/WIN2KXP" "$OUT/iso/GAMEDIR" "$OUT/iso/WINED3D"
+# The ISO: one folder per role, one copy of every file. What used to be
+# GAMEDIR\ was three different stacks in one folder — the WineD3D DLLs
+# under the same names ours use, next to the test EXEs — so a "copy this
+# next to the game" instruction could silently give you the wrong D3D.
+# Now each stack owns a folder, every test program lives in TESTS\, and
+# SETUP.EXE does the copying (including WineD3D's renames, which is why
+# the disc no longer carries a second copy of those DLLs).
+rm -rf "$OUT/iso"
+mkdir -p "$OUT/iso"/{GLIDE,OPENGL,D3DPT,WINED3D,TESTS,CDSHELF}
 G="$FX/wrappers/3dfx/build"; M="$FX/wrappers/mesa/build"
-cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxmemmap.vxd "$OUT/iso/WIN9X/"
-cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxptl.sys "$G"/instdrv.exe "$OUT/iso/WIN2KXP/"
-cp "$M"/opengl32.dll "$OUT/iso/GAMEDIR/"
-# WineD3D: per-game copies under the names games load (the Wine DX
-# interfaces export the real entry points and import wined3d.dll by name),
-# and the full set + switchers for a system-wide install per wine9x README.
+T="$OUT/iso/TESTS"
+
+# GLIDE\: the device mapper (FXMEMMAP.VXD on 9x, FXPTL.SYS + INSTDRV on
+# NT) and the Glide wrappers. One folder for both families: the DLLs are
+# the same files, only the directory they are copied into differs, and
+# SETUP.EXE knows which is which.
+cp "$G"/glide.dll "$G"/glide2x.dll "$G"/glide3x.dll "$G"/fxmemmap.vxd \
+   "$G"/fxptl.sys "$G"/instdrv.exe "$OUT/iso/GLIDE/"
+# OPENGL\: the GL pass-through wrapper, per game.
+cp "$M"/opengl32.dll "$OUT/iso/OPENGL/"
+# WINED3D\: the wine9x set under wine9x's own names, once. A per-game
+# install is WINED3D.DLL + one interface renamed (WINED9 -> D3D9); the
+# switchers are the system-wide variant, see WINE9X.TXT.
 W="$OUT/wine9x"
-cp "$W"/wined9.dll "$OUT/iso/GAMEDIR/d3d9.dll"
-cp "$W"/wined8.dll "$OUT/iso/GAMEDIR/d3d8.dll"
-cp "$W"/winedd.dll "$OUT/iso/GAMEDIR/ddraw.dll"
-cp "$W"/wined3d.dll "$OUT/iso/GAMEDIR/"
 cp "$W"/wined3d.dll "$W"/winedd.dll "$W"/wined8.dll "$W"/wined9.dll \
    "$W"/ddraw_xp.dll "$W"/d3d8_xp.dll "$W"/d3d9_xp.dll \
    "$W"/ddraw_98.dll "$W"/d3d8_98.dll "$W"/d3d9_98.dll "$OUT/iso/WINED3D/"
 cp "$W"/README.md "$OUT/iso/WINED3D/WINE9X.TXT"
-# D3D9 smoke test (guest-tools/src/d3d9test.c): adapter string, HAL caps,
-# x87 control word after CreateDevice, spinning triangle with fps.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3d9test.exe" "$ROOT/guest-tools/src/d3d9test.c" \
-  -ld3d9 -lgdi32 -luser32
-# Display-mode probe (guest-tools/src/modetest.c): current mode, mode list,
-# ChangeDisplaySettingsEx results for the switches ddraw/wined3d make.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/modetest.exe" "$ROOT/guest-tools/src/modetest.c" -luser32
-# CRT calibration patterns (doc 09, guest-tools/src/crtcal.c + crtcal.h): the
-# same patterns tools/crtcal-render writes for the shader side, put on a real
-# tube at the exact mode through an exclusive full-screen DirectDraw primary.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/crtcal.exe" "$ROOT/guest-tools/src/crtcal.c" \
-  -lddraw -ldxguid -luser32
-# The 720x400 text-mode patterns (doc 09, guest-tools/src/textcal.asm). DOS
-# only: 720x400 is the VGA *text* mode, which no Windows display driver
-# offers, so it is reachable from FreeDOS or a "Restart in MS-DOS mode"
-# screen and nowhere else.
-nasm -f bin -o "$OUT/iso/GAMEDIR/textcal.com" "$ROOT/guest-tools/src/textcal.asm"
-# Reference workloads (doc 14 P0a): the same deterministic game-like scene on
-# Direct3D 9 and Direct3D 8; -frames N -dump N x.bmp for golden images.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame9.exe" "$ROOT/guest-tools/src/d3dgame9.c" -ld3d9 -lgdi32 -luser32
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame8.exe" "$ROOT/guest-tools/src/d3dgame8.c" -ld3d8 -lgdi32 -luser32
-# Paravirtual Direct3D 9 (doc 14, d3dpt/): our d3d9.dll over the d3dpt
-# device, with qemu-3dfx's fxlib device mapper (FXPTL.SYS / FXMEMMAP.VXD).
-# Staged apart from WineD3D so the two stacks never mix in one folder;
-# D3D9TEST.EXE and D3DGAME9.EXE next to it run against the device.
-# d3d9_vtbl.h is generated from mingw's d3d9.h (gen_vtbl.py) and checked in.
-mkdir -p "$OUT/iso/D3DPT"
+
+# D3DPT\: Direct3D 8/9 over our paravirtual device (doc 14), with
+# qemu-3dfx's fxlib device mapper (FXPTL.SYS / FXMEMMAP.VXD). Per game:
+# only the DLLs live here, so nothing in this folder can be confused with
+# the WineD3D set. d3d9_vtbl.h is generated from mingw's d3d9.h
+# (gen_vtbl.py) and checked in.
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d9.dll" "$ROOT/guest-tools/src/d3dpt/d3d9.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
   -static-libgcc -Wl,--kill-at -lgdi32 -luser32 -lpsapi
-cp "$OUT/iso/GAMEDIR/d3d9test.exe" "$OUT/iso/GAMEDIR/d3dgame9.exe" "$OUT/iso/D3DPT/"
 # Direct3D 8 over the same device (doc 14 P4): d3d8.c includes d3d9.c, one DLL.
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/d3d8.dll" "$ROOT/guest-tools/src/d3dpt/d3d8.c" \
   "$FX/wrappers/fxlib/fxlibnt.c" "$FX/wrappers/fxlib/fxlib9x.c" -I"$FX/wrappers/fxlib" \
   -static-libgcc -Wl,--kill-at -lgdi32 -luser32 -lpsapi
-cp "$OUT/iso/GAMEDIR/d3dgame8.exe" "$OUT/iso/D3DPT/"
 # DirectDraw 7 shim (d3dpt/ddraw.c): forwards to the system ddraw.dll and
 # reports 256 MB of video memory. RenderWare launchers (GTA Vice City) ask
 # DirectDraw, not Direct3D, and refuse the Cirrus adapter's 4 MB.
-# DDVMTEST.EXE prints what such a check sees (system ddraw vs the shim).
 i686-w64-mingw32-gcc -O2 -Wall -shared -o "$OUT/iso/D3DPT/ddraw.dll" "$ROOT/guest-tools/src/d3dpt/ddraw.c" \
   "$ROOT/guest-tools/src/d3dpt/ddraw.def" -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c" -lddraw -ldxguid
 # DirectInput shim (d3dpt/dinput.c): forwards to the system dinput.dll and
 # merges GetAsyncKeyState into a non-exclusive keyboard's state — the fix for
 # a game whose loop stops pumping messages (FIFA 2000's match, doc 15).
@@ -205,105 +191,72 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/ddvmtest.exe" "$ROOT/guest-tools/src
 i686-w64-mingw32-gcc -O2 -Wall -shared -D__MSVCRT_VERSION__=0x700 -mcrtdll=msvcrt-os \
   -o "$OUT/iso/D3DPT/dinput.dll" "$ROOT/guest-tools/src/d3dpt/dinput.c" "$ROOT/guest-tools/src/d3dpt/dinput.def" \
   -static-libgcc -Wl,--kill-at -Wl,--enable-stdcall-fixup -ldxguid
+
+# TESTS\: every test, benchmark and calibration program, one copy each.
+# Which stack a test runs on is decided by what is copied next to it, not
+# by which folder it came from — SETUP.EXE's /GAME does that.
+# Reference workloads (doc 14 P0a): the same deterministic game-like scene on
+# Direct3D 9 and Direct3D 8; -frames N -dump N x.bmp for golden images.
+i686-w64-mingw32-gcc -O2 -o "$T/d3dgame9.exe" "$ROOT/guest-tools/src/d3dgame9.c" -ld3d9 -lgdi32 -luser32
+i686-w64-mingw32-gcc -O2 -o "$T/d3dgame8.exe" "$ROOT/guest-tools/src/d3dgame8.c" -ld3d8 -lgdi32 -luser32
 # Feature test (doc 14 P3): shaders, declarations, state blocks, queries, cube maps, surfaces.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/D3DPT/d3dfeat9.exe" "$ROOT/guest-tools/src/d3dfeat9.c" -ld3d9 -lgdi32 -luser32
+i686-w64-mingw32-gcc -O2 -o "$T/d3dfeat9.exe" "$ROOT/guest-tools/src/d3dfeat9.c" -ld3d9 -lgdi32 -luser32
+# D3D9 smoke test (guest-tools/src/d3d9test.c): adapter string, HAL caps,
+# x87 control word after CreateDevice, spinning triangle with fps.
+i686-w64-mingw32-gcc -O2 -o "$T/d3d9test.exe" "$ROOT/guest-tools/src/d3d9test.c" -ld3d9 -lgdi32 -luser32
+# DDVMTEST.EXE prints what a launcher's video-memory check sees (the
+# system ddraw against D3DPT\DDRAW.DLL).
+i686-w64-mingw32-gcc -O2 -o "$T/ddvmtest.exe" "$ROOT/guest-tools/src/ddvmtest.c" -lddraw -ldxguid
+# Display-mode probe (guest-tools/src/modetest.c): current mode, mode list,
+# ChangeDisplaySettingsEx results for the switches ddraw/wined3d make.
+i686-w64-mingw32-gcc -O2 -o "$T/modetest.exe" "$ROOT/guest-tools/src/modetest.c" -luser32
+# GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
+# OPENGL32.DLL inside the guest; the title/console shows the renderer.
+i686-w64-mingw32-gcc -O2 -o "$T/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
+  -lopengl32 -lgdi32 -lglu32 -mwindows
 # SSE throughput (guest-tools/src/ssebench.c, doc 16): D3DX-shaped SSE1
 # kernels plus the same math in x87 C; ns per op, console + ssebench.log.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/ssebench.exe" "$ROOT/guest-tools/src/ssebench.c"
+i686-w64-mingw32-gcc -O2 -o "$T/ssebench.exe" "$ROOT/guest-tools/src/ssebench.c"
 # CDTEST.EXE: CD audio through MCI (doc 17 §6.3), the CD-ROM backend's in-guest check
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/cdtest.exe" "$ROOT/guest-tools/src/cdtest.c" -lwinmm
+i686-w64-mingw32-gcc -O2 -o "$T/cdtest.exe" "$ROOT/guest-tools/src/cdtest.c" -lwinmm
+# CRT calibration patterns (doc 09, guest-tools/src/crtcal.c + crtcal.h): the
+# same patterns tools/crtcal-render writes for the shader side, put on a real
+# tube at the exact mode through an exclusive full-screen DirectDraw primary.
+i686-w64-mingw32-gcc -O2 -o "$T/crtcal.exe" "$ROOT/guest-tools/src/crtcal.c" \
+  -lddraw -ldxguid -luser32
+# The 720x400 text-mode patterns (doc 09, guest-tools/src/textcal.asm). DOS
+# only: 720x400 is the VGA *text* mode, which no Windows display driver
+# offers, so it is reachable from FreeDOS or a "Restart in MS-DOS mode"
+# screen and nowhere else.
+nasm -f bin -o "$T/textcal.com" "$ROOT/guest-tools/src/textcal.asm"
+
 # CDSHELF: the host's disc shelf from inside the machine (doc 07, patch 52;
 # protocol cdshelf/cdshelf_proto.h). One EXE for both Windows families — SPTI
 # on XP, WNASPI32 loaded at run time on Win98 — plus a DOS .COM that drives
 # the drive by PIO, for a DOS box that has neither. -mwindows: run with no
 # arguments it is a window (a disc swap is a thing you do, not a command line
 # you retype); its verbs still write to a redirected stdout.
-mkdir -p "$OUT/iso/CDSHELF"
 i686-w64-mingw32-gcc -O2 -Wall -mwindows -o "$OUT/iso/CDSHELF/cdshelf.exe" \
   "$ROOT/guest-tools/src/cdshelf.c" -I"$ROOT/cdshelf"
 nasm -f bin -o "$OUT/iso/CDSHELF/cdshelf.com" "$ROOT/guest-tools/src/cdshelf.asm"
-# GL smoke test: Mesa's wglgears, ships in qemu-3dfx's demos. Run it next to
-# OPENGL32.DLL inside the guest; the title/console shows the renderer.
-i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/wglgears.exe" "$FX/wrappers/mesa/demos/wglgears.c" \
-  -lopengl32 -lgdi32 -lglu32 -mwindows
+
 # XP display driver for the d3dpt-vga adapter (doc 15, M7a): built and
 # checked by its own script (kernel-mode PE rules differ), staged as DRIVER\.
 "$ROOT/guest-tools/build-driver.sh" >/dev/null
 mkdir -p "$OUT/iso/DRIVER" && cp "$ROOT"/guest-tools/out/driver/* "$OUT/iso/DRIVER/"
-for f in "$OUT"/iso/*/*.dll "$OUT"/iso/*/*.exe; do check_crt "$f"; check_isa "$f"; done
+
+# SETUP.EXE at the root: the installer that reads the folders above and
+# knows which of them this guest's Windows wants (guest-tools/src/setup.c).
+i686-w64-mingw32-gcc -O2 -Wall -o "$OUT/iso/setup.exe" "$ROOT/guest-tools/src/setup.c" \
+  -ladvapi32 -luser32
+
+for f in "$OUT"/iso/*/*.dll "$OUT"/iso/*/*.exe "$OUT"/iso/*.exe; do check_crt "$f"; check_isa "$f"; done
 # CRLF: Win9x Notepad shows LF-only text as one line
 crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }'; }
-crlf > "$OUT/iso/README.TXT" <<TXT
-qemu-3dfx guest wrappers, built from qemu-3dfx commit $REV
-(must match the host QEMU build's sign_commit stamp).
-
-WIN9X\   -> copy GLIDE.DLL GLIDE2X.DLL GLIDE3X.DLL FXMEMMAP.VXD to C:\WINDOWS\SYSTEM
-WIN2KXP\ -> copy GLIDE*.DLL to %SystemRoot%\system32, FXPTL.SYS to
-            %SystemRoot%\system32\drivers, then run INSTDRV.EXE as Administrator.
-            REQUIRED FOR OPENGL32.DLL TOO on 2000/XP: the wrapper maps the
-            device through FXPTL.SYS (\\.\MAPMEM); without it OPENGL32.DLL
-            refuses to load and every GL/D3D program fails at startup
-            (0xc0000142 / "failed to initialize"). Win9x uses FXMEMMAP.VXD.
-GAMEDIR\ -> copy OPENGL32.DLL next to each OpenGL game's EXE (Quake 2, etc.)
-            WGLGEARS.EXE + OPENGL32.DLL in one folder = quick GL pass-through test
-            Direct3D 8/9 games: also copy D3D8.DLL or D3D9.DLL + WINED3D.DLL
-            (WineD3D, renders through OPENGL32.DLL) next to the game's EXE.
-            DirectX 5/6/7 games (DirectDraw + Direct3D up to 7): DDRAW.DLL +
-            WINED3D.DLL instead. Never copy DDRAW.DLL into system32 this way.
-            D3D9TEST.EXE + D3D9.DLL + WINED3D.DLL + OPENGL32.DLL = D3D9 test
-            MODETEST.EXE prints the display modes the driver accepts (run
-            it when a fullscreen game fails to start).
-            D3DGAME9.EXE / D3DGAME8.EXE: the reference scene (doc 14). Run
-            on real hardware first: D3DGAME9 -frames 600 -dump 300 g9.bmp
-            (and -fs, -bpp16, -shader variants) gives the golden images the
-            emulated paths are compared against. WASD/arrows/Q/E camera,
-            F1 wireframe, Space pause, Esc quits; fps in the title/console.
-D3DPT\   -> paravirtual Direct3D 9 (our device, doc 14): D3D9.DLL next to
-            D3D9TEST.EXE / D3DGAME9.EXE; needs the WIN2KXP (FXPTL.SYS) or
-            WIN9X step like OPENGL32.DLL. Log: d3dpt.log next to the EXE
-            (C:\d3dpt.log when run from the CD). Do not mix with WINED3D.
-            D3D8.DLL for Direct3D 8 titles. DDRAW.DLL next to the EXE too
-            when a launcher checks video memory through DirectDraw (GTA
-            Vice City: "cannot find enough available video memory"); it
-            reports 256 MB and forwards everything else to the system.
-            DDVMTEST.EXE shows what such a check sees. DINPUT.DLL next to
-            the EXE fixes "the keyboard does nothing in the game" when the
-            game polls a non-exclusive DirectInput keyboard from a loop that
-            does not pump messages (FIFA 2000's match): what Windows reports
-            pressed is merged into the state. Set D3DPT_DINPUT_LOG=1 first
-            and it also logs the game's DirectInput use (devices, cooperative
-            level, buffer size, poll rate, every key/button) to
-            dinput_log.txt.
-            SSEBENCH.EXE: SSE/x87 math throughput in ns per op (console and
-            SSEBENCH.LOG). Run on the rig and in each guest, also with
-            -cpu ...,sse-fast=off / x87-fast=off, to compare the paths.
-WINED3D\ -> the full WineD3D set (wine9x ${WINE9X_REF:0:7}) incl. the
-            system-wide switcher DLLs; see WINE9X.TXT before touching system32.
-CDSHELF\ -> the host's disc shelf, from inside the machine (the launcher's
-            shelf, doc 07). CDSHELF.EXE on Windows 98 / 2000 / XP,
-            CDSHELF.COM in a DOS box; copy either one anywhere and run it.
-            Run with no arguments, CDSHELF.EXE opens a window: pick a disc,
-            press Insert, and it is in the drive (Eject empties it).
-            CDSHELF.COM does the same with the keyboard: the shelf is
-            listed and 0-9 puts that disc in the drive, E empties it,
-            R re-reads the shelf, Esc quits. Either also takes a command:
-              CDSHELF LIST   print the shelf and exit
-              CDSHELF 3      put slot 3 in the drive
-              CDSHELF E      empty the drive
-            Inserting always empties the drive first and waits for it —
-            without that, Windows and MSCDEX keep showing the old disc's
-            files. Nothing to install: it talks to the machine's own CD-ROM
-            drive, which answers a vendor command with the shelf. A machine
-            started without a shelf (plain qemu-system, no -device
-            ide-cd,shelf=...) says so instead of listing.
-DRIVER\  -> XP display driver for the d3dpt-vga adapter (boot with
-            -vga none -device d3dpt-vga): DRVINST.EXE -reboot installs it;
-            see DRIVER\README.TXT. Not for Win9x.
-
-Not included: GLIDE2X.OVL (DOS Glide games; needs Open Watcom to build).
-TXT
+sed -e "s/@REV@/$REV/" -e "s/@WINE9X@/${WINE9X_REF:0:7}/" "$ROOT/guest-tools/README-ISO.txt" \
+  | crlf > "$OUT/iso/README.TXT"
 # 8.3-safe upper-case names for Win9x
-( cd "$OUT/iso" && for f in WIN9X/* WIN2KXP/* GAMEDIR/* WINED3D/* D3DPT/* DRIVER/* CDSHELF/*; do
+( cd "$OUT/iso" && for f in */* *.exe; do
     u="$(dirname "$f")/$(basename "$f" | tr a-z A-Z)"; [ "$f" = "$u" ] || mv "$f" "$u"; done )
 
 ISO="$OUT/guest-tools-3dfx-$REV.iso"
