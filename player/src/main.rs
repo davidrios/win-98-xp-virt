@@ -556,6 +556,7 @@ impl Gpu {
 enum Source {
     Pattern(Pattern),
     Sweep(Sweep),
+    Calib(Calib),
     Qemu {
         vm: Qemu,
         display: qemu_vm::Display,
@@ -589,6 +590,49 @@ struct App {
     proxy: Option<EventLoopProxy<()>>,
     /// `--mode-sweep <dir>`: run the mode sweep instead of a guest.
     sweep: Option<std::path::PathBuf>,
+    /// `--calib <bmp|dir>`: shade the calibration patterns and exit.
+    calib: Option<std::path::PathBuf>,
+}
+
+/// Shade the calibration patterns (doc 09): each BMP that
+/// `tools/crtcal-render` wrote goes through the loaded preset at the size it
+/// was drawn at, and the shaded frame lands beside it as a PNG. That is the
+/// other half of the comparison — one photograph of the tube showing the
+/// pattern, one shaded frame of the same pattern, held side by side.
+struct Calib {
+    files: Vec<std::path::PathBuf>,
+    i: usize,
+    last_surface: (u32, u32),
+}
+
+/// The 24-bit bottom-up BMPs `crtcal-render` writes. Deliberately not a
+/// general decoder: anything else is a mistake worth reporting, not
+/// something to guess at.
+fn read_bmp(path: &std::path::Path) -> Result<(u32, u32, Vec<u32>), String> {
+    let d = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if d.len() < 54 || d[0] != b'B' || d[1] != b'M' {
+        return Err(format!("{}: not a BMP", path.display()));
+    }
+    let u32le = |o: usize| u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
+    let (off, w, h) = (u32le(10) as usize, u32le(18), u32le(22));
+    let bpp = u16::from_le_bytes([d[28], d[29]]);
+    if bpp != 24 {
+        return Err(format!("{}: {bpp}-bit BMP, expected 24", path.display()));
+    }
+    let stride = (w as usize * 3 + 3) & !3;
+    if off + stride * h as usize > d.len() {
+        return Err(format!("{}: truncated", path.display()));
+    }
+    let mut px = vec![0u32; (w * h) as usize];
+    for y in 0..h as usize {
+        let src = off + (h as usize - 1 - y) * stride; // BMP rows run bottom-up
+        for x in 0..w as usize {
+            let p = &d[src + x * 3..src + x * 3 + 3];
+            px[y * w as usize + x] =
+                (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32;
+        }
+    }
+    Ok((w, h, px))
 }
 
 /// The surface the sweep fits its pictures into: 1600x1200, the tallest mode
@@ -910,6 +954,39 @@ impl ApplicationHandler for App {
             gpu.load_shader(p);
         }
 
+        if let Some(target) = self.calib.clone() {
+            let mut files: Vec<std::path::PathBuf> = if target.is_dir() {
+                std::fs::read_dir(&target)
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok().map(|e| e.path()))
+                            .filter(|p| {
+                                p.extension().and_then(|e| e.to_str()) == Some("bmp")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![target.clone()]
+            };
+            files.sort();
+            if files.is_empty() {
+                eprintln!("calib: no .bmp in {}", target.display());
+                hard_exit(1);
+            }
+            if self.shader.is_none() {
+                eprintln!("calib: --shader is the whole point; nothing to shade with");
+                hard_exit(1);
+            }
+            gpu.forced_surface = Some(SWEEP_SURFACE);
+            println!("shading {} calibration pattern(s)", files.len());
+            self.gpu = Some(gpu);
+            self.source = Some(Source::Calib(Calib {
+                files,
+                i: 0,
+                last_surface: (0, 0),
+            }));
+            return;
+        }
         if let Some(dir) = self.sweep.clone() {
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 eprintln!("mode sweep: {}: {e}", dir.display());
@@ -1080,7 +1157,10 @@ impl ApplicationHandler for App {
                 // FIFO the second acquire blocks until the first image has
                 // been scanned out, which an occluded window (a test run
                 // behind a terminal, the usual case) never does.
-                let sweeping = matches!(self.source, Some(Source::Sweep(_)));
+                let sweeping = matches!(
+                    self.source,
+                    Some(Source::Sweep(_)) | Some(Source::Calib(_))
+                );
                 let frame = if sweeping {
                     None
                 } else {
@@ -1096,6 +1176,13 @@ impl ApplicationHandler for App {
                         gpu.upload(&p.fb, pattern::WIDTH as u32, pattern::HEIGHT as u32);
                     }
                     Some(Source::Sweep(s)) => sweep_upload(gpu, s),
+                    Some(Source::Calib(c)) => match read_bmp(&c.files[c.i]) {
+                        Ok((w, h, px)) => gpu.upload(&px, w, h),
+                        Err(e) => {
+                            eprintln!("calib: {e}");
+                            hard_exit(1);
+                        }
+                    },
                     Some(Source::Qemu {
                         display, last_seq, ..
                     }) => {
@@ -1122,6 +1209,32 @@ impl ApplicationHandler for App {
                         self.latency.clear();
                     }
                 }
+                if let Some(Source::Calib(c)) = self.source.as_mut() {
+                    if c.last_surface != gpu.surface_size() {
+                        c.last_surface = gpu.surface_size();
+                    } else {
+                        let src = c.files[c.i].clone();
+                        match gpu.chain.as_ref().and_then(|ch| ch.output()) {
+                            Some(tex) => {
+                                let (ow, oh, rgb) =
+                                    shader::read_texture(&gpu.device, &gpu.queue, tex);
+                                let out = src.with_extension("shaded.png");
+                                shader::write_png(&out.to_string_lossy(), ow, oh, &rgb);
+                                println!("  {} → {} ({ow}x{oh})",
+                                         src.file_name().unwrap_or_default().to_string_lossy(),
+                                         out.display());
+                            }
+                            None => {
+                                eprintln!("calib: the preset did not load");
+                                hard_exit(1);
+                            }
+                        }
+                        c.i += 1;
+                        if c.i >= c.files.len() {
+                            hard_exit(0);
+                        }
+                    }
+                }
                 if let Some(Source::Sweep(s)) = self.source.as_mut() {
                     if sweep_step(gpu, s) {
                         if s.fails.is_empty() {
@@ -1132,7 +1245,10 @@ impl ApplicationHandler for App {
                         hard_exit(1);
                     }
                 }
-                if matches!(self.source, Some(Source::Pattern(_)) | Some(Source::Sweep(_))) {
+                if matches!(
+                    self.source,
+                    Some(Source::Pattern(_)) | Some(Source::Sweep(_)) | Some(Source::Calib(_))
+                ) {
                     gpu.window.request_redraw();
                 }
             }
@@ -1256,8 +1372,10 @@ pub fn maybe_dump(pixels: &[u32], w: usize, h: usize, seq: u64) {
 }
 
 fn main() {
-    // player [--shader <preset.slangp>] [--mode-sweep <dir>] [--] <qemu args...>
-    //   no args: the M0 test pattern; --mode-sweep: doc 03's mode sweep, no guest
+    // player [--shader <preset.slangp>] [--mode-sweep <dir>] [--calib <bmp|dir>]
+    //        [--] <qemu args...>
+    //   no args: the M0 test pattern; --mode-sweep: doc 03's mode sweep;
+    //   --calib: shade doc 09's calibration patterns. All three: no guest.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut shader: Option<std::path::PathBuf> =
         std::env::var("PLAYER_SHADER").ok().map(Into::into);
@@ -1270,6 +1388,11 @@ fn main() {
         sweep = Some(std::path::PathBuf::from(args[1].clone()));
         args.drain(0..2);
     }
+    let mut calib = None;
+    if args.first().map(String::as_str) == Some("--calib") && args.len() >= 2 {
+        calib = Some(std::path::PathBuf::from(args[1].clone()));
+        args.drain(0..2);
+    }
     if args.first().map(String::as_str) == Some("--") {
         args.remove(0);
     }
@@ -1279,6 +1402,7 @@ fn main() {
         qemu_args: args,
         shader,
         sweep,
+        calib,
         proxy: Some(event_loop.create_proxy()),
         ..Default::default()
     };

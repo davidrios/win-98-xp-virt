@@ -169,6 +169,13 @@ host_stage() {
     skip d3dpt-dp2 "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
   fi
 
+  # the calibration patterns (doc 09): they render at every era mode, and the
+  # circle in `grid` comes out round on the tube it is drawn for
+  if cc -O2 -w -o build/crtcal-render tools/crtcal-render.c -lm; then
+    mkdir -p "$OUT/crtcal"
+    run_check crtcal crtcal.log build/crtcal-render "$OUT/crtcal" || true
+  else FAIL+=(crtcal); echo "  FAIL crtcal (build)"; fi
+
   # the player's display path without a guest: mode analysis, the geometry
   # stage and the CRT preset over every mode in the table (doc 03, M2)
   local preset=third_party/slang-shaders/crt/crt-guest-advanced.slangp
