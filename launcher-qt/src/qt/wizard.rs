@@ -55,6 +55,8 @@ pub mod ffi {
         #[qproperty(QString, accel_note)]
         #[qproperty(bool, accel_warning)]
         #[qproperty(bool, accel_is_default)]
+        #[qproperty(QString, graphics_note)]
+        #[qproperty(bool, graphics_warning)]
         #[qproperty(bool, network)]
         #[qproperty(QString, network_note)]
         #[qproperty(bool, existing_disk)]
@@ -192,6 +194,8 @@ pub struct WizardRust {
     accel_note: QString,
     accel_warning: bool,
     accel_is_default: bool,
+    graphics_note: QString,
+    graphics_warning: bool,
     network: bool,
     network_note: QString,
     existing_disk: bool,
@@ -387,6 +391,7 @@ impl ffi::Wizard {
             cpu_is_default,
         );
         let (accel, accel_note, accel_warning, accel_is_default, network, network_note);
+        let (graphics_note, graphics_warning);
         let (existing_disk, disk_path, disk_size_gb, install_media, floppy, boot, boot_note);
         let (shader_profile, advanced, advanced_toml, error);
         {
@@ -410,6 +415,10 @@ impl ffi::Wizard {
             accel_warning = note.warning;
             accel_note = qs(note.text);
             accel_is_default = f.accel_is_default();
+            // Empty on a DOS machine, which has no Direct3D to place.
+            let graphics = f.graphics_note();
+            graphics_warning = graphics.as_ref().is_some_and(|n| n.warning);
+            graphics_note = qs(graphics.map(|n| n.text).unwrap_or_default());
             network = f.network();
             network_note = qs(f.network_notes().join("\n"));
             existing_disk = f.existing_disk;
@@ -441,6 +450,8 @@ impl ffi::Wizard {
         self.as_mut().set_accel_note(accel_note);
         self.as_mut().set_accel_warning(accel_warning);
         self.as_mut().set_accel_is_default(accel_is_default);
+        self.as_mut().set_graphics_note(graphics_note);
+        self.as_mut().set_graphics_warning(graphics_warning);
         self.as_mut().set_network(network);
         self.as_mut().set_network_note(network_note);
         self.as_mut().set_existing_disk(existing_disk);

@@ -61,6 +61,7 @@ pub fn show(
             memory_ui(ui, form);
             cpu_speed_ui(ui, form);
             accel_ui(ui, form);
+            graphics_ui(ui, form);
             network_ui(ui, form);
             ui.separator();
             if editing {
@@ -180,6 +181,18 @@ fn accel_ui(ui: &mut egui::Ui, form: &mut Form) {
     } else {
         // The form composes a second line when there is one (Win98 under
         // KVM); egui's `small` takes the newline as-is.
+        ui.small(note.text);
+    }
+}
+
+/// No row of its own: what this host will give the guest's 3D, which the
+/// form decides and words (`graphics_notes`, ADR-013). Orange only for
+/// the software-Vulkan case, which is the one that will disappoint.
+fn graphics_ui(ui: &mut egui::Ui, form: &Form) {
+    let Some(note) = form.graphics_note() else { return };
+    if note.warning {
+        ui.colored_label(egui::Color32::from_rgb(200, 140, 0), note.text);
+    } else {
         ui.small(note.text);
     }
 }

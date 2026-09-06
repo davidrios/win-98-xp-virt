@@ -49,6 +49,24 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   tested on here. A bundle with no `accel` field follows its family
   rather than a fixed default, so nothing written before the field
   existed silently changes how it runs.
+- **The host's 3D** is stated, not chosen (ADR-013): under the
+  acceleration row a Windows machine gets one line saying what this host
+  will give the guest's Direct3D. It needs a Vulkan 1.3 device, because
+  that is what its DXVK executor needs; below that bar 3D goes through
+  OpenGL with WineD3D in the guest instead, and the line says how to
+  install it. There is no picker because there is no decision here: the
+  host settles it, and the only failure worth preventing is finding out
+  after the machine exists. A **software** Vulkan driver counts as
+  available — DXVK will use one — but is the single case drawn as a
+  warning rather than a note, because it works and disappoints: it says
+  to expect it to be very slow and that WineD3D may well beat it, both
+  being worth trying. A host with no Vulkan at all is a plain note;
+  nothing is wrong and every machine still runs. DOS machines get no
+  line. The sentence is the shared form's (`graphics_note()`), like every
+  other note under a row, so the egui build, the Qt build and the C ABI
+  cannot drift; `launcher --host-check` is the same answer in full, for a
+  support question or a script (`launcher-core/src/host_gpu.rs`; the
+  `host-check` check in `scripts/test.sh`).
 - **The processor** is a combo of named machines, not a number
   (`cpu_speed` in the bundle, `bundle::CpuSpeed`): *Unthrottled* down
   through *Pentium 133*, *486DX2-66*, *386DX-33*, *286-12*. Nobody knows

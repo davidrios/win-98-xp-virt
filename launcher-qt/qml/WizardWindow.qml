@@ -177,6 +177,20 @@ Window {
                 opacity: root.wizard.accelWarning ? 1.0 : 0.75
             }
 
+            // --- the host's 3D (ADR-013) --------------------------------
+            // Stated, not chosen: the host settles which 3D stack a guest
+            // gets. Empty on a DOS machine. Orange only for the software
+            // Vulkan driver, the case that runs and disappoints.
+            Label {
+                Layout.fillWidth: true
+                visible: root.wizard.graphicsNote !== ""
+                text: root.wizard.graphicsNote
+                wrapMode: Text.Wrap
+                font.pixelSize: 11
+                color: root.wizard.graphicsWarning ? "#c88200" : palette.windowText
+                opacity: root.wizard.graphicsWarning ? 1.0 : 0.75
+            }
+
             // --- networking ---------------------------------------------
             CheckBox {
                 text: qsTr("Networking")

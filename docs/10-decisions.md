@@ -459,12 +459,24 @@ the first time anything asks for the directory:
 The runtime directory is not migrated: what lives there belongs to a
 running process, and a stale socket path outlives nothing.
 
-## ADR-013: hosts without Vulkan 1.3 keep the GL path; no second executor (2026-09-06)
+## ADR-013: hosts without Vulkan 1.3 keep the GL path; no second executor (2026-09-06, amended the same day)
 
 *(ADR-012 is the Win98 display driver, on `track/m10-win98-driver`.)*
 
+**Amended 2026-09-06:** software Vulkan is no longer refused. The first
+version of this decision turned lavapipe down on the user's behalf —
+reasoning that a software rasteriser competes for the host CPU that TCG
+is already using, so it could not be worth having. That is a judgement
+about someone else's hardware, and it is not ours to make: DXVK ranks a
+`CPU` device last but never excludes it, so the executor *does* run
+there, and whether the result beats WineD3D-in-guest on a given box is
+something only that box can answer. So a software driver now counts as
+available, with the warning that it will be very slow and the note that
+the other path may well be faster. Everything else below stands; the
+paragraphs affected say so where they used to say "refused".
+
 **Decision.** The paravirtual Direct3D device (ADR-006) requires a
-**hardware Vulkan 1.3 device** on the host, because its executor is DXVK
+**Vulkan 1.3 device** on the host, because its executor is DXVK
 (ADR-007) and DXVK asks for exactly that. Hosts that fail the bar are
 still supported machines — they simply do not get the device. What they
 get is the path that predates it: qemu-3dfx's OpenGL pass-through with
@@ -511,14 +523,23 @@ hypothetical: it is the Air before it was upgraded, and it is every Intel
 Mac permanently. Each of these hosts has OpenGL 2.1 or better, which is
 all the GL pass-through has ever wanted.
 
-**Alternatives rejected.** *Software Vulkan (Mesa's lavapipe)*: it is
-1.3-conformant on any CPU and would cost us no code, and it was
-considered on exactly that basis — but a software rasteriser spends the
-host CPU that TCG needs for the guest, on the very hosts that have the
-least of it, and the acceptance titles are DX8 with hardware T&L and
-shaders rather than a 640×480 DX7 scene. Not a route this project takes
-(user decision, 2026-09-06); the probe below therefore refuses a
-`VK_PHYSICAL_DEVICE_TYPE_CPU` device instead of counting it. *Pinning an
+**Software Vulkan is used, and warned about** (the amendment). Mesa's
+lavapipe is 1.3-conformant on any CPU and costs us no code, and DXVK
+takes it: its adapter sort ranks `CPU` behind discrete, integrated and
+virtual, but the list it ranks is the list it uses, and a lavapipe-only
+host gets an adapter like any other. It will be slow — a software
+rasteriser spends the host CPU that TCG needs for the guest, on the very
+hosts that have the least of it, and the acceptance titles are DX8 with
+hardware T&L and shaders rather than a 640×480 DX7 scene. That is a
+warning, not a veto: which of the two stacks wins on a given box is a
+measurement, and refusing to start the one that might win means nobody
+ever takes it. So the probe **counts** a `VK_PHYSICAL_DEVICE_TYPE_CPU`
+device, reports "available, in software (slow)", and says in the same
+breath that WineD3D-in-guest may well be faster and both are worth
+trying. Verified against the real driver: it presents `llvmpipe` at
+Vulkan 1.4.354 and is now taken rather than turned down.
+
+**Alternatives rejected.** *Pinning an
 older DXVK for old hosts*: 1.10.3 was the last Vulkan-1.1 release, so
 this means carrying a second DXVK branch and its own patch queue for
 strictly fewer d3d9 features — the patch-queue discipline of ADR-007 is
@@ -536,8 +557,28 @@ and not a crash), asks for the loader version, creates an instance at
 `min(loader, 1.3)` with `VK_KHR_portability_enumeration` when it is
 offered — the same opt-in DXVK makes, without which a Vulkan-on-Metal
 driver is invisible — and classifies every physical device by type and
-`apiVersion`. `launcher --host-check` prints the report and exits
-non-zero when the device is unavailable. QEMU's own answer is unchanged
+`apiVersion`.
+
+It is said in two places, because a verb nobody types is not the promise
+this ADR makes. `launcher --host-check` (`launcher_core::cli`, so both
+binaries answer it identically — ADR-014) prints the whole report and
+exits non-zero **only when the device is unavailable**: a software
+driver is slow, not absent, and a script asking "can this host do 3D"
+should hear yes. And the wizard says the one-line version under the
+acceleration row, for Windows machines only — DOS has no Direct3D to
+place. That sentence is `wizard::Form::graphics_note()`, in the shared
+model with every other note (ADR-014), so the egui build, the Qt build
+and the C ABI cannot end up telling someone different things about the
+same host; the form takes the verdict once when it opens, like
+`have_kvm`, because a probe is a whole `VkInstance` and no window should
+make one per frame. It is a warning — orange — only for the software
+case, the one that runs and disappoints; a host with no Vulkan at all
+gets a plain note, because nothing is wrong and every machine still
+runs. The `host-check` check in `scripts/test.sh` holds all of it to
+what is true on every host: no Vulkan driver must mean "unavailable", a
+non-zero exit and a pointer at WineD3D; a software driver must mean
+available, exit zero and the word "slow"; and any report must name both
+the loader and the bar. QEMU's own answer is unchanged
 and remains the backstop: `d3dpt_exec_load.c` already boots a machine
 normally and reports "no executor" when the library or the Vulkan device
 is missing.

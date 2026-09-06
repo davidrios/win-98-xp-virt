@@ -131,6 +131,33 @@ cdimage_check() { # the block driver through qemu-img / qemu-io on the selftest 
   [ "$(nm -D build/qemu/libqemu-embed-i386.$SO 2>/dev/null | grep -c ' T _ZN3std')" = 0 ] || { echo "Rust std symbols exported from the embed library"; rc=1; }
   return $rc
 }
+host_check_probe() { # `launcher --host-check` (ADR-013), on any host
+  local rc=0 o
+  # This host's own answer: either verdict is legal, the report is not.
+  o="$(target/release/launcher --host-check 2>&1)" || true
+  case "$o" in *"Vulkan loader:"*) ;; *) echo "the report names no loader"; echo "$o"; rc=1;; esac
+  case "$o" in *"Required: a 1.3 device"*) ;; *) echo "the report names no bar"; echo "$o"; rc=1;; esac
+  # A host with no Vulkan driver at all, which every host can be made
+  # into: both loader variables, since which one is read depends on how
+  # old the loader is.
+  o="$(VK_DRIVER_FILES=/nonexistent.json VK_ICD_FILENAMES=/nonexistent.json \
+       target/release/launcher --host-check 2>&1)" \
+    && { echo "exit 0 with no Vulkan driver"; rc=1; }
+  case "$o" in *unavailable*) ;; *) echo "no Vulkan driver, yet not reported unavailable"; echo "$o"; rc=1;; esac
+  case "$o" in *WineD3D*) ;; *) echo "no Vulkan driver, yet not pointed at WineD3D"; echo "$o"; rc=1;; esac
+  # Where lavapipe is installed, the other half is testable for real: a
+  # software driver is *usable* (DXVK ranks a CPU device last but never
+  # excludes it), so the verdict is available and the warning is that it
+  # will be slow — never a refusal (ADR-013).
+  local lvp; lvp="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -1)"
+  if [ -n "$lvp" ]; then
+    o="$(VK_DRIVER_FILES="$lvp" target/release/launcher --host-check 2>&1)" \
+      || { echo "a software driver was refused instead of warned about"; echo "$o"; rc=1; }
+    case "$o" in *slow*) ;; *) echo "a software driver was not called slow"; echo "$o"; rc=1;; esac
+    case "$o" in *"software, usable but slow"*) ;; *) echo "the software device was not listed as usable"; echo "$o"; rc=1;; esac
+  fi
+  return $rc
+}
 have_display() { [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || [ "$OS" = Darwin ]; }
 
 # ---------------------------------------------------------------- host stage
@@ -153,6 +180,17 @@ host_stage() {
   if [ -x build/qemu/qemu-img ] && [ -f "$OUT/disc/mixed.cue" ]; then
     run_check cdimage cdimage.log cdimage_check || true
   else skip cdimage "needs build/qemu/qemu-img and the libdisc check's images"; fi
+
+  # the host GPU probe (ADR-013): what the launcher tells someone about 3D
+  # before a machine exists. The verdict itself is a property of the box,
+  # so what is checked here is the part that has to hold on every box —
+  # that a host with no Vulkan driver at all is reported unavailable,
+  # exits non-zero and is pointed at the WineD3D path, that a software
+  # driver is warned about rather than refused, and that a report always
+  # names the loader and the bar it was judged against.
+  cargo build --release -p launcher -q 2>"$OUT/host-check-build.log" \
+    && run_check host-check host-check.log host_check_probe \
+    || { [ -x target/release/launcher ] || { FAIL+=(host-check); echo "  FAIL host-check (build)"; }; }
 
   # the Linux package (M6 step 6): staged from this build and asked, with a
   # scrubbed environment, whether it resolves its own player, qemu-img,

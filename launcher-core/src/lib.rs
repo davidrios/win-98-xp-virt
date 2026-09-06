@@ -43,6 +43,8 @@ pub mod cli;
 pub mod control;
 pub mod disc_library;
 pub mod editor;
+// What this host's GPU can do for the Direct3D executor (ADR-013).
+pub mod host_gpu;
 pub mod library;
 pub mod machines;
 pub mod paths;

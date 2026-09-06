@@ -140,11 +140,19 @@ mtools`; `tools/x87-guest-test.py` downloads the FreeDOS floppy itself.
   executor — several of which are otherwise *good* hosts, being x86 boxes
   of about the right speed. They keep the OpenGL pass-through with
   WineD3D-in-guest, **which is therefore not retired when M10 lands**.
-  `launcher --host-check` (`launcher-core/src/host_gpu.rs`) reports the
-  verdict and every device behind it; software Vulkan (lavapipe) is
-  deliberately refused. Open: nobody has measured how many real users are
-  behind the bar, and doc 14 P0b's GL/wgpu executor stays unbuilt until
-  someone has.
+  `launcher --host-check` (`launcher-core/src/host_gpu.rs`, the
+  `host-check` check in `scripts/test.sh`) reports the verdict and every
+  device behind it, and the wizard says the one-line version under the
+  acceleration row through the shared model's `graphics_note()`, so all
+  three front ends say the same thing. **Software Vulkan is used, not
+  refused** (the same-day amendment): lavapipe presents `llvmpipe` at
+  1.4.354, DXVK ranks a CPU device last but never excludes it, so the
+  verdict is "available, in software (slow)" with the note that
+  WineD3D-in-guest may well be faster — the choice is a measurement on
+  the box, not ours. Open: nobody has measured how many real users are
+  behind the bar, nor whether the software path actually beats WineD3D on
+  one of them; doc 14 P0b's GL/wgpu executor stays unbuilt until someone
+  has.
 
 - 3D sync is `glFinish` before every hand-off (both platforms); a shared
   fence would let the vCPU continue while the blit drains. Glide (doc 12

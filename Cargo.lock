@@ -2049,6 +2049,7 @@ dependencies = [
 name = "launcher-core"
 version = "0.0.1"
 dependencies = [
+ "ash",
  "directories",
  "flate2",
  "image",

@@ -543,6 +543,28 @@ pub unsafe extern "C" fn lc_wizard_accel_note(w: *const LcWizard, warning: *mut 
     out(note.text)
 }
 
+/// What this host can do for the guest's 3D (ADR-013), said under the
+/// acceleration row. NULL for a DOS machine, which has no Direct3D to
+/// place. `*warning` (when non-NULL) is set for the one case that runs
+/// and disappoints: a software Vulkan driver, where the Direct3D
+/// pass-through works but very slowly.
+///
+/// # Safety
+/// `w` must be a live handle; `warning` NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_graphics_note(w: *const LcWizard, warning: *mut bool) -> *mut c_char {
+    let Some(note) = handle!(w, std::ptr::null_mut()).0.graphics_note() else {
+        if !warning.is_null() {
+            unsafe { *warning = false };
+        }
+        return std::ptr::null_mut();
+    };
+    if !warning.is_null() {
+        unsafe { *warning = note.warning };
+    }
+    out(note.text)
+}
+
 /// # Safety
 /// `w` must be a live handle.
 #[no_mangle]

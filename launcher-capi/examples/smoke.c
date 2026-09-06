@@ -82,6 +82,13 @@ int main(int argc, char **argv) {
     check("emulated, because a throttle needs TCG", accel && strcmp(accel, "Emulation") == 0, accel);
     lc_string_free(accel);
 
+    /* A DOS machine has no Direct3D to place, so the 3D line is absent
+     * whatever this host's GPU is (ADR-013). */
+    bool gfx_warning = true;
+    char *gfx = lc_wizard_graphics_note(w, &gfx_warning);
+    check("a DOS machine says nothing about 3D", gfx == NULL && !gfx_warning, gfx);
+    lc_string_free(gfx);
+
     check("no network card", !lc_wizard_network(w), NULL);
     char *note = lc_wizard_network_note(w);
     check("...and it says so", note && strstr(note, "No network adapter") != NULL, note);

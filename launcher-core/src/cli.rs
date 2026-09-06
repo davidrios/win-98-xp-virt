@@ -80,6 +80,19 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
             // this host's answer, not the bundle's setting.
             println!("{}", if player::kvm_available() { "available" } else { "not available" });
         }
+        "--host-check" => {
+            // The other half of `--kvm`: what this host can do for the
+            // guest's 3D, asked before a machine is created rather than
+            // found as an absence afterwards (ADR-013). The bar is DXVK's
+            // own — a Vulkan 1.3 device — and a host below it still runs
+            // every guest, through the OpenGL pass-through with WineD3D
+            // in the guest. Exits non-zero only when the device is
+            // unavailable: a software driver is slow, not absent, and a
+            // script asking "can this host do 3D" should hear yes.
+            let probe = crate::host_gpu::probe();
+            print!("{}", crate::host_gpu::report_text(&probe));
+            return Some(if probe.gpu.d3d_available() { 0 } else { 1 });
+        }
         "--paths" => {
             // Every companion a launcher would reach for, and where it
             // found it (`paths.rs`). This is what `scripts/package-linux.sh`

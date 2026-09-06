@@ -132,6 +132,10 @@ bool lc_wizard_accel_is_default(const LcWizard *w);
  * demanded and this host hasn't got it, so the machine won't start. */
 char *lc_wizard_accel_note(const LcWizard *w, bool *warning);
 bool lc_wizard_have_kvm(const LcWizard *w);
+/* What this host gives the guest's 3D (ADR-013). NULL for a DOS machine,
+ * which has no Direct3D to place. *warning is set for the one case that
+ * runs and disappoints: a software Vulkan driver. */
+char *lc_wizard_graphics_note(const LcWizard *w, bool *warning);
 
 bool lc_wizard_network(const LcWizard *w);
 void lc_wizard_choose_network(LcWizard *w, bool network);

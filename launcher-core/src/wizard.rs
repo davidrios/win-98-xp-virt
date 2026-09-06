@@ -29,7 +29,7 @@
 use crate::browse::Filter;
 use crate::bundle::{self, Accel, Boot, CpuSpeed, Family, Machine};
 use crate::disc_library::DISC_FILTER;
-use crate::{library, player};
+use crate::{host_gpu, library, player};
 use std::path::{Path, PathBuf};
 
 pub const DISK_FILTER: Filter<'static> = ("Disk images", &["qcow2", "img", "raw"]);
@@ -108,6 +108,11 @@ pub struct Form {
     /// bare `exists()` misses the "not in the `kvm` group" case), and
     /// the answer cannot change while a form is on screen.
     have_kvm: bool,
+    /// The same, for the guest's 3D (`host_gpu`, ADR-013), and for the
+    /// same reason twice over: a probe is a whole `VkInstance`, and the
+    /// answer cannot change while a form is on screen. `cached` so that
+    /// every window opened in one session pays for it once.
+    host_gpu: host_gpu::HostGpu,
     editing: Option<EditTarget>,
 }
 
@@ -137,6 +142,7 @@ impl Default for Form {
             cpu_speed: bundle::default_cpu_speed(Family::Win98),
             cpu_speed_chosen: false,
             have_kvm: player::kvm_available(),
+            host_gpu: host_gpu::cached().gpu,
             editing: None,
         }
     }
@@ -355,6 +361,29 @@ impl Form {
             text.push_str("Win98 runs at host speed under KVM, which its own fast-CPU bugs dislike.");
         }
         AccelNote { text, warning: matches!((self.accel, self.have_kvm), (Accel::Kvm, false)) }
+    }
+
+    /// What this host will give the guest's 3D, under the acceleration
+    /// row (ADR-013). Not a picker, because there is nothing to pick: the
+    /// host settles it, and the only failure worth preventing is finding
+    /// out after the machine exists. A DOS machine has no Direct3D to
+    /// place and gets no line.
+    ///
+    /// `warning` is true only for a software Vulkan driver — the
+    /// executor does run there, and slowly, which is the one case where
+    /// what the user sees will disappoint them. A host with no Vulkan at
+    /// all is a plain note: it runs every machine, through the OpenGL
+    /// pass-through with WineD3D in the guest, and nothing is wrong.
+    pub fn graphics_note(&self) -> Option<AccelNote> {
+        if self.family == Family::Dos {
+            return None;
+        }
+        let mut text = format!("3D: {}", self.host_gpu.headline());
+        if let Some(advice) = self.host_gpu.advice() {
+            text.push('\n');
+            text.push_str(advice);
+        }
+        Some(AccelNote { text, warning: self.host_gpu.is_slow() })
     }
 
     pub fn network(&self) -> bool {
