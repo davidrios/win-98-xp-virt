@@ -17,6 +17,11 @@
 #   rust    cargo build --release --target x86_64-pc-windows-gnu: the
 #           player, the launcher, discx. After `qemu`, because the player
 #           links the embed DLL out of build/win/qemu.
+#   qt      cargo build in launcher-qt/ (its own workspace): the Qt 6 /
+#           QML front end, the second of doc 07's two maintained ones.
+#           Cross-compiled like everything else — the image carries the
+#           mingw Qt to link against and the native Qt of the same
+#           version for moc/rcc/qmltyperegistrar.
 #   exec    build-d3dpt-exec.sh --windows: d3dpt_exec.dll, the Direct3D
 #           executor (doc 14). No DXVK build: on Windows the host has a
 #           Direct3D 9, and a DXVK d3d9.dll dropped next to the player
@@ -41,11 +46,11 @@ while [ $# -gt 0 ]; do
     -j*) JOBS=(-j "${1#-j}"); shift ;;
     -p|--package) PACKAGE=1; shift ;;
     -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    qemu|rust|exec|guest) STAGES+=("$1"); shift ;;
+    qemu|rust|qt|exec|guest) STAGES+=("$1"); shift ;;
     *) echo "build-windows.sh: unknown argument '$1' (try --help)" >&2; exit 2 ;;
   esac
 done
-if [ ${#STAGES[@]} -eq 0 ]; then STAGES=(qemu rust exec guest); else EXPLICIT=1; fi
+if [ ${#STAGES[@]} -eq 0 ]; then STAGES=(qemu rust qt exec guest); else EXPLICIT=1; fi
 
 BUILT=(); SKIPPED=(); T0=$SECONDS
 want() { local s; for s in "${STAGES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
@@ -90,6 +95,19 @@ if want rust; then
   say "rust: cargo build --release --target x86_64-pc-windows-gnu"
   inw cargo build --release --target x86_64-pc-windows-gnu --workspace ${JOBS[@]+"${JOBS[@]}"}
   BUILT+=(rust)
+fi
+
+# launcher-qt is its own cargo workspace (so a plain `cargo build` never
+# needs Qt), which is why this is a separate stage with its own directory
+# rather than another member of the one above.
+if want qt; then
+  if ! scripts/win-cross.sh test -x /usr/bin/x86_64-w64-mingw32-qmake-qt6; then
+    skip qt "the cross image has no mingw Qt 6 (rebuild it: scripts/win-cross.sh --build)" || true
+  else
+    say "qt: cargo build --release --target x86_64-pc-windows-gnu (launcher-qt)"
+    inw sh -c 'cd launcher-qt && exec cargo build --release --target x86_64-pc-windows-gnu'
+    BUILT+=(qt)
+  fi
 fi
 
 if want exec; then

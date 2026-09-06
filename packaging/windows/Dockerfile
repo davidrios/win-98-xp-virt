@@ -48,6 +48,23 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         mingw64-SDL2 mingw64-gettext mingw64-win-iconv mingw64-pkg-config \
     && dnf clean all -y
 
+# Qt 6 for the second front end (launcher-qt, ADR-014), both halves of a
+# cross build: the mingw libraries and headers the binary links against,
+# and the *native* Qt of the same version for the tools that have to run
+# here (moc, rcc, qmltyperegistrar, qmlcachegen). Fedora ships both at
+# 6.10.3 and a native `x86_64-w64-mingw32-qmake-qt6` that answers with the
+# mingw paths for the target and /usr/lib64/qt6 for the host, which is
+# exactly what cxx-qt's cargo-only build asks qmake for.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        mingw64-qt6-qtbase mingw64-qt6-qtdeclarative \
+        qt6-qtbase-devel qt6-qtdeclarative-devel \
+    && dnf clean all -y
+# The cross qmake, and: the host rcc has zstd and the mingw Qt6Core does
+# not, so a resource compiled with the default algorithm asks the target
+# for `qResourceFeatureZstd()` and does not link. zlib instead.
+ENV QMAKE=/usr/bin/x86_64-w64-mingw32-qmake-qt6 \
+    CXX_QT_AUTORCC_OPTIONS=--no-zstd
+
 # Rust, in the image rather than on the host: the same stable channel the
 # native build uses, plus the windows-gnu target. CARGO_HOME/RUSTUP_HOME
 # live under /opt so a bind-mounted checkout never inherits (or writes)

@@ -92,6 +92,39 @@ appended, with a header per run.
 Still open from that first run: whether a machine actually boots, and
 what WHPX does with it.
 
+### Both front ends (2026-09-06)
+
+`scripts/package-windows.sh --qt` rolls a second, complete package whose
+`2ksbox.exe` is `launcher-qt`, so the two can be unzipped side by side on
+one machine and compared. Qt crosses better than expected: Fedora has
+`mingw64-qt6-*` to link against, a native Qt of the same version for the
+tools that run here, and a `x86_64-w64-mingw32-qmake-qt6` whose `-query`
+splits `QT_INSTALL_*` (target) from `QT_HOST_*` (host) exactly the way
+cxx-qt's cargo-only build wants. Two things had to be said:
+
+- `CXX_QT_AUTORCC_OPTIONS=--no-zstd` (a supported cxx-qt env var, found
+  after nearly wrapping `rcc` by hand): the host rcc has zstd and the
+  mingw Qt6Core does not, so the default algorithm produces a resource
+  that asks the target for `qResourceFeatureZstd()` and will not link.
+- Qt deployment by hand, since Fedora has no cross `windeployqt`: the
+  plugin directories, the QML module trees, and a `qt.conf` so both
+  resolve relative to the executable. The DLL closure had to grow roots:
+  a platform plugin or a QML module's DLL sits in a subdirectory and
+  imports half of Qt, and nothing above it names either — it now walks
+  every binary anywhere in the package.
+
+**Open: the Qt binary does not start under wine.** It faults on a call to
+address 0 before `main` prints anything, with either subsystem, and with
+no display attached wine logs a window-creation attempt first. The egui
+binary in the same folder, with the same DLLs, answers `--paths` fine, so
+the package is not the problem, and the backtrace is one unwalkable frame
+at address 0 (which is what a jump through a null thunk looks like). Two
+candidates, in order: cxx-qt's whole-archive static initialisers (the QML
+type registration that runs before `main`, which would break on real
+Windows too), and wine's own Qt 6 support. The next real Windows run
+decides which — the packaging checks report rather than fail for `--qt`
+so the artefact exists to try.
+
 ### OpenGL in the embed library
 
 Written the same day: `embed/mglcntx_embed.c` grew a Windows branch using
@@ -176,17 +209,20 @@ images and a GPU, and now a Windows host too. The Windows evidence is
 
 ## Next steps, in order
 
-1. **Boot a machine on the user's Windows PC.** The launcher runs there
+1. **Try both packages on the user's Windows PC**, the Qt one first —
+   if it faults there too, it is cxx-qt's static initialisers and not
+   wine, and the fix is ours.
+2. **Boot a machine on the user's Windows PC.** The launcher runs there
    and Play now starts the player; what a guest does under WHPX is the
    next unknown.
-2. **A Win98 guest with 3D on real Windows.** The WGL backend is written
+3. **A Win98 guest with 3D on real Windows.** The WGL backend is written
    and its sequence passes under wine (`tools/wgl-probe.exe`), but no
    guest has used it.
-3. **The installer.** Doc 07 wants an installer as well as the portable
+4. **The installer.** Doc 07 wants an installer as well as the portable
    zip. QEMU's own `mingw32-nsis` recipe is in the cross image's reach.
-4. **Zero-copy frames** through a DXGI shared handle, the Windows answer
+5. **Zero-copy frames** through a DXGI shared handle, the Windows answer
    to the dma-buf ring and IOSurface.
-5. **A second Windows check that boots a guest**, once (1) says what
+6. **A second Windows check that boots a guest**, once (1) says what
    actually happens. The shape to aim for is `xp-driver-test.sh`'s: drive
    the machine over QMP, pull the artefacts out, diff a frame.
 
@@ -199,6 +235,13 @@ images and a GPU, and now a Windows host too. The Windows evidence is
   probably not on it.
 - A `wine` command whose output goes through a pipe can look like a hang;
   redirect to a file.
+- A kept copy of the cross image's DLLs (`build/win/sysroot-bin`) is a
+  snapshot of an older image: the first `--qt` package took one from
+  before Qt was installed and shipped a Qt launcher with no `Qt6Core.dll`.
+  Both sysroot copies are refreshed on every packaging run now.
+- Running the packaged binaries under wine with a display attached puts
+  wine's crash dialog **on the user's desktop** when one of them faults.
+  Unset `DISPLAY`/`WAYLAND_DISPLAY` for anything that might crash.
 - The launcher's Windows data directory is `%APPDATA%\2ksbox\data`
   (`directories`' own convention), not `%APPDATA%\2ksbox`.
 - A DLL loaded with `LoadLibrary` is not in any import table, so a

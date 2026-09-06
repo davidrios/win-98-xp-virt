@@ -12,9 +12,10 @@ Track: `docs/tracks/m11-windows-host.md`. Names and layout: doc 07.
 ## The short version
 
 ```sh
-scripts/win-cross.sh --build      # once: the cross container (~5 min, ~2 GB)
-scripts/build-windows.sh          # qemu, rust, exec, guest-tools
+scripts/win-cross.sh --build      # once: the cross container (~5 min, ~3 GB)
+scripts/build-windows.sh          # qemu, rust, qt, exec, guest-tools
 scripts/package-windows.sh        # the zip, checked under wine
+scripts/package-windows.sh --qt   # a second zip: the Qt 6 front end
 ```
 
 `build/win/package/2ksbox-<version>-windows-x86_64.zip` is the artefact.
@@ -57,6 +58,7 @@ base.
 |---|---|---|
 | `qemu` | `build/win/qemu/{qemu-system-i386,qemu-img,qemu-io}.exe`, `libqemu-embed-i386.dll` | `configure-qemu.sh --windows`; **WHPX detected and built in** |
 | `rust` | `target/x86_64-pc-windows-gnu/release/{launcher,player,discx}.exe` | the embed DLL is found in `build/win/qemu` by `qemu-embed/build.rs` |
+| `qt` | `launcher-qt/target/x86_64-pc-windows-gnu/release/launcher-qt.exe` | doc 07's other front end; its own cargo workspace, so its own stage |
 | `exec` | `build/win/d3dpt/d3dpt_exec.dll`, `build/win/wgl-probe.exe` | the Direct3D decoder + executor (doc 14), and the offscreen-GL diagnostic |
 | `guest` | `guest-tools/out/guest-tools-*.iso` | guest code: host-independent, so only built if absent |
 
@@ -149,6 +151,40 @@ the answer is in its output rather than inside a VM. Under wine on the
 Linux build host it passes on an AMD card (Mesa 26.2) — green clear, red
 quad, right way up — which is how the sequence has been verified at all;
 a real Windows driver is still ahead.
+
+## The two front ends
+
+Both of doc 07's front ends cross-build, and `--qt` rolls a second,
+complete package (`…-windows-x86_64-qt.zip`) whose `2ksbox.exe` is
+`launcher-qt`. Same player, same QEMU, same guest tools: unzip the two
+side by side and the machines they show are the same machines, because
+the library under both is `launcher-core`.
+
+Qt itself crosses more easily than it sounds: Fedora ships `mingw64-qt6-*`
+to link against and a native Qt of the *same version* for the tools that
+must run on the build machine, plus a `x86_64-w64-mingw32-qmake-qt6` that
+answers with the target's paths for `QT_INSTALL_*` and the host's for
+`QT_HOST_*` — which is exactly the split cxx-qt's cargo-only build asks
+for. Two things needed saying:
+
+- `CXX_QT_AUTORCC_OPTIONS=--no-zstd`, because the host `rcc` has zstd and
+  the mingw `Qt6Core` does not: a resource compiled with the default
+  algorithm asks the target for `qResourceFeatureZstd()` and does not
+  link. Both are set in the image.
+- There is no cross `windeployqt`, so `package-windows.sh` deploys Qt by
+  hand: the plugin directories (**there is no window without
+  `platforms/qwindows.dll`**, and it is in no import table), the QML
+  module trees the views import, and a `qt.conf` pointing Qt at both
+  relative to the executable. The DLL closure then walks *every* binary
+  in the package, plugins and QML modules included, since each imports
+  half of Qt and nothing above it says so.
+
+**The Qt package is unverified.** It builds and stages, but the binary
+faults on a null call under wine before `main` prints anything — with
+either subsystem, while the egui binary in the same folder answers
+`--paths` perfectly, so it is not the package. Whether that is wine's Qt
+6 or ours is a question only a real Windows machine can answer, and the
+packaging checks say so instead of failing.
 
 ## Acceleration
 

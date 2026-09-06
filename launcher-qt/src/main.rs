@@ -38,6 +38,12 @@
 //! `publish` reads the model and writes every property through its
 //! setter, and the property fields are never assigned anywhere else.
 
+// A windowed program on Windows, like the egui build: a console-subsystem
+// binary opens a black terminal on every double-click. The debug verbs
+// below still print — `main` borrows the console it was launched from
+// when there is one (`launcher_core::console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod preview;
 
 mod qt {
@@ -64,6 +70,11 @@ fn main() {
     // it pops `rfd`'s dialog, and this build's file dialog is QML's.)
     let mut args = std::env::args().skip(1);
     let verb = args.next();
+    if verb.is_some() {
+        // Anything on the command line answers in text, so this is where
+        // a Windows build goes looking for a console to print into.
+        launcher_core::console::attach_parent();
+    }
     if let Some(verb) = verb.as_deref() {
         if let Some(code) = launcher_core::cli::run(verb, &mut args) {
             std::process::exit(code);
