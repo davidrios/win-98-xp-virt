@@ -92,6 +92,36 @@ for the next mode, `L` to take the legend away, ESC to quit.
 | 7 | `gamma` | the tube's gamma, against a dithered reference | whole screen, straight on; slightly defocused is right |
 | 8 | `colour` | phosphor primaries and colour temperature | whole screen, fixed white balance (daylight), never auto |
 
+### 720x400, which needs DOS
+
+Windows 98 cannot put its desktop at 720×400 — no display driver offers it and
+it is not a VESA graphics mode. 720×400 is the VGA *text* mode, and the tube is
+already in it whenever the machine sits at a DOS prompt: 80×25 cells of 9×16
+pixels, 400 lines, 70 Hz. So `GAMEDIR\TEXTCAL.COM` is a DOS `.COM` — run it
+from FreeDOS on the rig, or from a "Restart in MS-DOS mode" screen. Its
+patterns are built from a custom character generator, which is enough because
+a calibration pattern is periodic and 256 glyphs of 9×16 tile one exactly.
+
+Two of them exist nowhere else:
+
+* **Pattern 2, the 9th column.** A text cell is 9 pixels wide and the glyph is
+  8. For character codes 0xC0–0xDF the 9th column repeats the 8th; for every
+  other code it is background. Half the screen filled with a solid glyph below
+  0xC0 and half with the built-in block at 0xDB is the same intent coming out
+  as stripes on one side and continuous white on the other. That is what doc
+  03 rule 2's "9-dot characters" means, shown rather than asserted.
+* **Pattern 6 against pattern 1.** Text mode's 400 lines are scanned once;
+  mode 13h's 200 are scanned twice. The same one-on-one-off line pattern
+  therefore repeats every 2 lines on the tube in pattern 1 and every 4 in
+  pattern 6. Two photographs at one camera setting settle doc 03 rule 3
+  outright — which is the whole reason for the trip.
+
+Verified end to end under our own emulator before it ever goes near the rig:
+FreeDOS on a floppy, `TEXTCAL.COM` from `FDAUTO.BAT`, QMP `screendump`
+reporting **720x400** for the text patterns, and the player's own log naming
+the mode `720x400 VGA text 80x25 (9-dot) — 4:3 picture, pixel aspect 0.741,
+400 scanlines`.
+
 The two that pay for the trip are **2 at 320×200** — it is the direct answer to
 whether the tube really draws 400 scanlines for a 200-line mode, which doc 03
 rule 3 asserts and the shader is now told — and **3 with a ruler**, which turns

@@ -125,6 +125,32 @@ it, it decides the source is interlaced and draws half the lines of one field:
 640×480 at 240, 1024×768 at 384. Only 640×350 (short enough not to be called
 interlaced, and genuinely single-scanned) is right by accident.
 
+**QEMU has usually double-scanned the mode before we see it.** Measured with a
+DOS guest (`TEXTCAL.COM`, doc 09) through the player on `-vga cirrus`: a mode
+13h screen arrives as a **640×400 surface**, not 320×200 — QEMU's VGA doubles
+both axes in its `DisplaySurface`. The consequences are worth being exact
+about, because the obvious reading ("the double-scan code never runs, so it is
+broken") is wrong:
+
+* *Vertically the answer is the same either way.* 640×400 analyses to 400
+  scanlines, not double-scanned; 320×200 would analyse to 400, double-scanned.
+  The preset is told 400 in both cases, which is what the tube draws.
+* *The aspect is the same too.* Doubling both axes preserves the ratio, so
+  640×400 and 320×200 both come out at pixel aspect 0.833 in a 4:3 picture.
+* *What is lost is horizontal fidelity.* The shader sees 640 columns where the
+  tube had 320 distinct ones, so `h_sharp` and the mask act on pixels half the
+  true width. Rule 1 ("never scale before the shader") is already broken
+  upstream of the player, inside QEMU, and nothing in `player/` can put it
+  back — undoing it means detecting the doubling and halving the surface, or
+  patching QEMU's VGA not to double. Neither is done, and neither should be
+  attempted without a photograph of the real tube to say it matters.
+
+So the double-scan branch is right, and on today's VGA path it is redundant.
+It earns its place for any source that delivers a genuinely short surface —
+our own `d3dpt-vga` driver at a 200- or 240-line mode, or a 3D path — and the
+mode sweep exercises it synthetically either way. **720×400 text is not
+doubled** and arrives intact, which the same DOS run confirms.
+
 **The limitation, stated plainly.** This works for presets that expose a
 resolution override. crt-lottes and crt-royale derive their scanline period
 from `OriginalSize` and have no such parameter, and rule 1 forbids the obvious
