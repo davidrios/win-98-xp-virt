@@ -577,6 +577,8 @@ static int wait_medium(Drive *d, int want_present, int dots)
  *
  * `slot < 0` just empties the drive.
  */
+static void tell_windows(Drive *d);
+
 static int cdshelf_insert(Drive *d, int slot, int dots, Sense *sense)
 {
     BYTE cdb[CDB_LEN];
@@ -587,7 +589,13 @@ static int cdshelf_insert(Drive *d, int slot, int dots, Sense *sense)
     if (r != CDB_OK) {
         return r;
     }
-    wait_medium(d, 0, dots);
+    /* An eject the drive never confirms means the old medium may still be
+     * there when the new one is asked for, which is the swap that appears
+     * to do nothing. It was ignored here once; it is a failure now. */
+    if (!wait_medium(d, 0, dots)) {
+        return CDB_FAILED;
+    }
+    tell_windows(d);
     if (slot < 0) {
         return CDB_OK;
     }
@@ -606,14 +614,37 @@ static int cdshelf_insert(Drive *d, int slot, int dots, Sense *sense)
  * touches the drive. Best effort — a failure here changes nothing about
  * the disc actually being loaded.
  */
+#ifndef FSCTL_DISMOUNT_VOLUME
+#define FSCTL_DISMOUNT_VOLUME CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 8, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+
+/*
+ * Tell Windows the medium is not the one it last saw.
+ *
+ * CHECK_VERIFY alone is not enough, and the reason is us: a drive raises
+ * its media-change sense (NOT READY, then UNIT ATTENTION) once, for
+ * whoever asks first, and the first to ask is `wait_medium` polling TEST
+ * UNIT READY through SPTI to know the tray had settled. The file system
+ * driver therefore never sees a change, keeps the volume it cached, and
+ * `dir` lists the disc that came *out* — the drive swapped, Windows did
+ * not. Ejecting by hand worked only because Explorer's own polling
+ * happened to catch a change we had not eaten.
+ *
+ * So say it directly: dismount what the file system is holding, then ask
+ * it to look again. It remounts on the next access and reads the disc
+ * that is actually in the drive. Windows 98 goes through ASPI and has no
+ * volume handle to dismount; there the eject-and-settle in
+ * `cdshelf_insert` is what MSCDEX notices.
+ */
 static void tell_windows(Drive *d)
 {
     DWORD returned = 0;
 
-    if (!d->aspi && d->h != INVALID_HANDLE_VALUE) {
-        DeviceIoControl(d->h, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0,
-                        &returned, NULL);
+    if (d->aspi || d->h == INVALID_HANDLE_VALUE) {
+        return;
     }
+    DeviceIoControl(d->h, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &returned, NULL);
+    DeviceIoControl(d->h, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &returned, NULL);
 }
 
 static void print_sense(const Sense *s)

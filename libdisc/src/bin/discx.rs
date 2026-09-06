@@ -1595,6 +1595,60 @@ fn check_dirdisc(dir: &Path) -> Result<(), String> {
         Ok(_) => return Err("a file changed under the disc was served anyway".into()),
     }
 
+    // What a shared folder is refused for, and what it is only warned
+    // about: a tree nobody meant to share, and a file no directory record
+    // can address. Both are the kind of thing a user's own folder has in
+    // it, so both have to say which path they mean.
+    let deep = dir.join("dirdeep");
+    let _ = fs::remove_dir_all(&deep);
+    let mut p = deep.clone();
+    for i in 0..32 {
+        p = p.join(format!("d{i}"));
+    }
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    match Disc::open(&deep) {
+        Err(e) if e.to_string().contains("deeper than") => {}
+        Err(e) => return Err(format!("a 32-level tree: {e}")),
+        Ok(_) => return Err("a 32-level tree was served".into()),
+    }
+    let _ = fs::remove_dir_all(&deep);
+
+    let huge = dir.join("dirhuge");
+    let _ = fs::remove_dir_all(&huge);
+    fs::create_dir_all(&huge).map_err(|e| e.to_string())?;
+    // Sparse: the bytes are never written, only the size is claimed.
+    let big = fs::File::create(huge.join("huge.bin")).map_err(|e| e.to_string())?;
+    if big.set_len(4 << 30).is_ok() {
+        match Disc::open(&huge) {
+            Err(e) if e.to_string().contains("too large") => {}
+            Err(e) => return Err(format!("a 4 GiB file: {e}")),
+            Ok(_) => return Err("a 4 GiB file was given an extent".into()),
+        }
+    }
+    drop(big);
+    let _ = fs::remove_dir_all(&huge);
+
+    // A name that is not UTF-8 cannot be a Joliet identifier at all, so
+    // it is skipped with a warning rather than mangled into something
+    // the user never named.
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = dir.join("dirodd");
+        let _ = fs::remove_dir_all(&odd);
+        fs::create_dir_all(&odd).map_err(|e| e.to_string())?;
+        fs::write(odd.join("keep.txt"), b"kept").map_err(|e| e.to_string())?;
+        let bad = odd.join(std::ffi::OsStr::from_bytes(b"bad\xff.txt"));
+        if fs::write(&bad, b"dropped").is_ok() {
+            let d = Disc::open(&odd).map_err(|e| e.to_string())?;
+            let files = d.tracks().flat_map(|(_, t)| t.extents.iter()).filter(|e| matches!(e.source, libdisc::Source::File { .. })).count();
+            if files != 1 {
+                return Err(format!("a name that is not UTF-8 was not skipped ({files} file extents)"));
+            }
+        }
+        let _ = fs::remove_dir_all(&odd);
+    }
+
     // A symlink loop is refused rather than walked.
     let loopdir = dir.join("dirloop");
     let _ = fs::remove_dir_all(&loopdir);

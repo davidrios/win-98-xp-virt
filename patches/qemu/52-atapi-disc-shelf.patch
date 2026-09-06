@@ -41,6 +41,13 @@ happened.
 
 The new IDEState fields are not migrated, like patch 51's.
 
+A shelf entry names a medium, not always a file: `isodir:<dir>` is a host
+directory the drive generates an ISO 9660 volume from as the guest reads
+it (M5g), and it is what the launcher writes for a shared folder. The
+existence checks strip that prefix before asking the host — without it
+every shared folder lists as MISSING and every LOAD of one is refused,
+which is what the guest shelf test found.
+
 --- a/hw/ide/atapi.c
 +++ b/hw/ide/atapi.c
 @@ -31,6 +31,11 @@
@@ -55,10 +62,11 @@ The new IDEState fields are not migrated, like patch 51's.
  #ifdef CONFIG_CDIMAGE
  /* win98-xp-virt (patch 51, doc 17 §5.3): the disc model behind a cdimage medium */
  #include "block/cdimage.h"
-@@ -2127,6 +2132,216 @@
+@@ -2126,7 +2131,234 @@
+      */
      CONDDATA = 0x08,
  };
- 
++
 +/*
 + * win98-xp-virt (patch 52): the disc shelf, as a vendor ATAPI command.
 + *
@@ -123,7 +131,7 @@ The new IDEState fields are not migrated, like patch 51's.
 +    g_free(contents);
 +    return ents;
 +}
-+
+ 
 +static void cdshelf_free(GArray *ents)
 +{
 +    guint i;
@@ -144,6 +152,23 @@ The new IDEState fields are not migrated, like patch 51's.
 + * the guest picks the change up as the UNIT ATTENTION that
 + * blockdev-change-medium raises on its next command.
 + */
++/*
++ * A shelf entry names a *medium*, which is not always a file:
++ * `isodir:<dir>` is a host directory the drive generates an ISO 9660
++ * volume from as the guest reads it (M5g, docs/tracks/m5-dirdisc.md),
++ * and it is what the launcher writes for a shared folder
++ * (`disc_library::qemu_medium`). What has to exist on the host is the
++ * directory, so the prefix comes off before anything asks about it —
++ * otherwise every shared folder lists as MISSING and every LOAD of one
++ * is refused, which is exactly what happens if you forget.
++ */
++static const char *cdshelf_host_path(const char *entry)
++{
++    static const char prefix[] = "isodir:";
++
++    return strncmp(entry, prefix, sizeof(prefix) - 1) == 0 ? entry + sizeof(prefix) - 1 : entry;
++}
++
 +static void ide_atapi_shelf_bh(void *opaque)
 +{
 +    IDEState *s = opaque;
@@ -219,7 +244,7 @@ The new IDEState fields are not migrated, like patch 51's.
 +
 +            stw_le_p(e + 0, i);
 +            e[2] = (i == s->shelf_loaded) ? CDSHELF_FLAG_LOADED : 0;
-+            if (access(ent->path, R_OK) != 0) {
++            if (access(cdshelf_host_path(ent->path), R_OK) != 0) {
 +                e[2] |= CDSHELF_FLAG_MISSING;
 +            }
 +            e[3] = label_len;
@@ -244,7 +269,7 @@ The new IDEState fields are not migrated, like patch 51's.
 +         * stayed in the tray. "No medium" is the truth from the drive's
 +         * side and is what the guest program prints.
 +         */
-+        if (access(g_array_index(ents, CdshelfEnt, slot).path, R_OK) != 0) {
++        if (access(cdshelf_host_path(g_array_index(ents, CdshelfEnt, slot).path), R_OK) != 0) {
 +            ide_atapi_cmd_error(s, NOT_READY, ASC_MEDIUM_NOT_PRESENT);
 +            break;
 +        }
@@ -272,7 +297,7 @@ The new IDEState fields are not migrated, like patch 51's.
  static const struct AtapiCmd {
      void (*handler)(IDEState *s, uint8_t *buf);
      int flags;
-@@ -2158,6 +2373,15 @@
+@@ -2158,6 +2390,15 @@
      [ 0xbd ] = { cmd_mechanism_status,              0 },
      [ 0xb9 ] = { cmd_read_cd_msf,                   CHECK_READY | CONDDATA },
      [ 0xbe ] = { cmd_read_cd,                       CHECK_READY | CONDDATA },
@@ -290,10 +315,11 @@ The new IDEState fields are not migrated, like patch 51's.
  
 --- a/hw/ide/ide-dev.c
 +++ b/hw/ide/ide-dev.c
-@@ -205,6 +205,24 @@
+@@ -204,6 +204,24 @@
+             return;
          }
          ide_atapi_audio_init(s, &dev->card);
-     }
++    }
 +    /* win98-xp-virt (patch 52): the disc shelf when shelf= was given.
 +     * The ATAPI handlers only ever see an IDEState, so both the shelf
 +     * file and this drive's qdev id (which the medium change names) are
@@ -311,10 +337,9 @@ The new IDEState fields are not migrated, like patch 51's.
 +            warn_report("ide-cd shelf= without id=: the guest can list the "
 +                        "shelf but not load from it");
 +        }
-+    }
+     }
  }
  
- static Property ide_hd_properties[] = {
 @@ -238,6 +256,8 @@
      DEFINE_IDE_DEV_PROPERTIES(),
      /* win98-xp-virt (patch 51): CD-DA through a host audiodev (doc 17 §5.4) */

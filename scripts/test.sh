@@ -20,7 +20,9 @@
 #                  through cdrom.sys and every file matches the directory itself
 #   dirdisc        a host directory served as a disc (isodir, M5g): discx generates
 #                  the ISO 9660 + Joliet volume over a fixture tree, exports it and
-#                  xorriso (or bsdtar) reads the folder back out identical; then
+#                  xorriso (or bsdtar) reads the folder back out identical, and
+#                  bsdtar with Joliet off reads the 8.3 tree a DOS driver sees;
+#                  then
 #                  qemu-img reads the same bytes through the block layer and
 #                  SeaBIOS probing the drive proves the ATAPI path finds the disc
 #                  model (a plain .iso on the raw driver is the control)
@@ -184,6 +186,28 @@ dirdisc_check() { # a host directory served as a disc, read back by someone else
   diff -r -x 'semi*' -x 'star*' "${extra[@]}" "$src" "$ext" || { echo "the folder did not come back identical"; rc=1; }
   cmp -s "$src/semi;colon.txt" "$ext/semi_colon.txt" || { echo "semi;colon.txt is not there as semi_colon.txt"; rc=1; }
   cmp -s "$src/star*name.txt" "$ext/star_name.txt" || { echo "star*name.txt is not there as star_name.txt"; rc=1; }
+
+  # The *other* tree: ISO 9660 level 1, which is what a real-mode DOS
+  # driver reads and what Windows falls back to. bsdtar with Joliet
+  # turned off is the only reader here that will look at it, and the two
+  # colliding names are the point — a mangling that crossed their
+  # contents would pass every check that only counts files.
+  if command -v bsdtar >/dev/null; then
+    local dos="$OUT/dirsrc-83"
+    [ -d "$dos" ] && chmod -R u+w "$dos"; rm -rf "$dos"; mkdir -p "$dos"
+    if bsdtar -xf "$iso" -C "$dos" --options 'iso9660:!joliet,iso9660:!rockridge' 2>>"$OUT/dirdisc-extract.log"; then
+      chmod -R u+w "$dos"
+      for n in EMPTY.BIN README.TXT PROGRAM_.TXT CAF_.TXT SEMI_COL.TXT STAR_NAM.TXT COLLISIO.TXT COLLIS~1.TXT LLLLLLLL.TXT EXACT204.BIN ODD2049.BIN; do
+        [ -f "$dos/$n" ] || { echo "the 8.3 tree has no $n"; rc=1; }
+      done
+      [ -d "$dos/EMPTY_DI" ] || { echo "the 8.3 tree has no EMPTY_DI directory"; rc=1; }
+      grep -q '^one$' "$dos/COLLISIO.TXT" 2>/dev/null || { echo "COLLISIO.TXT is not collision-one.txt"; rc=1; }
+      grep -q '^two$' "$dos/COLLIS~1.TXT" 2>/dev/null || { echo "COLLIS~1.TXT is not collision-two.txt"; rc=1; }
+      cmp -s "$src/big.bin" "$dos/BIG.BIN" || { echo "BIG.BIN differs in the 8.3 tree"; rc=1; }
+    else
+      echo "bsdtar could not read the primary tree"; rc=1
+    fi
+  fi
 
   # The block layer: the same bytes through QEMU's own read path.
   if [ -x build/qemu/qemu-img ]; then

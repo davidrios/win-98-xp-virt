@@ -16,7 +16,7 @@ Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`. Rebase on
 `main` before each step and keep the shared files (§Scope) to minimal
 edits.
 
-## State (2026-09-06: steps 1–4 landed)
+## State (2026-09-06: steps 1–5 landed)
 
 `libdisc/src/isodir.rs` generates the volume, `discx` exercises it, and
 `scripts/test.sh`'s new **`dirdisc`** check hands the result to an ISO
@@ -134,8 +134,59 @@ each is on the shelf under its own name, the shelf file names it as
 drive with the comma doubled, and our QEMU is handed the result and opens
 it. `scripts/test.sh host`: 14 passed, 0 failed, 3 skipped.
 
-Next: step 5 — Win98 and DOS legs, the refusals and warnings each with a
-case, and the stale-file rule watched in a guest.
+Step 5 closed the track, and found a bug doing it.
+
+**Win98 reads a shared folder.** `tools/dirdisc-guest-test.sh` is the new
+leg: `-cdrom isodir:<dir>` straight into the drive, no shelf and no guest
+program, then `dir` and `type` over COM1. On Win98 (TCG, cirrus) the
+listing has the long names, the directory with a space in it and the
+empty file, and both files read back — Joliet through 9x's own CDFS.
+
+**The 8.3 tree has a reader at last.** `bsdtar --options
+'iso9660:!joliet'` extracts the primary tree, which is what a real-mode
+DOS driver sees, and the `dirdisc` check now asserts the mangling
+directly — including that `COLLISIO.TXT` and `COLLIS~1.TXT` carry the
+*right* contents, since a mangling that crossed the two colliding files
+would pass any check that only counts names. This is the MSCDEX-shaped
+proof; a real MSCDEX leg would mean shipping a CD driver, because the
+FreeDOS boot floppy `tools/x87-guest-test.py` fetches carries none.
+
+**Every refusal has a case** in `discx selftest`: a 32-level tree, a 4 GiB
+(sparse) file with no single extent that can address it, a name that is
+not UTF-8 skipped rather than mangled into something the user never
+typed, and the symlink loop from step 1.
+
+**The bug: the shelf's C side did not know the prefix.** A folder on the
+shelf listed as `[missing on the host]` and every LOAD of one was refused
+02/3A, because patch 52 `access()`ed the whole entry string,
+`isodir:` and all. `cdshelf_host_path()` strips it before asking the
+host. The guest shelf test is what found it — nothing host-side could
+have, since the launcher writes the line and the C reads it. XP now
+passes all twelve of its checks, the folder slot among them.
+
+**And a second bug, reported by the user mid-track and fixed here**
+because the same harness reproduces it: loading a disc while another was
+already in the drive left Windows reading the *previous* one — "inserting
+did nothing", and ejecting by hand first made it work. The cause is us
+eating our own notification. A drive raises its media-change sense (NOT
+READY, then UNIT ATTENTION) once, for whoever asks first, and the first
+to ask is `CDSHELF`'s own `wait_medium` polling TEST UNIT READY through
+SPTI to know the tray settled; the file system driver then never sees a
+change and keeps the volume it cached. `tell_windows` issues
+`FSCTL_DISMOUNT_VOLUME` before `CHECK_VERIFY` now — saying it outright
+rather than hoping a driver notices — and the eject wait's result is no
+longer discarded (an eject the drive never confirmed meant the old medium
+could still be there when the new one was asked for). The shelf test
+grew the case that had never been covered: load, then load again with no
+eject between, and the new disc's files are the ones that come back.
+
+**Not done, and named rather than pretended:** the stale-file rule is
+covered host-side (`discx selftest`'s EMEDIUM case) and not in a guest —
+the mechanism is the same code path, and a race against XP's read-ahead
+would be a flaky check rather than a stronger one. `CDSHELF.EXE` prints
+nothing at all on Win98 (both verbs, into an empty serial log), which is
+pre-existing and unrelated to folders — XP passes the same script. That
+is M5's to chase.
 
 ## Why it is small
 
@@ -380,7 +431,7 @@ is the handoff.
    in the guest (`tools/cdshelf-guest-test.sh`'s pattern), ejected; a
    folder set as a machine's boot disc survives a bundle round-trip; a
    path with a comma in it works.
-5. **The other guests, and the edges.** Win98 (`-vga cirrus`, TCG) reads
+5. **The other guests, and the edges** — *done 2026-09-06*. Win98 (`-vga cirrus`, TCG) reads
    the same folder; a DOS leg proves the 8.3 tree under MSCDEX; the
    refusals and warnings of "The layout" each get a case in the
    `dirdisc` selftest; the stale-file rule is watched to produce a read
@@ -479,3 +530,26 @@ Learned in step 4:
 - `--print-args` puts `file=` last in the `-drive` value, so a pattern
   that expects a trailing comma after it never matches. Two of the first
   three failures in the new check were the check, not the code.
+
+Learned in step 5:
+
+- **A prefix is a contract, and C had not signed it.** The launcher, the
+  block driver and the Rust model all understood `isodir:`; patch 52's
+  shelf did not, so it called every shared folder missing. When a value
+  crosses into another language, look for everything that *inspects* it,
+  not only what passes it on.
+- The FreeDOS boot floppy in `build/images/144m/` has **no CD driver** —
+  no UDVD2, no SHSUCDX — so there is no MSCDEX leg to be had without
+  shipping one. `bsdtar` with Joliet turned off reads the same tree.
+- Win98's `CDSHELF.EXE` writes nothing to a redirected stdout (a
+  `-mwindows` binary under COMMAND.COM); the same script passes on XP.
+  Pre-existing, and worth knowing before blaming a change.
+- **A program that polls a drive consumes the drive's news.** The
+  media-change sense is delivered once, to whoever asks first, so
+  anything that waits for a tray to settle has to tell the file system
+  itself afterwards. Every case the shelf test covered until now loaded
+  into an empty tray or ejected first, which is why a swap into a full
+  drive had never failed here.
+- A `python3 - <<'PY'` edit whose anchor does not match writes nothing
+  and the shell carries on: a test run right after it silently uses the
+  old file. Check the file, not the exit code.
