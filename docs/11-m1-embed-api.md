@@ -57,6 +57,18 @@ overlaid into `qemu/embed/` by `prepare-qemu.sh`, like the 3dfx devices;
   network — good enough for "in-memory". (True pipe: `qemu_chr_open_fd()`
   on a `TYPE_CHARDEV_PIPE`, ~15 lines, if ever needed.)
 
+  Windows has no `socketpair()`: the player makes a connected pair on the
+  loopback interface and keeps it only when the accepted peer address is
+  the exact address its own connecting socket was given, which no other
+  process can be using at the same time. And that `N` is **not** a
+  `SOCKET`. Every socket call in QEMU's Windows build is an `os-win32.h`
+  wrapper that starts with `_get_osfhandle(fd)`, so `fd=` is an index into
+  a C-runtime descriptor table — and which table depends on which CRT a
+  module links, which the player cannot know about the library. So the
+  handle crosses the boundary as a handle and **`qemu_embed_socket_to_fd()`
+  (API v7) converts it inside the library**. A raw `SOCKET` passed straight
+  through is refused at startup as `File descriptor 'N' is not a socket`.
+
 ## What needs patches
 
 1. `10-embed-api.patch` — meson: `shared_library('qemu-embed-<target>',

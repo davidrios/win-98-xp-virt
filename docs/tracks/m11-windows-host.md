@@ -37,7 +37,7 @@ one. Windows had been "untested" since M1 (doc 08).
 The whole stack cross-builds and packages. `scripts/build-windows.sh`
 then `scripts/package-windows.sh` produce a ~92 MB zip holding
 `2ksbox.exe`, `2ksbox-player.exe`, `qemu-img.exe`,
-`libqemu-embed-i386.dll` (all 19 embed API entry points exported),
+`libqemu-embed-i386.dll` (all 20 embed API entry points exported),
 `d3dpt_exec.dll`, the mingw runtime closure, `pc-bios\`, the guest-tools
 ISO and `tools\wgl-probe.exe`. **WHPX is detected and built in**, and the
 embed library has a WGL backend, so a Win98 guest's OpenGL has somewhere
@@ -91,6 +91,28 @@ appended, with a header per run.
 
 Still open from that first run: whether a machine actually boots, and
 what WHPX does with it.
+
+### The QMP monitor's `fd=` on Windows (2026-09-06)
+
+The next run got as far as starting a machine and QEMU refused the
+command line: `-chardev socket,id=qmp0,fd=7368: File descriptor '7368' is
+not a socket`. 7368 is a `SOCKET` handle, and `fd=` on Windows is not one.
+Every socket call in QEMU's Windows build is an `os-win32.h` wrapper
+(`#define getsockopt qemu_getsockopt_wrap`) whose first line is
+`_get_osfhandle(fd)`, so the number has to be a **C-runtime descriptor**
+— and `util/qemu-sockets.c`'s `fd_is_socket()` is the getsockopt that
+fails on a raw handle.
+
+`_open_osfhandle()` makes that descriptor, but *whose* table it lands in
+depends on which CRT the module linking it uses, and the player cannot
+know that about the library it loads (both are msvcrt.dll today; nothing
+enforces it). So the handle crosses the boundary as a handle and the
+library converts: **`qemu_embed_socket_to_fd()`, embed API v7**. On Unix
+an fd is already an fd and it returns the value unchanged, so
+`player/src/qmp.rs` has one `into_raw` shape on both platforms.
+
+Anyone pulling this must rebuild the embed library before the player
+links (the API version moved).
 
 ### Both front ends (2026-09-06)
 

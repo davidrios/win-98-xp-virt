@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
 
-pub const API_VERSION: u32 = 6;
+pub const API_VERSION: u32 = 7;
 pub const FMT_XRGB8888: u32 = 1;
 
 #[repr(C)]
@@ -70,6 +70,19 @@ extern "C" {
         wr_idx: *mut u32,
         rd_idx: *const u32,
     );
+    fn qemu_embed_socket_to_fd(sock: u64) -> c_int;
+}
+
+/// A socket the caller owns, as the `fd=` of `-chardev socket,fd=N`.
+///
+/// Pass a raw fd on Unix and a raw `SOCKET` on Windows; the value that comes
+/// back is what QEMU's own C runtime will resolve, and it owns the socket
+/// afterwards. `None` if the conversion failed. The conversion lives in the
+/// library because on Windows `fd=` is a CRT descriptor and the descriptor
+/// table belongs to whichever CRT a module links.
+pub fn socket_to_fd(sock: u64) -> Option<i32> {
+    let fd = unsafe { qemu_embed_socket_to_fd(sock) };
+    (fd >= 0).then_some(fd)
 }
 
 /// Install the audio ring. Must be called BEFORE [`Qemu::new`] on any

@@ -6,8 +6,11 @@
 //!
 //! Windows has no `socketpair()`, so the pair is made on the loopback
 //! interface and the connection is proved to be our own before it is used
-//! (see `pair`) — the socket handle is then passed to QEMU exactly as the
-//! Unix fd is, because `fd=` is a plain integer on both.
+//! (see `pair`). The handle is then turned into a descriptor by the embed
+//! library itself (`qemu_embed::socket_to_fd`): `fd=` is a plain integer on
+//! both platforms, but on Windows it is a C-runtime descriptor QEMU resolves
+//! with `_get_osfhandle`, not a `SOCKET` — a raw handle is refused as
+//! "File descriptor 'N' is not a socket".
 //!
 //! `execute` is synchronous (id-matched, 10 s timeout). Events accumulate in
 //! a queue the UI thread drains with `take_events`.
@@ -26,7 +29,7 @@ use std::os::unix::net::UnixStream as Stream;
 #[cfg(windows)]
 use std::net::TcpStream as Stream;
 #[cfg(windows)]
-use std::os::windows::io::{AsRawSocket, IntoRawSocket};
+use std::os::windows::io::IntoRawSocket;
 
 pub struct Qmp {
     writer: Mutex<Stream>,
@@ -55,7 +58,7 @@ impl Qmp {
             .name("qmp".into())
             .spawn(move || q.reader_loop(reader))
             .expect("spawn qmp reader");
-        Ok((qmp, into_raw(theirs)))
+        Ok((qmp, into_raw(theirs)?))
     }
 
     /// QEMU command-line fragment that attaches the monitor to `fd`.
@@ -185,8 +188,8 @@ fn socket_pair() -> std::io::Result<(Stream, Stream)> {
 }
 
 #[cfg(unix)]
-fn into_raw(s: Stream) -> i32 {
-    s.into_raw_fd()
+fn into_raw(s: Stream) -> std::io::Result<i32> {
+    Ok(s.into_raw_fd())
 }
 
 /// A connected pair on the loopback interface, Windows' stand-in for
@@ -219,17 +222,16 @@ fn socket_pair() -> std::io::Result<(Stream, Stream)> {
     ))
 }
 
-/// The socket handle as QEMU's `fd=` wants it. Windows socket handles are
-/// kernel handle values, small in practice but pointer-sized by type, and
-/// `fd=` is parsed as an int — so a value that would not survive the trip
-/// is refused here rather than silently truncated into someone else's
-/// handle.
+/// The socket handle as QEMU's `fd=` wants it: a descriptor in the C runtime
+/// *the embed library* links, which is not the same table this crate's
+/// `_open_osfhandle` would write to if the two ever linked different CRTs.
+/// So the handle crosses the boundary as a handle and the library converts.
 #[cfg(windows)]
-fn into_raw(s: Stream) -> i32 {
-    let raw = s.as_raw_socket();
-    assert!(raw <= i32::MAX as u64, "socket handle {raw} does not fit QEMU's fd=");
-    let _ = s.into_raw_socket(); // QEMU owns it now; do not close it here
-    raw as i32
+fn into_raw(s: Stream) -> std::io::Result<i32> {
+    let raw = s.into_raw_socket(); // QEMU owns it now; do not close it here
+    qemu_embed::socket_to_fd(raw).ok_or_else(|| {
+        std::io::Error::other(format!("socket handle {raw} could not be made a file descriptor"))
+    })
 }
 
 /// Events worth a log line even without PLAYER_QMP=1.

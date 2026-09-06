@@ -17,6 +17,10 @@
 #include "libqemu_embed.h"
 #include "embedfx.h"
 
+#ifdef _WIN32
+#include <io.h>                 /* _open_osfhandle() for qemu_embed_socket_to_fd */
+#endif
+
 /*
  * system/main.c is not part of the library, but ui/cocoa.m (macOS) still
  * references qemu_default_main()/qemu_main: provide upstream's definitions.
@@ -215,6 +219,19 @@ static const DisplayChangeListenerOps embed_dcl_ops = {
 uint32_t qemu_embed_api_version(void)
 {
     return QEMU_EMBED_API_VERSION;
+}
+
+int qemu_embed_socket_to_fd(uint64_t sock)
+{
+#ifdef _WIN32
+    /* QEMU's socket calls are the os-win32.h wrappers, and every one of them
+     * starts with _get_osfhandle(fd): the `fd=` of a chardev is an index into
+     * this library's CRT descriptor table, so a raw SOCKET handed straight
+     * through fails as "File descriptor 'N' is not a socket". */
+    return _open_osfhandle((intptr_t)sock, _O_BINARY);
+#else
+    return sock > INT_MAX ? -1 : (int)sock;
+#endif
 }
 
 qemu_embed_t *qemu_embed_new(int argc, char **argv,

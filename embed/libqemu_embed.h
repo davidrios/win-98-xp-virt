@@ -124,9 +124,18 @@ QEMU_EMBED_API void qemu_embed_set_audio_ring(void *base, size_t bytes,
  * The player sets ~16 for 60 Hz hosts. Any thread. */
 QEMU_EMBED_API void qemu_embed_set_refresh_ms(qemu_embed_t *e, uint32_t ms);
 
+/* v7: a socket the caller made, as the `fd=` of `-chardev socket,fd=N`
+ * (doc 11 QMP). On Windows that N is a C-runtime descriptor, not a SOCKET:
+ * QEMU resolves it with _get_osfhandle(), and the descriptor table belongs
+ * to whichever CRT a module links — so the conversion has to happen on this
+ * side of the library boundary, not in the caller. Pass the raw SOCKET;
+ * the returned descriptor owns it. Elsewhere an fd is already an fd and the
+ * value comes back unchanged. Returns -1 if it cannot be converted. */
+QEMU_EMBED_API int qemu_embed_socket_to_fd(uint64_t sock);
+
 /* Library version of the embed API, for the bindings to sanity-check. */
 QEMU_EMBED_API uint32_t qemu_embed_api_version(void);
-#define QEMU_EMBED_API_VERSION 6
+#define QEMU_EMBED_API_VERSION 7
 
 #ifdef __cplusplus
 }
