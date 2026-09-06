@@ -65,7 +65,7 @@ impl eframe::App for LauncherApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("win98-xp-virt");
+            ui.heading(paths::NAME);
             ui.add_space(8.0);
             if self.entries.is_empty() {
                 ui.label("No machines yet.");
@@ -1061,13 +1061,13 @@ fn main() -> eframe::Result {
     let debug_shader_preview = std::env::var("LAUNCHER_DEBUG_SHADER_PREVIEW").ok();
     // The window's own identity, which only matters once this is
     // installed (M6 step 6): `app_id` is what a Wayland compositor matches
-    // against `win98-xp-virt.desktop` to give the window its icon and its
-    // name in a task switcher, and `icon` is the same picture handed over
-    // directly, for X11 and Windows where there is no such matching. The
-    // PNG is `packaging/linux/win98-xp-virt-128.png`, rendered from the
-    // icon the desktop entry uses, so the two can't drift apart.
+    // against `com._2ksbox.Launcher.desktop` to give the window its icon
+    // and its name in a task switcher, and `icon` is the same picture
+    // handed over directly, for X11 and Windows where there is no such
+    // matching. The PNG is rendered from the very SVG the desktop entry
+    // points at, so the two can't drift apart.
     let icon = {
-        let png = include_bytes!("../../packaging/linux/win98-xp-virt-128.png");
+        let png = include_bytes!("../../packaging/linux/com._2ksbox.Launcher-128.png");
         image::load_from_memory(png).map(|img| {
             let rgba = img.to_rgba8();
             let (width, height) = rgba.dimensions();
@@ -1081,7 +1081,7 @@ fn main() -> eframe::Result {
         Err(e) => eprintln!("[launcher] window icon: {e}"),
     }
     eframe::run_native(
-        "win98-xp-virt launcher",
+        paths::NAME,
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
             let mut shader_manager = shader_manager::ShaderManager::default();

@@ -1227,7 +1227,7 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   found in the checkout it was *built* from (`CARGO_MANIFEST_DIR`) — the
   player, `qemu-img`, `pc-bios`, the guest-tools ISO, the presets — and an
   installed copy has no checkout. `launcher/src/paths.rs` is now the one
-  place that decides: `<exe dir>/..` containing `share/win98-xp-virt`
+  place that decides: `<exe dir>/..` containing `share/2ksbox`
   means installed, and then `paths::resource(installed_rel, checkout_rel)`
   answers **only** from the prefix. Not a fallback chain on purpose: a
   package that falls back to a checkout works on the machine that built it
@@ -1235,7 +1235,7 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   catch. The `LAUNCHER_*` overrides still win over both. Doc 07 now
   carries the layout.
 
-  The player's half is an rpath: `$ORIGIN/../lib/win98-xp-virt`
+  The player's half is an rpath: `$ORIGIN/../lib/2ksbox`
   (`@loader_path` on macOS) added by `player/build.rs`, **before** the
   absolute build-directory one, so a player copied out of a developer's
   `target/` loads the packaged library rather than quietly loading theirs.
@@ -1256,7 +1256,8 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   `-L` at the packaged firmware, and that the desktop entry validates.
   `packaging/linux/` holds the desktop entry, an icon (a beige CRT, drawn
   here; the same PNG is compiled into the launcher as its window icon,
-  with `app_id` = `win98-xp-virt` so a compositor pairs window and entry)
+  with `app_id` = the application ID so a compositor pairs window and
+  entry)
   and `install.sh`, which copies a tree into a prefix (`~/.local` by
   default, `--uninstall` to remove) and rewrites `Exec=`/`Icon=` absolute.
 
@@ -1285,6 +1286,42 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   links ~190 of them (GTK, SDL, gnutls, …) and the package ships none, so
   it installs on a machine like the one that built it — which is exactly
   the gap the Flatpak closes, and why doc 07 calls Flatpak primary.
+
+- **The project has a name: 2ksbox** (user decision, 2026-09-05, **ADR-011**,
+  taken the moment step 6a put an application ID on the table). The user
+  registered `2ksbox.com`, and chose to move **the packaged identity only**
+  for now — the repository, the docs and the user's data directory keep
+  `win98-xp-virt`.
+
+  - **`2ksbox`** (`paths::NAME`) is the product: `bin/2ksbox` and
+    `bin/2ksbox-player`, `lib/2ksbox`, `libexec/2ksbox`, `share/2ksbox`,
+    `share/doc/2ksbox`, the tarball's name, the window title and the
+    launcher's own heading.
+  - **`com._2ksbox.Launcher`** (`paths::APP_ID`) is the application: the
+    desktop entry's filename, the icon's name, the Wayland `app_id`, and
+    the Flatpak/AppStream ID 6b needs. **The underscore is not a
+    stylistic choice** — no segment of such a name may begin with a
+    digit, and `flatpak build-init com.2ksbox.Launcher` refuses with
+    "Name segment can't start with 2" (checked here, along with
+    `appstreamcli validate` accepting the escaped form); `7-zip.org` gets
+    `org._7zip.…` for the same reason.
+
+  Deliberately **not** renamed: `~/.local/share/win98-xp-virt` (machines,
+  `discs.toml`, shader profiles) and the runtime sockets under
+  `$XDG_RUNTIME_DIR/win98-xp-virt`. Moving a real user's library needs a
+  migration that survives being interrupted; that is its own change, not
+  a side effect of a packaging rename. `Cargo.toml`'s `repository` is
+  still the placeholder for the same reason.
+
+  Verified by re-running the whole stranger path under the new names: the
+  tarball is `2ksbox-0.0.1-linux-x86_64.tar.zst`, `install.sh` puts
+  `bin/2ksbox` + `bin/2ksbox-player` and a valid
+  `com._2ksbox.Launcher.desktop` (absolute `Exec`/`Icon`) into a prefix,
+  the extracted tree was deleted, and from the prefix alone a machine was
+  created and booted (SeaBIOS → iPXE DHCP, screendumped, QMP `quit`).
+  The installed launcher's window reports **`app_id: com._2ksbox.Launcher`
+  with title `2ksbox`** — the same string as the installed desktop
+  entry's basename, which is the whole point of the ID.
 
 ## Next steps, in order
 
@@ -1317,12 +1354,12 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
      `packaging/linux/`).
    - 6b **Flatpak** (doc 07's primary Linux target): a manifest building
      QEMU + both binaries against `org.freedesktop.Sdk`, so the ~190
-     system libraries the tarball assumes come from the runtime. Needs
-     `flatpak-builder` (absent on this box) and an application ID — which
-     is a reverse-DNS name, and the project has no domain yet
-     (`Cargo.toml`'s `repository` is `example.invalid`). **Ask before
-     inventing one**; the same name goes in the AppStream metainfo the
-     Flatpak also wants.
+     system libraries the tarball assumes come from the runtime. The
+     application ID is settled (**`com._2ksbox.Launcher`**, ADR-011), and
+     the desktop entry and icon are already named after it; what is left
+     is the manifest, an AppStream metainfo file (which wants a homepage
+     URL — `2ksbox.com` — and a content rating), and `flatpak-builder`,
+     which is **not installed on this box**.
    - 6c **macOS**: the same layout as a `.app`
      (`Contents/MacOS` + `Contents/Resources`, a third candidate in
      `paths.rs`), signed with the JIT entitlement and notarized. The Mac

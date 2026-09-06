@@ -406,3 +406,41 @@ stays open.
 "Everything GPL" includes ADR-009's `GPL-2.0-or-later` for `launcher` and
 `shader-chain`, which is what keeps the launcher's Apache-2.0 dependencies
 permissible; only the QEMU-linking crates need `GPL-2.0-only`.
+
+## ADR-011: the product is 2ksbox; the application ID is `com._2ksbox.Launcher` (2026-09-05)
+
+**Decision.** The project's name is **2ksbox** (the user registered
+`2ksbox.com`), and the application ID everything desktop-facing keys off
+is **`com._2ksbox.Launcher`**. `win98-xp-virt` was always a working name;
+it stays for now as the repository, the docs and the user's data
+directory, and only the *packaged identity* moved (M6 step 6a).
+
+**Why the underscore.** `com.2ksbox.Launcher` is not a legal application
+ID: no segment of a D-Bus-style name may start with a digit, and
+`flatpak build-init` refuses it outright — *"Name segment can't start
+with 2"* (checked, not assumed; `appstreamcli validate` accepts the
+underscore form). Escaping the leading digit is the established fix, the
+same one that gives `7-zip.org` `org._7zip.…`.
+
+**What carries which name.**
+
+- **`2ksbox`** is the product: the installed commands (`2ksbox`,
+  `2ksbox-player`), the resource directories (`share/2ksbox`,
+  `lib/2ksbox`, `libexec/2ksbox`), the tarball, the window title.
+  `launcher/src/paths.rs::NAME`.
+- **`com._2ksbox.Launcher`** is the application: the desktop entry's
+  filename, the icon's name, the Wayland `app_id` a compositor matches
+  between the two, and — when 6b lands — the Flatpak and AppStream ID.
+  `launcher/src/paths.rs::APP_ID`. Verified end to end: an installed
+  launcher's window reports `app_id: com._2ksbox.Launcher`, exactly the
+  basename of the installed `com._2ksbox.Launcher.desktop`.
+
+**Deliberately not renamed yet.** The user's data directory is still
+`~/.local/share/win98-xp-virt` (machines, `discs.toml`, shader
+profiles), as are the QMP/shelf runtime files under
+`$XDG_RUNTIME_DIR/win98-xp-virt`. Renaming the data directory means
+moving a real user's library, so it needs a migration that reads the old
+location, moves it, and leaves nothing stranded if it is interrupted —
+worth doing on its own, not as a side effect of a packaging change. The
+repository, `Cargo.toml`'s placeholder `repository` URL, and the docs
+keep the working name until then.

@@ -11,7 +11,7 @@ use crate::shader_profile::ShaderProfile;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
-/// The `player` binary: `bin/win98-xp-virt-player` in an installed tree
+/// The `player` binary: `bin/2ksbox-player` in an installed tree
 /// (`paths.rs`), otherwise alongside the launcher's own executable, where
 /// both sit in dev (workspace binaries in the same `target/<profile>`
 /// directory). `LAUNCHER_PLAYER_BIN` overrides both.
@@ -20,7 +20,7 @@ pub fn player_binary() -> PathBuf {
         return p.into();
     }
     if let Some(prefix) = crate::paths::install_prefix() {
-        let name = if cfg!(windows) { "win98-xp-virt-player.exe" } else { "win98-xp-virt-player" };
+        let name = if cfg!(windows) { "2ksbox-player.exe" } else { "2ksbox-player" };
         return prefix.join("bin").join(name);
     }
     let exe = std::env::current_exe().expect("current_exe");
@@ -41,13 +41,13 @@ pub fn kvm_available() -> bool {
 }
 
 /// QEMU's firmware directory (README's `-L`): shipped as
-/// `share/win98-xp-virt/pc-bios` in an installed tree, `qemu/pc-bios` in
+/// `share/2ksbox/pc-bios` in an installed tree, `qemu/pc-bios` in
 /// a checkout (`paths.rs`). `LAUNCHER_PC_BIOS_DIR` overrides both.
 pub fn pc_bios_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LAUNCHER_PC_BIOS_DIR") {
         return dir.into();
     }
-    crate::paths::resource("share/win98-xp-virt/pc-bios", "qemu/pc-bios")
+    crate::paths::resource("share/2ksbox/pc-bios", "qemu/pc-bios")
 }
 
 /// Resolve `machine`'s shader setting into the preset+overrides the
@@ -110,7 +110,7 @@ pub fn spawn(
 
 /// `qemu-img`, a QEMU build product rather than a workspace binary, so it
 /// doesn't sit next to the launcher/player like `player_binary` does. In
-/// an installed tree it is `libexec/win98-xp-virt/qemu-img` — deliberately
+/// an installed tree it is `libexec/2ksbox/qemu-img` — deliberately
 /// not `bin/`, since it is *our* patched build and must not shadow (or be
 /// shadowed by) the system's own on `PATH`; in a checkout it is
 /// `build/qemu/qemu-img`, the same path the test scripts use.
@@ -119,7 +119,7 @@ pub fn qemu_img_binary() -> PathBuf {
     if let Ok(bin) = std::env::var("LAUNCHER_QEMU_IMG_BIN") {
         return bin.into();
     }
-    crate::paths::resource("libexec/win98-xp-virt/qemu-img", "build/qemu/qemu-img")
+    crate::paths::resource("libexec/2ksbox/qemu-img", "build/qemu/qemu-img")
 }
 
 /// Create a new qcow2 disk image for the wizard's "new disk" path.

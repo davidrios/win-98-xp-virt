@@ -99,8 +99,11 @@ macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
 
 ## Packaging (Linux)
 
+The shipped product is named **2ksbox** (ADR-011); `win98-xp-virt` stays
+the repository's working name, and so does the user's data directory.
+
 ```sh
-scripts/package-linux.sh              # build/package/win98-xp-virt-<version>-linux-<arch>.tar.zst
+scripts/package-linux.sh              # build/package/2ksbox-<version>-linux-<arch>.tar.zst
 scripts/package-linux.sh --with-shaders   # + the ~80 MB preset collection
 ```
 
@@ -108,12 +111,13 @@ It stages the launcher, the player, the embed library, our `qemu-img`,
 QEMU's firmware and the guest-tools ISO into one relocatable prefix
 (doc 07's install layout), checks that the staged launcher resolves all of
 them *inside* the package with a scrubbed environment, and rolls a
-tarball. The extracted tree runs where it lands — `bin/win98-xp-virt` —
-and the `install.sh` inside it copies the tree into a prefix
-(`~/.local` by default) and adds a desktop entry:
+tarball. The extracted tree runs where it lands — `bin/2ksbox` — and the
+`install.sh` inside it copies the tree into a prefix (`~/.local` by
+default) and adds a desktop entry (`com._2ksbox.Launcher.desktop`, the
+application ID the launcher's window also reports as its `app_id`):
 
 ```sh
-tar xf win98-xp-virt-*.tar.zst && cd win98-xp-virt-*
+tar xf 2ksbox-*.tar.zst && cd 2ksbox-*
 ./install.sh                 # or --prefix /usr/local, or --uninstall
 ```
 

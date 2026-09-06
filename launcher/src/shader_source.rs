@@ -29,13 +29,13 @@ pub const DOWNLOAD_SIZE: &str = "~50 MB";
 
 /// The collection that came with this build: the checkout's
 /// `third_party/slang-shaders` submodule, or — for an installed launcher
-/// — whatever the package shipped in `share/win98-xp-virt/shaders`.
+/// — whatever the package shipped in `share/2ksbox/shaders`.
 /// `scripts/package-linux.sh` ships none by default (80 MB, and the
 /// manager can fetch them), but `--with-shaders`, a Flatpak or a distro
 /// package would, and then nobody should be asked to download what they
 /// already have.
 pub fn repo_dir() -> PathBuf {
-    crate::paths::resource("share/win98-xp-virt/shaders", "third_party/slang-shaders")
+    crate::paths::resource("share/2ksbox/shaders", "third_party/slang-shaders")
 }
 
 /// Where a download lands, and the first place looked at when

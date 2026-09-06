@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=win98-xp-virt
+Name=2ksbox
 GenericName=Vintage Windows machines
 Comment=Run Windows 98 and XP as native vintage boxes, with a CRT shader chain
 # Rewritten to an absolute path by packaging/linux/install.sh, so the entry
 # works whether or not the install prefix's bin/ is on PATH.
-Exec=win98-xp-virt
-Icon=win98-xp-virt
+Exec=2ksbox
+Icon=com._2ksbox.Launcher
 Terminal=false
 StartupNotify=true
 Categories=System;Emulator;

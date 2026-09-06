@@ -11,7 +11,7 @@
 //! 1. **Installed** — the layout `scripts/package-linux.sh` stages and
 //!    doc 07 documents, found *relative to the running executable*
 //!    (`<exe dir>/..`), so the whole tree can be moved or extracted
-//!    anywhere and still work. `share/win98-xp-virt` is the marker: a
+//!    anywhere and still work. `share/2ksbox` is the marker: a
 //!    launcher that merely happens to sit in some `bin/` is not
 //!    installed.
 //! 2. **A source checkout** — `CARGO_MANIFEST_DIR`, baked in at compile
@@ -32,10 +32,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The name the resource directories carry inside a prefix
-/// (`share/win98-xp-virt`, `lib/win98-xp-virt`, …) and the launcher's
-/// installed executable name.
-pub const APP_ID: &str = "win98-xp-virt";
+/// The product name: the resource directories inside a prefix
+/// (`share/2ksbox`, `lib/2ksbox`, …) and the launcher's installed
+/// executable. `win98-xp-virt` is the repository's working name and still
+/// names the checkout, the docs and the user's data directory (renaming
+/// that one needs a migration, deliberately deferred — 2026-09-05).
+pub const NAME: &str = "2ksbox";
+
+/// The application ID: the desktop entry's filename, the icon's name, the
+/// Wayland `app_id` the compositor matches between the two, and the
+/// Flatpak/AppStream ID. Reverse-DNS of `2ksbox.com` — with the leading
+/// digit escaped as `_2ksbox`, because a name segment may not start with
+/// one (`flatpak build-init` rejects `com.2ksbox.…` outright; the same
+/// convention gives `7-zip.org` `org._7zip.…`).
+pub const APP_ID: &str = "com._2ksbox.Launcher";
 
 /// The prefix this launcher is installed under, or `None` when it is a
 /// binary in a checkout's `target/`. Computed once: it is a couple of
@@ -48,7 +58,7 @@ pub fn install_prefix() -> Option<&'static Path> {
 fn detect_prefix() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let prefix = exe.parent()?.parent()?;
-    prefix.join("share").join(APP_ID).is_dir().then(|| prefix.to_path_buf())
+    prefix.join("share").join(NAME).is_dir().then(|| prefix.to_path_buf())
 }
 
 /// A companion at `installed` under the install prefix, or at `checkout`
