@@ -1,0 +1,314 @@
+The jump-cache probe of indirect branches inline (M9 track,
+docs/tracks/m9-tcg-aarch64.md). Every ret / call * / jmp * (and every jump
+that leaves its page) ended its TB with a call to helper_lookup_tb_ptr(): a
+register sync, cpu_get_tb_cpu_state(), curr_cflags(), the breakpoint check
+and the jump-cache compare, ~70 host instructions plus the call, 13 % of the
+vCPU thread's self time on 7-Zip and 5-7 % on the games. Now
+translator_lookup_and_goto_ptr() emits the probe as TCG ops: the target
+computes pc / cs_base / flags exactly as its cpu_get_tb_cpu_state() does
+(i386: hflags, the eflags bits, the x87 / SSE fast-mode bits, CS base + eip),
+the generic part hashes the pc, compares the entry, the TB's cs_base, flags
+and cflags (against cpu->tcg_cflags), the breakpoint list and gdb single-step
+into one mismatch word, branch-free (a brcond would spill every live temp at
+the block end), and one goto_ptr takes either the TB's code or the epilogue
+- the main loop's tb_lookup() is the miss path, exactly what the helper did
+when it found nothing. Off with -accel tcg,inline-lookup=off (the helper,
+as before); the helper is also kept when exec logging or nochain is on,
+one-insn-per-tb, CF_NO_GOTO_PTR, a 32-bit host, the x86-64 target's CS64.
+Tests: the DOS batteries and the XP guest stage, unchanged.
+
+--- a/accel/tcg/internal-common.h
++++ b/accel/tcg/internal-common.h
+@@ -18,6 +18,8 @@
+ extern bool one_insn_per_tb;
+ /* a store that leaves a code page's bytes unchanged invalidates no TB (patch 18) */
+ extern bool tcg_smc_same_value;
++/* the jump-cache probe of indirect branches emitted as TCG ops (patch 20) */
++extern bool tcg_inline_lookup;
+ 
+ /*
+  * Return true if CS is not running in parallel with other cpus, either
+--- a/accel/tcg/tcg-all.c
++++ b/accel/tcg/tcg-all.c
+@@ -100,6 +100,7 @@
+ bool mttcg_enabled;
+ bool one_insn_per_tb;
+ bool tcg_smc_same_value = true;
++bool tcg_inline_lookup = true;
+ 
+ static int tcg_init_machine(MachineState *ms)
+ {
+@@ -210,6 +211,16 @@
+     tcg_smc_same_value = value;
+ }
+ 
++static bool tcg_get_inline_lookup(Object *obj, Error **errp)
++{
++    return tcg_inline_lookup;
++}
++
++static void tcg_set_inline_lookup(Object *obj, bool value, Error **errp)
++{
++    tcg_inline_lookup = value;
++}
++
+ static void tcg_set_one_insn_per_tb(Object *obj, bool value, Error **errp)
+ {
+     TCGState *s = TCG_STATE(obj);
+@@ -262,6 +273,11 @@
+         tcg_get_smc_same_value, tcg_set_smc_same_value);
+     object_class_property_set_description(oc, "smc-same-value",
+         "A store that leaves a code page's bytes unchanged invalidates no translated block");
++
++    object_class_property_add_bool(oc, "inline-lookup",
++        tcg_get_inline_lookup, tcg_set_inline_lookup);
++    object_class_property_set_description(oc, "inline-lookup",
++        "Probe the jump cache inline at indirect branches instead of calling the lookup helper");
+ 
+     object_class_property_add_bool(oc, "one-insn-per-tb",
+                                    tcg_get_one_insn_per_tb,
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -16,7 +16,11 @@
+ #include "exec/plugin-gen.h"
+ #include "exec/cpu_ldst.h"
+ #include "tcg/tcg-op-common.h"
++#include "tcg/tcg-temp-internal.h"
+ #include "internal-target.h"
++#include "internal-common.h"
++#include "tb-jmp-cache.h"
++#include "tb-hash.h"
+ #include "disas/disas.h"
+ 
+ static void set_can_do_io(DisasContextBase *db, bool val)
+@@ -25,6 +29,95 @@
+     tcg_gen_st8_i32(tcg_constant_i32(val), tcg_env,
+                     offsetof(ArchCPU, parent_obj.neg.can_do_io) -
+                     offsetof(ArchCPU, env));
++}
++
++void translator_lookup_and_goto_ptr(TCGv_i64 pc, TCGv_i64 cs_base,
++                                    TCGv_i32 flags)
++{
++#if UINTPTR_MAX == UINT64_MAX && !defined(CONFIG_USER_ONLY)
++    TCGv_i64 tmp, hash, entry, tb, tbs, m, ptr;
++    TCGv_i32 f, c;
++
++    if (!tcg_inline_lookup
++        || (tcg_ctx->gen_tb->cflags & CF_NO_GOTO_PTR)
++        || qatomic_read(&one_insn_per_tb)
++        || qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC
++                              | CPU_LOG_TB_NOCHAIN)) {
++        tcg_gen_lookup_and_goto_ptr();
++        return;
++    }
++
++    /*
++     * Branch-free on purpose: a brcond ends a TCG basic block, where every
++     * live TB temporary is spilled to the stack and reloaded after it. The
++     * probe accumulates a mismatch word instead and decides once, at the
++     * goto_ptr. A null jump-cache entry is replaced by the TB being
++     * translated so the loads are safe; its nullness is part of the word.
++     */
++#define CPU_OFF(f) (offsetof(ArchCPU, parent_obj.f) - offsetof(ArchCPU, env))
++    tmp = tcg_temp_ebb_new_i64();
++    hash = tcg_temp_ebb_new_i64();
++    entry = tcg_temp_ebb_new_i64();
++    tb = tcg_temp_ebb_new_i64();
++    tbs = tcg_temp_ebb_new_i64();
++    m = tcg_temp_ebb_new_i64();
++    ptr = tcg_temp_ebb_new_i64();
++    f = tcg_temp_ebb_new_i32();
++    c = tcg_temp_ebb_new_i32();
++
++    /* hash = tb_jmp_cache_hash_func(pc) */
++    tcg_gen_shri_i64(tmp, pc, TARGET_PAGE_BITS - TB_JMP_PAGE_BITS);
++    tcg_gen_xor_i64(tmp, tmp, pc);
++    tcg_gen_shri_i64(hash, tmp, TARGET_PAGE_BITS - TB_JMP_PAGE_BITS);
++    tcg_gen_andi_i64(hash, hash, TB_JMP_PAGE_MASK);
++    tcg_gen_andi_i64(tmp, tmp, TB_JMP_ADDR_MASK);
++    tcg_gen_or_i64(hash, hash, tmp);
++
++    /* entry = &cpu->tb_jmp_cache->array[hash] */
++    QEMU_BUILD_BUG_ON(sizeof(((CPUJumpCache *)0)->array[0]) != 16);
++    tcg_gen_ld_i64(entry, tcg_env, CPU_OFF(tb_jmp_cache));
++    tcg_gen_shli_i64(hash, hash, 4);
++    tcg_gen_add_i64(entry, entry, hash);
++
++    /* tb = entry->tb; tbs = tb ? tb : the current TB (a safe base) */
++    tcg_gen_ld_i64(tb, (TCGv_ptr)entry, offsetof(CPUJumpCache, array[0].tb));
++    tcg_gen_movcond_i64(TCG_COND_EQ, tbs, tb, tcg_constant_i64(0),
++                        tcg_constant_i64((uintptr_t)tcg_ctx->gen_tb), tb);
++
++    /* m: zero iff the entry is a hit and the chain may be taken */
++    tcg_gen_setcondi_i64(TCG_COND_EQ, m, tb, 0);
++    tcg_gen_ld_i64(tmp, (TCGv_ptr)entry, offsetof(CPUJumpCache, array[0].pc));
++    tcg_gen_xor_i64(tmp, tmp, pc);
++    tcg_gen_or_i64(m, m, tmp);
++    tcg_gen_ld_i64(tmp, (TCGv_ptr)tbs, offsetof(TranslationBlock, cs_base));
++    tcg_gen_xor_i64(tmp, tmp, cs_base);
++    tcg_gen_or_i64(m, m, tmp);
++    /* a breakpoint list or gdb single-step: the main loop's lookup decides */
++    tcg_gen_ld_i64(tmp, tcg_env, CPU_OFF(breakpoints.tqh_first));
++    tcg_gen_or_i64(m, m, tmp);
++
++    tcg_gen_ld_i32(f, (TCGv_ptr)tbs, offsetof(TranslationBlock, flags));
++    tcg_gen_xor_i32(f, f, flags);
++    tcg_gen_ld_i32(c, (TCGv_ptr)tbs, offsetof(TranslationBlock, cflags));
++    tcg_gen_or_i32(f, f, c);
++    tcg_gen_ld_i32(c, tcg_env, CPU_OFF(tcg_cflags));
++    tcg_gen_xor_i32(f, f, c);      /* (tb->cflags ^ cpu->tcg_cflags) folded */
++    QEMU_BUILD_BUG_ON(sizeof_field(CPUState, singlestep_enabled) != 4);
++    tcg_gen_ld_i32(c, tcg_env, CPU_OFF(singlestep_enabled));
++    tcg_gen_or_i32(f, f, c);
++    tcg_gen_extu_i32_i64(tmp, f);
++    tcg_gen_or_i64(m, m, tmp);
++
++    /* jump to the TB's code, or to the epilogue (return 0: no last TB) */
++    tcg_gen_ld_i64(ptr, (TCGv_ptr)tbs, offsetof(TranslationBlock, tc.ptr));
++    tcg_gen_movcond_i64(TCG_COND_EQ, ptr, m, tcg_constant_i64(0), ptr,
++                        tcg_constant_i64((uintptr_t)tcg_code_gen_epilogue));
++    plugin_gen_disable_mem_helpers();
++    tcg_gen_goto_ptr((TCGv_ptr)ptr);
++#undef CPU_OFF
++#else
++    tcg_gen_lookup_and_goto_ptr();
++#endif
+ }
+ 
+ bool translator_io_start(DisasContextBase *db)
+--- a/include/exec/translator.h
++++ b/include/exec/translator.h
+@@ -20,6 +20,7 @@
+ 
+ #include "qemu/bswap.h"
+ #include "exec/vaddr.h"
++#include "tcg/tcg.h"
+ 
+ /**
+  * gen_intermediate_code
+@@ -181,6 +182,27 @@
+  * Otherwise return false.
+  */
+ bool translator_io_start(DisasContextBase *db);
++
++/**
++ * translator_lookup_and_goto_ptr() - the jump-cache probe as TCG ops
++ * @pc: the target's virtual pc, as cpu_get_tb_cpu_state() computes it
++ * @cs_base: its cs_base, likewise
++ * @flags: its flags, likewise
++ *
++ * The TB-ending sequence of an indirect branch: what tcg_gen_lookup_and_goto_ptr()
++ * does through helper_lookup_tb_ptr(), emitted inline (M9 track, patch 20). The
++ * jump-cache entry of @pc is compared with (@pc, @cs_base, @flags) and the CPU's
++ * tcg_cflags, and the code jumps to the found TB, or to the epilogue when the
++ * entry does not match, a breakpoint exists or gdb single-step is on — the main
++ * loop's lookup is then the slow path (it fills the cache), exactly as when the
++ * helper finds no TB. The target computes the three inputs exactly as its
++ * cpu_get_tb_cpu_state() does, as TCG ops, so the result of the probe is the
++ * result the helper would have had. Falls back to the helper when the property
++ * inline-lookup is off, the TB may not use goto_ptr, exec logging or nochain is
++ * on (the helper logs every TB), or the host is not 64-bit.
++ */
++void translator_lookup_and_goto_ptr(TCGv_i64 pc, TCGv_i64 cs_base,
++                                    TCGv_i32 flags);
+ 
+ /*
+  * Translator Load Functions
+--- a/include/tcg/tcg-op-common.h
++++ b/include/tcg/tcg-op-common.h
+@@ -74,6 +74,15 @@
+  */
+ void tcg_gen_lookup_and_goto_ptr(void);
+ 
++/**
++ * tcg_gen_goto_ptr() - jump to a host address computed by the TB
++ * @ptr: the host address; tcg_code_gen_epilogue returns to the main loop
++ *
++ * The inline jump-cache probe (translator_lookup_and_goto_ptr) selects
++ * between a found TB's code and the epilogue and jumps through this.
++ */
++void tcg_gen_goto_ptr(TCGv_ptr ptr);
++
+ void tcg_gen_plugin_cb(unsigned from);
+ void tcg_gen_plugin_mem_cb(TCGv_i64 addr, unsigned meminfo);
+ 
+--- a/target/i386/tcg/translate.c
++++ b/target/i386/tcg/translate.c
+@@ -2376,6 +2376,53 @@
+  * single step traps, resetting the RF flag, and handling the interrupt
+  * shadow.
+  */
++/*
++ * The jump-cache probe inline (M9 track, patch 20): the target's pc, cs_base
++ * and flags as cpu_get_tb_cpu_state() computes them, from the state the
++ * instruction and gen_eob() have already stored, so far jumps (CS and hflags
++ * changed by a helper) and the x87 / SSE fast-mode bits (runtime state) are
++ * covered exactly like the helper would. i386 target only: the x86-64
++ * target's CS64 case (cs_base 0, a 64-bit pc) is not built here.
++ */
++static void gen_lookup_and_goto_ptr(DisasContext *s)
++{
++#ifdef TARGET_X86_64
++    tcg_gen_lookup_and_goto_ptr();
++#else
++    TCGv_i32 flags = tcg_temp_new_i32();
++    TCGv_i32 t = tcg_temp_new_i32();
++    TCGv_i32 u = tcg_temp_new_i32();
++    TCGv_i64 pc = tcg_temp_new_i64();
++    TCGv_i64 cs_base = tcg_temp_new_i64();
++
++    tcg_gen_ld_i32(flags, tcg_env, offsetof(CPUX86State, hflags));
++    tcg_gen_ld_i32(t, tcg_env, offsetof(CPUX86State, eflags));
++    tcg_gen_andi_i32(t, t, IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK);
++    tcg_gen_or_i32(flags, flags, t);
++    tcg_gen_ld8u_i32(t, tcg_env, offsetof(CPUX86State, x87_fast_mode));
++    tcg_gen_shli_i32(t, t, TB_FLAG_X87_MODE_SHIFT);
++    tcg_gen_or_i32(flags, flags, t);
++    QEMU_BUILD_BUG_ON(sizeof_field(CPUX86State,
++                                   sse_status.float_exception_flags) != 2);
++    tcg_gen_ld16u_i32(t, tcg_env,
++                      offsetof(CPUX86State, sse_status.float_exception_flags));
++    tcg_gen_andi_i32(t, t, float_flag_inexact);
++    tcg_gen_setcondi_i32(TCG_COND_NE, t, t, 0);
++    tcg_gen_ld8u_i32(u, tcg_env, offsetof(CPUX86State, sse_fast_mode));
++    tcg_gen_setcondi_i32(TCG_COND_NE, u, u, 0);
++    tcg_gen_and_i32(t, t, u);
++    tcg_gen_shli_i32(t, t, TB_FLAG_SSE_FAST_SHIFT);
++    tcg_gen_or_i32(flags, flags, t);
++
++    tcg_gen_ld_i32(t, tcg_env, offsetof(CPUX86State, segs[R_CS].base));
++    tcg_gen_extu_i32_i64(cs_base, t);
++    tcg_gen_add_i32(t, t, cpu_eip);
++    tcg_gen_extu_i32_i64(pc, t);
++
++    translator_lookup_and_goto_ptr(pc, cs_base, flags);
++#endif
++}
++
+ static void
+ gen_eob(DisasContext *s, int mode)
+ {
+@@ -2404,7 +2451,7 @@
+     } else if (mode == DISAS_JUMP &&
+                /* give irqs a chance to happen */
+                !inhibit_reset) {
+-        tcg_gen_lookup_and_goto_ptr();
++        gen_lookup_and_goto_ptr(s);
+     } else {
+         tcg_gen_exit_tb(NULL, 0);
+     }
+--- a/tcg/tcg-op.c
++++ b/tcg/tcg-op.c
+@@ -3457,6 +3457,11 @@
+     tcg_gen_op1i(INDEX_op_goto_tb, idx);
+ }
+ 
++void tcg_gen_goto_ptr(TCGv_ptr ptr)
++{
++    tcg_gen_op1i(INDEX_op_goto_ptr, tcgv_ptr_arg(ptr));
++}
++
+ void tcg_gen_lookup_and_goto_ptr(void)
+ {
+     TCGv_ptr ptr;

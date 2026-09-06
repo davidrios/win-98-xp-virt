@@ -796,11 +796,21 @@ def sh(*cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
+def tcg_opts(*own):
+    """`-accel tcg,<own>,<QEMU_TCG_OPTS>`: the accelerator properties of a run.
+    QEMU_TCG_OPTS=pinned-regs=off runs every DOS battery with the doc 18
+    oracle (the register file in env, as upstream); the batteries then
+    compare their own on/off pair under it."""
+    opts = list(own) + [o for o in os.environ.get("QEMU_TCG_OPTS", "").split(",") if o]
+    return ["-accel", ",".join(["tcg"] + opts)] if opts else []
+
+
 def run_qemu(fast, img, log):
     if os.path.exists(log):
         os.unlink(log)
     p = subprocess.Popen([
-        QEMU, "-machine", "pc", "-cpu", "pentium3,x87-fast=" + fast, "-m", "64",
+        QEMU, "-machine", "pc", *tcg_opts(),
+        "-cpu", "pentium3,x87-fast=" + fast, "-m", "64",
         "-L", os.path.join(ROOT, "qemu/pc-bios"), "-display", "none", "-net", "none",
         "-fda", img, "-boot", "a", "-serial", "file:" + log, "-monitor", "none",
     ])

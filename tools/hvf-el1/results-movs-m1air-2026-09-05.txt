@@ -1,0 +1,24 @@
+movs:  32 KiB x2, rows of 640 B, env identity  today 4.45 ns/dword  no-mb 4.23  pinned+softmmu 2.84  pinned+direct 2.49  fast 0.09   [51 rows, 3084 passes]
+movs:  32 KiB x2, rows of 640 B, env in window  today 4.43 ns/dword  no-mb 4.19  pinned+softmmu 1.17  pinned+direct 0.40  fast 0.09   [51 rows, 3084 passes]
+movs:  32 KiB diag  direct-no-cc 0.36  stores-only 0.36  loads-only 0.36
+movs:  32 KiB diag3 via window: st-env+ld 0.31  st-env+st 2.51  st-env+ld+st 2.51
+movs:  32 KiB diag3 via identity: st-env+ld 0.31  st-env+st 0.31  st-env+ld+st 0.31
+movs: 512 KiB x2, rows of 640 B, env identity  today 4.47 ns/dword  no-mb 4.07  pinned+softmmu 2.85  pinned+direct 2.50  fast 0.09   [819 rows, 192 passes]
+movs: 512 KiB x2, rows of 640 B, env in window  today 4.44 ns/dword  no-mb 4.34  pinned+softmmu 1.19  pinned+direct 0.40  fast 0.09   [819 rows, 192 passes]
+movs: 512 KiB diag  direct-no-cc 0.36  stores-only 0.36  loads-only 0.36
+movs: 512 KiB diag3 via window: st-env+ld 0.31  st-env+st 2.51  st-env+ld+st 2.52
+movs: 512 KiB diag3 via identity: st-env+ld 0.31  st-env+st 0.31  st-env+ld+st 0.31
+movs:   8 MiB x2, rows of 640 B, env identity  today 4.49 ns/dword  no-mb 4.05  pinned+softmmu 2.86  pinned+direct 2.54  fast 0.10   [13107 rows, 12 passes]
+movs:   8 MiB x2, rows of 640 B, env in window  today 4.45 ns/dword  no-mb 4.24  pinned+softmmu 1.19  pinned+direct 0.41  fast 0.10   [13107 rows, 12 passes]
+movs:   8 MiB diag  direct-no-cc 0.37  stores-only 0.37  loads-only 0.37
+movs:   8 MiB diag3 via window: st-env+ld 0.32  st-env+st 2.51  st-env+ld+st 2.51
+movs:   8 MiB diag3 via identity: st-env+ld 0.32  st-env+st 0.31  st-env+ld+st 0.34
+movs:  32 KiB x2, rows of 640 B  today 2.11 ns/dword  no-mb 2.12  pinned+softmmu 1.17  pinned+direct 0.41  fast 0.09  memcpy 0.05   [51 rows, 3084 passes]
+movs:  32 KiB diag  direct-no-cc 0.36  stores-only 0.36  loads-only 0.36
+movs:  32 KiB diag3 native: st-env+ld 0.31  st-env+st 0.31  st-env+ld+st 0.31
+movs: 512 KiB x2, rows of 640 B  today 2.15 ns/dword  no-mb 2.13  pinned+softmmu 1.17  pinned+direct 0.40  fast 0.09  memcpy 0.05   [819 rows, 192 passes]
+movs: 512 KiB diag  direct-no-cc 0.36  stores-only 0.36  loads-only 0.36
+movs: 512 KiB diag3 native: st-env+ld 0.31  st-env+st 0.31  st-env+ld+st 0.31
+movs:   8 MiB x2, rows of 640 B  today 2.16 ns/dword  no-mb 2.14  pinned+softmmu 1.18  pinned+direct 0.41  fast 0.09  memcpy 0.07   [13107 rows, 12 passes]
+movs:   8 MiB diag  direct-no-cc 0.36  stores-only 0.36  loads-only 0.36
+movs:   8 MiB diag3 native: st-env+ld 0.31  st-env+st 0.32  st-env+ld+st 0.33

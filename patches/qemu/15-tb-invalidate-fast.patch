@@ -1,0 +1,209 @@
+TB invalidation on guest writes, four cuts (M9 track,
+docs/tracks/m9-tcg-aarch64.md; found on Moto Racer 1997's in-engine intro
+under TCG on the M1 Air, where the softmmu slow path and TB maintenance were
+75 % of the vCPU thread):
+
+1. tb_invalidate_phys_range() (the DMA / cpu_physical_memory_write side)
+   rounded the first page's range down to the page start, invalidating every
+   TB below the written bytes. The vAPIC option ROM keeps its TPR stubs (all
+   of a Windows guest's IRQL fast paths) in the page below the VAPICState the
+   APIC writes at every interrupt: thousands of retranslations a second on
+   any XP guest, idle included. Upstream master still has it (2026-09-05).
+2. A per-page byte range of the TBs on it (PageDesc code_lo/code_hi): a
+   write outside it returns before the page collection (two g_tree lookups)
+   and the list walk. Windows data pages carrying one stale TB (the vAPIC
+   lock word, pool pages) are written tens of thousands of times a second.
+3. The single-page path: a write that cannot hit a TB shared with a
+   neighbouring page (PageDesc span_in_end / span_out_lo) is handled under
+   the page's own spinlock, without the page collection; the precise-SMC
+   exit unlocks that page itself. The current TB's g_tree lookup (precise
+   SMC) is made only once a TB is actually hit.
+4. No jump-cache flush per invalidated CF_PCREL TB (a 64 KiB memset each,
+   then every TB entry misses until the cache warms): the TB already carries
+   CF_INVALID, which tb_lookup() compares against, and its memory lives
+   until the next tb_flush(), which flushes the caches itself. A
+   self-modifying guest (the game patches its rasterizer's immediates per
+   span) invalidates 20k TBs a second.
+
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -183,6 +183,25 @@
+     QemuSpin lock;
+     /* list of TBs intersecting this ram page */
+     uintptr_t first_tb;
++    /*
++     * Page offsets [code_lo, code_hi] covering every TB on the list (grows
++     * as TBs are added, restarted when the first TB lands on an empty page):
++     * a write outside it cannot hit translated code, so the notdirty slow
++     * path returns before taking the page collection lock and walking the
++     * list.  Data pages that carry one stale TB are written millions of
++     * times a second by a Windows guest (the vAPIC ROM's lock word, pool
++     * pages); each write used to pay two g_tree lookups and the walk.
++     */
++    uint16_t code_lo, code_hi;
++    /*
++     * Where TBs shared with a neighbouring page reach: span_in_end is one
++     * past the last byte covered by TBs that start on the previous page,
++     * span_out_lo the first byte of TBs that continue into the next one.
++     * A write between the two can only hit TBs living on this page alone,
++     * so it is handled under this page's lock, without the page collection
++     * (two g_tree lookups per write).
++     */
++    uint16_t span_in_end, span_out_lo;
+ };
+ 
+ void page_table_config_init(void)
+@@ -693,10 +712,35 @@
+     bool page_already_protected;
+ 
+     assert_page_locked(p);
++
++    tb_page_addr_t lo, hi;
+ 
+     tb->page_next[n] = p->first_tb;
+     page_already_protected = p->first_tb != 0;
+     p->first_tb = (uintptr_t)tb | n;
++
++    /* the byte range this TB occupies on this page */
++    if (n == 0) {
++        lo = tb_page_addr0(tb) & ~TARGET_PAGE_MASK;
++        hi = MIN(lo + tb->size - 1, (tb_page_addr_t)~TARGET_PAGE_MASK);
++    } else {
++        lo = 0;
++        hi = (tb_page_addr0(tb) + tb->size - 1) & ~TARGET_PAGE_MASK;
++    }
++    if (!page_already_protected) {
++        p->code_lo = lo;
++        p->code_hi = hi;
++        p->span_in_end = 0;
++        p->span_out_lo = TARGET_PAGE_SIZE;
++    } else {
++        p->code_lo = MIN(p->code_lo, lo);
++        p->code_hi = MAX(p->code_hi, hi);
++    }
++    if (n == 1) {
++        p->span_in_end = MAX(p->span_in_end, hi + 1);
++    } else if (tb_page_addr1(tb) != -1) {
++        p->span_out_lo = MIN(p->span_out_lo, lo);
++    }
+ 
+     /*
+      * If some code is already present, then the pages are already
+@@ -880,10 +924,17 @@
+     CPUState *cpu;
+ 
+     if (tb_cflags(tb) & CF_PCREL) {
+-        /* A TB may be at any virtual address */
+-        CPU_FOREACH(cpu) {
+-            tcg_flush_jmp_cache(cpu);
+-        }
++        /*
++         * A TB may be at any virtual address, so its jump cache slot is
++         * unknown.  Flushing the whole cache (a 64 KiB memset per
++         * invalidated TB, then every TB entry misses until it warms up)
++         * is unnecessary: the TB already carries CF_INVALID, which
++         * tb_lookup() compares against the wanted cflags, so a stale slot
++         * simply misses, and the TB's memory stays allocated until the
++         * next tb_flush(), which flushes the jump caches itself.  A
++         * self-modifying guest (a 1997 software rasterizer patching its
++         * inner loop per span) invalidates 20k TBs a second.
++         */
+     } else {
+         uint32_t h = tb_jmp_cache_hash_func(tb->pc);
+ 
+@@ -1092,7 +1143,9 @@
+ #else
+ /*
+  * @p must be non-NULL.
+- * Call with all @pages locked.
++ * Call with all @pages locked, or with @pages NULL and only @p locked when
++ * no TB the range can hit spans another page (it lies between p->span_in_end
++ * and p->span_out_lo), so that removing a TB touches no other page's list.
+  */
+ static void
+ tb_invalidate_phys_page_range__locked(struct page_collection *pages,
+@@ -1104,7 +1157,9 @@
+     PageForEachNext n;
+ #ifdef TARGET_HAS_PRECISE_SMC
+     bool current_tb_modified = false;
+-    TranslationBlock *current_tb = retaddr ? tcg_tb_lookup(retaddr) : NULL;
++    /* the g_tree lookup of the writing TB only once a TB is actually hit */
++    TranslationBlock *current_tb = NULL;
++    bool current_tb_known = !retaddr;
+ #endif /* TARGET_HAS_PRECISE_SMC */
+ 
+     /* Range may not cross a page. */
+@@ -1128,6 +1183,10 @@
+         }
+         if (!(tb_last < start || tb_start > last)) {
+ #ifdef TARGET_HAS_PRECISE_SMC
++            if (!current_tb_known) {
++                current_tb = tcg_tb_lookup(retaddr);
++                current_tb_known = true;
++            }
+             if (current_tb == tb &&
+                 (tb_cflags(current_tb) & CF_COUNT_MASK) != 1) {
+                 /*
+@@ -1152,7 +1211,11 @@
+ 
+ #ifdef TARGET_HAS_PRECISE_SMC
+     if (current_tb_modified) {
+-        page_collection_unlock(pages);
++        if (pages) {
++            page_collection_unlock(pages);
++        } else {
++            page_unlock(p);     /* the single-page path holds only @p */
++        }
+         /* Force execution of one insn next time.  */
+         current_cpu->cflags_next_tb = 1 | CF_NOIRQ | curr_cflags(current_cpu);
+         mmap_unlock();
+@@ -1186,6 +1249,14 @@
+         assert_page_locked(pd);
+         page_start = index << TARGET_PAGE_BITS;
+         page_last = page_start | ~TARGET_PAGE_MASK;
++        /*
++         * Only the TBs intersecting [start, last]: the first page's range
++         * begins at @start, not at the page boundary.  Rounding it down
++         * invalidated every TB in the page below a DMA write — the vAPIC
++         * option ROM's TPR stubs (all of a Windows guest's IRQL fast paths)
++         * sit below the VAPICState the APIC writes at every interrupt.
++         */
++        page_start = MAX(page_start, start);
+         page_last = MIN(page_last, last);
+         tb_invalidate_phys_page_range__locked(pages, pd,
+                                               page_start, page_last, 0);
+@@ -1221,7 +1292,34 @@
+                                    uintptr_t retaddr)
+ {
+     struct page_collection *pages;
++    PageDesc *p = page_find(ram_addr >> TARGET_PAGE_BITS);
++    unsigned off = ram_addr & ~TARGET_PAGE_MASK;
++    bool may_hit;
+ 
++    if (!p) {
++        return;
++    }
++    /* under the page lock, against a TB being added on another vCPU */
++    page_lock(p);
++    may_hit = p->first_tb &&
++              !(off + size - 1 < p->code_lo || off > p->code_hi);
++    if (!may_hit) {
++        page_unlock(p);
++        return;
++    }
++    if (off >= p->span_in_end && off + size - 1 < p->span_out_lo) {
++        /*
++         * The common case, nothing the write can hit reaches into another
++         * page: the page's own lock is enough to unlink what it hits.  (The
++         * precise-SMC exit inside unlocks @p itself before leaving.)
++         */
++        tb_invalidate_phys_page_range__locked(NULL, p, ram_addr,
++                                              ram_addr + size - 1, retaddr);
++        page_unlock(p);
++        return;
++    }
++    page_unlock(p);
++
+     pages = page_collection_lock(ram_addr, ram_addr + size - 1);
+     tb_invalidate_phys_page_fast__locked(pages, ram_addr, size, retaddr);
+     page_collection_unlock(pages);

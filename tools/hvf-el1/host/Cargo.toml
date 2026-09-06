@@ -1,0 +1,15 @@
+[package]
+name = "hvf-el1"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "hvf-el1 probe: the Hypervisor.framework host side (docs/tracks/m9-tcg-aarch64.md)"
+
+[workspace]
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+debug = 1

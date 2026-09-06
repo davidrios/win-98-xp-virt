@@ -1,0 +1,29 @@
+Softmmu TLB: a 4096-entry floor for the dynamic table (M9 track,
+docs/tracks/m9-tcg-aarch64.md). See the comment in the header and the patch
+README row.
+
+--- a/include/exec/cpu-defs.h
++++ b/include/exec/cpu-defs.h
+@@ -55,8 +55,20 @@
+ #include "exec/target_long.h"
+ 
+ #if defined(CONFIG_SOFTMMU) && defined(CONFIG_TCG)
+-#define CPU_TLB_DYN_MIN_BITS 6
+-#define CPU_TLB_DYN_DEFAULT_BITS 8
++/*
++ * The dynamic TLB is direct-mapped and resized at every flush from the
++ * entries used since the previous one.  A Windows guest flushes at every
++ * context switch (hundreds a second), so the measured "working set" is a
++ * few hundred pages and the table shrank to 64-256 entries under the
++ * 30-70 % use-rate policy; at that load two live pages share an index all
++ * the time and every access to either is a victim-TLB swap (a 1997 game's
++ * software renderer: 6 million swaps a second, half the vCPU in the slow
++ * path).  A 4096-entry floor (128 KiB of entries per mmu index, memset per
++ * flush) is where those conflicts vanish on the game workloads; growth
++ * above it is unchanged.  M9 track, docs/tracks/m9-tcg-aarch64.md.
++ */
++#define CPU_TLB_DYN_MIN_BITS 12
++#define CPU_TLB_DYN_DEFAULT_BITS 12
+ 
+ # if HOST_LONG_BITS == 32
+ /* Make sure we do not require a double-word shift for the TLB load */

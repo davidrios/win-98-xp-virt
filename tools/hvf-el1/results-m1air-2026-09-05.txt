@@ -1,0 +1,56 @@
+hvf-el1: Hypervisor.framework EL1 probe (counter 24 MHz)
+host: VM created (IPA size default 36 / max 36 bits); image 37 KiB at 0x40000000, arena 64 MiB at 0x600000000 (host VA == IPA), MMIO probe at 0xf0000000 unmapped
+guest: up at EL1, MMU on, 24 MHz counter, arena at 0x600000000 (host VA == IPA == guest VA)
+id: CurrentEL=1 MIDR=0x610f0000 CNTFRQ=24000000 Hz
+id: ID_AA64MMFR0=0x10000f100001 TGran4=0 TGran16=1 TGran64=15 ASIDBits=0 PARange=1
+id: ID_AA64MMFR1=0x11212000 HAFDBS=0 VH=0 PAN=2 ID_AA64MMFR2=0x1001001100001011
+id: CTR_EL0=0x8444c004 DIC=0 IDC=0
+id: SCTLR_EL1=0x30d01985 TCR_EL1=0x280903510
+guest: x86 tables built (CR3 A 0x2c00000, CR3 B 0x2c01000), stage-1 roots with ASIDs 1 and 2
+exit: hvc round trip (guest -> host -> guest): 859.49 ns  [200000 calls]
+exit: MMIO load (stage-2 fault -> host emulates -> retry): 831.86 ns  [100000 loads, sum 30542634529360]
+trap: in-VM exception round trip (svc -> EL1 vector -> save/restore -> eret): 39.61 ns  [1000000 traps]
+call: in-VM helper call (bl to a Rust function): 0.93 ns  [20000000 calls, acc 16775608223978882689]
+stage2: first guest touch of the 48 MiB x86 RAM (identity map): 747.46 ns/4K page  [HVF's lazy stage-2 fill, once per page; xor 0x2802007]
+fill: first touch of 8192 pages through the window: 156.92 ns/page  [8192 faults: abort -> x86 walk -> PTE -> eret]
+fill: same 8192 pages after tlbi vmalle1: 6.08 ns/page  [0 faults: TLB misses, stage-1+2 walks]
+fill: 1024 pages touched again (warm): 6.42 ns/page
+pf: read of unmapped linear 0xff000000 -> x86 #PF error code 0 (value 0x10ff000000)
+pf: #PF round trip (abort -> walk -> resume, the in-VM cpu_loop_exit): 66.66 ns
+dirty: read code 0 (PTE 0x2328027: A set, D clear, mirrored RO); write code 0 in 583.33 ns, 1 fault(s), PTE 0x2328067 (D set, remapped RW); value 0x12345678
+dirty: read-only page: read code 0, write code 3 (expect 0 and 3)
+dirty: first write to 512 clean pages (permission fault -> D set -> remap RW -> tlbi vae1is + dsb ish): 493.57 ns/page, 512 faults
+dirty: the same with tlbi vae1 + dsb nsh (no broadcast): 494.62 ns/page, 512 faults
+load:  64 KiB chase  direct 1.24 ns  softmmu 3.22 ns  pinned 3.27 ns   [2000000 steps, TLB 256 entries]
+load:  64 KiB indep  direct 0.31 ns  softmmu 0.64 ns  pinned 0.63 ns   [4194304 loads, 0 faults during the set]
+load:   4 MiB chase  direct 3.50 ns  softmmu 5.80 ns  pinned 5.78 ns   [2000000 steps, TLB 2048 entries]
+load:   4 MiB indep  direct 0.80 ns  softmmu 1.12 ns  pinned 1.01 ns   [4194304 loads, 0 faults during the set]
+load:   8 MiB chase  direct 5.55 ns  softmmu 10.42 ns  pinned 10.45 ns   [2000000 steps, TLB 4096 entries]
+load:   8 MiB indep  direct 0.89 ns  softmmu 1.37 ns  pinned 1.22 ns   [4194304 loads, 0 faults during the set]
+load:  16 MiB chase  direct 28.14 ns  softmmu 33.13 ns  pinned 33.49 ns   [2000000 steps, TLB 8192 entries]
+load:  16 MiB indep  direct 2.57 ns  softmmu 4.82 ns  pinned 3.70 ns   [4194304 loads, 0 faults during the set]
+load:  32 MiB chase  direct 29.03 ns  softmmu 35.14 ns  pinned 35.22 ns   [2000000 steps, TLB 16384 entries]
+load:  32 MiB indep  direct 3.27 ns  softmmu 6.02 ns  pinned 5.27 ns   [4194304 loads, 0 faults during the set]
+jit: code written by the host process executes in the VM: f(100) = 142 (expect 142)
+jit: patch + dc cvau/ic ivau/isb + call: 134.28 ns  [100000 rounds, 0 wrong]
+asid: B first touch, 1024 pages: 110.22 ns/page, 1024 faults (xor 0x0)
+asid: CR3 switch (msr ttbr0_el1 + isb, tables kept): 18.98 ns
+asid: A after the switches, 1024 pages: 6.59 ns/page, 0 faults (xor 0x0)
+asid: A flushed and refaulted, 1024 pages: 113.93 ns/page (xor 0x0)
+asid: A and B see their own pages through the same window: ok
+irq: host thread kick -> guest IRQ handler: min 1875 / median 1958 / max 4000 ns  [20 trials; guest clock, calibrated at the kick request]
+irq: of which hv_vcpus_exit -> hv_vcpu_run returns (host side): min 1000 / median 1041 ns; kick -> the handler's ack HVC seen by the host: min 1916 / median 1958 ns
+guest: done, 12291 window faults handled in the VM, 20 IRQs, tables used 116 KiB
+host: guest finished after 300102 exits, 1.02 s of vCPU wall time
+host: the same kernels natively in the macOS process (16 KiB host pages, no stage 2):
+load:  64 KiB chase  direct 1.25 ns  softmmu 3.23 ns  pinned 3.16 ns   [2000000 steps, TLB 256 entries]
+load:  64 KiB indep  direct 0.31 ns  softmmu 0.64 ns  pinned 0.62 ns   [4194304 loads]
+load:   4 MiB chase  direct 2.37 ns  softmmu 4.76 ns  pinned 4.74 ns   [2000000 steps, TLB 2048 entries]
+load:   4 MiB indep  direct 0.71 ns  softmmu 1.14 ns  pinned 0.99 ns   [4194304 loads]
+load:   8 MiB chase  direct 5.10 ns  softmmu 10.18 ns  pinned 9.97 ns   [2000000 steps, TLB 4096 entries]
+load:   8 MiB indep  direct 0.86 ns  softmmu 1.45 ns  pinned 1.56 ns   [4194304 loads]
+load:  16 MiB chase  direct 7.32 ns  softmmu 12.27 ns  pinned 12.17 ns   [2000000 steps, TLB 8192 entries]
+load:  16 MiB indep  direct 2.52 ns  softmmu 4.11 ns  pinned 3.52 ns   [4194304 loads]
+load:  32 MiB chase  direct 7.70 ns  softmmu 14.28 ns  pinned 14.12 ns   [2000000 steps, TLB 16384 entries]
+load:  32 MiB indep  direct 2.81 ns  softmmu 5.44 ns  pinned 4.68 ns   [4194304 loads]
+jit: native macOS: W^X toggle pair + patch + sys_icache_invalidate + call: 172.70 ns  [100000 rounds, 0 wrong]
