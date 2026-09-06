@@ -17,7 +17,7 @@ guards the disc paths in hw/ide/atapi.c (patch 51). Doc 17 §5.2.
  option('rbd', type : 'feature', value : 'auto',
 --- a/meson.build
 +++ b/meson.build
-@@ -2006,6 +2006,17 @@
+@@ -2006,6 +2006,25 @@
    endif
  endif
  
@@ -27,15 +27,23 @@ guards the disc paths in hw/ide/atapi.c (patch 51). Doc 17 §5.2.
 +if get_option('libdisc_dir') != ''
 +  libdisc_lib = cc.find_library('libdisc', dirs: [get_option('libdisc_dir')],
 +                                static: true, required: true)
++  # What the staticlib itself needs, as `rustc --print native-static-libs`
++  # reports it per platform (meson forbids a chained ternary).
++  if host_os == 'darwin'
++    libdisc_libs = ['-liconv']
++  elif host_os == 'windows'
++    libdisc_libs = ['-lkernel32', '-lntdll', '-luserenv', '-lws2_32', '-ldbghelp']
++  else
++    libdisc_libs = ['-ldl', '-lm', '-lrt', '-lutil', '-lgcc_s']
++  endif
 +  libdisc = declare_dependency(dependencies: [libdisc_lib, threads],
-+                               link_args: host_os == 'darwin' ? ['-liconv'] :
-+                                          ['-ldl', '-lm', '-lrt', '-lutil', '-lgcc_s'])
++                               link_args: libdisc_libs)
 +endif
 +
  lzo = not_found
  if not get_option('lzo').auto() or have_system
    lzo = cc.find_library('lzo2', has_headers: ['lzo/lzo1x.h'],
-@@ -2421,6 +2432,7 @@
+@@ -2421,6 +2440,7 @@
  config_host_data.set('CONFIG_POSIX', host_os != 'windows')
  config_host_data.set('CONFIG_WIN32', host_os == 'windows')
  config_host_data.set('CONFIG_LZO', lzo.found())
@@ -43,7 +51,7 @@ guards the disc paths in hw/ide/atapi.c (patch 51). Doc 17 §5.2.
  config_host_data.set('CONFIG_MPATH', mpathpersist.found())
  config_host_data.set('CONFIG_BLKIO', blkio.found())
  if blkio.found()
-@@ -4816,6 +4828,7 @@
+@@ -4816,6 +4836,7 @@
  summary_info += {'TPM support':       have_tpm}
  summary_info += {'libssh support':    libssh}
  summary_info += {'lzo support':       lzo}

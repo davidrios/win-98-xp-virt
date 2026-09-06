@@ -169,12 +169,17 @@ impl Boot {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Accel {
-    /// KVM when the host has it, emulation otherwise. QEMU itself picks,
-    /// from the `kvm:tcg` list — no host probing here can be wrong.
+    /// Hardware acceleration when the host has it, emulation otherwise.
+    /// QEMU itself picks, from the `kvm:tcg` (Windows: `whpx:tcg`) list —
+    /// no host probing here can be wrong.
     #[default]
     Auto,
-    /// KVM only: the machine refuses to start without it, which is what
-    /// "required" has to mean to be worth choosing over `Auto`.
+    /// Hardware acceleration only: the machine refuses to start without
+    /// it, which is what "required" has to mean to be worth choosing over
+    /// `Auto`. Named `kvm` in the bundle for every host — the field says
+    /// what the user asked for, and each host spells it its own way
+    /// (`whpx` on Windows), so a machine directory copied between them
+    /// keeps meaning the same thing.
     Kvm,
     /// Emulation only. The honest choice for Win98: KVM runs the guest at
     /// host speed, and Win9x has real fast-CPU bugs (doc 06) that the
@@ -192,7 +197,12 @@ impl Accel {
     pub fn label(self) -> &'static str {
         match self {
             Accel::Auto => "Automatic",
-            Accel::Kvm => "KVM (required)",
+            // Named for what this host actually has — the same setting,
+            // spelled the way the machine in front of the user spells it
+            // (`crate::player::hw_accel_label`).
+            Accel::Kvm if cfg!(target_os = "windows") => "WHPX (required)",
+            Accel::Kvm if cfg!(target_os = "linux") => "KVM (required)",
+            Accel::Kvm => "Hardware acceleration (required)",
             Accel::Tcg => "Emulation",
         }
     }
@@ -620,9 +630,16 @@ impl Machine {
         let mut tcg = "tcg".to_string();
         tcg.push_str(&self.optimization_props(Knob::Tcg));
         match self.effective_accel() {
+            // "hardware acceleration, required": spelled the way the
+            // host in hand spells it (`whpx` on Windows), so a machine
+            // directory carries between them meaning the same thing.
+            Accel::Kvm if cfg!(target_os = "windows") => vec!["-accel".into(), "whpx".into()],
             Accel::Kvm => vec!["-accel".into(), "kvm".into()],
             Accel::Auto if cfg!(target_os = "linux") => {
                 vec!["-accel".into(), "kvm".into(), "-accel".into(), tcg]
+            }
+            Accel::Auto if cfg!(target_os = "windows") => {
+                vec!["-accel".into(), "whpx".into(), "-accel".into(), tcg]
             }
             Accel::Auto | Accel::Tcg => vec!["-accel".into(), tcg],
         }

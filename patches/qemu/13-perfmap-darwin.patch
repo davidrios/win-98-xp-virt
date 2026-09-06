@@ -51,3 +51,83 @@ attribute `sample` hits in the code buffer to guest addresses.
              case QEMU_OPTION_perfmap:
                  perf_enable_perfmap();
                  break;
+--- a/tcg/perf.c
++++ b/tcg/perf.c
+@@ -110,6 +110,23 @@
+             host_pc, host_size, pretty_symbol(q, NULL));
+ }
+ 
++#ifdef CONFIG_WIN32
++/*
++ * 2ksbox: the perfmap half of this file is plain stdio and runs on every
++ * host (that is what patch 13 is for), but jitdump is a Linux perf
++ * artefact: `perf inject` finds the dump through an executable mapping of
++ * it, so writing one needs mmap, and Windows has neither that nor
++ * flockfile. Only jitdump is out here — -jitdump says so and carries on.
++ */
++#define jitdump NULL
++#define flockfile(f)    ((void)0)
++#define funlockfile(f)  ((void)0)
++
++void perf_enable_jitdump(void)
++{
++    warn_report("jitdump is not available on Windows, proceeding without it");
++}
++#else
+ static FILE *jitdump;
+ static size_t perf_marker_size;
+ static void *perf_marker = MAP_FAILED;
+@@ -232,6 +249,7 @@
+     header.flags = 0;
+     fwrite(&header, sizeof(header), 1, jitdump);
+ }
++#endif /* !CONFIG_WIN32 */
+ 
+ void perf_report_prologue(const void *start, size_t size)
+ {
+@@ -241,6 +259,7 @@
+     }
+ }
+ 
++#ifndef CONFIG_WIN32
+ /* Write a JIT_CODE_DEBUG_INFO jitdump entry. */
+ static void write_jr_code_debug_info(const void *start,
+                                      const struct debuginfo_query *q,
+@@ -308,6 +327,7 @@
+     fwrite(symbol, symbol_size, 1, jitdump);
+     fwrite(start, host_size, 1, jitdump);
+ }
++#endif /* !CONFIG_WIN32 */
+ 
+ void perf_report_code(uint64_t guest_pc, TranslationBlock *tb,
+                       const void *start)
+@@ -351,6 +371,7 @@
+     }
+ 
+     /* Emit jitdump entries if needed. */
++#ifndef CONFIG_WIN32
+     if (jitdump) {
+         flockfile(jitdump);
+         write_jr_code_debug_info(start, q, tb->icount);
+@@ -358,6 +379,7 @@
+                            q);
+         funlockfile(jitdump);
+     }
++#endif
+ 
+     debuginfo_unlock();
+     g_free(q);
+@@ -370,6 +392,7 @@
+         perfmap = NULL;
+     }
+ 
++#ifndef CONFIG_WIN32
+     if (perf_marker != MAP_FAILED) {
+         munmap(perf_marker, perf_marker_size);
+         perf_marker = MAP_FAILED;
+@@ -379,4 +402,5 @@
+         fclose(jitdump);
+         jitdump = NULL;
+     }
++#endif
+ }

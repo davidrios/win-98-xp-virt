@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let default = manifest.join("../build/qemu");
+    // The Windows cross build keeps its own QEMU build directory so one
+    // checkout can hold both (scripts/win-cross.sh, docs/build-windows.md).
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    let default = manifest.join(if windows { "../build/win/qemu" } else { "../build/qemu" });
     let dir = std::env::var("QEMU_EMBED_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or(default);

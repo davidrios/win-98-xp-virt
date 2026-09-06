@@ -28,16 +28,75 @@ pub fn player_binary() -> PathBuf {
     dir.join(if cfg!(windows) { "player.exe" } else { "player" })
 }
 
-/// Whether this host can actually give a guest KVM, for the wizard to
-/// say so next to the acceleration picker. Deliberately not consulted by
-/// `bundle::qemu_args`, which leaves the decision to QEMU's own
-/// `accel=kvm:tcg` fallback: this is a hint for a human, and being open
-/// to *write* is the part a bare `exists()` would miss (the device node
-/// is there on a host whose user is not in the `kvm` group, and that is
-/// the common way for this to be unavailable).
-pub fn kvm_available() -> bool {
-    cfg!(target_os = "linux")
-        && std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
+/// What this host's hardware acceleration is called, for the wizard's
+/// picker and its hints — KVM on Linux, WHPX on Windows (doc 07's
+/// "acceleration: …" indicator). macOS gets no name: the Apple Silicon
+/// machines this project targets cannot run an x86 guest natively at
+/// all, so there is nothing to offer.
+pub fn hw_accel_label() -> Option<&'static str> {
+    match () {
+        _ if cfg!(target_os = "linux") => Some("KVM"),
+        _ if cfg!(target_os = "windows") => Some("WHPX"),
+        _ => None,
+    }
+}
+
+/// Whether this host can actually give a guest hardware acceleration, for
+/// the wizard to say so next to the acceleration picker. Deliberately not
+/// consulted by `bundle::qemu_args`, which leaves the decision to QEMU's
+/// own `accel=kvm:tcg` fallback: this is a hint for a human.
+///
+/// Linux: being open to *write* is the part a bare `exists()` would miss
+/// (the device node is there on a host whose user is not in the `kvm`
+/// group, and that is the common way for this to be unavailable).
+/// Windows: the Hypervisor Platform is asked whether a hypervisor is
+/// present, because the feature can be installed and still turned off —
+/// and on a machine where Hyper-V or WSL2 already took the root
+/// partition, this is exactly the answer that differs from the guess.
+pub fn hw_accel_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        whpx_present()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        false
+    }
+}
+
+/// `WHvGetCapability(WHvCapabilityCodeHypervisorPresent)`, resolved at
+/// run time so the launcher still starts on a Windows without the
+/// Hypervisor Platform feature (where the DLL is simply absent).
+#[cfg(target_os = "windows")]
+fn whpx_present() -> bool {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryA(name: *const u8) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    }
+    type GetCapability =
+        unsafe extern "system" fn(u32, *mut c_void, u32, *mut u32) -> i32;
+    unsafe {
+        let dll = LoadLibraryA(c"WinHvPlatform.dll".as_ptr() as *const u8);
+        if dll.is_null() {
+            return false;
+        }
+        let proc = GetProcAddress(dll, c"WHvGetCapability".as_ptr() as *const u8);
+        if proc.is_null() {
+            return false;
+        }
+        let get: GetCapability = std::mem::transmute(proc);
+        let mut present: u32 = 0;
+        let mut written: u32 = 0;
+        // WHvCapabilityCodeHypervisorPresent = 0; the buffer is a BOOL.
+        let hr = get(0, &mut present as *mut u32 as *mut c_void, 4, &mut written);
+        hr >= 0 && written == 4 && present != 0
+    }
 }
 
 /// QEMU's firmware directory (README's `-L`): shipped as

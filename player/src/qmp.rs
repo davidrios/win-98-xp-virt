@@ -1,8 +1,13 @@
 //! QMP over a socketpair (doc 11 §QMP). The player keeps one end; the other
 //! is handed to QEMU as `-chardev socket,id=qmp0,fd=N -mon
-//! chardev=qmp0,mode=control`. No filesystem path, no network: the monitor
-//! exists only inside this process. Full QMP including events; the monitor
-//! runs on QEMU's own iothread, so commands are safe from any thread.
+//! chardev=qmp0,mode=control`. No filesystem path: the monitor exists only
+//! inside this process. Full QMP including events; the monitor runs on
+//! QEMU's own iothread, so commands are safe from any thread.
+//!
+//! Windows has no `socketpair()`, so the pair is made on the loopback
+//! interface and the connection is proved to be our own before it is used
+//! (see `pair`) — the socket handle is then passed to QEMU exactly as the
+//! Unix fd is, because `fd=` is a plain integer on both.
 //!
 //! `execute` is synchronous (id-matched, 10 s timeout). Events accumulate in
 //! a queue the UI thread drains with `take_events`.
@@ -10,14 +15,21 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::os::fd::IntoRawFd;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::fd::IntoRawFd;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream as Stream;
+#[cfg(windows)]
+use std::net::TcpStream as Stream;
+#[cfg(windows)]
+use std::os::windows::io::{AsRawSocket, IntoRawSocket};
+
 pub struct Qmp {
-    writer: Mutex<UnixStream>,
+    writer: Mutex<Stream>,
     pending: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
     events: Mutex<VecDeque<Value>>,
     next_id: AtomicU64,
@@ -29,7 +41,7 @@ impl Qmp {
     /// Create the pair. Returns the client and the raw fd to pass to QEMU
     /// (kept open for the process lifetime; QEMU owns it after init).
     pub fn pair() -> std::io::Result<(Arc<Qmp>, i32)> {
-        let (ours, theirs) = UnixStream::pair()?;
+        let (ours, theirs) = socket_pair()?;
         let reader = ours.try_clone()?;
         let qmp = Arc::new(Qmp {
             writer: Mutex::new(ours),
@@ -43,7 +55,7 @@ impl Qmp {
             .name("qmp".into())
             .spawn(move || q.reader_loop(reader))
             .expect("spawn qmp reader");
-        Ok((qmp, theirs.into_raw_fd()))
+        Ok((qmp, into_raw(theirs)))
     }
 
     /// QEMU command-line fragment that attaches the monitor to `fd`.
@@ -56,7 +68,7 @@ impl Qmp {
         ]
     }
 
-    fn reader_loop(&self, stream: UnixStream) {
+    fn reader_loop(&self, stream: Stream) {
         let mut rd = BufReader::new(stream);
         let mut line = String::new();
         loop {
@@ -165,6 +177,59 @@ impl Qmp {
     pub fn take_events(&self) -> Vec<Value> {
         self.events.lock().unwrap().drain(..).collect()
     }
+}
+
+#[cfg(unix)]
+fn socket_pair() -> std::io::Result<(Stream, Stream)> {
+    Stream::pair()
+}
+
+#[cfg(unix)]
+fn into_raw(s: Stream) -> i32 {
+    s.into_raw_fd()
+}
+
+/// A connected pair on the loopback interface, Windows' stand-in for
+/// `socketpair()`. Anything else on the machine can also connect to a
+/// listening port, so the accepted connection is only kept when its peer
+/// address is the exact address our own connecting socket was given —
+/// which no other process can be using at the same time. A stranger that
+/// wins the race is dropped and the whole thing is tried again, so the
+/// monitor is never handed to it.
+#[cfg(windows)]
+fn socket_pair() -> std::io::Result<(Stream, Stream)> {
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    let addr = listener.local_addr()?;
+    for _ in 0..16 {
+        let ours = Stream::connect(addr)?;
+        let mine = ours.local_addr()?;
+        let (theirs, peer) = listener.accept()?;
+        if peer == mine && matches!(mine, SocketAddr::V4(a) if *a.ip() == Ipv4Addr::LOCALHOST) {
+            ours.set_nodelay(true)?;
+            theirs.set_nodelay(true)?;
+            return Ok((ours, theirs));
+        }
+        // Someone else got in first: drop both and try a fresh pair.
+        drop(theirs);
+        drop(ours);
+    }
+    Err(std::io::Error::other(
+        "could not establish a private loopback pair for the QEMU monitor",
+    ))
+}
+
+/// The socket handle as QEMU's `fd=` wants it. Windows socket handles are
+/// kernel handle values, small in practice but pointer-sized by type, and
+/// `fd=` is parsed as an int — so a value that would not survive the trip
+/// is refused here rather than silently truncated into someone else's
+/// handle.
+#[cfg(windows)]
+fn into_raw(s: Stream) -> i32 {
+    let raw = s.as_raw_socket();
+    assert!(raw <= i32::MAX as u64, "socket handle {raw} does not fit QEMU's fd=");
+    let _ = s.into_raw_socket(); // QEMU owns it now; do not close it here
+    raw as i32
 }
 
 /// Events worth a log line even without PLAYER_QMP=1.

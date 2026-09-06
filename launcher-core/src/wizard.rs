@@ -149,7 +149,7 @@ impl Default for Form {
             cpu_speed: bundle::default_cpu_speed(Family::Win98),
             cpu_speed_chosen: false,
             optimizations: Optimizations::default(),
-            have_kvm: player::kvm_available(),
+            have_kvm: player::hw_accel_available(),
             host_gpu: host_gpu::cached().gpu,
             editing: None,
         }
@@ -350,24 +350,27 @@ impl Form {
         self.accel_chosen = false;
     }
 
-    /// Whether this host has KVM — the picker alone would leave
-    /// "Automatic" meaning something invisible.
+    /// Whether this host has hardware acceleration — the picker alone
+    /// would leave "Automatic" meaning something invisible.
     pub fn have_kvm(&self) -> bool {
         self.have_kvm
     }
 
     pub fn accel_note(&self) -> AccelNote {
+        // KVM on Linux, WHPX on Windows: the note names what this host
+        // has, because "No KVM on this host" on a Windows machine is
+        // both wrong and unactionable.
+        let hw = player::hw_accel_label().unwrap_or("Hardware acceleration");
         let mut text = match (self.accel, self.have_kvm) {
-            (Accel::Auto, true) => "KVM is available on this host and will be used.",
-            (Accel::Auto, false) => "No KVM on this host: this machine will be emulated.",
-            (Accel::Kvm, true) => "KVM is available on this host.",
-            (Accel::Kvm, false) => "No KVM on this host: this machine will refuse to start.",
-            (Accel::Tcg, _) => "Emulated: the era-CPU behaviour everything here is tuned for.",
-        }
-        .to_string();
+            (Accel::Auto, true) => format!("{hw} is available on this host and will be used."),
+            (Accel::Auto, false) => format!("No {hw} on this host: this machine will be emulated."),
+            (Accel::Kvm, true) => format!("{hw} is available on this host."),
+            (Accel::Kvm, false) => format!("No {hw} on this host: this machine will refuse to start."),
+            (Accel::Tcg, _) => "Emulated: the era-CPU behaviour everything here is tuned for.".to_string(),
+        };
         if self.family == Family::Win98 && self.accel != Accel::Tcg && self.have_kvm {
             text.push('\n');
-            text.push_str("Win98 runs at host speed under KVM, which its own fast-CPU bugs dislike.");
+            text.push_str(&format!("Win98 runs at host speed under {hw}, which its own fast-CPU bugs dislike."));
         }
         AccelNote { text, warning: matches!((self.accel, self.have_kvm), (Accel::Kvm, false)) }
     }

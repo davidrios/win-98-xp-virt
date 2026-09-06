@@ -4,7 +4,15 @@
 # Python version pinned in .python-version (QEMU 9.2.x supports <= 3.13;
 # host 3.14s broke mkvenv/distlib).
 #
-# Usage: scripts/configure-qemu.sh [extra configure flags...]
+# Usage: scripts/configure-qemu.sh [--windows] [extra configure flags...]
+#
+# --windows cross-compiles for Windows x86_64 with mingw-w64 into
+# build/win/qemu instead of build/qemu, against the Rust staticlib built
+# for x86_64-pc-windows-gnu. Run it inside the cross container
+# (scripts/win-cross.sh), which is where the mingw glib/pixman/epoxy the
+# build needs actually exist — docs/build-windows.md. The two build
+# directories are independent, so one checkout holds a Linux build and a
+# Windows build at once.
 #
 # QEMU_PYTHON=<interpreter> uses that one and never consults uv — for a
 # build inside a sandbox that has a suitable Python already and cannot
@@ -15,7 +23,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/build/qemu"
+
+WINDOWS=""
+if [ "${1:-}" = "--windows" ]; then WINDOWS=1; shift; fi
+
+if [ -n "$WINDOWS" ]; then
+  BUILD="$ROOT/build/win/qemu"
+  CARGO_TARGET=x86_64-pc-windows-gnu
+else
+  BUILD="$ROOT/build/qemu"
+  CARGO_TARGET=""
+fi
+LIBDISC_DIR="$ROOT/target${CARGO_TARGET:+/$CARGO_TARGET}/release"
 
 PYVER="$(cat "$ROOT/.python-version")"
 if [ -n "${QEMU_PYTHON:-}" ]; then
@@ -35,8 +54,8 @@ echo "==> python: $PYTHON ($("$PYTHON" -V 2>&1))"
 # libdisc (the CD-ROM image model, libdisc/): a Rust staticlib linked into
 # qemu-system-* and libqemu-embed-* for block/cdimage.c (patch 50). The crate
 # has no QEMU dependency, so no cycle with the player.
-echo "==> cargo build --release -p libdisc"
-(cd "$ROOT" && cargo build --release -p libdisc)
+echo "==> cargo build --release -p libdisc${CARGO_TARGET:+ --target $CARGO_TARGET}"
+(cd "$ROOT" && cargo build --release -p libdisc ${CARGO_TARGET:+--target "$CARGO_TARGET"})
 
 mkdir -p "$BUILD"
 cd "$BUILD"
@@ -44,7 +63,16 @@ cd "$BUILD"
 # --extra-cflags: vendored Khronos GL headers (third_party/khronos/README.md)
 # -fPIC: objects are also linked into libqemu-embed-<target> (shared)
 EXTRA_CFLAGS="-I$ROOT/third_party/khronos -fPIC"
-if [ "$(uname -s)" = Darwin ]; then
+CFG=(-Db_staticpic=true)
+if [ -n "$WINDOWS" ]; then
+  # PE code is position-independent by construction and gcc says so on every
+  # file it compiles ("-fPIC ignored for target"), so the native build's flag
+  # goes away here rather than being repeated a few thousand times.
+  EXTRA_CFLAGS="-I$ROOT/third_party/khronos"
+  CFG=(--cross-prefix=x86_64-w64-mingw32-)
+  command -v x86_64-w64-mingw32-gcc >/dev/null || {
+    echo "no x86_64-w64-mingw32-gcc — run this inside scripts/win-cross.sh"; exit 1; }
+elif [ "$(uname -s)" = Darwin ]; then
   # qemu-3dfx's Darwin path is GLX via XQuartz (patched meson.build hardcodes
   # /opt/X11) and the patch requires SDL2.
   [ -d /opt/X11/include ] || { echo "XQuartz missing: brew install --cask xquartz"; exit 1; }
@@ -62,9 +90,9 @@ fi
   --python="$PYTHON" \
   --disable-werror \
   --extra-cflags="$EXTRA_CFLAGS" \
-  -Db_staticpic=true \
+  "${CFG[@]}" \
   --target-list=i386-softmmu,x86_64-softmmu \
-  -Dlibdisc_dir="$ROOT/target/release" \
+  -Dlibdisc_dir="$LIBDISC_DIR" \
   "$@"
 
 # QEMU's configure writes `werror = true` into its native file for git

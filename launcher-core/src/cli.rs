@@ -87,7 +87,7 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
         "--kvm" => {
             // What the wizard's acceleration hint reads, on its own:
             // this host's answer, not the bundle's setting.
-            println!("{}", if player::kvm_available() { "available" } else { "not available" });
+            println!("{}", if player::hw_accel_available() { "available" } else { "not available" });
         }
         "--host-check" => {
             // The other half of `--kvm`: what this host can do for the

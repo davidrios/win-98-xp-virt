@@ -1120,8 +1120,7 @@ fn repair(disc: &Disc, image: &Path, outdir: &Path) -> Result<Repaired, String> 
                 handles.entry(file).or_insert(f)
             }
         };
-        use std::os::unix::fs::FileExt;
-        h.write_all_at(&raw, off).map_err(|e| format!("{}: at {off}: {e}", copies[file].display()))?;
+        write_all_at(h, &raw, off).map_err(|e| format!("{}: at {off}: {e}", copies[file].display()))?;
         done += 1;
     }
     for (_, h) in handles.iter_mut() {
@@ -1129,6 +1128,30 @@ fn repair(disc: &Disc, image: &Path, outdir: &Path) -> Result<Repaired, String> 
     }
 
     Ok(Repaired { sectors: done, no_sync, unstored, out_image })
+}
+
+/// Positional write, the mirror of `Payload::read_at` in the library: the
+/// two platforms spell it differently and neither moves the file cursor,
+/// which is what makes `repair` safe to interleave across files.
+fn write_all_at(h: &mut fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        h.write_all_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            let n = h.seek_write(&buf[done..], offset + done as u64)?;
+            if n == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "short write"));
+            }
+            done += n;
+        }
+        Ok(())
+    }
 }
 
 fn subscan(disc: &Disc, first: i32, count: Option<i32>) -> Result<(), String> {

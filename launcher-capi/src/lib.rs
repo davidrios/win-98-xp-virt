@@ -1550,9 +1550,12 @@ pub unsafe extern "C" fn lc_path(what: *const c_char) -> *mut c_char {
     out(path.display().to_string())
 }
 
-/// Whether this host can give a guest KVM — the same answer the wizard's
-/// acceleration hint reads.
+/// Whether this host can give a guest hardware acceleration — the same
+/// answer the wizard's acceleration hint reads. Named `kvm` because that
+/// is what it is on the hosts this ABI has front ends for; on Windows it
+/// answers for WHPX (`launcher_core::player::hw_accel_label` is the name
+/// to show).
 #[no_mangle]
 pub extern "C" fn lc_kvm_available() -> bool {
-    launcher_core::player::kvm_available()
+    launcher_core::player::hw_accel_available()
 }
