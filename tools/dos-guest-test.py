@@ -194,8 +194,13 @@ def main():
     kvm_bundle = os.path.join(OUT, "kvm.toml")
     write_bundle(kvm_bundle, disk, floppy, "486dx2-66", accel="kvm")
     args = print_args(kvm_bundle)
-    check("pc,accel=tcg" in args, "a throttled machine runs emulated even when it asks for KVM",
-          " ".join(a for a in args if a.startswith("pc,")))
+    # The accelerator is spelled `-accel`, not `-machine accel=`, because
+    # the TCG-side optimizations are properties of the accelerator object
+    # and the two spellings cannot be mixed; a machine that has changed
+    # none of them carries a bare `tcg` here.
+    accel = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-accel"]
+    check(accel == ["tcg"], "a throttled machine runs emulated even when it asks for KVM",
+          " ".join("-accel %s" % a for a in accel) or "(no -accel)")
 
     # 3. the guest itself, once per processor setting
     print("== a real FreeDOS guest, %d instructions of loop" % INSNS)

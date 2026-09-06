@@ -14,7 +14,7 @@
 //! screenshot verbs render real frames — synthetic egui input on one
 //! side, `QT_QPA_PLATFORM=offscreen` and `grabToImage` on the other.
 
-use crate::bundle::{self, Family, Machine};
+use crate::bundle::{self, Family, Machine, Optimization};
 use crate::{browse, control, disc_library, library, machines, player, preview, shader_library, shader_profile,
     shader_source, shelf, snaps, wizard};
 use std::path::{Path, PathBuf};
@@ -198,6 +198,54 @@ pub fn run(verb: &str, args: &mut impl Iterator<Item = String>) -> Option<i32> {
             match form.submit(&library::default_dir()) {
                 Some(saved) => println!("{}", saved.display()),
                 None => panic!("save bundle: {}", form.error.unwrap_or_default()),
+            }
+        }
+        "--optimizations" => {
+            // Headless equivalent of the wizard's "Emulation
+            // optimizations" section: the real form's checkboxes and its
+            // "All defaults" button, then a save. With no changes it
+            // just reports, which is also how a bundle is read back
+            // after one — the state, and whether it is the shipped one.
+            let usage = "usage: --optimizations <machine.toml> [<name> on|off | defaults]...";
+            let path: PathBuf = args.next().expect(usage).into();
+            let mut form = wizard::Form::default();
+            form.open_edit_path(path.clone());
+            if let Some(e) = &form.error {
+                panic!("{e}");
+            }
+            let mut changed = false;
+            while let Some(arg) = args.next() {
+                changed = true;
+                if arg == "defaults" {
+                    form.reset_optimizations();
+                    continue;
+                }
+                let opt = Optimization::ALL
+                    .into_iter()
+                    .find(|o| o.key() == arg)
+                    .unwrap_or_else(|| panic!("unknown optimization {arg:?}; {usage}"));
+                let on = match args.next().as_deref() {
+                    Some("on") => true,
+                    Some("off") => false,
+                    other => panic!("{} takes on or off, not {other:?}; {usage}", opt.key()),
+                };
+                form.choose_optimization(opt, on);
+            }
+            if changed && form.submit(&library::default_dir()).is_none() {
+                eprintln!("[optimizations] {}", form.error.unwrap_or_default());
+                return Some(1);
+            }
+            // What the section says above the switches — on a machine
+            // headed for KVM it says they do nothing, which is the one
+            // thing worth seeing from a script too.
+            println!("[optimizations] {}", form.optimizations_note());
+            for opt in Optimization::ALL {
+                println!(
+                    "{}\t{}\t{}",
+                    opt.key(),
+                    if form.optimization_enabled(opt) { "on" } else { "off" },
+                    if form.optimizations().is_default(opt) { "default" } else { "changed" }
+                );
             }
         }
         "--boot-disc" => {

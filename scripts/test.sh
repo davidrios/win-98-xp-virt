@@ -24,6 +24,10 @@
 #                  this build, and the staged launcher asked with a scrubbed
 #                  environment whether player/qemu-img/firmware/guest-tools all
 #                  resolve inside the package (doc 07's install layout)
+#   optimizations  the wizard's fast-path switches (patches/qemu/README.md) from a
+#                  checkbox to a real QEMU: a default machine's line unchanged,
+#                  each switch on the option QEMU looks it up on, our QEMU
+#                  accepting the line the launcher writes
 #   capi           launcher-capi/examples/smoke.c: a third front end, in C, over
 #                  the same models the egui and Qt builds use — the wizard's
 #                  DOS defaults, the disc shelf, snapshots and the profile
@@ -158,6 +162,58 @@ host_check_probe() { # `launcher --host-check` (ADR-013), on any host
   fi
   return $rc
 }
+optimizations_check() { # the wizard's fast-path switches, all the way to a real QEMU
+  local rc=0 dir="$OUT/opt-switches" bundle args o
+  rm -rf "$dir"; mkdir -p "$dir/library"
+  export LAUNCHER_LIBRARY_DIR="$dir/library" LAUNCHER_DISC_LIBRARY="$dir/discs.toml"
+  export LAUNCHER_SHADER_PROFILES_DIR="$dir/profiles"
+  : >"$dir/disk.qcow2"
+  bundle="$(target/release/launcher --new xp opts "$dir/disk.qcow2")" || { echo "--new failed"; return 1; }
+  # A machine nobody has touched must produce the command line it always
+  # produced: no properties, and no `[optimizations]` table in the file.
+  args="$(target/release/launcher --print-args "$bundle")"
+  case "$args" in *-cpu\ pentium3\ *) ;; *) echo "a default machine names a CPU property"; echo "$args"; rc=1;; esac
+  case "$args" in *=on*|*=off*) echo "a default machine names an optimization"; echo "$args"; rc=1;; esac
+  grep -q '^\[optimizations\]' "$bundle" && { echo "a default machine wrote an [optimizations] table"; rc=1; }
+  # Every switch, through the real form: off where it ships on, on where
+  # it ships off, and each on the option QEMU looks it up on — a CPU
+  # property on `-cpu`, an accelerator property on `-accel tcg`.
+  target/release/launcher --optimizations "$bundle" \
+    x87-fast off sse-fast off simd-fast off rep-fast off \
+    smc-same-value off inline-lookup off pinned-regs on >"$OUT/optimizations-set.log" 2>&1 \
+    || { echo "--optimizations failed"; cat "$OUT/optimizations-set.log"; rc=1; }
+  args="$(target/release/launcher --print-args "$bundle")"
+  for p in x87-fast=off sse-fast=off simd-fast=off rep-fast=off; do
+    case "$args" in *"-cpu pentium3,"*"$p"*) ;; *) echo "$p is not on -cpu"; echo "$args"; rc=1;; esac
+  done
+  for p in smc-same-value=off inline-lookup=off pinned-regs=on; do
+    case "$args" in *"-accel tcg,"*"$p"*) ;; *) echo "$p is not on -accel tcg"; echo "$args"; rc=1;; esac
+  done
+  # The point of the whole thing: our QEMU accepts the line the launcher
+  # writes. Started paused on the real binary and told to quit, so a
+  # rejected property is an exit code and not a hung guest.
+  if [ -x build/qemu/qemu-system-i386 ] && [ -x build/qemu/qemu-img ]; then
+    # A real image, because a zero-byte file is not a disk; and
+    # `audiodev=embed0` is the player's own backend, which lives inside
+    # the embed library and not out here, so a null one takes the name
+    # (the same stand-in `tools/dos-guest-test.py` uses) and the
+    # machine's device line is run verbatim.
+    build/qemu/qemu-img create -f qcow2 "$dir/disk.qcow2" 64M >/dev/null || rc=1
+    # shellcheck disable=SC2086
+    o="$(printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' \
+         | timeout 30 build/qemu/qemu-system-i386 $args \
+             -audiodev none,id=embed0 -display none -S -qmp stdio -serial none 2>&1)" \
+      || { echo "our QEMU refused the launcher's command line"; echo "$o" | tail -3; rc=1; }
+  else
+    echo "  (no build/qemu: the command line was checked but not run)"
+  fi
+  # "All defaults" empties the table again rather than writing every
+  # switch out at its shipped value.
+  target/release/launcher --optimizations "$bundle" defaults >/dev/null 2>&1 || rc=1
+  grep -q '^\[optimizations\]' "$bundle" \
+    && { echo "\"All defaults\" left an [optimizations] table behind"; rc=1; }
+  return $rc
+}
 have_display() { [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || [ "$OS" = Darwin ]; }
 
 # ---------------------------------------------------------------- host stage
@@ -191,6 +247,18 @@ host_stage() {
   cargo build --release -p launcher -q 2>"$OUT/host-check-build.log" \
     && run_check host-check host-check.log host_check_probe \
     || { [ -x target/release/launcher ] || { FAIL+=(host-check); echo "  FAIL host-check (build)"; }; }
+
+  # the wizard's emulation-optimization switches (patches/qemu/README.md):
+  # that a machine nobody has touched still produces the command line it
+  # always produced, that each switch lands on the option QEMU looks it up
+  # on — a CPU property on `-cpu`, an accelerator property on `-accel tcg`
+  # — and that our own QEMU actually accepts the line the launcher writes.
+  # The switches' *effect* is the guest batteries' job (x87-guest,
+  # sse-guest, rep-guest, smc-guest); this is the wiring between them and
+  # a checkbox.
+  cargo build --release -p launcher -q 2>"$OUT/optimizations-build.log" \
+    && run_check optimizations optimizations.log optimizations_check \
+    || { [ -x target/release/launcher ] || { FAIL+=(optimizations); echo "  FAIL optimizations (build)"; }; }
 
   # the Linux package (M6 step 6): staged from this build and asked, with a
   # scrubbed environment, whether it resolves its own player, qemu-img,

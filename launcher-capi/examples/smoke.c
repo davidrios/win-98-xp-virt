@@ -103,6 +103,32 @@ int main(int argc, char **argv) {
     lc_wizard_reset_ram(w);
     check("...and \"Default\" puts it back", lc_wizard_ram_is_default(w), NULL);
 
+    /* Our own emulator fast paths: everything on except the one that
+     * ships off, a checkbox that changes the count, and "All defaults"
+     * that puts it back — the section of the form a third front end has
+     * to be able to draw as well as the two Rust ones. */
+    size_t opt_count = 0;
+    for (char *l; (l = lc_wizard_label(LC_LABEL_OPTIMIZATION, opt_count)); opt_count++) {
+        lc_string_free(l);
+    }
+    check("the form offers some optimizations", opt_count > 0, NULL);
+    check("...all at their shipped setting", lc_wizard_optimizations_are_default(w), NULL);
+    char *opt_note = lc_wizard_label(LC_LABEL_OPTIMIZATION_NOTE, 0);
+    check("...each with a sentence under it", opt_note && strlen(opt_note) > 0, opt_note);
+    lc_string_free(opt_note);
+    char *before_summary = lc_wizard_optimizations_summary(w);
+    check("...and a count of what is on", before_summary && strchr(before_summary, ' ') != NULL, before_summary);
+    check("the first one is on", lc_wizard_optimization_enabled(w, 0), NULL);
+    lc_wizard_choose_optimization(w, 0, false);
+    check("...turning it off takes", !lc_wizard_optimization_enabled(w, 0), NULL);
+    check("...and is not the default any more", !lc_wizard_optimizations_are_default(w), NULL);
+    char *after_summary = lc_wizard_optimizations_summary(w);
+    check("...which the count says", after_summary && strcmp(after_summary, before_summary) != 0, after_summary);
+    lc_string_free(before_summary);
+    lc_string_free(after_summary);
+    lc_wizard_reset_optimizations(w);
+    check("\"All defaults\" puts every one back", lc_wizard_optimizations_are_default(w), NULL);
+
     lc_wizard_set(w, "name", "capi dos");
     lc_wizard_set_flag(w, "existing_disk", true);
     lc_wizard_set(w, "disk_path", "/dev/null");

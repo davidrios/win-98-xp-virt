@@ -27,7 +27,7 @@
 //! directly.
 
 use crate::browse::Filter;
-use crate::bundle::{self, Accel, Boot, CpuSpeed, Family, Machine};
+use crate::bundle::{self, Accel, Boot, CpuSpeed, Family, Machine, Optimization, Optimizations};
 use crate::disc_library::DISC_FILTER;
 use crate::{host_gpu, library, player};
 use std::path::{Path, PathBuf};
@@ -102,6 +102,13 @@ pub struct Form {
     /// family to DOS must bring it along.
     cpu_speed: CpuSpeed,
     cpu_speed_chosen: bool,
+    /// Which of our own emulator fast paths this machine runs with.
+    /// Private like the fields above, though nothing here follows the
+    /// family: a checkbox that is *off* is a diagnosis someone is in the
+    /// middle of, and `choose_optimization` is the only way to set one,
+    /// which is what keeps the "only the difference is stored" rule
+    /// (`Optimizations::set`) out of two front ends.
+    optimizations: Optimizations,
 
     /// Whether this host can give a guest KVM. Read once when the form
     /// opens rather than per frame: it opens `/dev/kvm` to find out (a
@@ -141,6 +148,7 @@ impl Default for Form {
             network_chosen: false,
             cpu_speed: bundle::default_cpu_speed(Family::Win98),
             cpu_speed_chosen: false,
+            optimizations: Optimizations::default(),
             have_kvm: player::kvm_available(),
             host_gpu: host_gpu::cached().gpu,
             editing: None,
@@ -183,6 +191,7 @@ impl Form {
             network_chosen: true,
             cpu_speed: machine.effective_cpu_speed(),
             cpu_speed_chosen: true,
+            optimizations: machine.optimizations.clone(),
             floppy: machine.floppy.as_ref().map(|f| f.display().to_string()).unwrap_or_default(),
             boot: machine.effective_boot(),
             existing_disk: true,
@@ -413,6 +422,61 @@ impl Form {
         }
     }
 
+    pub fn optimizations(&self) -> &Optimizations {
+        &self.optimizations
+    }
+
+    pub fn optimization_enabled(&self, opt: Optimization) -> bool {
+        self.optimizations.enabled(opt)
+    }
+
+    pub fn choose_optimization(&mut self, opt: Optimization, on: bool) {
+        self.optimizations.set(opt, on);
+    }
+
+    /// Every fast path back on its shipped setting — the way out of a
+    /// diagnosis session, and the only button in that section that
+    /// someone will look for.
+    pub fn reset_optimizations(&mut self) {
+        self.optimizations.reset();
+    }
+
+    pub fn optimizations_are_default(&self) -> bool {
+        self.optimizations.all_default()
+    }
+
+    /// What the collapsed section says about itself, so a machine with
+    /// something turned off says so without being opened.
+    pub fn optimizations_summary(&self) -> String {
+        self.optimizations.summary()
+    }
+
+    /// The one thing worth saying above the switches: on a machine that
+    /// is about to run on KVM they are all inert, because the guest's
+    /// instructions are then executed by the host CPU and there is no
+    /// emulator in the path to have a fast path.
+    pub fn optimizations_note(&self) -> &'static str {
+        if self.will_use_kvm() {
+            "This machine runs on KVM, where none of these apply: they are fast paths in the emulator. \
+             Choose Emulation above (or a processor, which forces it) to use them."
+        } else {
+            "Our own additions to QEMU, each measured (patches/qemu/README.md). Turn one off to find out \
+             whether it is what makes a guest compute the wrong number or stop drawing."
+        }
+    }
+
+    /// Whether this machine, as the form currently stands, will actually
+    /// run on KVM: what `effective_accel` decides, plus what this host
+    /// has — `Automatic` on a box without `/dev/kvm` is emulation.
+    fn will_use_kvm(&self) -> bool {
+        self.cpu_speed.icount_shift().is_none()
+            && match self.accel {
+                Accel::Kvm => true,
+                Accel::Auto => self.have_kvm,
+                Accel::Tcg => false,
+            }
+    }
+
     /// The one thing the boot picker can say that isn't obvious: a
     /// machine told to boot from a floppy it hasn't got.
     pub fn boot_note(&self) -> Option<&'static str> {
@@ -445,6 +509,7 @@ impl Form {
                 floppy: None,
                 boot: None,
                 cpu_speed: None,
+                optimizations: Optimizations::default(),
             },
             None => Machine::reference(self.family, self.name.clone(), disk),
         };
@@ -462,6 +527,9 @@ impl Form {
         machine.network = if self.network_chosen { self.network } else { bundle::default_network(self.family) };
         machine.cpu_speed =
             Some(if self.cpu_speed_chosen { self.cpu_speed } else { bundle::default_cpu_speed(self.family) });
+        // Only what someone turned off is in here, so this is a clone
+        // of "nothing" for almost every machine (`Optimizations`).
+        machine.optimizations = self.optimizations.clone();
         machine.boot = Some(self.boot);
         machine.floppy = Some(self.floppy.trim()).filter(|f| !f.is_empty()).map(PathBuf::from);
         machine.shader_profile = self.shader_profile.clone();

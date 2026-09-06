@@ -1497,6 +1497,88 @@ in QML, secondary screens as **real top-level windows**.
   of `src/qt/wizard.rs`, which is where the next person will be when
   they bite.
 
+## The emulation optimizations, as checkboxes (2026-09-06)
+
+The QEMU patch queue has seven fast paths that carry an off switch
+(`patches/qemu/README.md`): `x87-fast` (patches 05 and 06), `sse-fast`
+(11), `simd-fast` (12) and `rep-fast` (17) are properties of the guest
+CPU; `smc-same-value` (18), `inline-lookup` (20) and `pinned-regs` (21)
+are properties of the TCG accelerator. All are now a checkbox in the
+machine form, behind a disclosure headed with the count so a machine
+with one off says so while closed.
+
+**Why expose them at all.** Each replaces simulated arithmetic with the
+host's own. When a guest computes the wrong number or a game stops
+drawing, one run with one switch clear says whether a fast path did it;
+without the switch the answer costs a bisect of the patch queue against
+a Windows install. That is also why the defaults are "everything that has
+shipped", with `pinned-regs` off — its own patch is off by default while
+the work is in progress and a boot crash has been seen with it on.
+
+**Three decisions worth keeping.**
+
+* **Only the difference is stored.** `Optimizations` is a
+  `BTreeMap<String, bool>` holding what someone changed, keyed by the
+  QEMU property name; `set()` back to a value's own default *removes* the
+  entry. So a machine that has changed nothing writes no
+  `[optimizations]` table, emits no property, and produces the command
+  line it always produced — which also means it still starts on a QEMU
+  without these patches. An optimization added to the queue later arrives
+  **on** in every bundle that already exists, and an entry a newer
+  launcher wrote survives a load and a save here, because the key is a
+  name and not a Rust enum variant.
+* **The field is last in `Machine`.** It is the only one that serializes
+  to a TOML *table*, and a table swallows every key-value line after it;
+  anywhere else in the struct, the fields below would come back as part
+  of `[optimizations]`.
+* **`-accel`, not `-machine accel=`.** The accelerator-side properties
+  have nowhere to live in `accel=kvm:tcg`, and QEMU refuses the two
+  spellings together ("The -accel and \"-machine accel=\" options are
+  incompatible", `system/vl.c`). `Auto` is now `-accel kvm -accel
+  tcg[,…]`: `configure_accelerators` tries them in order and stops at the
+  first that initializes, which is exactly what the colon list did.
+  Confirmed with `query-kvm` on the real binary — `kvm` for both
+  spellings, `tcg` alone for `-accel tcg`. `tools/dos-guest-test.py`'s
+  "a throttled machine runs emulated even when it asks for KVM" reads the
+  `-accel` list now instead of matching `pc,accel=tcg`.
+
+**Where the code is.** `bundle::Optimization` (the enum, the QEMU
+property name, which option it goes on, the label and the sentence under
+it) and `bundle::Optimizations` (the set); `wizard::Form`'s
+`choose_optimization` / `reset_optimizations` / `optimizations_summary` /
+`optimizations_note` — including the one thing worth saying above the
+switches, that a machine headed for KVM has no emulator in the path for
+them to be fast paths *in*. The egui build draws a `CollapsingHeader`;
+QML a `CheckBox` disclosure over a `Repeater`, whose `checked` binds to a
+new `optimizationsMask` Q_PROPERTY — a bitmask because a `Q_INVOKABLE`
+would never re-evaluate, and cxx-qt has no `QList<bool>`. The C ABI gets
+`lc_wizard_optimization_enabled` and friends plus two new
+`lc_wizard_label` kinds.
+
+**Both wizards now scroll.** Seven more rows plus a sentence each was
+enough to push "Save" past the bottom of a 720-tall window: the fields go
+in a scroll area (egui `ScrollArea`, QML `ScrollView`) and the error line
+and the buttons stay outside it. Verified on a deliberately short screen
+in both — the section expanded, the button still there. (An egui trap
+worth remembering: `CollapsingHeader` *animates* open and clips its
+content while it does, so a `--diag-wizard-frame` script has to spend
+several `~ms` steps after the click or it screenshots a half-open,
+truncated section and looks like a layout bug.)
+
+**Checked.** The `optimizations` check in `scripts/test.sh`: a machine
+nobody has touched still emits no property and writes no table; each of
+the seven lands on the option QEMU looks it up on; **our own
+`qemu-system-i386` accepts the exact line the launcher writes** with all
+seven flipped (started paused on QMP and told to quit, so a rejected
+property is an exit code); "All defaults" empties the table again. Plus
+the `capi` smoke test's new block (the count, a switch, the reset) and
+both GUIs driven headlessly — the egui build clicked through to a real
+`machine.toml` carrying `sse-fast = false` and `pinned-regs = true`,
+which `--print-args` then places as `-cpu pentium3,sse-fast=off` and
+`-accel tcg,pinned-regs=on`. The switches' *effect* is already the guest
+batteries' job (`x87-guest`, `sse-guest`, `rep-guest`, `smc-guest`);
+this check is the wiring between them and a checkbox.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -1665,7 +1747,8 @@ list (`--new`, `--print-args`, `--play`, `--paths`,
 `--diag-editor-frame`, `--discs`, `--boot-disc`, `--diag-shelf-frame`,
 `--snapshots` (`--live` for a running machine), `--diag-snapshots-frame`,
 `--qmp-socket`, `--insert-disc`, `--kvm`, `--diag-wizard-frame`,
-`--shaders`, `--download-shaders`, `--browse-start`; and
+`--shaders`, `--download-shaders`, `--browse-start`,
+`--optimizations`; and
 `--wizard-edit` now takes optional
 `[ram-mb] [auto|kvm|tcg] [net|nonet] [processor] [boot]`, `-` keeping a
 field — the last two added at step 7, since they are exactly what the Qt

@@ -59,6 +59,15 @@ pub mod ffi {
         #[qproperty(bool, graphics_warning)]
         #[qproperty(bool, network)]
         #[qproperty(QString, network_note)]
+        /// Our own emulator fast paths, as a bit per `Optimization::ALL`
+        /// entry — set means on. A bitmask rather than a list because a
+        /// QML `CheckBox` needs a *property* to bind `checked` to (a
+        /// `Q_INVOKABLE` would never re-evaluate), and seven bits in an
+        /// `i32` is a property the generated setter already notifies on.
+        #[qproperty(i32, optimizations_mask)]
+        #[qproperty(QString, optimizations_summary)]
+        #[qproperty(QString, optimizations_note)]
+        #[qproperty(bool, optimizations_are_default)]
         #[qproperty(bool, existing_disk)]
         #[qproperty(QString, disk_path)]
         #[qproperty(i32, disk_size_gb)]
@@ -112,6 +121,15 @@ pub mod ffi {
         #[qinvokable]
         fn choose_network(self: Pin<&mut Wizard>, network: bool);
 
+        /// Turn one fast path on or off, by its index in
+        /// `optimization_labels()`.
+        #[qinvokable]
+        fn choose_optimization(self: Pin<&mut Wizard>, index: i32, on: bool);
+
+        /// Every fast path back on its shipped setting.
+        #[qinvokable]
+        fn reset_optimizations(self: Pin<&mut Wizard>);
+
         /// The boot order. A plain field with no consequence beyond its
         /// own note, but an index like the other combos.
         #[qinvokable]
@@ -152,6 +170,16 @@ pub mod ffi {
         #[qinvokable]
         fn boot_labels(self: &Wizard) -> QStringList;
 
+        /// The fast paths' checkbox labels and the sentence under each,
+        /// in `Optimization::ALL` order — the same order the bits of
+        /// `optimizations_mask` are in. Fixed lists, so QML can call
+        /// them once as a `Repeater` model.
+        #[qinvokable]
+        fn optimization_labels(self: &Wizard) -> QStringList;
+
+        #[qinvokable]
+        fn optimization_notes(self: &Wizard) -> QStringList;
+
         /// The file dialog's name filters, from the same constants the
         /// egui build hands `rfd`.
         #[qinvokable]
@@ -169,7 +197,7 @@ use crate::{qs, qs_opt};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QString, QStringList};
 use launcher_core::browse::name_filter;
-use launcher_core::bundle::{Accel, Boot, CpuSpeed, Family};
+use launcher_core::bundle::{Accel, Boot, CpuSpeed, Family, Optimization};
 use launcher_core::library;
 use launcher_core::wizard::{Form, DISK_FILTER, FLOPPY_FILTER, MEDIA_FILTER};
 use std::path::PathBuf;
@@ -198,6 +226,10 @@ pub struct WizardRust {
     graphics_warning: bool,
     network: bool,
     network_note: QString,
+    optimizations_mask: i32,
+    optimizations_summary: QString,
+    optimizations_note: QString,
+    optimizations_are_default: bool,
     existing_disk: bool,
     disk_path: QString,
     disk_size_gb: i32,
@@ -287,6 +319,17 @@ impl ffi::Wizard {
         self.publish();
     }
 
+    fn choose_optimization(mut self: Pin<&mut Self>, index: i32, on: bool) {
+        let opt = at(&Optimization::ALL, index);
+        self.as_mut().rust_mut().form.choose_optimization(opt, on);
+        self.publish();
+    }
+
+    fn reset_optimizations(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().form.reset_optimizations();
+        self.publish();
+    }
+
     fn choose_boot(mut self: Pin<&mut Self>, boot: i32) {
         let b = at(&Boot::ALL, boot);
         self.as_mut().rust_mut().form.boot = b;
@@ -330,6 +373,14 @@ impl ffi::Wizard {
 
     fn boot_labels(&self) -> QStringList {
         labels(Boot::ALL.iter().map(|b| b.label()))
+    }
+
+    fn optimization_labels(&self) -> QStringList {
+        labels(Optimization::ALL.iter().map(|o| o.label()))
+    }
+
+    fn optimization_notes(&self) -> QStringList {
+        labels(Optimization::ALL.iter().map(|o| o.note()))
     }
 
     fn disk_filter(&self) -> QString {
@@ -392,6 +443,7 @@ impl ffi::Wizard {
         );
         let (accel, accel_note, accel_warning, accel_is_default, network, network_note);
         let (graphics_note, graphics_warning);
+        let (optimizations_mask, optimizations_summary, optimizations_note, optimizations_are_default);
         let (existing_disk, disk_path, disk_size_gb, install_media, floppy, boot, boot_note);
         let (shader_profile, advanced, advanced_toml, error);
         {
@@ -421,6 +473,14 @@ impl ffi::Wizard {
             graphics_note = qs(graphics.map(|n| n.text).unwrap_or_default());
             network = f.network();
             network_note = qs(f.network_notes().join("\n"));
+            optimizations_mask = Optimization::ALL
+                .iter()
+                .enumerate()
+                .filter(|(_, opt)| f.optimization_enabled(**opt))
+                .fold(0i32, |mask, (bit, _)| mask | (1 << bit));
+            optimizations_summary = qs(f.optimizations_summary());
+            optimizations_note = qs(f.optimizations_note());
+            optimizations_are_default = f.optimizations_are_default();
             existing_disk = f.existing_disk;
             disk_path = qs(&f.disk_path);
             disk_size_gb = f.disk_size_gb as i32;
@@ -454,6 +514,10 @@ impl ffi::Wizard {
         self.as_mut().set_graphics_warning(graphics_warning);
         self.as_mut().set_network(network);
         self.as_mut().set_network_note(network_note);
+        self.as_mut().set_optimizations_mask(optimizations_mask);
+        self.as_mut().set_optimizations_summary(optimizations_summary);
+        self.as_mut().set_optimizations_note(optimizations_note);
+        self.as_mut().set_optimizations_are_default(optimizations_are_default);
         self.as_mut().set_existing_disk(existing_disk);
         self.as_mut().set_disk_path(disk_path);
         self.as_mut().set_disk_size_gb(disk_size_gb);

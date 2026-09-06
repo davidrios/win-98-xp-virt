@@ -5,6 +5,7 @@
 //! user-visible QEMU command line exists anywhere else.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Which reference guest configuration (doc 06) a machine is modeled on.
@@ -197,6 +198,201 @@ impl Accel {
     }
 }
 
+/// One of the QEMU fast paths this project carries as its own patches
+/// (`patches/qemu/README.md`, docs 13 and 16, the M8/M9 tracks), with
+/// the off switch the patch already gave it.
+///
+/// Every one of them is *the emulator running the guest's arithmetic on
+/// the host's own silicon instead of simulating it*, which is why each
+/// arrived with an off switch: the switch is the oracle. When a guest
+/// computes the wrong number or a game stops drawing, one run with one
+/// of these off says whether a fast path did it — the alternative is
+/// bisecting a patch queue against a Windows install.
+///
+/// They therefore only exist under emulation. A machine running on KVM
+/// executes on the host CPU directly and none of these is reachable;
+/// the form says so rather than showing seven switches that do nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Optimization {
+    X87Fast,
+    SseFast,
+    SimdFast,
+    RepFast,
+    SmcSameValue,
+    InlineLookup,
+    PinnedRegs,
+}
+
+/// Where an optimization's switch goes on the command line: a property
+/// of the guest CPU (`-cpu pentium3,x87-fast=off`) or of the TCG
+/// accelerator itself (`-accel tcg,smc-same-value=off`). The two are not
+/// interchangeable — QEMU looks each name up on a different object — and
+/// the accelerator half is the reason `qemu_args` spells the accelerator
+/// as `-accel` rather than `-machine accel=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Knob {
+    Cpu,
+    Tcg,
+}
+
+impl Optimization {
+    /// In the order the form lists them: the arithmetic fast paths
+    /// first, in the order they were written, then the two that are
+    /// about translation, then the experimental one.
+    pub const ALL: [Optimization; 7] = [
+        Optimization::X87Fast,
+        Optimization::SseFast,
+        Optimization::SimdFast,
+        Optimization::RepFast,
+        Optimization::SmcSameValue,
+        Optimization::InlineLookup,
+        Optimization::PinnedRegs,
+    ];
+
+    /// The QEMU property name, which is also the key in `machine.toml`:
+    /// one name for the thing, so a bundle can be read against
+    /// `patches/qemu/README.md` without a translation table.
+    pub fn key(self) -> &'static str {
+        match self {
+            Optimization::X87Fast => "x87-fast",
+            Optimization::SseFast => "sse-fast",
+            Optimization::SimdFast => "simd-fast",
+            Optimization::RepFast => "rep-fast",
+            Optimization::SmcSameValue => "smc-same-value",
+            Optimization::InlineLookup => "inline-lookup",
+            Optimization::PinnedRegs => "pinned-regs",
+        }
+    }
+
+    fn knob(self) -> Knob {
+        match self {
+            Optimization::X87Fast
+            | Optimization::SseFast
+            | Optimization::SimdFast
+            | Optimization::RepFast => Knob::Cpu,
+            Optimization::SmcSameValue | Optimization::InlineLookup | Optimization::PinnedRegs => Knob::Tcg,
+        }
+    }
+
+    /// Whether a machine that says nothing has it on. Everything that
+    /// has shipped is on — turning one off is a diagnosis, not a
+    /// preference — and `pinned-regs` is off because the patch itself is
+    /// off by default while the work is in progress.
+    pub fn default_on(self) -> bool {
+        self != Optimization::PinnedRegs
+    }
+
+    /// The checkbox's label: what the fast path does, not what it is
+    /// called in the patch queue.
+    pub fn label(self) -> &'static str {
+        match self {
+            Optimization::X87Fast => "x87 floating point on the host FPU",
+            Optimization::SseFast => "SSE floating point on the host",
+            Optimization::SimdFast => "MMX and SSE integer instructions inline",
+            Optimization::RepFast => "Block string moves as whole-page copies",
+            Optimization::SmcSameValue => "Skip retranslation when code is rewritten unchanged",
+            Optimization::InlineLookup => "Find the next block without leaving generated code",
+            Optimization::PinnedRegs => "Keep guest registers in host registers (experimental)",
+        }
+    }
+
+    /// The sentence under it: what it buys, and — for the one case where
+    /// it matters — why it is off.
+    pub fn note(self) -> &'static str {
+        match self {
+            Optimization::X87Fast => {
+                "Windows and Direct3D run the x87 unit at a precision the host reproduces exactly, \
+                 so the guest's floating point is executed rather than simulated. Super PI 1M on the \
+                 M1 Air: 9:49 off, 1:57 on. Turn it off if a guest's arithmetic looks wrong."
+            }
+            Optimization::SseFast => {
+                "Packed and scalar SSE/SSE2 arithmetic on the host's vector unit instead of a call \
+                 per instruction: 7-12x on packed code, 3-4x on scalar."
+            }
+            Optimization::SimdFast => {
+                "MMX and SSE integer maths, shuffles and packs become host vector instructions: \
+                 2-4x on the pixel loops of an era software renderer."
+            }
+            Optimization::RepFast => {
+                "REP MOVS / STOS copies a page at a time through memcpy instead of one element per \
+                 loop - 30x on the blits an era game fills the screen with."
+            }
+            Optimization::SmcSameValue => {
+                "Self-modifying code usually writes back the bytes already there, and rewriting a \
+                 value with itself cannot invalidate anything. Moto Racer's race: 7.3 to 21.7 fps."
+            }
+            Optimization::InlineLookup => {
+                "Every return and indirect jump finds its next block in generated code rather than \
+                 through a helper call: 7-Zip in the guest, +7-12%."
+            }
+            Optimization::PinnedRegs => {
+                "Apple Silicon only, and still being worked on - a boot crash has been seen with it \
+                 on. Leave it off unless you are testing it."
+            }
+        }
+    }
+}
+
+/// A machine's optimization settings: **only what differs from
+/// `Optimization::default_on` is stored**, so a bundle that says nothing
+/// runs exactly the way every bundle written before this field existed
+/// did, and an optimization added to the patch queue later arrives on in
+/// every bundle that already exists.
+///
+/// Keyed by the QEMU property name rather than by the enum, so a bundle
+/// written by a launcher that knows an optimization this build does not
+/// survives a load and a save with the entry intact instead of being
+/// refused as an unknown variant.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Optimizations(BTreeMap<String, bool>);
+
+impl Optimizations {
+    pub fn enabled(&self, opt: Optimization) -> bool {
+        self.0.get(opt.key()).copied().unwrap_or_else(|| opt.default_on())
+    }
+
+    pub fn is_default(&self, opt: Optimization) -> bool {
+        self.enabled(opt) == opt.default_on()
+    }
+
+    /// Turn one on or off. Putting it back on its own default *removes*
+    /// the entry rather than writing it out, which is what keeps a
+    /// `machine.toml` holding only what someone actually changed.
+    pub fn set(&mut self, opt: Optimization, on: bool) {
+        if on == opt.default_on() {
+            self.0.remove(opt.key());
+        } else {
+            self.0.insert(opt.key().to_string(), on);
+        }
+    }
+
+    /// Every optimization back on its default. Only the ones this build
+    /// knows about: an entry a newer launcher wrote is not something
+    /// this one can decide is wrong.
+    pub fn reset(&mut self) {
+        for opt in Optimization::ALL {
+            self.0.remove(opt.key());
+        }
+    }
+
+    pub fn all_default(&self) -> bool {
+        Optimization::ALL.iter().all(|opt| self.is_default(*opt))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// What a collapsed section says about itself, so someone who never
+    /// opens it still sees that something in there has been changed.
+    /// A count rather than "all on", because one of them ships off.
+    pub fn summary(&self) -> String {
+        let on = Optimization::ALL.iter().filter(|opt| self.enabled(**opt)).count();
+        format!("{on} of {} on", Optimization::ALL.len())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Machine {
     pub name: String,
@@ -264,6 +460,17 @@ pub struct Machine {
     /// unthrottled, again what every earlier bundle was doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_speed: Option<CpuSpeed>,
+
+    /// Which of our own emulator fast paths this machine runs with
+    /// (`Optimization`), holding only what someone turned off — absent
+    /// means all of them at their shipped setting.
+    ///
+    /// **Last in the struct on purpose.** It is the only field that
+    /// serializes to a TOML *table*, and a table swallows every
+    /// key-value line that follows it: written anywhere else, the fields
+    /// after it would be read back as part of `[optimizations]`.
+    #[serde(default, skip_serializing_if = "Optimizations::is_empty")]
+    pub optimizations: Optimizations,
 }
 
 /// How a family runs unless the machine says otherwise.
@@ -358,6 +565,7 @@ impl Machine {
             floppy: None,
             boot: None,
             cpu_speed: Some(default_cpu_speed(family)),
+            optimizations: Optimizations::default(),
         }
     }
 
@@ -392,20 +600,48 @@ impl Machine {
     /// `pc_bios_dir` is `qemu/pc-bios` (see README's `-L`); `shelf`, when
     /// given, is the flat disc-shelf file the drive answers the in-guest
     /// `CDSHELF` program from (`cdshelf/cdshelf_proto.h`).
-    /// The `accel=` list for `-machine`. `Auto` is expressed as QEMU's own
-    /// fallback list rather than by probing `/dev/kvm` here: the answer a
-    /// probe gives can still be wrong at spawn time (permissions, a
-    /// module unloaded since), and QEMU's list already means exactly
-    /// "KVM if you can, emulation otherwise". `kvm` is only offered where
-    /// it exists at all — on macOS the name is not a registered
-    /// accelerator, and listing it there would print a warning on every
-    /// boot for nothing.
-    fn accel_list(&self) -> &'static str {
+    /// The accelerator, as `-accel` options. `Auto` is expressed as
+    /// QEMU's own fallback list rather than by probing `/dev/kvm` here:
+    /// the answer a probe gives can still be wrong at spawn time
+    /// (permissions, a module unloaded since), and QEMU's list already
+    /// means exactly "KVM if you can, emulation otherwise" — two
+    /// `-accel` options are tried in order and the first that
+    /// initializes wins, which is the same code path `accel=kvm:tcg`
+    /// took. `kvm` is only offered where it exists at all — on macOS the
+    /// name is not a registered accelerator, and listing it there would
+    /// print a warning on every boot for nothing.
+    ///
+    /// **`-accel`, not `-machine accel=`, and the two cannot be mixed**
+    /// ("The -accel and \"-machine accel=\" options are incompatible",
+    /// `system/vl.c`). The TCG-side optimizations are properties of the
+    /// accelerator object, and `-accel` is the only spelling that has
+    /// somewhere to put them.
+    fn accel_args(&self) -> Vec<String> {
+        let mut tcg = "tcg".to_string();
+        tcg.push_str(&self.optimization_props(Knob::Tcg));
         match self.effective_accel() {
-            Accel::Auto if cfg!(target_os = "linux") => "kvm:tcg",
-            Accel::Auto | Accel::Tcg => "tcg",
-            Accel::Kvm => "kvm",
+            Accel::Kvm => vec!["-accel".into(), "kvm".into()],
+            Accel::Auto if cfg!(target_os = "linux") => {
+                vec!["-accel".into(), "kvm".into(), "-accel".into(), tcg]
+            }
+            Accel::Auto | Accel::Tcg => vec!["-accel".into(), tcg],
         }
+    }
+
+    /// The `,name=on`/`,name=off` tail for one kind of switch — **only
+    /// what differs from the property's own default in our QEMU**, so a
+    /// machine that has changed nothing produces the command line it
+    /// always produced, and one run against a QEMU without these patches
+    /// still starts.
+    fn optimization_props(&self, knob: Knob) -> String {
+        let mut out = String::new();
+        for opt in Optimization::ALL {
+            if opt.knob() == knob && !self.optimizations.is_default(opt) {
+                let value = if self.optimizations.enabled(opt) { "on" } else { "off" };
+                out.push_str(&format!(",{}={value}", opt.key()));
+            }
+        }
+        out
     }
 
     /// What this machine actually runs as: its own setting, or its
@@ -433,24 +669,22 @@ impl Machine {
     }
 
     pub fn qemu_args(&self, pc_bios_dir: &Path, shelf: Option<&Path>) -> Vec<String> {
-        let mut args = vec![
-            "-L".into(),
-            pc_bios_dir.display().to_string(),
-            "-machine".into(),
-            format!("pc,accel={}", self.accel_list()),
+        let mut args = vec!["-L".into(), pc_bios_dir.display().to_string(), "-machine".into(), "pc".into()];
+        args.extend(self.accel_args());
+        args.extend([
             "-m".into(),
             self.ram_mb.to_string(),
             // doc 06's floor for both families: avoids the fast-CPU Win9x
             // bugs and CPUID-dispatched guest code that mis-decodes under
             // -cpu host (the Max Payne JPEG decoder gotcha)
             "-cpu".into(),
-            "pentium3".into(),
+            format!("pentium3{}", self.optimization_props(Knob::Cpu)),
             "-drive".into(),
             format!("file={},if=ide,index=0,media=disk", self.disk.display()),
             "-usb".into(),
             "-device".into(),
             "usb-tablet".into(),
-        ];
+        ]);
         // The CPU rate, when the machine asks for one. `align=on` is the
         // whole point and not a detail: `-icount shift=N` on its own only
         // makes the *guest's* clock a function of instructions retired,

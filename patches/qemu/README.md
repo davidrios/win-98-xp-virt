@@ -9,6 +9,16 @@ and re-applies everything on each run, then runs qemu-3dfx's `sign_commit`
 (stamps the qemu-3dfx commit; guest wrappers must be built from the same
 commit — `guest-tools/build-wrappers.sh` does that).
 
+Seven of these carry an off switch, and **the launcher exposes all seven
+as checkboxes** ("Emulation optimizations" in the machine form, doc 07):
+`x87-fast`, `sse-fast`, `simd-fast` and `rep-fast` are guest-CPU
+properties, `smc-same-value`, `inline-lookup` and `pinned-regs` belong to
+the TCG accelerator, so a bundle's command line spells the accelerator
+`-accel tcg,<prop>=off` rather than `-machine accel=`. The switch is the
+oracle: a guest that computes the wrong number is diagnosed with one run,
+not a bisect. A machine that has changed nothing emits no property, so the
+default command line is unchanged and still runs on a stock QEMU.
+
 **Never `git checkout` files inside `qemu/` by hand between prepare runs** and
 never rely on "already applied" heuristics — a partial tree once silently
 lost the 3dfx meson hunk (symptom: `unknown type 'glidept'`).

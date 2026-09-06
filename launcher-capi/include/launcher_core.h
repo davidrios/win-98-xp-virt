@@ -91,6 +91,11 @@ typedef struct LcWizard LcWizard;
 #define LC_LABEL_ACCEL     1u
 #define LC_LABEL_CPU_SPEED 2u
 #define LC_LABEL_BOOT      3u
+/* Our own emulator fast paths (patches/qemu/README.md): the checkbox
+ * label, and the sentence that goes under it. Same order and same
+ * indices as lc_wizard_optimization_* below. */
+#define LC_LABEL_OPTIMIZATION      4u
+#define LC_LABEL_OPTIMIZATION_NOTE 5u
 char *lc_wizard_label(uint32_t kind, size_t index);
 
 LcWizard *lc_wizard_new(void);
@@ -136,6 +141,20 @@ bool lc_wizard_have_kvm(const LcWizard *w);
  * which has no Direct3D to place. *warning is set for the one case that
  * runs and disappoints: a software Vulkan driver. */
 char *lc_wizard_graphics_note(const LcWizard *w, bool *warning);
+
+/* Which of our own emulator fast paths this machine runs with, one
+ * checkbox each, indexed the way LC_LABEL_OPTIMIZATION is. A machine
+ * that has changed none of them writes no `[optimizations]` table at
+ * all, so what a front end shows is `..._enabled`, never the file. */
+bool lc_wizard_optimization_enabled(const LcWizard *w, size_t index);
+void lc_wizard_choose_optimization(LcWizard *w, size_t index, bool on);
+void lc_wizard_reset_optimizations(LcWizard *w);
+bool lc_wizard_optimizations_are_default(const LcWizard *w);
+/* "6 of 7 on" — what a collapsed section says about itself. */
+char *lc_wizard_optimizations_summary(const LcWizard *w);
+/* The line above the switches: on a machine headed for KVM it says they
+ * do nothing there. */
+char *lc_wizard_optimizations_note(const LcWizard *w);
 
 bool lc_wizard_network(const LcWizard *w);
 void lc_wizard_choose_network(LcWizard *w, bool network);

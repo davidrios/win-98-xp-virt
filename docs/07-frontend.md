@@ -88,6 +88,36 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   Automatic emits no `-boot` at all, which is what every bundle written
   before the field did and what the wizard's "boot the installer from
   the CD because the new disk is blank" case relies on.
+- **Our own emulator fast paths are seven checkboxes**, behind a
+  disclosure headed "Emulation optimizations — 6 of 7 on" so a machine
+  with one turned off says so while the section is closed. Each is one of
+  the QEMU patches this project maintains (`patches/qemu/README.md`) with
+  the off switch that patch already carried: `x87-fast`, `sse-fast`,
+  `simd-fast` and `rep-fast` are guest-CPU properties, `smc-same-value`,
+  `inline-lookup` and `pinned-regs` are properties of the TCG accelerator
+  itself. **They are exposed because the switch is the oracle.** Every
+  one of them replaces simulated arithmetic with the host's own, so when
+  a guest computes the wrong number or a game stops drawing, one run with
+  one checkbox clear says whether a fast path did it — the alternative is
+  bisecting a patch queue against a Windows install. The section says the
+  measured gain under each switch, and says above them that on a machine
+  headed for KVM they do nothing at all, because there is then no
+  emulator in the path to have a fast path.
+  Everything that has shipped is on; `pinned-regs` is off, because the
+  patch itself is off by default while that work is in progress.
+  **Only the difference is stored** (`[optimizations]` in the bundle, keyed
+  by the QEMU property name): a machine that has changed nothing writes no
+  table and produces the command line it always produced, and an
+  optimization added to the patch queue later arrives on in every bundle
+  that already exists. An entry a newer launcher wrote survives a load and
+  a save in an older one, since the table is keyed by name and not by a
+  Rust enum.
+  One consequence reaches the command line: the accelerator is now spelled
+  `-accel kvm -accel tcg,…` rather than `-machine accel=kvm:tcg`, because
+  the accelerator-side properties need somewhere to live and QEMU refuses
+  the two spellings together. It is the same code path — two `-accel`
+  options are tried in order and the first that initializes wins, which is
+  exactly what `kvm:tcg` did.
 - **Networking** is one checkbox (`network` in the bundle). It follows
   the family for a new machine — on for Win98 and XP, **off for DOS**,
   which reaches a network only through a packet driver the user installs
@@ -171,7 +201,10 @@ QEMU has open corrupts it.
 - **Per-app:** shader preset library, the disc shelf, default hotkeys,
   telemetry = none.
 - **Per-machine:** everything in the bundle (hardware, RAM, media, preset
-  override, grab behavior).
+  override, grab behavior, the emulator's own fast paths). The fast paths
+  are per machine and not per app on purpose: turning one off is a
+  diagnosis of *one guest* — the game that draws wrong — and it must not
+  slow down every other machine in the library while that lasts.
 - Bundles live in a plain, documented directory layout the user can back up.
 
 ## Platform packaging

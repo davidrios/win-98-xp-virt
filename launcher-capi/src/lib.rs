@@ -40,7 +40,7 @@
 //! this file; `examples/smoke.c` is a program that exercises it, built
 //! and run by `scripts/test.sh host` so the ABI cannot rot.
 
-use launcher_core::bundle::{Accel, Boot, CpuSpeed, Family};
+use launcher_core::bundle::{Accel, Boot, CpuSpeed, Family, Optimization};
 use launcher_core::{editor, machines, preview, shelf, snaps, wizard};
 use std::ffi::{c_char, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -328,6 +328,8 @@ pub extern "C" fn lc_wizard_label(kind: u32, index: usize) -> *mut c_char {
         1 => Accel::ALL.get(index).map(|v| v.label()),
         2 => CpuSpeed::ALL.get(index).map(|v| v.label()),
         3 => Boot::ALL.get(index).map(|v| v.label()),
+        4 => Optimization::ALL.get(index).map(|v| v.label()),
+        5 => Optimization::ALL.get(index).map(|v| v.note()),
         _ => None,
     };
     match label {
@@ -570,6 +572,56 @@ pub unsafe extern "C" fn lc_wizard_graphics_note(w: *const LcWizard, warning: *m
 #[no_mangle]
 pub unsafe extern "C" fn lc_wizard_have_kvm(w: *const LcWizard) -> bool {
     handle!(w, false).0.have_kvm()
+}
+
+/// Whether one of our own emulator fast paths is on, by its index in
+/// `Optimization::ALL` — the same index `LC_LABEL_OPTIMIZATION` uses.
+/// An index past the end reads as off rather than trapping, since a
+/// front end built against an older header walks until the label is
+/// NULL.
+///
+/// # Safety
+/// `w` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_optimization_enabled(w: *const LcWizard, index: usize) -> bool {
+    let Some(opt) = Optimization::ALL.get(index).copied() else { return false };
+    handle!(w, false).0.optimization_enabled(opt)
+}
+
+/// # Safety
+/// `w` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_choose_optimization(w: *mut LcWizard, index: usize, on: bool) {
+    let Some(opt) = Optimization::ALL.get(index).copied() else { return };
+    handle_mut!(w, ()).0.choose_optimization(opt, on);
+}
+
+/// # Safety
+/// `w` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_reset_optimizations(w: *mut LcWizard) {
+    handle_mut!(w, ()).0.reset_optimizations();
+}
+
+/// # Safety
+/// `w` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_optimizations_are_default(w: *const LcWizard) -> bool {
+    handle!(w, true).0.optimizations_are_default()
+}
+
+/// # Safety
+/// `w` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_optimizations_summary(w: *const LcWizard) -> *mut c_char {
+    out(handle!(w, std::ptr::null_mut()).0.optimizations_summary())
+}
+
+/// # Safety
+/// `w` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn lc_wizard_optimizations_note(w: *const LcWizard) -> *mut c_char {
+    out(handle!(w, std::ptr::null_mut()).0.optimizations_note())
 }
 
 /// # Safety
