@@ -458,3 +458,44 @@ the first time anything asks for the directory:
 
 The runtime directory is not migrated: what lives there belongs to a
 running process, and a stale socket path outlives nothing.
+
+## ADR-012: Win98 gets the same display driver as XP, over one shared core (2026-09-06)
+
+**Decision.** Windows 98/Me gets a **native display driver for our
+`d3dpt-vga` adapter**, the way XP already has one (ADR-008, doc 15) —
+desktop modes from our table, a DirectDraw HAL, a Direct3D HAL feeding
+the same `d3dpt` protocol and the same host executor. And before that 9x
+driver is written, XP's driver is **split into an OS-independent core
+plus a thin per-OS layer**, with XP rebuilt on the core first. Track M10,
+design in doc 19.
+
+**Why a native driver.** The Glide + WineD3D stack Win98 uses today needs
+per-game files in per-game folders and cannot accelerate the desktop at
+all; the driver needs nothing next to a game, because 98's own
+`ddraw.dll` / `d3dim.dll` drive it. It is also the cheap half of a job
+already done: the DirectX 3–7 behaviour the 98 title matrix depends on —
+execute buffers, colour keys, palettized textures, 8 bpp modes, the flip
+chain's vertical blank — is exactly what M7 spent itself on for XP.
+
+**Why the core, and why first.** `d3dptdisp.c` is 3 708 lines of which
+roughly three quarters — the DP2 walker, the surface table and its format
+arithmetic, the caps tables, contexts and readback, the flip chain, the
+encoder and the debug log — states facts about *our adapter and our
+protocol*, not about NT. Copying that into a second tree would double
+every future protocol bump and guarantee the two drivers drift apart at
+the first bug fixed on one side only. The core must not see either OS's
+DirectDraw structures: the per-OS layer fills a neutral surface
+descriptor, so NT's `DD_SURFACE_LOCAL` and 9x's `DDRAWI_DDRAWSURFACE_LCL`
+stay behind the boundary even if they turn out to agree field for field.
+
+**Sequencing.** The split lands on its own, proven to be a refactor by
+the M7 suite being byte-identical across it (the same golden BMPs, the
+same case counts, the same games drawing). Only then does the 9x layer
+start — a 9x bug on top of an unproven refactor is two bugs wearing one
+coat.
+
+**What this does not change.** The M4 paravirtual device and its guest
+DLLs stay exactly as they are and remain the path wherever the driver is
+not installed. The adapter itself should need no change for 9x; if it
+does, that is a finding worth writing down rather than a licence to fork
+the register set.

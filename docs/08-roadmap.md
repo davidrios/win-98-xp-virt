@@ -167,6 +167,25 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 - **Exit:** a measured, reproducible gain on the game workload with both
   guest batteries identical and `scripts/test.sh all` green.
 
+## M10 — Native Win98 display driver (ADR-012, doc 19; track opened 2026-09-06: `docs/tracks/m10-win98-driver.md`)
+
+- The same driver XP has (M7), on the same `d3dpt-vga` adapter, over the
+  same protocol and executor — so a 98 title needs nothing in its folder
+  and the desktop is accelerated too.
+- Step 0 establishes the 9x driver model (the 16-bit `.drv` + VxD split,
+  how a DirectDraw HAL is published from a 16-bit driver, whether the
+  DDHAL / D3DHAL structures match NT's where we read them, how far the
+  DDI goes on 9x) against `vmdisp9x` as the reference.
+- Step 1 splits `d3dptdisp.c` into an OS-independent core (DP2 walker,
+  surfaces and formats, caps, contexts, the flip chain, the encoder) plus
+  a thin per-OS layer, and rebuilds XP on it with no behaviour change —
+  proven by the M7 suite being byte-identical across the split.
+- Then 98's M7a (modes and the desktop), M7b (DirectDraw DDI) and M7c
+  (Direct3D DDI, the DX3–7 half first: it is most of the 98 matrix).
+- **Exit:** the doc 04 Win98 acceptance matrix through the driver, measured
+  against the same titles on the Glide/WineD3D stack, and the launcher's
+  Win98 machine defaulting to whichever wins.
+
 ## Post-v1 candidates
 
 Recording/streaming, gamepads / DirectInput, CRT bezel packs, VRR pacing,
