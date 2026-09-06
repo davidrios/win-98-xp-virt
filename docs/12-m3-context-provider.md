@@ -43,9 +43,14 @@ trusting the host to look at them: `glidetest: 4 cases, 0 failed` (clear,
 triangle, re-clear, close/reopen). It paid for itself immediately with
 patch `04-lfb-origin`: OpenGLide's `grLfbLock` never filled the caller's
 `lfbInfo->origin`, which the dispatcher caches and answers a Glide 2.11
-title's `grLfbBegin` from. Refinement still open: fence-based sync on both
-platforms instead of `glFinish`; macOS and Windows builds of the wrapper;
-a Glide *title* rather than our own program.
+title's `grLfbBegin` from. **The wrapper compiles on macOS too** (a
+forwarding `<GL/gl.h>` / `<GL/glext.h>` in `glidept/host/macos/`, on the
+include path on Darwin only, because the framework's headers live under
+`OpenGL/` and the only `GL/` on a Mac is XQuartz's Mesa) — built and linked
+against `OpenGL.framework` alone, but run by nothing there: `glide-host` is
+the EGL path and stays Linux-only. Refinement still open: fence-based sync
+on both platforms instead of `glFinish`; a macOS `glide-host` check and the
+Windows build of the wrapper; a Glide *title* rather than our own program.
 
 Source survey of the patched tree (hw/mesa, hw/3dfx, ui/sdl2.c); file:line
 refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
@@ -183,5 +188,5 @@ refs are to `qemu/` as prepared by `scripts/prepare-qemu.sh`.
 
 vtable patch -> embed provider on Linux with readback -> dma-buf import ->
 macOS CGL/IOSurface -> Glide. All done on Linux, guest included
-(`tools/glide-guest-test.sh`); the wrapper still has to be built for macOS
-and Windows, and no Glide *title* has run yet.
+(`tools/glide-guest-test.sh`); the wrapper builds on macOS but nothing has
+run it there, it has no Windows build, and no Glide *title* has run yet.

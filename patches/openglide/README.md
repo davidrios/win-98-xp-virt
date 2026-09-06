@@ -31,6 +31,27 @@ window-less platform layer, the entry points `hw/3dfx` looks for and the two
 GLU replacements live in `glidept/host/`, outside the submodule; only what
 had to change *inside* OpenGLide is a patch.
 
+**macOS builds the same sources** (2026-09-06). OpenGLide says `<GL/gl.h>`
+and `<GL/glext.h>` outright -- `platform/window.h` reaches for the framework
+only under `__MACOSX__`, an SDL-era define nothing sets -- and macOS has no
+`GL/` directory: the framework keeps its headers under `OpenGL/`, and the
+only `GL/` on the box belongs to XQuartz's Mesa, the one implementation this
+must not bind to (`docs/build-macos.md`). So `glidept/host/macos/GL/` holds
+a forwarding `gl.h` and `glext.h`, and `build-glide.sh` puts that directory
+on the include path **on Darwin only** -- a Linux build still finds the real
+headers. The `glext.h` carries what Apple's copy lacks: it stopped at
+`GL_GLEXT_VERSION 8` (2003), before the `PFNGL…PROC` convention, so the
+seventeen typedefs OpenGLide names (it resolves every extension through the
+platform's `GetProcAddress`), `APIENTRY`, and the four
+`EXT_paletted_texture` / `EXT_packed_pixels` enums `PGTexture.cpp` names
+behind a runtime check for extensions macOS does not have. Nothing inside
+the submodule changed for it, so it is a directory rather than a patch. The
+result links against `OpenGL.framework` and `libSystem` alone -- 120
+`gr…`/`gu…` exports plus `setConfig` -- but **nothing exercises it there**:
+`glide-host` drives the embed backend's EGL path and stays Linux-only, and
+the guest run below is a Linux one, so the macOS wrapper is built, not
+proven.
+
 | Patch | What / why | Drop when |
 |---|---|---|
 | `01-no-glu` | drop `<GL/glu.h>` and the two GLU calls: `gluErrorString` (one log line) and `gluBuild2DMipmaps` (behind the off-by-default `BuildMipMaps`). Replaced by `ogl_error_string` / `ogl_build_2d_mipmaps` in `glidept/host/glu_shim.cpp` — a switch statement and `GL_GENERATE_MIPMAP`, which is the driver's own downsample rather than GLU's box filter and correct here because Glide textures are already power-of-two. GLU is deprecated and absent from runtimes we ship into (`org.freedesktop.Sdk`) | never, unless GLU comes back |

@@ -19,9 +19,18 @@ OG="$ROOT/third_party/openglide"
 [ -f "$OG/Glide.cpp" ] || { echo "openglide submodule missing (git submodule update --init third_party/openglide)"; exit 1; }
 
 OUT="$ROOT/build/glide"; mkdir -p "$OUT"
+# platform/linux is the platform layer on both hosts: what we take from it
+# (clock.cpp, library.cpp) is POSIX, and __unix__ is what sdk2_3dfx.h looks
+# for. macOS has no GL/ headers -- the framework keeps its own under
+# OpenGL/, and the only GL/ on the box is XQuartz's Mesa, the one
+# implementation this must not bind to -- so glidept/host/macos puts a
+# forwarding <GL/gl.h> and <GL/glext.h> on the include path there, and only
+# there.
+INC=()
 if [ "$(uname -s)" = Darwin ]; then
   LIB="$OUT/libglide2x.dylib"; SHARED=(-dynamiclib -install_name "$LIB")
   GL=(-framework OpenGL); PLATDIR="$OG/platform/linux"; OSDEF=(-D__unix__ -D__linux__)
+  INC=(-I"$ROOT/glidept/host/macos")
 else
   LIB="$OUT/libglide2x.so"; SHARED=(-shared)
   GL=(-lGL); PLATDIR="$OG/platform/linux"; OSDEF=(-D__unix__ -D__linux__)
@@ -55,6 +64,6 @@ srcs+=("$ROOT"/glidept/host/*.cpp)
 echo "==> ${#srcs[@]} sources -> $LIB"
 "$CXX" -std=c++17 -O2 -fPIC -w -DHAVE_CONFIG_H "${OSDEF[@]}" "${SHARED[@]}" -o "$LIB" \
   "${srcs[@]}" \
-  -I"$OUT" -I"$OG" -I"$PLATDIR" -I"$ROOT/glidept" -I"$ROOT/glidept/host" \
+  -I"$OUT" -I"$OG" -I"$PLATDIR" -I"$ROOT/glidept" -I"$ROOT/glidept/host" "${INC[@]}" \
   "${GL[@]}" -ldl
 echo "==> $LIB"
