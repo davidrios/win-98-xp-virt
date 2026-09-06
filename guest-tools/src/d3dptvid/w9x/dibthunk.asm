@@ -57,12 +57,24 @@ DIBTHK  GetPalette,           _lpDriverPDevice
 DIBTHK  SetPaletteTranslate,  _lpDriverPDevice
 DIBTHK  GetPaletteTranslate,  _lpDriverPDevice
 DIBTHK  UpdateColors,         _lpDriverPDevice
-DIBTHK  ExtTextOut,           _lpDriverPDevice
 DIBTHK  SetCursor,            _lpDriverPDevice
 DIBTHK  MoveCursor,           _lpDriverPDevice
 DIBTHK  CheckCursor,          _lpDriverPDevice
 
+; ExtTextOut is **not** one of the thunked ones, and the reason is worth
+; keeping: `DIB_ExtTextOutExt` (ordinal 403) does not take this device as
+; its extra argument the way every other `…Ext` entry does — it takes *two*
+; more pointers, `lpDrawTextBitmap` and `lpDrawRect`. Thunking it with one
+; dword leaves the whole argument list four bytes low, and the Engine's very
+; first instruction, `lds si,[bp+0x32]`, then loads a garbage selector: a
+; fatal exception 0D the moment anything draws text, which on this adapter
+; is a message written in VGA text mode that nothing on screen shows
+; (doc 19 Section 15). The plain entry (ordinal 14) pushes the two nulls
+; itself, so forwarding to it is both correct and what the reference driver
+; does.
+;
 ; and the ones that are the Engine's unchanged
+DIBFWD  ExtTextOut
 DIBFWD  BitBlt
 DIBFWD  ColorInfo
 DIBFWD  EnumDFonts

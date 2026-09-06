@@ -101,6 +101,41 @@ static WORD CallVDD_Register(void);
     "vdd_done:"                     \
     value [ax] modify [bx cx dx si];
 
+/* The main VDD's own entries, the ones every 9x display driver calls around
+ * a mode change. They do not go to our mini-VDD — it hooks only
+ * REGISTER_DISPLAY_DRIVER — they go to the VDD itself, which is what has to
+ * be told that this VM is no longer showing VGA. */
+static void CallVDD_Simple(WORD fn);
+#pragma aux CallVDD_Simple =        \
+    ".386"                          \
+    "push   eax"                    \
+    "push   ebx"                    \
+    "movzx  eax, ax"                \
+    "movzx  ebx, word ptr [OurVMHandle]" \
+    "call   dword ptr [VDDEntryPoint]"   \
+    "pop    ebx"                    \
+    "pop    eax"                    \
+    parm [ax];
+
+/* VDD_DRIVER_REGISTER wants the size of the frame buffer the driver is
+ * using — pitch times height, in ECX — and a far pointer to the routine the
+ * VDD calls to put the desktop mode back after a full-screen DOS box. */
+static DWORD CallVDD_DriverRegister(WORD fn, WORD pitch, WORD height,
+                                    void __far *restore);
+#pragma aux CallVDD_DriverRegister =\
+    ".386"                          \
+    "movzx  eax, ax"                \
+    "movzx  edx, dx"                \
+    "mul    edx"                    \
+    "mov    ecx, eax"               \
+    "movzx  eax, bx"                \
+    "movzx  ebx, word ptr [OurVMHandle]" \
+    "xor    edx, edx"               \
+    "call   dword ptr [VDDEntryPoint]"   \
+    "mov    edx, eax"               \
+    "shr    edx, 16"                \
+    parm [bx] [ax] [dx] [es di];
+
 /* ------------------------------------------------------------ the adapter */
 
 /* The adapter's registers are 32 bits wide and the device accepts **nothing
@@ -222,6 +257,44 @@ static BOOL ModeOk(WORD x, WORD y, WORD bpp)
     return need <= dwVramSize;
 }
 
+/* Paint the visible frame buffer one colour, which for a display driver
+ * means black. GDI paints the desktop over this immediately, so what it is
+ * really for is that *nothing else* is on the screen at the moment the mode
+ * comes up: VRAM at power-on holds whatever the device left in it, and a
+ * driver that does not clear shows that as a band of garbage above a desktop
+ * that has not arrived yet. Written 32 bits at a time through the VRAM
+ * selector, the same hand-written access the registers need. */
+/* Not `rep stosd`: this module is a 16-bit code segment, and there a string
+ * instruction indexes with DI and counts with CX no matter what the operand
+ * size is — the clear would stop after 64 KB, in the first 25 lines of the
+ * screen, which is very nearly the symptom it is here to remove. An explicit
+ * 32-bit base register makes the assembler emit the address-size prefix the
+ * whole frame buffer needs. */
+static void ClearScreen(WORD sel, DWORD bytes);
+#pragma aux ClearScreen =           \
+    ".386"                          \
+    "push   es"                     \
+    "shl    edx, 16"                \
+    "mov    dx, ax"                 \
+    "shr    edx, 2"                 \
+    "mov    ecx, edx"               \
+    "mov    es, bx"                 \
+    "xor    edx, edx"               \
+    "xor    eax, eax"               \
+    "jecxz  clr_done"               \
+    "clr_next:"                     \
+    "mov    es:[edx], eax"          \
+    "add    edx, 4"                 \
+    "dec    ecx"                    \
+    "jnz    clr_next"               \
+    "clr_done:"                     \
+    "pop    es"                     \
+    parm [bx] [dx ax] modify [ax bx cx dx];
+
+/* The VDD calls this one back, so DS is not ours on entry. */
+void __far RestoreDesktopMode(void);
+#pragma aux RestoreDesktopMode loadds;
+
 int PhysicalEnable(void)
 {
     if (!AdapterFind()) return 0;
@@ -231,6 +304,10 @@ int PhysicalEnable(void)
     }
 
     dwPitch = MulW(wScrX, wBpp / 8);
+
+    /* The VDD virtualises the VGA for every VM and has to be told before
+     * and after the hardware stops being one. */
+    if (VDDEntryPoint) CallVDD_Simple(VDD_PRE_MODE_CHANGE);
 
     RegPut(D3DPT_FB_REG_ENABLE, 0);
     RegPut(D3DPT_FB_REG_WIDTH,  wScrX);
@@ -247,11 +324,45 @@ int PhysicalEnable(void)
     dbg_val("d3dpt9x: mode w", wScrX);
     dbg_val("d3dpt9x: mode h", wScrY);
     dbg_val("d3dpt9x: mode bpp", wBpp);
+
+    /* **The VDD has to know a hi-res driver owns the screen.** Until this
+     * call it believes the VM is still showing the VGA it virtualises, and
+     * it keeps the screen switch, the DOS box and USER's repaint path on
+     * that footing; `RestoreDesktopMode` is how it asks for the mode back
+     * afterwards. A failure here is not fatal on the reference driver's own
+     * account, so it is logged rather than refused. */
+    if (VDDEntryPoint) {
+        DWORD rc = CallVDD_DriverRegister(VDD_DRIVER_REGISTER, (WORD)dwPitch,
+                                          wScrY, RestoreDesktopMode);
+        if (rc == VDD_DRIVER_REGISTER) dbg_str("d3dpt9x: VDD declined the register");
+        else                           dbg_val("d3dpt9x: VDD vram used", rc);
+
+        CallVDD_Simple(VDD_POST_MODE_CHANGE);
+        CallVDD_Simple(VDD_SAVE_DRIVER_STATE);
+    }
+
+    if (wVramSel) ClearScreen(wVramSel, MulW(wScrY, (WORD)dwPitch));
     return 1;
+}
+
+/* The VDD calls this to put the desktop back after a full-screen DOS box:
+ * the mode registers again, with none of the one-time work. */
+void __far RestoreDesktopMode(void)
+{
+    dbg_str("d3dpt9x: RestoreDesktopMode");
+    if (!wRegsSel) return;
+    RegPut(D3DPT_FB_REG_ENABLE, 0);
+    RegPut(D3DPT_FB_REG_WIDTH,  wScrX);
+    RegPut(D3DPT_FB_REG_HEIGHT, wScrY);
+    RegPut(D3DPT_FB_REG_BPP,    wBpp);
+    RegPut(D3DPT_FB_REG_PITCH,  dwPitch);
+    RegPut(D3DPT_FB_REG_OFFSET, 0);
+    RegPut(D3DPT_FB_REG_ENABLE, 1);
 }
 
 void PhysicalDisable(void)
 {
+    if (VDDEntryPoint) CallVDD_Simple(VDD_DRIVER_UNREGISTER);
     if (wRegsSel) RegPut(D3DPT_FB_REG_ENABLE, 0);
 }
 
@@ -357,7 +468,11 @@ UINT WINAPI __loadds Enable(LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
          * This is the whole of the "no copy anywhere" claim on 9x: the
          * bits GDI writes are the bits the device scans out. */
         lpEng->deType         = TYPE_DIBENG;
-        lpEng->deFlags        = MINIDRIVER | VRAM;
+        /* OFFSCREEN says the surface is a window on a larger VRAM the
+         * driver manages, which is what it is; FIVE6FIVE is what tells the
+         * Engine a 16 bpp mode is 5-6-5 rather than 5-5-5. */
+        lpEng->deFlags        = MINIDRIVER | VRAM | OFFSCREEN |
+                                (wBpp == 16 ? FIVE6FIVE : 0);
         lpEng->deWidth        = wScrX;
         lpEng->deHeight       = wScrY;
         lpEng->deWidthBytes   = (WORD)dwPitch;

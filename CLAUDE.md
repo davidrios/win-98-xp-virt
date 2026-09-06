@@ -257,6 +257,21 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   build-time checks in `build-driver9x.sh`: an NE relocation naming a
   segment wlink dropped (KERNEL refuses the module), and a VxD whose DDB is
   not at offset 0 of its code object (the VMM ignores it).
+- **A Win98 guest on `d3dpt-vga` that "stops at a black desktop" has
+  usually faulted**, and the message is a VGA *text* screen the linear frame
+  buffer hides: QEMU's VGA core keeps its planes interleaved four bytes to a
+  character cell from VRAM offset 0, so the text page lands in the first
+  32 KB of the frame buffer and scans out as the band of coloured noise
+  across the top. Nothing switches the mode back, because putting our
+  adapter back is the mini-VDD's job. `tools/win98-driver-test.sh` reads
+  that page out of VRAM and prints it after every run — believe it over the
+  screendump (doc 19 §15).
+- **`install` writes the driver into SYSTEM.INI, not just the registry.**
+  PnP installs `d3dpt9x.inf` with no clicks and the registry then names both
+  halves, but the boot after that comes up on the VGA with nothing of ours
+  running; `[386Enh] device=…D3DPT9V.VXD` and `[boot] display.drv=d3dpt9x.drv`
+  work every time (doc 19 §16). Edit that file in binary — Python's text
+  mode eats its CRLFs.
 - **End a scripted Win98 run with the ACPI power button** (`system_powerdown`),
   not keystrokes: a modal dialog swallows them, and a machine that does not
   power off leaves the FAT dirty, so the *next* boot comes up in **safe

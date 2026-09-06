@@ -46,15 +46,32 @@ Branch `track/m10-win98-driver`, worktree
 
 ## State (2026-09-06)
 
-**Steps 0–4 are done: the toolchain, the `.drv`, the mini-VDD, and — since
-2026-09-06 — the driver actually running. GDI loads it, it claims the
+**Steps 0–4 are done and the driver runs: GDI loads it, it claims the
 adapter through the mini-VDD and sets the mode (`d3dpt-vga: linear mode on
 (640x480x32 pitch 2560 offset 0)`), its own `d3dpt9x:` lines arrive through
-the DEBUG register as the XP driver's do, and the DIB Engine's software
-cursor is drawn into guest VRAM at the right place and scale. The open item
-is that the shell never appears: a black desktop, the wait cursor, and a
-640×20 strip of garbage at the top of the frame buffer, unchanged between
-150 s and 200 s of boot (doc 19 §15).** The findings that shape the plan:
+the DEBUG register as the XP driver's do, and the DIB Engine draws into
+guest VRAM. Step 5 — getting to a desktop — is where the work is.**
+
+The thing that changed everything about how this track is debugged: what
+looked like "a black desktop that never paints" was **a fatal exception,
+written by Windows in VGA text mode, which the linear frame buffer hides**
+(doc 19 §15). The band of coloured noise across the top of every screendump
+*was* the message — QEMU's VGA core keeps its planes interleaved four bytes
+to a character cell from VRAM offset 0, so the text page is the first 32 KB
+of the frame buffer. `tools/win98-driver-test.sh` now reads it out of VRAM
+and prints it after every run. Nothing about this track should be judged
+from a screendump again.
+
+The first fault it caught, and its fix: `DIB_ExtTextOutExt` (DIBENG ordinal
+403) does **not** take the display's PDEVICE as its extra argument the way
+every other `…Ext` entry does — it takes two more pointers,
+`lpDrawTextBitmap` and `lpDrawRect`. `dibthunk.asm` was thunking it with
+one dword, which left the Engine's whole argument list four bytes low, and
+its first instruction (`lds si,[bp+0x32]`) then loaded a garbage selector —
+a fatal exception 0D the moment anything drew text. `ExtTextOut` is a plain
+forwarder to ordinal 14 now, which is what the reference driver does.
+
+The findings that shape the plan:
 
 - A 9x display driver is **three binaries**: a 16-bit `.drv` whose drawing
   exports all jump to the DIB Engine, a ring-0 mini-VDD `.vxd`, and — the
@@ -111,15 +128,18 @@ is that the shell never appears: a black desktop, the wait cursor, and a
 reading. Nothing of their *code* is vendored; their `ddk/` headers are,
 under `ddk9x/`, for the reason in the bullet above.
 
-**Where a new session starts.** Everything is committed and pushed; the
-open item is doc 19 §15 — the driver runs and draws, but Windows never
-reaches the desktop. The two leads, in order: the 640×20 strip of garbage
-at the top of the frame buffer (nothing the driver draws belongs there, so
-whatever writes it is writing where it should not), and what `Enable`
-answers with — the `GDIINFO` and the `deviceBitmap` handed to the DIB
-Engine, held against `vmdisp9x`'s `enable.c` field by field. Rule out the
-dull explanation first: a 32 bpp desktop painted in software under TCG may
-simply be slower than the harness waits.
+**Where a new session starts.** Everything is committed and pushed. The
+open item is step 5 — a desktop — and the way to work on it is now
+mechanical rather than archaeological: run the harness, read the `text`
+block it prints. If Windows has faulted it says so, with the selector and
+offset; take the selector's base out of the LDT (`memsave` the LDT at the
+base `info registers` gives, decode the descriptor), read the code there
+and disassemble it. That is exactly how the `ExtTextOut` fault above was
+found, in one run, and any further fault of the same family will fall the
+same way. A run with no `text` block and a screen that stops changing is
+the *other* case, and only then are the dull explanations — a paint that
+is simply slow at 32 bpp under TCG, a `GDIINFO` USER cannot work with —
+worth chasing.
 
 Do not re-derive the three silent refusals; they are written up in doc 19
 §13 and §14 and two of them are now build-time checks.
@@ -168,14 +188,18 @@ What the track starts from:
    ring-0-only mapping, then 16-bit accesses to a register BAR that takes
    only 32-bit ones. `tools/win98-driver-test.sh` now prints the driver's
    own `d3dpt9x:` lines and the device's `linear mode on (640x480x32 …)`.
-5. **Get to a desktop** — the open blocker (doc 19 §15). The driver draws,
-   but the shell never appears: a black screen, the wait cursor and a
-   640×20 strip of garbage at the top of VRAM. Where to look, in order:
-   whether the boot is merely slow at 32 bpp under TCG; what writes that
-   strip; and `Enable`'s `GDIINFO` / `deviceBitmap` against `vmdisp9x`'s
-   `enable.c`. The pass is a Win98 desktop the harness can drive — and the
+5. **Get to a desktop** — the open blocker. The driver draws and the
+   harness now reads Windows' own text-mode messages out of VRAM, so each
+   fault is one run away from being named. One is fixed already (the
+   `ExtTextOut` thunk, doc 19 §15); expect more of that family, because a
+   16-bit driver's every mistake about an argument list is a bad selector
+   somewhere. The pass is a Win98 desktop the harness can drive — and the
    ACPI power-button shutdown succeeding, which is the same thing said
-   another way.
+   another way, since a faulted machine cannot shut down at all.
+   Two smaller things belong here when it does: the `minivdd=` registry
+   path that should make `install` work without touching SYSTEM.INI
+   (doc 19 §16), and whether 16 bpp — the depth the era's drivers actually
+   ran — behaves differently from the 32 bpp default.
 6. **Step 1 — the split, XP unchanged.** Carve `core/` out of
    `d3dptdisp.c` per doc 19, thunk NT onto it, and prove it is a
    refactor: `scripts/test.sh all` green, `d3dpt-dp2-test` and `d3d7test`
@@ -229,14 +253,12 @@ mode. `boot` re-stages only the two
 binaries, which is what an edit-build-test cycle wants. `BOOT_WAIT=190`
 buys more time on a slow run; `OUT=` moves the outputs.
 
-**The scratch image (`build/w98/win98-m10.raw`) is hand-edited** and a new
-session should know what is in it, or run `install` to start clean:
-`MSDOS.SYS` has `BootLog=1` and `Logo=0`; `SYSTEM.INI` has `[386Enh]
-device=C:\WINDOWS\SYSTEM\D3DPT9V.VXD` (loading the mini-VDD explicitly,
-which is how it was first proven — the `minivdd=` registry path has not
-been tested on its own since) and `[boot] display.drv=d3dpt9x.drv` (naming
-the display driver directly, part of ruling out the selection path in doc
-19 §13).
+`install` writes the SYSTEM.INI configuration itself now — `[386Enh]
+device=C:\WINDOWS\SYSTEM\D3DPT9V.VXD` and `[boot] display.drv=d3dpt9x.drv`
+— so the scratch image is no longer a hand-edited thing a session has to
+be told about. The registry alone, which is all PnP writes, is not enough:
+the boot after a clean install comes up on the VGA with nothing of ours
+running (doc 19 §16).
 
 The XP side, for when the split lands:
 

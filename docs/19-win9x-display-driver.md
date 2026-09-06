@@ -503,25 +503,103 @@ hand the driver an LDT selector as well as the GDT one (both zero from ring
 3 — not the selector), and then disassemble `RegGet` out of the NE image,
 where the two `mov ax,[es:bx]` say it.
 
-### 15. Where it stands (2026-09-06)
+### 15. The strip of garbage was the message (2026-09-06)
 
 The driver loads, claims the adapter through the mini-VDD, and sets the
 mode: `d3dpt-vga: linear mode on (640x480x32 pitch 2560 offset 0)`, and the
-driver's own `d3dpt9x:` lines now arrive through the DEBUG register exactly
-as the XP driver's do. GDI draws into guest VRAM — the DIB Engine's
-software cursor lands at the right place and the right scale, which is the
-proof that the frame buffer's address, pitch and depth all agree.
+driver's own `d3dpt9x:` lines arrive through the DEBUG register exactly as
+the XP driver's do. GDI draws into guest VRAM — the DIB Engine's software
+cursor lands at the right place and the right scale, which is the proof
+that the frame buffer's address, pitch and depth all agree.
 
-**The shell does not come up.** The screen stays black apart from the wait
-cursor and a 640×20 strip of garbage at the top of the frame buffer, and it
-is unchanged between 150 s and 200 s of boot. That is the next thing to
-work out: whether GDI's `Enable` is answering with a `GDIINFO` or a
-`deviceBitmap` USER cannot work with, or whether the desktop paint is
-simply that slow at 32 bpp under TCG. The strip at the top is the first
-lead — nothing the driver draws should be there.
+Then the screen stops changing: black, a wait cursor, and a band of
+coloured noise across the top of the frame buffer. That reads exactly like
+a desktop that is merely slow to paint, and it is not. **The band is a VGA
+text screen showing through**, and what it says is:
 
-Note for whoever runs the harness: **end a run with the ACPI power
-button**, not keystrokes. `tools/win98-driver-test.sh` now does. A run that
-does not power off leaves the FAT dirty, and the boot after it comes up in
-**safe mode** — no driver, no VxD, an empty debug log — which reads exactly
-like the driver having failed and costs a full cycle to recognise.
+```
+                                   Windows
+   A fatal exception 0D has occurred at 036F:000003C1.  The current
+   application will be terminated.
+```
+
+Two facts make it invisible, and each is worth keeping.
+
+**QEMU's VGA core stores its planes interleaved, four bytes to a character
+cell, from offset 0 of the same VRAM.** So the text page the VMM writes at
+0xB8000 lands in the first 32 KB of the linear frame buffer — 12.8 lines of
+a 640×480×32 mode — and a character cell of `20 17` (a space, light grey on
+blue) is scanned out as one dark navy pixel. The band is *exactly* 32 KB
+wide because that is the size of the 0xB8000 text window; the tell that it
+is not our drawing is that it survives the driver's own clear of the whole
+frame buffer, because the VMM writes it afterwards.
+
+**A 9x fatal exception is a text-mode screen, and nothing switches the mode
+back.** On an adapter Windows knows, the VDD returns the hardware to VGA
+before writing it. Ours is a device the VDD cannot put back — that is the
+whole point of a mini-VDD — so the message is written into a frame buffer
+that is still scanning out 32 bpp. Every earlier run of this track that
+"stopped at a black desktop" was a machine that had already faulted and was
+holding up a message nobody could read.
+
+`tools/win98-driver-test.sh` now reads that page out of VRAM after every
+run and prints it (`text  Windows has a VGA text screen up behind the frame
+buffer:`). It is the single most useful thing the harness does: without it
+a fault and a slow paint look the same, and both look like the driver
+almost working.
+
+The fault itself is inside **DIBENG.DLL**, at the first instruction of a
+blit-shaped routine: `lds si,[bp+0x32]` followed by `deFlags`,
+`deBeginAccess` / `deEndAccess`, `deBitsOffset` / `deBitsSelector`,
+`deDeltaScan` and a jump table on `deBitsPixel`. So the Engine is
+dereferencing a `DIBENGINE` far pointer it was handed, and the selector in
+it is not a selector. What we hand it out of band is `lpDriverPDevice`,
+pushed by every `DIBTHK` thunk in `dibthunk.asm`; that is where to look
+first, and the reference driver's own thunk list — which does *not* thunk
+`ExtTextOut` or `SetPalette`, and reaches the cursor entries through C — is
+the thing to hold ours against.
+
+### 16. What the install has to write, and what it may not rely on
+
+PnP installs the driver from `d3dpt9x.inf` with no clicks and writes both
+halves into the registry: `drv=d3dpt9x.drv` and `minivdd=d3dpt9v.vxd` under
+the adapter's own key, with `display.drv=pnpdrvr.drv` in SYSTEM.INI's
+`[boot]` section resolving through it. **The boot after that comes up on
+the VGA**, with neither the VxD's nor the driver's debug lines — the
+registry is right, the files are in place, and nothing of ours runs.
+
+Naming both in SYSTEM.INI works every time:
+
+```
+[386Enh]
+device=C:\WINDOWS\SYSTEM\D3DPT9V.VXD
+[boot]
+display.drv=d3dpt9x.drv
+```
+
+`tools/win98-driver-test.sh install` writes exactly that now, so a fresh
+image is in the proven configuration in one step rather than by hand. Why
+the registry path does not work is unanswered and worth an hour some day:
+it may be as small as a missing `DevLoader`, and until then this is not a
+thing to rediscover.
+
+Edit that file **in binary or not at all**: it has CRLF line endings, and
+Python's text mode eats them on the way through — a rewrite that did so ate
+a section header once, which then looks exactly like Windows having
+rejected the setting.
+
+### 17. Ending a run
+
+**End a run with the ACPI power button**, not keystrokes; a run that does
+not power off leaves the FAT dirty, and the boot after it is a ScanDisk or
+**safe mode** — no driver, no VxD, an empty debug log, which reads exactly
+like the driver having failed and costs a full cycle to recognise. Two
+things get in the way of the button and the harness now handles both: the
+`install` run always ends on "to finish setting up your new hardware, you
+must restart your computer" (`alt+n` is No, and the restart is the next
+run's job), and a modal dialog swallows the power button as surely as it
+swallows keys, so Escape goes first.
+
+A machine that has faulted cannot be shut down at all — it is in the text
+screen above, waiting for a key that only reaches DOS. That is not a
+harness bug to chase; it is the fault, and the printed text screen says so.
