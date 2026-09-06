@@ -8,6 +8,12 @@
 #   scripts/package-linux.sh --no-tar        # leave the staged tree only
 #   scripts/package-linux.sh --with-shaders  # include the preset collection
 #   scripts/package-linux.sh --out DIR       # default build/package
+#   scripts/package-linux.sh --prefix DIR    # stage straight into DIR
+#
+# `--prefix` stages the layout directly into an existing prefix instead of
+# a versioned subdirectory, and rolls no tarball: it is how the Flatpak
+# (packaging/flatpak/) fills `/app`, since an install prefix and the
+# staged tree are the same shape. It never deletes the destination.
 #
 # It does not build QEMU: build/qemu (libqemu-embed-i386.so + qemu-img)
 # and qemu/pc-bios must already be there, per CLAUDE.md's build order.
@@ -36,13 +42,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-BUILD=1 TAR=1 SHADERS=0 OUT="$ROOT/build/package"
+BUILD=1 TAR=1 SHADERS=0 OUT="$ROOT/build/package" PREFIX=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-build) BUILD=0; shift ;;
     --no-tar) TAR=0; shift ;;
     --with-shaders) SHADERS=1; shift ;;
     --out) OUT=$2; shift 2 ;;
+    --prefix) PREFIX=$2; TAR=0; shift 2 ;;
     -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "package-linux.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -50,7 +57,7 @@ done
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 NAME="2ksbox-$VERSION-linux-$(uname -m)"
-STAGE="$OUT/$NAME"
+if [ -n "$PREFIX" ]; then STAGE="$PREFIX"; else STAGE="$OUT/$NAME"; fi
 
 need() { [ -e "$1" ] || { echo "package-linux.sh: missing $1${2:+ ($2)}" >&2; exit 1; }; }
 need build/qemu/libqemu-embed-i386.so "scripts/configure-qemu.sh && ninja -C build/qemu libqemu-embed-i386.so"
@@ -63,13 +70,16 @@ fi
 need target/release/launcher
 need target/release/player
 
-rm -rf "$STAGE"
+# Only ever clear a staging directory of our own making. `--prefix` names
+# somewhere that already exists and belongs to someone else (`/app`).
+[ -n "$PREFIX" ] || rm -rf "$STAGE"
 mkdir -p "$STAGE"/{bin,lib/2ksbox,libexec/2ksbox,share/2ksbox/desktop,share/doc/2ksbox}
 
 install -m755 target/release/launcher "$STAGE/bin/2ksbox"
 install -m755 target/release/player "$STAGE/bin/2ksbox-player"
 install -m755 build/qemu/libqemu-embed-i386.so "$STAGE/lib/2ksbox/"
 install -m755 build/qemu/qemu-img "$STAGE/libexec/2ksbox/"
+rm -rf "$STAGE/share/2ksbox/pc-bios"   # a re-run must replace it, not nest inside it
 cp -a qemu/pc-bios "$STAGE/share/2ksbox/pc-bios"
 
 # The guest-tools ISO: the newest one, the same choice the launcher's

@@ -1,0 +1,123 @@
+# The Flatpak (M6 step 6b, doc 07's primary Linux target).
+#
+#   scripts/package-flatpak.sh          build + install + a smoke check
+#
+# Why a Flatpak at all: our QEMU is a patch queue, so no distro's `qemu`
+# can ever be linked, and `libqemu-embed-i386.so` pulls ~191 shared
+# libraries that the plain tarball ships none of. A runtime supplies
+# exactly that set on every distro. The sandbox is a secondary benefit
+# here and a fairly nominal one — see `finish-args` below.
+#
+# The binaries MUST be built inside the SDK: the host's glibc is newer
+# than the runtime's (2.44 vs 2.42 as of writing) and our embed library
+# already references GLIBC_2.43, so host-built binaries will not run here.
+app-id: com._2ksbox.Launcher
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: 2ksbox
+
+finish-args:
+  # A machine is the point of the app: KVM when the host has it, the GPU
+  # for the shader chain and the guest's 3D.
+  - --device=kvm
+  - --device=dri
+  # Wayland first, X11 as the fallback the player's winit build expects.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --socket=pulseaudio
+  # QEMU's user-mode NAT gives the guest outbound networking, and the
+  # shader-preset download fetches upstream's tarball.
+  - --share=network
+  # Disc images and qcow2s live wherever the user keeps them (an external
+  # drive, a NAS mount), and a machine bundle stores absolute paths, so
+  # they must resolve without a portal round-trip. This is why the
+  # sandbox is nominal for this app — an honest `--filesystem=host` is
+  # better than pretending otherwise with a narrower list that fails on
+  # someone's second disk.
+  - --filesystem=host
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/2ksbox/cargo
+    # No uv in the SDK and no network during a Flathub build; the SDK's
+    # own Python is 3.13, which is what QEMU 9.2.x wants
+    # (scripts/configure-qemu.sh checks this rather than trusting it).
+    QEMU_PYTHON: /usr/bin/python3
+
+modules:
+  # QEMU 9.2 needs libslirp for `-netdev user`, which every machine this
+  # launcher generates uses, and the runtime has neither the library nor
+  # its pkg-config file.
+  - name: libslirp
+    buildsystem: meson
+    config-opts:
+      - --buildtype=release
+    sources:
+      - type: archive
+        url: https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.9.4/libslirp-v4.9.4.tar.gz
+        sha256: 3998863b020aeda34bddc567097c6efba55a78cdf6eeee6bcd42c11ef23967da
+
+  # QEMU 9.2's mkvenv wants distlib, and takes pip's vendored copy as a
+  # substitute — but pip 26 (what the SDK ships) has trimmed that copy:
+  # `pip._vendor.distlib.scripts` is still there, `…distlib.version` is
+  # gone, so mkvenv's import fails and configure dies with "found no
+  # usable distlib". The real package satisfies its first choice. Build
+  # dependency only, hence the cleanup — /app/lib/python3.13/site-packages
+  # is on the venv's path (it inherits system site packages), which is
+  # what makes this visible to QEMU's configure at all.
+  - name: python3-distlib
+    buildsystem: simple
+    cleanup: ['*']
+    build-commands:
+      - pip3 install --no-index --no-deps --prefix=/app distlib-0.4.3-py2.py3-none-any.whl
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/02/08/9c41fb51ab5b43eb21674aff13df270e8ba6c4b29c8624e328dc7a9482af/distlib-0.4.3-py2.py3-none-any.whl
+        sha256: 4b0ce306c966eb73bc3a7b6abad017c556dadd92c44701562cd528ac7fde4d5b
+
+  - name: 2ksbox
+    buildsystem: simple
+    build-options:
+      # Local builds only: cargo fetches crates and QEMU's configure may
+      # want its Python wheels. A Flathub submission has to replace this
+      # with vendored cargo sources (flatpak-cargo-generator) — that is
+      # the one thing standing between this manifest and a submission.
+      build-args:
+        - --share=network
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          # Build products and everything only a developer needs. The
+          # QEMU submodule comes along *already patched*: the patch queue
+          # (scripts/prepare-qemu.sh) needs git and rsync, neither of
+          # which applies to a copied tree, so it runs on the host first
+          # — and QEMU's own configure treats a tree with no .git as a
+          # tarball build, which is exactly what we want here.
+          - target
+          - build
+          - .git
+          - third_party/dxvk
+          - third_party/slang-shaders
+          - .claude
+    build-commands:
+      # The same three steps a developer runs, then the same staging
+      # script the tarball uses — `<prefix>` is `/app`, so the install
+      # layout needs no Flatpak-specific variant.
+      - scripts/configure-qemu.sh --disable-download
+      - ninja -C build/qemu qemu-img libqemu-embed-i386.so
+      - cargo build --release --locked -p launcher -p player
+      - scripts/package-linux.sh --no-build --prefix /app
+      # Flatpak exports these three by name, so they go where it looks
+      # rather than through packaging/linux/install.sh (which rewrites
+      # Exec/Icon to absolute paths for a plain prefix install; inside
+      # the sandbox the shipped `Exec=2ksbox` / `Icon=<app-id>` are
+      # already right).
+      - install -Dm644 packaging/linux/com._2ksbox.Launcher.desktop /app/share/applications/com._2ksbox.Launcher.desktop
+      - install -Dm644 packaging/linux/com._2ksbox.Launcher.svg /app/share/icons/hicolor/scalable/apps/com._2ksbox.Launcher.svg
+      - install -Dm644 packaging/linux/com._2ksbox.Launcher.metainfo.xml /app/share/metainfo/com._2ksbox.Launcher.metainfo.xml

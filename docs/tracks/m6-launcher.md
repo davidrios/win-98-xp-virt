@@ -1342,6 +1342,62 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
   with title `2ksbox`** — the same string as the installed desktop
   entry's basename, which is the whole point of the ID.
 
+- **Step 6b — the Flatpak builds, installs and runs a machine**
+  (2026-09-05). `packaging/flatpak/com._2ksbox.Launcher.yml` +
+  `scripts/package-flatpak.sh`. It is a real from-source build against
+  `org.freedesktop.Sdk//25.08`, not a repackaged tarball, and it had to
+  be: the host's glibc is 2.44 and `libqemu-embed-i386.so` already
+  references `GLIBC_2.43`, while the runtime ships 2.42 — host binaries
+  simply will not load there (checked with `objdump -T` before writing a
+  line of manifest).
+
+  The manifest is short because the install layout already fits: `<prefix>`
+  *is* `/app`, so it runs `scripts/package-linux.sh --prefix /app` (a new
+  flag: stage into an existing prefix, never delete it, no tarball) and
+  gets the same tree **and the same self-check** the tarball gets. Two
+  modules exist only to fill gaps in the runtime:
+
+  - **libslirp 4.9.4** — the runtime has neither the library nor its
+    pkg-config file, and `-netdev user` is what *every* machine this
+    launcher generates uses. Without it QEMU would have configured
+    without slirp and every guest would have lost networking at run time,
+    silently, long after the build looked fine.
+  - **distlib** (build-only, `cleanup: ['*']`) — see the gotcha above:
+    QEMU 9.2's mkvenv wants `distlib.version`, which pip 26 no longer
+    vendors.
+
+  `--filesystem=host` is deliberate and documented in the manifest: disc
+  images and qcow2s live wherever a person keeps them and bundles store
+  absolute paths, so a narrower list would fail on someone's second disk.
+  That is also why the sandbox is not the reason we are doing this.
+
+  **Verified by running it, not by the build exiting 0.** `flatpak run
+  --command=2ksbox … --paths` inside the sandbox: every companion under
+  `/app` (`/app/bin/2ksbox-player`, `/app/libexec/2ksbox/qemu-img`,
+  `/app/share/2ksbox/{pc-bios,guest-tools}`), the library under
+  `~/.var/app/com._2ksbox.Launcher/data/` — `scripts/package-flatpak.sh`
+  asserts both, so a regression fails the build rather than a person's
+  first launch. Then a real machine: `--wizard-new` created a 2 GB qcow2
+  through the packaged `qemu-img`, `--play` booted it, and a screendump
+  over the launcher's own QMP socket (visible on the host under the app's
+  `xdg-run`) shows SeaBIOS → **iPXE taking a DHCP lease**, which is the
+  bundled libslirp working end to end. `query-kvm` said
+  `{"enabled": true, "present": true}` — `--device=kvm` is real — and
+  `query-pci` listed the whole machine (VGA, Ethernet, Audio). Clean QMP
+  `quit`. The GUI runs too: the window reports `app_id
+  com._2ksbox.Launcher` / title `2ksbox` to sway, radv initialises inside
+  the sandbox (so `--device=dri` gives wgpu a GPU), and
+  `--diag-wizard-frame` dumped a correct 700×600 egui frame from inside
+  the Flatpak — including its own "KVM is available on this host" hint.
+
+  Not done: **screenshots** for the metainfo (they need hosting, so this
+  waits on 2ksbox.com), and **offline sources** for a Flathub submission —
+  the manifest currently builds the 2ksbox module with `--share=network`
+  so cargo can fetch crates, which Flathub forbids;
+  `flatpak-cargo-generator` is the standard answer and QEMU's own
+  `--disable-download` already works (its softfloat subprojects are
+  checked out in the submodule rather than fetched by a wrap).
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.
@@ -1371,7 +1427,10 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
    - ~~6a the install layout + the Linux tarball~~ — done above
      (`launcher/src/paths.rs`, `scripts/package-linux.sh`,
      `packaging/linux/`).
-   - 6b **Flatpak** — **and then an AppImage** (user decision, 2026-09-05,
+   - ~~6b **Flatpak**~~ — **landed 2026-09-05** (see the entry above);
+     what remains is screenshots and offline sources for a Flathub
+     submission. The reasoning, kept because it decides 6b′ too — **and
+     then an AppImage** (user decision, 2026-09-05,
      after asking why Flatpak at all: doc 07's one line was never argued).
      The honest case for it is **bundling and distribution, not
      sandboxing**: our QEMU is a patch queue, so no distro's `qemu` can
@@ -1397,6 +1456,21 @@ section (scope, exit criterion). Branch: `track/m6-launcher` (opened
      real tree; and — with a booby-trapped `uv` first on `PATH` that fails
      loudly — the uv branch is provably not taken. `ninja` relinks and
      `scripts/test.sh host` still passes 5/5 afterwards.
+
+     **Gotcha found building it (2026-09-05): QEMU 9.2 + pip 26 =
+     "found no usable distlib".** `mkvenv` tries `import distlib.scripts`
+     and `distlib.version`, falling back to pip's vendored copy — and
+     pip 26 (what `org.freedesktop.Sdk//25.08` ships) has *trimmed* that
+     copy: `pip._vendor.distlib.scripts` still imports, `…distlib.version`
+     is gone, so the fallback fails and configure dies before meson runs.
+     Nothing to do with Flatpak — any environment with a modern pip and
+     no real `distlib` hits it. The manifest installs the actual `distlib`
+     wheel into `/app` first (a build-only module, `cleanup: ['*']`);
+     `/app/lib/python3.13/site-packages` is on the venv's path because
+     QEMU builds its venv with system site packages, which is what makes
+     that work. Diagnosed by reproducing it in a bare SDK sandbox — not
+     inside flatpak-builder — and then listing the vendored package's own
+     directory.
 
      **Two things this box needs before the build can run at all:**
      `flatpak-builder` is not installed, and `/` has 14 GB free at 97 %

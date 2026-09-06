@@ -122,8 +122,18 @@ tar xf 2ksbox-*.tar.zst && cd 2ksbox-*
 ```
 
 The tarball ships no system libraries, so it wants a host much like the
-one that built it; the Flatpak (doc 07, still to come) is the portable
-answer. `launcher --paths` prints where a given build looks for each
+one that built it. The **Flatpak** is the portable answer — it builds
+everything from source against `org.freedesktop.Sdk`, so the ~191
+libraries come from the runtime:
+
+```sh
+scripts/package-flatpak.sh          # build, install --user, smoke check
+flatpak run com._2ksbox.Launcher
+```
+
+Set `FLATPAK_BUILD_DIR` (and flatpak's own `FLATPAK_USER_DIR`) if the
+build tree — a whole QEMU plus a release Rust workspace, ~12 GB — should
+not land on your root filesystem. `launcher --paths` prints where a given build looks for each
 companion — the first thing to ask when something says a file is missing.
 
 CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
