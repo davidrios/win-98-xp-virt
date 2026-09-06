@@ -38,7 +38,37 @@ Branch `track/m10-win98-driver`, worktree
 
 ## State (2026-09-06)
 
-Track opened, nothing built yet. What it starts from:
+**Step 0 is done** — the 9x driver model is established and written into
+doc 19; nothing is built yet. The findings that change the plan:
+
+- A 9x display driver is **three binaries**: a 16-bit `.drv` whose drawing
+  exports all jump to the DIB Engine, a ring-0 mini-VDD `.vxd`, and — the
+  surprise — the DirectDraw/Direct3D HAL as a **ring-3 32-bit DLL** loaded
+  into the game's own process. Only that last one links our core, and it
+  builds with the `i686-w64-mingw32` toolchain we already have.
+- **The per-call DDI structures are field-for-field identical to NT's**
+  (`D3DHAL_DRAWPRIMITIVES2DATA` = `D3DNTHAL_DRAWPRIMITIVES2DATA`, same
+  fourteen fields, same order, `__stdcall` both), and the DP2 opcode
+  values agree. The walker is portable as it stands.
+- **The DirectDraw object structures are not**: `DDRAWI_DDRAWSURFACE_LCL`
+  has the same fields as `DD_SURFACE_LOCAL` under the same names at
+  different offsets (and 16-bit `wWidth`/`wHeight`). The neutral
+  descriptor is required, and filling it is mechanical.
+- **DDI 8 works on 9x** — same `GetDriverInfo2`, same `D3DGDI2_*`, same
+  `D3DCAPS8` — so all of M7c is in scope for 98.
+- **Caps rules differ**: `DDCAPS_GDI` is normal on 9x and fatal on NT; a
+  9x callback may decline and fall back to the HEL, an NT one may not. The
+  caps table is per-OS, not shared.
+- **Modes come from the INF/registry on 9x**, not from the adapter.
+- **New build prerequisite: Open Watcom** for the `.drv` and the `.vxd`
+  (mingw cannot make NE or VxD binaries); not installed on this box.
+  Header provenance for the 16-bit side is an open item — our rule is no
+  Microsoft DDK.
+
+`vmdisp9x` and `vmhal9x` are cloned to `build/ref/` (gitignored) for
+reading; nothing from them is vendored.
+
+What the track starts from:
 
 - XP's driver is complete through the DX8 DDI and is the thing being
   generalised: miniport + display driver, DirectDraw DDI, Direct3D DDI
@@ -55,16 +85,21 @@ Track opened, nothing built yet. What it starts from:
 
 ## Next steps, in order
 
-1. **Step 0 — establish the 9x driver model** (doc 19, "What 9x does
-   differently"). Read `vmdisp9x` for the `.drv` + VxD split, how a
-   DirectDraw HAL is published from a 16-bit driver, whether the DDHAL /
-   D3DHAL structures match NT's field for field where our core reads
-   them, and how far the DDI goes on 9x (DX8 or DX7). Write the answers
-   into doc 19 — this is the single biggest unknown in the track and
-   every estimate below depends on it. Deliverable: doc 19's step-0
-   section replaced by facts, and a "hello world" 9x display driver that
-   brings up a mode on `d3dpt-vga` and nothing else.
-2. **Step 1 — the split, XP unchanged.** Carve `core/` out of
+1. ~~**Step 0 — establish the 9x driver model**~~ **done 2026-09-06**,
+   from `vmdisp9x` and `vmhal9x`; the answers are doc 19's "What 9x does
+   differently" and the State section above. One question of that section
+   is left for a guest to answer rather than a source tree: whether a
+   driver claiming DDI 8 may leave out the pre-DP2 HAL entries
+   (`RenderState`, `RenderPrimitive`, `DrawOnePrimitive`, `TextureCreate`)
+   that NT dropped and `vmhal9x` still implements.
+2. **Get Open Watcom building a "hello world" `.drv` + `.vxd`** before
+   the split, because it is the one prerequisite that can fail outright:
+   install it, build a minimal 16-bit display driver over the DIB engine
+   and a dynamic VxD, and get a 98 guest to a desktop on `d3dpt-vga` with
+   them — no DirectDraw, no core. That also settles the header-provenance
+   question in practice. If this cannot be made to work, the track stops
+   here and nothing has been wasted on the split.
+3. **Step 1 — the split, XP unchanged.** Carve `core/` out of
    `d3dptdisp.c` per doc 19, thunk NT onto it, and prove it is a
    refactor: `scripts/test.sh all` green, `d3dpt-dp2-test` and `d3d7test`
    against the same golden BMP, `shtest` / `cktest` / `ebtest` / `dxttest`
@@ -73,22 +108,26 @@ Track opened, nothing built yet. What it starts from:
    `tools/xp-motoracer.sh`, `tools/xp-vicecity.sh`). Land this on its own
    — a 9x bug on top of an unproven refactor is two bugs wearing one
    coat.
-3. **Step 2 — the 9x framebuffer driver** (98's M7a): modes from the
-   miniport's table, the desktop on the adapter, `d3dptvid: adapter
-   found` from the device, no copy inside QEMU. Installed by INF from the
+4. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
+   adapter, `d3dptvid: adapter found` from the device, no copy inside
+   QEMU. Modes come from the INF on 9x, so decide there between an INF
+   superset and a mode-list utility (doc 19 §6). Installed by INF from the
    guest-tools ISO; `SETUP.EXE` grows the component and
    `tools/setup-guest-test.sh win98`'s "never offered" check inverts.
-4. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
+5. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
    flip chain against the frame counter, `DdMapMemory`'s equivalent,
    8 bpp palettized modes. `DDTEST.EXE` and `CDTEST`-style guest probes
    run on 98 as they do on XP.
-5. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
-   under the 9x HAL. `D3D7TEST.EXE`'s frame must match
+6. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
+   under the 9x HAL. Two decisions land here, both new on 9x (doc 19 §8):
+   whether the doorbell is a mapped register page or a VxD ioctl, and how
+   the single command window at the top of VRAM is serialised now that
+   every process has its own copy of the HAL. `D3D7TEST.EXE`'s frame must match
    `d3dpt-dp2-test`'s BMP exactly, the same oracle XP is held to. Then
    `EBTEST` (the DX3 path, which is most of the 98 matrix), `CKTEST`,
-   `DXTTEST`, and `SHTEST`/DX8 only if step 0 says 9x's runtime goes
-   there.
-6. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
+   `DXTTEST`, and `SHTEST` — the DX8 half is in scope on 98 too, step 0
+   settled that.
+7. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
    the driver, against the same titles on the Glide/WineD3D stack: which
    is faster, which is correct, and what the launcher should default to.
 
@@ -105,6 +144,19 @@ tools/xp-driver-test.sh ~/vms/winxp-m7c.qcow2 d3d7   # XP's regression oracle ac
 This worktree has its own submodules but no `build/`. It needs
 `scripts/build.sh` once (~15 min for QEMU from scratch on the Linux box);
 `build/dxvk` may be symlinked from the main checkout rather than rebuilt.
+
+The 9x binaries need a second toolchain: **Open Watcom** (`wcc`, `wcc386`,
+`wasm`, `wlink`) for the 16-bit `.drv` and the ring-0 `.vxd`. It is not
+installed on this box and mingw cannot stand in for it; the ring-3 HAL DLL,
+which is the half that links our core, builds with the
+`i686-w64-mingw32` toolchain we already use.
+
+The reference trees read in step 0 are cloned (gitignored, not vendored):
+
+```sh
+git clone --depth 1 https://github.com/JHRobotics/vmdisp9x build/ref/vmdisp9x   # the .drv + VxD
+git clone --depth 1 https://github.com/JHRobotics/vmhal9x  build/ref/vmhal9x    # the ring-3 DirectDraw/D3D HAL
+```
 
 Notes that cost time if forgotten (CLAUDE.md has them, they bite here):
 

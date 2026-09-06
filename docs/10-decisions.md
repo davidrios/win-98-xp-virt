@@ -477,6 +477,19 @@ already done: the DirectX 3–7 behaviour the 98 title matrix depends on —
 execute buffers, colour keys, palettized textures, 8 bpp modes, the flip
 chain's vertical blank — is exactly what M7 spent itself on for XP.
 
+**Confirmed by step 0 (2026-09-06).** Reading `vmdisp9x` and `vmhal9x`
+settled the premises rather than leaving them assumed: the per-call DDI
+structures are field-for-field identical to NT's (`D3DHAL_` vs
+`D3DNTHAL_DRAWPRIMITIVES2DATA`: same fourteen fields, same order) and the
+DP2 opcode values agree, so the walker is portable as it stands; the
+DirectDraw *object* structures are laid out differently, so the neutral
+descriptor is required rather than merely prudent; and DDI 8 works on 9x,
+so the whole of M7c is in scope. The one structural surprise is that on
+9x the DirectDraw/Direct3D HAL is a **ring-3 DLL in the game's process**,
+not part of the display driver — which is why the core may call no
+operating-system service at all: it is linked into a kernel-mode DLL on
+NT and a user-mode one on 9x. Details in doc 19.
+
 **Why the core, and why first.** `d3dptdisp.c` is 3 708 lines of which
 roughly three quarters — the DP2 walker, the surface table and its format
 arithmetic, the caps tables, contexts and readback, the flip chain, the

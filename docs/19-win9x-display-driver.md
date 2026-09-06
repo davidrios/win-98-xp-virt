@@ -92,9 +92,22 @@ guest-tools/src/d3dptvid/
   nt/       d3dptdisp.c   Drv* + the dxg callbacks, thunked onto the core
             d3dptvid.c    the video miniport
             d3dptdisp.def, d3dptvid.inf
-  w9x/      (the 16-bit driver, the VxD, the DDHAL/D3DHAL thunks)
+  w9x/      d3dpthal.c    the ring-3 HAL DLL: the DDHAL / D3DHAL callbacks,
+                          thunked onto the same core (mingw, like NT's)
+            d3dptmini.c   the 16-bit .drv: GDI over the DIB engine, modes,
+                          palette, cursor, the DCICOMMAND escapes (Watcom)
+            d3dptvxd.c    the mini-VDD: the adapter, VRAM, the DOS boxes (Watcom)
+            d3dptvid.inf
   ddk/      vendored headers (per OS as needed)
 ```
+
+Only `w9x/d3dpthal.c` links the core; the other two 9x binaries never see
+it. And because the core is linked into a **kernel-mode** DLL on NT and a
+**user-mode** one on 9x, it may call no operating-system service at all —
+every one it needs (map VRAM, read a tick, allocate, write the debug
+register) arrives through the per-OS layer. That constraint is what makes
+the core portable, and it is close to true already: `d3dptdisp.c`'s core
+three quarters calls almost nothing but the encoder.
 
 **The refactor is a refactor.** It changes no behaviour on XP, and the
 proof is that the M7 suite is byte-identical across it: `d3dpt-dp2-test`
@@ -104,33 +117,182 @@ the native oracle, Moto Racer and Vice City still drawing. Split first,
 land it green, then start on 9x — never both at once, or a 9x bug and a
 refactor bug are indistinguishable.
 
-## What 9x does differently (to be established, step 0)
+## What 9x does differently (step 0, answered 2026-09-06)
 
-This is the part nobody in this repository has written before, so the
-first thing the track does is establish it against a working reference
-rather than from memory. The reference is **JHRobotics' `vmdisp9x`** (the
-Win9x display minidriver behind SoftGPU, which already drives QEMU/VMware
-adapters and carries a DirectDraw HAL) — we do not vendor it; we read it
-to answer:
+Answered by reading JHRobotics' **`vmdisp9x`** (the Win9x display
+minidriver behind SoftGPU, itself derived from Michal Necasek's VirtualBox
+minidriver, with Philip Kelley's `boxv9x` for QEMU's `-vga std`) and its
+companion **`vmhal9x`** (the DirectDraw/Direct3D HAL). Both are cloned to
+`build/ref/` (gitignored) — read, not vendored. Line references below are
+to those trees at the commits cloned on 2026-09-06.
 
-- **The driver's shape.** A 16-bit display driver (`.drv`) that leaves
-  the drawing to the DIB engine and owns mode setting and the hardware,
-  plus a ring-0 VxD for the 32-bit work and DOS-box VGA arbitration.
-  What exactly must be 16-bit, what may be flat, and how the two halves
-  call each other.
-- **How the DirectDraw HAL is published** from a driver whose GDI half is
-  16-bit, and where the 32-bit callbacks live.
-- **Whether the DDHAL / D3DHAL structures match NT's** for the fields the
-  core reads (this decides how thin the 9x layer is).
-- **How far the DDI goes on 9x.** DirectX 9.0c installs on 98; era
-  drivers shipped DX8-level DDIs. If `GetDriverInfo2` and the DX8 token
-  rewrite work the same, the whole DX8 DDI comes along for free; if 9x
-  tops out at the DX7 HAL, the DX3–7 half is still the 98 title matrix.
-- **Installation.** An INF the same way, and the display adapter is
-  chosen in Device Manager rather than by `DRVINST.EXE`.
-- **The 9x traps we already know of:** Win98 must be an ACPI install for
-  PCI hot-adds to be seen, Win98 runs under TCG here (KVM loses Explorer),
-  and a scripted run ends with a Start-menu shutdown (CLAUDE.md).
+### 1. A 9x display driver is three binaries, not two
+
+| | XP (what we have) | Win98/Me |
+|---|---|---|
+| GDI | `d3dptdisp.dll`, kernel, `Drv*` DDI, loaded by win32k | a **16-bit NE `.drv`** exporting the Win3.x-style DDI by ordinal (`BitBlt.1 … ValidateMode.700`), ring 3 |
+| drawing | GDI draws into the engine bitmap = VRAM | every drawing export **jumps straight to the DIB Engine** (`DIBENG.DLL`); the driver keeps only `Enable`/`ReEnable`/`Disable`, `Control`, palette, cursor, `ValidateMode` |
+| hardware | the video miniport `d3dptvid.sys` (`videoprt`) | a ring-0 **mini-VDD `.vxd`** (`system win_vxd dynamic`) that owns the adapter, maps VRAM, and arbitrates the DOS boxes |
+| DirectDraw / D3D HAL | **in the kernel display driver**, called by `dxg.sys` | a **ring-3 32-bit DLL** loaded into the *game's* process by `ddraw.dll` |
+
+The last row is the structural surprise and it is good news: on 9x the
+part of the driver that carries our DP2 walker and surface table is an
+ordinary user-mode Win32 DLL. The 16-bit `.drv` and the VxD never see the
+core at all.
+
+### 2. How the 32-bit HAL is published from a 16-bit driver
+
+The 16-bit driver answers GDI's `Control` (escape) `DCICOMMAND` (0x0C03)
+with four sub-commands (`vmdisp9x/control.c`, `dddrv.c`):
+
+- `DDNEWCALLBACKFNS` hands the driver DirectDraw's `lpSetInfo`;
+- `DDGET32BITDRIVERNAME` returns a `DD32BITDRIVERDATA` — **a DLL file
+  name, an entry-point name (`"DriverInit"`) and a 32-bit context value**.
+  DirectDraw loads that DLL into the calling process and calls the entry;
+- `DDCREATEDRIVEROBJECT` builds `DDHALINFO` and calls `lpSetInfo`;
+- `DDVERSIONINFO` reports `DD_RUNTIME_VERSION`.
+
+The context value is the **linear address of a structure shared between
+the two halves** (`VMDAHAL_t`: a far pointer for the 16-bit side, a flat
+pointer for the DLL — 9x maps everything above 2 GiB into every process,
+so one linear address is valid everywhere). `DriverInit` in the DLL fills
+that structure's `cb32` table with its own 32-bit callbacks; the 16-bit
+side then copies them into `DDHAL_DDCALLBACKS` / `DDHAL_DDSURFACECALLBACKS`
+and sets the matching `DDHAL_CB32_*` flags. There is no registry entry
+and no signing: whoever the `.drv` names is what gets loaded.
+
+### 3. The DDI structures: identical calls, rearranged objects
+
+This is the fact the whole split hinges on, and it is now checked rather
+than hoped for.
+
+**The per-call data structures are field-for-field identical.** NT's
+`DD_CREATESURFACEDATA` and 9x's `DDHAL_CREATESURFACEDATA` have the same
+six members in the same order; so does the one that matters most —
+`D3DNTHAL_DRAWPRIMITIVES2DATA` and `D3DHAL_DRAWPRIMITIVES2DATA` are the
+same fourteen fields in the same order, down to the
+`lpDDVertex`/`lpVertices` union and `dwVertexSize`/`ddrval`. Only the
+*names of the pointer types* differ (`PDD_SURFACE_LOCAL` against
+`LPDDRAWI_DDRAWSURFACE_LCL`). Calling convention is `__stdcall` on both.
+
+**The DirectDraw object structures are not.** NT's `DD_SURFACE_LOCAL` is
+ten members; 9x's `DDRAWI_DDRAWSURFACE_LCL` is twenty-six, in a different
+order, with `lpSurfMore` first instead of `lpGbl`. Every field our driver
+reads exists on both sides under the same name — `lpGbl->fpVidMem`,
+`lpGbl->lPitch`/`dwLinearSize`, `lpGbl->ddpfSurface`,
+`lpSurfMore->dwSurfaceHandle`, `lpSurfMore->dwMipMapCount`, `ddsCaps`,
+`dwFlags`, `ddckCKSrcBlt` — at different offsets, and
+`lpGbl->wWidth`/`wHeight` are `WORD` on 9x against `DWORD` on NT. So the
+neutral descriptor of "The split" is required, not a precaution, and
+filling it is a mechanical per-OS accessor rather than a translation.
+
+**The DP2 token stream is the same stream.** 9x's `d3dhal.h` and our
+`d3dnthal.h` agree on every opcode value we handle (`TEXBLT` 38,
+`CLIPPEDTRIANGLEFAN` 58, `DRAWPRIMITIVE2` 59, `BUFFERBLT` 64,
+`SETVERTEXSHADERFUNC` 76 …), and `vmhal9x` sees the full DX8 set in a
+real 98 guest — stream sources, vertex/index buffers, shader create/set,
+palettes, state sets. The walker — the expensive three quarters of
+`d3dptdisp.c` — is portable as it stands.
+
+### 4. The DDI does reach DirectX 8 on 9x
+
+`GetDriverInfo2` works exactly as on NT: same `GUID_GetDriverInfo2`
+(aliased to `GUID_DDStereoMode`), same `D3DGDI2_MAGIC`, same
+`D3DGDI2_TYPE_GETD3DCAPS8` / `GETFORMATCOUNT` / `GETFORMAT` / `DXVERSION`
+sub-types, same `D3DCAPS8`. `vmhal9x` announces it by setting
+`DDHALINFO_GETDRIVERINFO2` in the flags the 16-bit half passes on, and
+its README claims "current DDI is 8, this means support up to DX9
+programs and games". So the DX8 DDI (hardware T&L, the token rewrite,
+vs/ps 1.x) is not XP-only and the whole of M7c is in scope for 98.
+
+One difference to expect: 9x's runtime still offers the pre-DP2 HAL
+entries (`RenderState`, `RenderPrimitive`, `DrawOnePrimitive`,
+`TextureCreate`) that NT dropped, and `vmhal9x` implements them. Whether
+a driver claiming DDI 8 can leave them out — as ours would — is the one
+question of this section that only a guest can answer.
+
+### 5. Caps rules are *not* the same as NT's
+
+- `DDCAPS_GDI` is **normal on 9x** ("the hardware is shared with GDI")
+  and `vmdisp9x` sets it. On NT it makes dxg drop the whole HAL (doc 15).
+  Two OSes, opposite answers, same bit — a per-OS caps table, not a
+  shared one.
+- On 9x a HAL callback may return `DDHAL_DRIVER_NOTHANDLED` and
+  DirectDraw's HEL takes over; on NT a declined `DdBlt` reaches the
+  application as `E_NOTIMPL` (doc 15, "Blit caps and the HEL"). So 9x can
+  claim `DDCAPS_BLT` cheaply — though `vmhal9x` implements blits in
+  software anyway rather than leave them to the HEL.
+
+### 6. Modes come from the registry, not from the adapter
+
+On NT our miniport enumerates the host's mode table and `DrvGetModes`
+reports it. On 9x the mode list is **written into the registry by the
+INF** (`HKR,"MODES\<bpp>\<w>,<h>"`), the driver only validates and sets
+them; `vmdisp9x` ships a `vesamode.exe` and a tray applet to rewrite the
+list from the adapter afterwards. Consequence for us: either the INF
+carries a superset of the host table, or we ship the equivalent of that
+utility. M2's "the mode table comes from the player" needs an answer on
+98 that it does not need on XP.
+
+### 7. Installation
+
+A plain `Class=DISPLAY`, `signature="$CHICAGO$"` INF matched on
+`PCI\VEN_1234&DEV_3D00`, with `HKR,DEFAULT,drv,,<name>.drv`,
+`HKR,DEFAULT,minivdd,,<name>.vxd`, `HKR,,DevLoader,,*vdd` and the mode
+list. Selected in Device Manager or Display Settings; no `DRVINST.EXE`
+equivalent needed.
+
+### 8. Ring 3 reaches the hardware through the VxD
+
+`vmhal9x` opens the VxD with `CreateFileA("\\\\.\\<name>.vxd")` and drives
+it with `DeviceIoControl` (its `OP_FBHDA_*` ops), and reads VRAM through a
+linear address the VxD published in the shared structure. For us that
+gives two options for the doorbell, and the choice belongs to step 4:
+
+- **map the register page into the process** (it is one 4 KiB page,
+  `D3DPT_FB_REGS_SIZE`) and let the HAL write `DOORBELL` directly — no
+  ring transition per batch, the same cost profile as XP; or
+- **an ioctl per submission** through the VxD — slower, but the VxD can
+  then serialise submissions.
+
+Serialisation is the real question behind that choice, and it is new:
+on NT the command window has exactly one writer because the HAL lives in
+the kernel behind dxg. On 9x every process with a Direct3D device has its
+own copy of the HAL and they would share one window at the top of VRAM.
+
+### 9. Toolchain: two compilers, and a header-provenance question
+
+- The 16-bit `.drv` and the ring-0 `.vxd` need **Open Watcom** (`wcc`,
+  `wcc386`, `wasm`, `wlink`; `system windows dll` and `system win_vxd
+  dynamic`), plus a small `fixlink`-style post-pass to fix the NE/VxD
+  header flags wlink leaves wrong. mingw-w64 cannot produce either
+  format. Open Watcom is not installed on this box — a new build
+  prerequisite, and one `scripts/build.sh` must treat the way it already
+  treats a missing mingw: skip the artefact and say which one is behind.
+- The ring-3 HAL DLL — **the one that links our core** — builds with the
+  `i686-w64-mingw32` toolchain we already use; `vmhal9x` does exactly
+  that, freestanding with its own tiny CRT, which is also how our NT
+  driver is built. mingw-w64 already ships `ddrawi.h`, `d3dhal.h` and
+  `dmemmgr.h`, so the ring-3 side needs almost no vendored headers.
+- The 16-bit side is the gap: `gdidefs.h`, `dibeng.h`, `minivdd.h`,
+  `valmode.h` are Windows 98 DDK headers that `vmdisp9x` vendors. Our
+  rule is "no Microsoft DDK" (doc 15), so their provenance has to be
+  settled before we copy anything — as does linking the `.drv` without
+  Watcom's `clibs.lib` (our NT driver already builds `-nostdlib` with a
+  30-line `kcrt.c`, and the VxD link in `vmdisp9x` already uses
+  `option nodefaultlibs`).
+- `dibeng.lib` is not a Microsoft file: it is generated by `wlib` from a
+  text import list, so the DIB Engine can be imported without a DDK.
+
+### 10. What this means for the split
+
+The core stays freestanding C with no operating-system calls at all —
+because on NT it is linked into a kernel-mode DLL and on 9x into a
+user-mode one, and nothing may assume either. Every OS service it needs
+(map VRAM, read a tick, allocate, write the debug register) arrives
+through the per-OS layer, and every DirectDraw object arrives as the
+neutral descriptor. The 9x side is then three binaries of which only one
+— the ring-3 HAL DLL — links the core.
 
 ## What else moves when this lands
 
