@@ -61,10 +61,16 @@ table is one that still exists. The Mac side pulls `main`.
 
 ```sh
 git clone --recurse-submodules --shallow-submodules <repo>
+scripts/build.sh             # ALL of it: qemu, rust, dxvk, the D3D executor, the guest ISO.
+                             # After every git pull, this is the command. ~3 s when up to
+                             # date (each prepare step is stamped: build/.stamp-*), and it
+                             # says in its summary what this host could not build. -f
+                             # re-runs every prepare; --test chains scripts/test.sh host.
+# The stages it runs, for driving one by hand:
 scripts/prepare-qemu.sh && scripts/configure-qemu.sh
-ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so     # .dylib on macOS
+ninja -C build/qemu qemu-system-i386 qemu-img qemu-io libqemu-embed-i386.so     # .dylib on macOS
 cargo build --release
-# After every git pull: repeat prepare → configure → ninja → cargo. qemu/embed/
+# qemu/embed/
 # is a COPY of embed/ (prepare-qemu.sh rsyncs it); a stale copy links the
 # player against an old dylib ("undefined symbol _qemu_embed_..."). build.rs
 # warns when the copy differs. macOS: export MACOSX_DEPLOYMENT_TARGET (same
@@ -80,8 +86,9 @@ guest-tools/build-wrappers.sh   # the guest-tools ISO (the D3DPT DLLs live on it
 # A D3DPT_PROTO_VERSION bump makes BOTH stale, and neither rebuilds itself: the
 # suite then fails as "protocol mismatch" (d3dpt-dp2, executor N vs header M) and
 # as a guest stage whose DLLs log "host protocol M, this DLL speaks N" and quietly
-# forward to XP's own d3d9 on cirrus (guest-boot: no attach). Rebuild both after a
-# pull that moves the protocol, not just QEMU.
+# forward to XP's own d3d9 on cirrus (guest-boot: no attach). scripts/build.sh
+# rebuilds both, and warns when this host cannot — which is the reason to use it
+# rather than the lines above.
 scripts/test.sh          # the regression suite, host stage (~30 s); `all` adds XP + DOS guests (~2 min)
 target/release/discx convert game.iso build/test/disc/game.cue --audio a.wav   # cue/bin from an ISO (+ audio tracks)
 build/qemu/qemu-img info build/test/disc/game.cue   # "file format: cdimage"; -cdrom game.cue probes to it (doc 17)

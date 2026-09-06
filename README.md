@@ -47,12 +47,16 @@ git clone --recurse-submodules <repo-url>   # submodules: qemu (gitlab.com, pinn
 cd win98-xp-virt                            #             third_party/qemu-3dfx (github.com)
 # already cloned without submodules? → git submodule update --init --depth 1
 
-cargo build --release        # player + libdisc + launcher stub
+scripts/build.sh             # everything, in order: qemu, rust, dxvk, the D3D
+                             # executor, the guest-tools ISO. This is the command
+                             # after every pull; `--test` chains the host test
+                             # stage, `--help` lists the individual stages.
 target/release/player        # M0: native window with test pattern (integer-scaled 4:3)
 
+# What build.sh runs, for driving a single stage by hand:
 scripts/prepare-qemu.sh      # overlay qemu-3dfx devices + embed/, patches, sign
 scripts/configure-qemu.sh    # configure (uv-managed python — needs uv, ninja, glib, pixman, SDL2)
-ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so   # .dylib on macOS
+ninja -C build/qemu qemu-system-i386 qemu-img qemu-io libqemu-embed-i386.so   # .dylib on macOS
 cargo build --release        # player links libqemu-embed (rpath into build/qemu)
 
 # M1: boot something in-process (firmware path needed until machine bundles land)

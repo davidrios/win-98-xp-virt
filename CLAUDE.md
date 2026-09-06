@@ -81,21 +81,40 @@ backend later.
 
 ```sh
 git clone --recurse-submodules --shallow-submodules <repo>
+scripts/build.sh          # everything: qemu, rust, dxvk, the D3D executor, the guest ISO
+scripts/build.sh --test   # ... and then the host test stage
+```
+
+`scripts/build.sh` is the one command. The rest of this section is what it
+runs, for when a single stage has to be driven by hand:
+
+```sh
 scripts/prepare-qemu.sh && scripts/configure-qemu.sh
-ninja -C build/qemu qemu-system-i386 libqemu-embed-i386.so   # .dylib on macOS
+ninja -C build/qemu qemu-system-i386 qemu-img qemu-io libqemu-embed-i386.so   # .dylib on macOS
 cargo build --release
 # configure-qemu.sh also builds libdisc (the CD-ROM model) and links it into QEMU (patch 50)
 # Direct3D pass-through (doc 14) needs the executor too:
 scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja -C build/dxvk && scripts/build-d3dpt-exec.sh
+guest-tools/build-wrappers.sh   # the guest-tools ISO (the D3DPT guest DLLs live on it)
 ```
 
-After **every** `git pull`, repeat prepare → configure → ninja → cargo:
+After **every** `git pull`, run `scripts/build.sh` — it works out what has
+to be redone. It skips each prepare step whose inputs are unchanged (hashed
+into `build/.stamp-*`), because a prepare re-applies its patch queue and so
+hands the build system a few thousand fresh mtimes: running them
+unconditionally costs a full QEMU rebuild every time, running them never
+costs a stale tree. `-f` re-runs them all — reach for it if a tree was
+edited by hand. A **`D3DPT_PROTO_VERSION` bump also makes the executor and
+the guest-tools ISO stale**, and neither says so: the suite fails instead
+as `d3dpt-dp2: protocol mismatch` and as a guest that never attaches.
+`build.sh` rebuilds both, and when a host cannot (no mingw) its summary
+says which artefacts are behind. What the stages are for:
 `qemu/embed/` is an rsync copy of `embed/` made by `prepare-qemu.sh`, and a
 stale copy links the player against an old library (`undefined symbol
-_qemu_embed_…`; `qemu-embed/build.rs` warns). Run `configure-qemu.sh`
-again whenever meson files changed (keeps `werror` off). On macOS export
-`MACOSX_DEPLOYMENT_TARGET` to the running OS before both configure and
-cargo. `QEMU_PYTHON=<interpreter>` makes `configure-qemu.sh` use that one
+_qemu_embed_…`; `qemu-embed/build.rs` warns). `configure-qemu.sh` must run
+again whenever meson files changed (keeps `werror` off). On macOS
+`MACOSX_DEPLOYMENT_TARGET` must be the same for configure and cargo
+(`build.sh` exports it). `QEMU_PYTHON=<interpreter>` makes `configure-qemu.sh` use that one
 and never consult uv (3.8–3.13 enforced) — for a sandboxed build that has
 a Python already and cannot fetch one, i.e. the Flatpak. Player env knobs
 (`PLAYER_*`) are listed in `README.md`.
