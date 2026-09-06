@@ -4,6 +4,13 @@ embed/libqemu_embed.c (overlaid by scripts/prepare-qemu.sh). Objects are
 linked directly so type_init constructors survive. Needs -fPIC
 (scripts/configure-qemu.sh). Design: docs/11-m1-embed-api.md
 
+On Windows (2026-09-06, M11) it also compiles hw/mesa/mglcntx_mingw.c a
+second time, with MESAGL_WGL_BACKEND, into the emulators alone: that file
+holds both the WGL backend and the helpers every backend needs, the
+static library is shared object-for-object with this shared library, and
+the embed library brings its own window-less backend. See patch 31 for
+why weak symbols do not do this job on COFF.
+
 --- a/meson.build
 +++ b/meson.build
 @@ -4232,6 +4232,22 @@
@@ -29,3 +36,39 @@ linked directly so type_init constructors survive. Needs -fPIC
    if target.endswith('-softmmu')
      execs = [{
        'name': 'qemu-system-' + target_name,
+--- a/meson.build
++++ b/meson.build
+@@ -4269,6 +4269,24 @@
+                    install: true)
+   endif
+ 
++  # 2ksbox: the Mesa pass-through's WGL backend, for the emulators only.
++  # `lib` above is shared object-for-object with libqemu-embed, which
++  # brings its own window-less backend (embed/mglcntx_embed.c), so the two
++  # cannot both be in there. hw/mesa/mglcntx_mingw.c is compiled once more
++  # here with MESAGL_WGL_BACKEND, which is its backend half alone (its
++  # other half, the platform-independent helpers, stays in `lib` where
++  # both consumers get it).
++  mesa_wgl_objects = []
++  if host_os == 'windows'
++    mesa_wgl = static_library('mesa-wgl-' + target_name,
++                              files('hw/mesa/mglcntx_mingw.c'),
++                              dependencies: lib_deps,
++                              include_directories: target_inc + [include_directories('hw/mesa')],
++                              c_args: c_args + ['-DMESAGL_WGL_BACKEND'],
++                              build_by_default: false)
++    mesa_wgl_objects = mesa_wgl.extract_all_objects(recursive: false)
++  endif
++
+   if target.endswith('-softmmu')
+     execs = [{
+       'name': 'qemu-system-' + target_name,
+@@ -4311,7 +4329,7 @@
+                install: true,
+                c_args: c_args,
+                dependencies: arch_deps + exe['dependencies'],
+-               objects: lib.extract_all_objects(recursive: true),
++               objects: [lib.extract_all_objects(recursive: true), mesa_wgl_objects],
+                link_depends: [block_syms, qemu_syms],
+                link_args: link_args,
+                win_subsystem: exe['win_subsystem'])

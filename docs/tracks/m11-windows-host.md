@@ -73,11 +73,19 @@ already links.
 
 Three things this needed elsewhere:
 
-- Patch 31 now weakens `hw/mesa/mglcntx_mingw.c`'s entry points too, so
-  the embed definitions win inside the DLL. COFF weak externals turn out
-  to behave like ELF's: the native object's symbols are `w`, ours are
-  `T`, the link takes ours (checked with `nm`, and the link would have
-  failed as a duplicate definition otherwise).
+- **The weak-symbol trick does not work on Windows.** Marking
+  `hw/mesa/mglcntx_mingw.c`'s entry points weak the way patch 31 does for
+  GLX and SDL links the DLL fine and then leaves `qemu-system-i386.exe`
+  with `undefined reference to MGLCreateContext` — a COFF weak external
+  is not an ELF weak definition, and ld.bfd does not fall back to the
+  aliased body (the object's own calls to its own weak symbols are
+  undefined too). The file is split instead: its WGL backend behind
+  `MESAGL_WGL_BACKEND`, its platform-independent helpers behind the
+  negation, and patch 10's meson hunk compiles it once more — backend
+  half only — into the emulators alone, so the archive both consumers
+  share holds the helpers and no backend. `strings` says it worked: the
+  emulator carries the WGL backend's messages and the DLL the
+  window-less one's, neither the other's.
 - The shared WGL layer at the top of `mglcntx_embed.c` *defines*
   `PIXELFORMATDESCRIPTOR`, `WORD`, `DWORD`, `BYTE` because Linux and
   macOS have no `windows.h`; on Windows those give way to the real ones.

@@ -108,11 +108,18 @@ takes a DC to say which device to create the pbuffer on. Nothing is ever
 drawn to it.
 
 qemu-3dfx's own WGL backend (`hw/mesa/mglcntx_mingw.c`) stays where it is
-for `qemu-system-i386.exe`, which *does* have a window: patch 31 now
-marks its entry points weak on Windows too, so the embed library's
-definitions win inside the DLL exactly as they do on the other two
-platforms. COFF weak externals behave like ELF's here — the native
-object's symbols come out `w`, ours `T`, and the linker takes ours.
+for `qemu-system-i386.exe`, which *does* have a window. Linux and macOS
+arrange that with weak symbols (patch 31); **Windows cannot** — a COFF
+weak external is not an ELF weak definition, and marking those entry
+points weak leaves `qemu-system-i386.exe` with undefined references
+rather than a fallback. So that file is split instead: its WGL backend
+behind `MESAGL_WGL_BACKEND`, its platform-independent helpers behind the
+negation, and patch 10's meson hunk compiles it a second time — backend
+half only — into the emulators alone. The static library both consumers
+share ends up with the helpers and no backend at all, which is what the
+weak marks were for. `strings` on the two artefacts is the check: the
+emulator has the WGL backend's messages, the DLL the window-less one's,
+and neither has the other's.
 
 **`tools\wgl-probe.exe`, shipped in the package, is the diagnostic.** It
 performs that whole sequence with no QEMU involved and prints where it
