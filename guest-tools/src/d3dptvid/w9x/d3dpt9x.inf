@@ -1,0 +1,62 @@
+; d3dpt9x.inf - the 2ksbox d3dpt-vga display driver for Windows 98/Me
+; (doc 19, ADR-012 / M10). The XP driver's INF is d3dptvid.inf; this is
+; the same adapter under the other operating system's rules, which
+; includes the mode list: on 9x it lives in the registry, put there from
+; here, not enumerated from the device (doc 19, "Modes come from the
+; registry").
+;
+; SPDX-License-Identifier: GPL-2.0-or-later
+
+[version]
+DriverVer=09/06/2026,1.0.0.0
+Class=DISPLAY
+signature="$CHICAGO$"
+Provider=%Mfg%
+
+[DestinationDirs]
+DefaultDestDir=11            ; LDID_SYS
+D3dpt.Copy=11
+
+[SourceDisksNames]
+1="2ksbox guest tools",,0
+
+[SourceDisksFiles]
+d3dpt9x.drv=1
+
+[Manufacturer]
+%Mfg%=Mfg.2ksbox
+
+[Mfg.2ksbox]
+%D3dpt.DeviceDesc%=D3dpt, PCI\VEN_1234&DEV_3D00
+
+[D3dpt]
+CopyFiles=D3dpt.Copy
+AddReg=D3dpt.AddReg,Modes.AddReg
+
+[D3dpt.Copy]
+d3dpt9x.drv
+
+[D3dpt.AddReg]
+HKR,,Ver,,4.0
+HKR,,DevLoader,,*vdd
+HKR,DEFAULT,drv,,d3dpt9x.drv
+HKR,DEFAULT,vdd,,"*vdd"
+HKR,DEFAULT,RefreshRate,,-1
+HKR,DEFAULT,Mode,,"32,640,480"
+
+; No minivdd= key: this driver has no mini-VDD yet, so DOS boxes and
+; screen switching are the main VDD's problem alone (doc 19, step 2).
+
+[Modes.AddReg]
+HKR,"MODES\16\640,480"
+HKR,"MODES\16\800,600"
+HKR,"MODES\16\1024,768"
+HKR,"MODES\16\1280,1024"
+HKR,"MODES\32\640,480"
+HKR,"MODES\32\800,600"
+HKR,"MODES\32\1024,768"
+HKR,"MODES\32\1280,1024"
+
+[Strings]
+Mfg="2ksbox"
+D3dpt.DeviceDesc="2ksbox d3dpt-vga display adapter"
