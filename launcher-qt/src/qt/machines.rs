@@ -197,10 +197,7 @@ impl ffi::MachineModel {
         };
         match role {
             ROLE_NAME => QVariant::from(&qs(&entry.machine.name)),
-            ROLE_FAMILY => QVariant::from(&QString::from(match entry.machine.family {
-                bundle::Family::Win98 => "Win98",
-                bundle::Family::Xp => "XP",
-            })),
+            ROLE_FAMILY => QVariant::from(&QString::from(entry.machine.family.label())),
             ROLE_SHADER => QVariant::from(&qs(self.rust().shader_label(entry))),
             ROLE_LOCATION => QVariant::from(&qs(entry.dir.display())),
             ROLE_RUNNING => QVariant::from(&self.running.contains_key(&entry.dir)),

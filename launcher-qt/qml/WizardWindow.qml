@@ -60,7 +60,7 @@ Window {
                 Label { text: qsTr("Family") }
                 ComboBox {
                     Layout.fillWidth: true
-                    model: ["Win98", "XP"]
+                    model: ["Win98", "XP", "DOS"]
                     currentIndex: root.wizard.family
                     onActivated: root.wizard.chooseFamily(currentIndex)
                 }

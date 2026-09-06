@@ -174,6 +174,13 @@ pub struct WizardRust {
     /// box. `launcher/src/wizard.rs`'s `EditTarget`.
     edit_path: Option<PathBuf>,
     edit_shader: Option<PathBuf>,
+    /// The three fields this port's form does not show (it is doc 07's
+    /// costed comparison, not a second product). Carried through an edit
+    /// verbatim, so editing a DOS machine here cannot silently take its
+    /// processor away.
+    edit_floppy: Option<PathBuf>,
+    edit_boot: Option<bundle::Boot>,
+    edit_cpu_speed: Option<bundle::CpuSpeed>,
     edit_toml: String,
     saved_path: PathBuf,
 }
@@ -210,6 +217,9 @@ impl Default for WizardRust {
             library_dir: library::default_dir(),
             edit_path: None,
             edit_shader: None,
+            edit_floppy: None,
+            edit_boot: None,
+            edit_cpu_speed: None,
             edit_toml: String::new(),
             saved_path: PathBuf::new(),
         };
@@ -219,11 +229,11 @@ impl Default for WizardRust {
 }
 
 fn family_of(index: i32) -> Family {
-    if index == 1 {
-        Family::Xp
-    } else {
-        Family::Win98
-    }
+    *Family::ALL.get(index as usize).unwrap_or(&Family::Win98)
+}
+
+fn family_index(family: Family) -> i32 {
+    Family::ALL.iter().position(|f| *f == family).unwrap_or(0) as i32
 }
 
 fn accel_of(index: i32) -> Accel {
@@ -304,6 +314,9 @@ impl WizardRust {
                 discs: Vec::new(),
                 shader_profile: None,
                 shader: self.edit_shader.clone(),
+                floppy: self.edit_floppy.clone(),
+                boot: self.edit_boot,
+                cpu_speed: self.edit_cpu_speed,
             },
             None => Machine::reference(family, name, disk),
         };
@@ -394,10 +407,7 @@ impl ffi::Wizard {
             open: true,
             editing: true,
             title: QString::from("Edit machine"),
-            family: match machine.family {
-                Family::Win98 => 0,
-                Family::Xp => 1,
-            },
+            family: family_index(machine.family),
             name: qs(&machine.name),
             ram_mb: machine.ram_mb as i32,
             // An existing machine's memory is a chosen value whatever it
@@ -412,6 +422,9 @@ impl ffi::Wizard {
             shader_profile: machine.shader_profile.as_deref().map(qs).unwrap_or_default(),
             edit_path: Some(path),
             edit_shader: machine.shader.clone(),
+            edit_floppy: machine.floppy.clone(),
+            edit_boot: machine.boot,
+            edit_cpu_speed: machine.cpu_speed,
             edit_toml: original_toml,
             ..WizardRust::default()
         };
@@ -514,6 +527,9 @@ impl ffi::Wizard {
             this.library_dir = state.library_dir.clone();
             this.edit_path = state.edit_path.clone();
             this.edit_shader = state.edit_shader.clone();
+            this.edit_floppy = state.edit_floppy.clone();
+            this.edit_boot = state.edit_boot;
+            this.edit_cpu_speed = state.edit_cpu_speed;
             this.edit_toml = state.edit_toml.clone();
             this.saved_path = state.saved_path.clone();
         }

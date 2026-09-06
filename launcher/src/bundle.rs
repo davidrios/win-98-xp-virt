@@ -13,6 +13,150 @@ use std::path::{Path, PathBuf};
 pub enum Family {
     Win98,
     Xp,
+    /// A DOS machine: MS-DOS or FreeDOS on the same i440FX PC, with the
+    /// SB16 the Win98 family already carries "for DOS boxes/games" (doc
+    /// 06) and no network card. What actually makes it a *DOS* machine
+    /// is `CpuSpeed`: the era's software paces itself by how fast the
+    /// CPU is, and emulation is far too fast for it (doc 06).
+    Dos,
+}
+
+impl Family {
+    /// In the order a picker should offer them, newest first.
+    pub const ALL: [Family; 3] = [Family::Win98, Family::Xp, Family::Dos];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Family::Win98 => "Win98",
+            Family::Xp => "XP",
+            Family::Dos => "DOS",
+        }
+    }
+}
+
+/// How fast the guest's CPU is allowed to be, named after the machine it
+/// feels like rather than after the knob underneath.
+///
+/// DOS-era software calibrates delay loops against the CPU it finds and
+/// then trusts the answer forever, so on a fast machine it does not merely
+/// run quickly — it runs *wrong*: unplayable games, Turbo Pascal's
+/// "runtime error 200", music that plays at double speed. Our TCG runs a
+/// DOS guest at around 610 million instructions/s on the Linux box
+/// (measured 2026-09-06, a tight loop under `-cpu pentium3`), which is
+/// Pentium III territory; KVM is far beyond that.
+///
+/// QEMU's only rate control is `-icount`, whose `shift` sets one
+/// instruction per 2^shift ns — so the rates below are powers of two by
+/// construction, and the labels say which real machine each is closest
+/// to. Two things follow from how it works, both of which the UI says
+/// out loud: it needs `align=on` to pace against the host at all (without
+/// it the guest only *believes* it is slow), and it cannot coexist with
+/// KVM, so a throttled machine runs emulated whatever its `accel` says.
+///
+/// The cap is exact where it matters. Measured on the Linux box with a
+/// 100M-instruction loop: 30.6 MIPS asked 31.25, 7.9 asked 7.8. Above
+/// ~30 MIPS the alignment only corrects the guest when it falls *behind*,
+/// so the fast entries are a ceiling the host may not reach and may
+/// overshoot — which is why the two slowest entries are the ones a 1993
+/// game should be given.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CpuSpeed {
+    /// No throttle: as fast as this host emulates (or KVM, if the machine
+    /// asked for it). Right for Windows, wrong for most DOS software.
+    #[default]
+    #[serde(rename = "unthrottled")]
+    Unthrottled,
+    #[serde(rename = "pentium-133")]
+    Pentium133,
+    #[serde(rename = "pentium-75")]
+    Pentium75,
+    #[serde(rename = "486dx2-66")]
+    Dx266,
+    #[serde(rename = "486sx-25")]
+    Sx25,
+    #[serde(rename = "386dx-33")]
+    Dx33,
+    #[serde(rename = "286-12")]
+    At286,
+}
+
+impl CpuSpeed {
+    /// In the order a combo box should offer them: fastest first, because
+    /// "as fast as possible" is the answer for everything that is not a
+    /// DOS game, and the list then reads downwards through the eras.
+    pub const ALL: [CpuSpeed; 7] = [
+        CpuSpeed::Unthrottled,
+        CpuSpeed::Pentium133,
+        CpuSpeed::Pentium75,
+        CpuSpeed::Dx266,
+        CpuSpeed::Sx25,
+        CpuSpeed::Dx33,
+        CpuSpeed::At286,
+    ];
+
+    /// `-icount shift=`, or `None` for no throttle at all.
+    pub fn icount_shift(self) -> Option<u32> {
+        match self {
+            CpuSpeed::Unthrottled => None,
+            CpuSpeed::Pentium133 => Some(3), // 125 M instructions/s
+            CpuSpeed::Pentium75 => Some(4),  // 62.5
+            CpuSpeed::Dx266 => Some(5),      // 31.25
+            CpuSpeed::Sx25 => Some(6),       // 15.6
+            CpuSpeed::Dx33 => Some(7),       // 7.8
+            CpuSpeed::At286 => Some(8),      // 3.9
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CpuSpeed::Unthrottled => "Unthrottled (as fast as the host emulates)",
+            CpuSpeed::Pentium133 => "Pentium 133 (~125 M instructions/s)",
+            CpuSpeed::Pentium75 => "Pentium 75 (~62 M)",
+            CpuSpeed::Dx266 => "486DX2-66 (~31 M)",
+            CpuSpeed::Sx25 => "486SX-25 (~16 M)",
+            CpuSpeed::Dx33 => "386DX-33 (~8 M)",
+            CpuSpeed::At286 => "286-12 (~4 M)",
+        }
+    }
+}
+
+/// Which drive the machine boots from. `Auto` leaves the order to QEMU,
+/// which tries the hard disk, then the floppy, then the CD — the right
+/// answer for an installed Windows and for the wizard's "boot the
+/// installer from the CD because the new disk is blank" case alike.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Boot {
+    #[default]
+    Auto,
+    Disk,
+    /// The floppy first, the disk if there is no disk in it: a DOS boot
+    /// disk, or a Windows machine being repaired from one.
+    Floppy,
+    /// The CD first: reinstalling over a disk that still boots.
+    Cd,
+}
+
+impl Boot {
+    pub const ALL: [Boot; 4] = [Boot::Auto, Boot::Disk, Boot::Floppy, Boot::Cd];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Boot::Auto => "Automatic",
+            Boot::Disk => "Hard disk",
+            Boot::Floppy => "Floppy, then hard disk",
+            Boot::Cd => "CD, then hard disk",
+        }
+    }
+
+    fn order(self) -> Option<&'static str> {
+        match self {
+            Boot::Auto => None,
+            Boot::Disk => Some("c"),
+            Boot::Floppy => Some("ac"),
+            Boot::Cd => Some("dc"),
+        }
+    }
 }
 
 /// How the guest's instructions are executed. Kept in the bundle rather
@@ -86,6 +230,25 @@ pub struct Machine {
     /// `None` uses the app default.
     #[serde(default)]
     pub shader: Option<PathBuf>,
+
+    /// A floppy image in the machine's A: drive, if it has one. Doc 06
+    /// lists a floppy on the Win98 machine ("driver/utility sneakernet,
+    /// boot disks") and doc 07 lists floppy images among the media the
+    /// launcher handles; a DOS machine may boot from one. Absent means
+    /// no disk in the drive — the controller is there either way, as on
+    /// a real PC of the era.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floppy: Option<PathBuf>,
+
+    /// Which drive to boot from. Absent = `Boot::Auto`, which is what
+    /// every bundle written before this field existed was doing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot: Option<Boot>,
+
+    /// How fast the CPU is allowed to run (`CpuSpeed`). Absent =
+    /// unthrottled, again what every earlier bundle was doing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_speed: Option<CpuSpeed>,
 }
 
 /// How a family runs unless the machine says otherwise.
@@ -98,7 +261,10 @@ pub struct Machine {
 /// tested on here. XP has none of those problems and wants the speed.
 pub fn default_accel(family: Family) -> Accel {
     match family {
-        Family::Win98 => Accel::Tcg,
+        // A DOS machine is throttled by default and a throttle needs TCG
+        // (`-icount` and KVM cannot coexist), so this is the only honest
+        // default; `Auto` would promise KVM and not deliver it.
+        Family::Win98 | Family::Dos => Accel::Tcg,
         Family::Xp => Accel::Auto,
     }
 }
@@ -110,11 +276,29 @@ fn network_enabled_default() -> bool {
     true
 }
 
+/// The speed a family runs at unless the machine says otherwise. Only
+/// DOS is throttled: a 486DX2-66 is the machine most of the CD-ROM era
+/// was written for, and it is inside the range where the cap is exact
+/// (see `CpuSpeed`). Windows machines are unthrottled — 9x and XP read
+/// the clock instead of counting instructions, and a throttle would only
+/// make them slow.
+pub fn default_cpu_speed(family: Family) -> CpuSpeed {
+    match family {
+        Family::Dos => CpuSpeed::Dx266,
+        Family::Win98 | Family::Xp => CpuSpeed::Unthrottled,
+    }
+}
+
 /// doc 06's RAM default for a family.
 pub fn default_ram_mb(family: Family) -> u32 {
     match family {
         Family::Win98 => 256, // doc 06: 256 MB default, ≤512 MB hard cap
         Family::Xp => 512,    // doc 06: 512 MB-1 GB default
+        // DOS itself uses the first megabyte; the rest is XMS for the
+        // extenders a mid-90s game ships with, and more of it buys
+        // nothing. 64 MB is generous for the era and stays inside what
+        // MS-DOS 6.22's own HIMEM.SYS manages.
+        Family::Dos => 64,
     }
 }
 
@@ -127,6 +311,7 @@ pub fn ram_mb_range(family: Family) -> std::ops::RangeInclusive<u32> {
     match family {
         Family::Win98 => 32..=512,
         Family::Xp => 64..=3072,
+        Family::Dos => 4..=256,
     }
 }
 
@@ -138,12 +323,18 @@ impl Machine {
             family,
             ram_mb: default_ram_mb(family),
             accel: Some(default_accel(family)),
-            network: network_enabled_default(),
+            // A DOS machine gets no card: DOS reaches a network only
+            // through a packet driver the user installs by hand, and an
+            // unused NIC is one more device the guest enumerates.
+            network: family != Family::Dos && network_enabled_default(),
             disk,
             disc: None,
             discs: Vec::new(),
             shader_profile: None,
             shader: None,
+            floppy: None,
+            boot: None,
+            cpu_speed: Some(default_cpu_speed(family)),
         }
     }
 
@@ -195,9 +386,27 @@ impl Machine {
     }
 
     /// What this machine actually runs as: its own setting, or its
-    /// family's (`default_accel`) when the bundle doesn't say.
+    /// family's (`default_accel`) when the bundle doesn't say —
+    /// **except** that a throttled CPU forces emulation, because QEMU
+    /// refuses `-icount` together with KVM ("cannot enable icount when
+    /// KVM is enabled") and starting is better than being right about
+    /// the accelerator. The wizard says so next to the field, so this
+    /// never happens behind someone's back.
     pub fn effective_accel(&self) -> Accel {
+        if self.effective_cpu_speed().icount_shift().is_some() {
+            return Accel::Tcg;
+        }
         self.accel.unwrap_or_else(|| default_accel(self.family))
+    }
+
+    /// The CPU speed this machine runs at: its own setting, or its
+    /// family's default (only DOS has a throttled one).
+    pub fn effective_cpu_speed(&self) -> CpuSpeed {
+        self.cpu_speed.unwrap_or_else(|| default_cpu_speed(self.family))
+    }
+
+    pub fn effective_boot(&self) -> Boot {
+        self.boot.unwrap_or_default()
     }
 
     pub fn qemu_args(&self, pc_bios_dir: &Path, shelf: Option<&Path>) -> Vec<String> {
@@ -219,6 +428,25 @@ impl Machine {
             "-device".into(),
             "usb-tablet".into(),
         ];
+        // The CPU rate, when the machine asks for one. `align=on` is the
+        // whole point and not a detail: `-icount shift=N` on its own only
+        // makes the *guest's* clock a function of instructions retired,
+        // which leaves the guest believing it is slow while the host runs
+        // it as fast as it likes — measured 2026-09-06, a run that was
+        // meant to be throttled finished in less wall-clock time than the
+        // unthrottled one, because the guest's idle waits collapse too.
+        if let Some(shift) = self.effective_cpu_speed().icount_shift() {
+            args.extend(["-icount".into(), format!("shift={shift},align=on")]);
+        }
+        // The floppy: `format=raw` because a floppy image has no header
+        // to probe and QEMU otherwise both warns and refuses writes to
+        // the boot sector.
+        if let Some(floppy) = &self.floppy {
+            args.extend(["-drive".into(), format!("file={},if=floppy,index=0,format=raw", floppy.display())]);
+        }
+        if let Some(order) = self.effective_boot().order() {
+            args.extend(["-boot".into(), format!("order={order}")]);
+        }
         // Doc 06's per-family NIC on QEMU's user-mode NAT, or no adapter
         // at all — not an unplugged cable: a card that is present would
         // still make Windows enumerate it, ask for its driver on a fresh
@@ -250,6 +478,19 @@ impl Machine {
                 if self.network {
                     args.extend(["-netdev".into(), "user,id=n0".into()]);
                     args.extend(["-device".into(), "pcnet,netdev=n0".into()]); // in-box 98 driver
+                }
+                args.extend(["-device".into(), "sb16,audiodev=embed0".into()]);
+            }
+            // The 1994 PC: the same chipset and the SB16 doc 06 already
+            // puts on the Win98 machine "for DOS boxes/games", the cirrus
+            // adapter for its VGA and VESA modes, and nothing else. No
+            // 3D of any kind is reachable from DOS here — the Glide
+            // wrapper for DOS is GLIDE2X.OVL, which we do not build.
+            Family::Dos => {
+                args.extend(["-vga".into(), "cirrus".into()]);
+                if self.network {
+                    args.extend(["-netdev".into(), "user,id=n0".into()]);
+                    args.extend(["-device".into(), "pcnet,netdev=n0".into()]);
                 }
                 args.extend(["-device".into(), "sb16,audiodev=embed0".into()]);
             }

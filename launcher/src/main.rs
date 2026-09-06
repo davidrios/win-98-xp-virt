@@ -80,10 +80,7 @@ impl eframe::App for LauncherApp {
                     ui.end_row();
                     for entry in &self.entries {
                         ui.label(&entry.machine.name);
-                        ui.label(match entry.machine.family {
-                            bundle::Family::Win98 => "Win98",
-                            bundle::Family::Xp => "XP",
-                        });
+                        ui.label(entry.machine.family.label());
                         let shader_label = entry
                             .machine
                             .shader_profile
@@ -407,6 +404,15 @@ fn import_legacy_discs(entries: &[library::LibraryEntry], library_path: &std::pa
     }
 }
 
+fn parse_family(arg: Option<&str>, usage: &str) -> bundle::Family {
+    match arg {
+        Some("win98") => bundle::Family::Win98,
+        Some("xp") => bundle::Family::Xp,
+        Some("dos") => bundle::Family::Dos,
+        _ => panic!("{usage}"),
+    }
+}
+
 fn main() -> eframe::Result {
     // Debug/advanced-drawer aids (doc 07), until the wizard exists:
     // `--new` bootstraps a bundle into the library from the doc 06
@@ -452,12 +458,8 @@ fn main() -> eframe::Result {
             // Headless equivalent of the "New machine" window, for
             // scripted testing of the wizard's actual submit() logic
             // (disk creation via qemu-img included) without a GUI click.
-            let usage = "usage: launcher --wizard-new <win98|xp> <name> <disk-size-gb>";
-            let family = match args.next().as_deref() {
-                Some("win98") => bundle::Family::Win98,
-                Some("xp") => bundle::Family::Xp,
-                _ => panic!("{usage}"),
-            };
+            let usage = "usage: launcher --wizard-new <win98|xp|dos> <name> <disk-size-gb>";
+            let family = parse_family(args.next().as_deref(), usage);
             let name = args.next().expect(usage);
             let size_gb: u32 = args.next().expect(usage).parse().expect("disk size must be a number");
             let w = wizard::Wizard::with_new_disk(family, name, size_gb);
@@ -627,12 +629,8 @@ fn main() -> eframe::Result {
             return Ok(());
         }
         Some("--new") => {
-            let usage = "usage: launcher --new <win98|xp> <name> <disk.qcow2>";
-            let family = match args.next().as_deref() {
-                Some("win98") => bundle::Family::Win98,
-                Some("xp") => bundle::Family::Xp,
-                _ => panic!("{usage}"),
-            };
+            let usage = "usage: launcher --new <win98|xp|dos> <name> <disk.qcow2>";
+            let family = parse_family(args.next().as_deref(), usage);
             let name = args.next().expect(usage);
             let disk = args.next().expect(usage).into();
             let path = library::create(&library::default_dir(), family, name, disk).expect("create bundle");

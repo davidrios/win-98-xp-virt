@@ -27,7 +27,8 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
 
 - Machine library grid with last-frame thumbnails, family badge, running
   state; spawns a player per machine.
-- **Guided creation:** family (Win98/XP) → name → memory → acceleration →
+- **Guided creation:** family (Win98/XP/DOS) → name → memory → processor →
+  acceleration →
   networking → disk size → install media → bundle from the reference
   definitions (doc 06). Advanced drawer edits the TOML. Never a QEMU
   command line.
@@ -48,6 +49,27 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   tested on here. A bundle with no `accel` field follows its family
   rather than a fixed default, so nothing written before the field
   existed silently changes how it runs.
+- **The processor** is a combo of named machines, not a number
+  (`cpu_speed` in the bundle, `bundle::CpuSpeed`): *Unthrottled* down
+  through *Pentium 133*, *486DX2-66*, *386DX-33*, *286-12*. Nobody knows
+  how many instructions per second their DOS game wants, but "it needs a
+  486" is written on the box — and DOS-era software times itself against
+  the CPU it finds, so this is the field that decides whether a game is
+  playable at all (doc 06 has the measurements). It is offered for every
+  family, because a Win98 machine runs DOS games in a DOS box too;
+  only the DOS family defaults to a throttled one. The form says, next
+  to the combo, the two things that follow: that this is what makes an
+  era game work, and that choosing a processor makes the machine
+  emulated — QEMU's `-icount` cannot run under KVM, so
+  `effective_accel()` returns TCG whenever one is chosen rather than
+  letting the machine fail to start.
+- **A floppy and a boot order** (`floppy`, `boot`): doc 06 lists a floppy
+  on the Win98 machine and this document lists floppy images among the
+  media the launcher handles, but until 2026-09-06 no bundle could
+  express either. *Boot from* is Automatic / Hard disk / Floppy / CD;
+  Automatic emits no `-boot` at all, which is what every bundle written
+  before the field did and what the wizard's "boot the installer from
+  the CD because the new disk is blank" case relies on.
 - **Networking** is one checkbox (`network` in the bundle, default on):
   the machine either has doc 06's per-family NIC on QEMU's user-mode NAT
   — outbound through the host, nothing on the network able to reach the

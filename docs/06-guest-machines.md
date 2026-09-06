@@ -56,6 +56,67 @@ license (volume/retail as they possess) — the project ships nothing related
 to it. TSC/HAL: uniprocessor ACPI HAL default; SMP under TCG is a measured
 decision later (MTTCG helps, XP-era games rarely do).
 
+## DOS machine (added 2026-09-06)
+
+Modeled as a ~1994 PC: the same i440FX board, the SB16 the Win98 row
+already carries "for DOS boxes/games", and nothing else.
+
+| Component | Choice | Rationale |
+|---|---|---|
+| Machine | `pc` (i440FX + PIIX) | same board as the other two; DOS cares about the ISA devices, not the chipset |
+| CPU model | `pentium3` | deliberately *not* changed: what makes a machine feel like a 486 is the rate, not the CPUID string, and one variable at a time. Revisit if a real title is found that dislikes the model |
+| **CPU rate** | **`cpu_speed`, default 486DX2-66** | the field that makes this a DOS machine at all — see below |
+| RAM | 64 MB (4–256) | DOS uses the first megabyte; the rest is XMS for a mid-90s extender. 64 MB is generous for the era and inside what MS-DOS 6.22's own HIMEM.SYS manages |
+| Video | Cirrus GD5446 (`-vga cirrus`) | a real VGA/VESA BIOS of the period. `-vga std`'s Bochs VBE 2.0 with a linear framebuffer is arguably better for late VESA titles — an open question, not a decision |
+| Audio | SB16 | what DOS software knows how to talk to |
+| Net | none | DOS reaches a network only through a packet driver the user installs by hand; an unused card is one more device to enumerate |
+| Storage | IDE HDD + our ATAPI CD | the CD-ROM model (doc 17) and the disc shelf both already speak DOS: `CDSHELF.COM` is a DOS program |
+| Floppy | `floppy` + `boot` on the machine | a DOS machine usually boots from one |
+
+**No 3D of any kind.** The Glide wrapper for DOS is `GLIDE2X.OVL`, which
+needs Open Watcom and which we do not build; OpenGL and Direct3D
+pass-through are Windows DLLs. A DOS machine is 2D, the CRT shader chain
+and the real CD-ROM model — which is a coherent story, and a much smaller
+one than the Windows families'.
+
+### Why a rate control, and what it costs
+
+Software of the era calibrates a delay loop against the CPU it finds and
+then trusts the answer forever, so on a fast machine it does not merely
+run quickly — it runs *wrong*. Our TCG runs a DOS guest at ~660 M
+instructions/s on the Linux box, which is Pentium III territory; KVM is
+far beyond that.
+
+QEMU's only rate control is `-icount`, whose `shift` gives one
+instruction per 2^shift ns, so the offered processors are powers of two
+by construction (`bundle::CpuSpeed`). Two consequences, both surfaced in
+the wizard rather than discovered later:
+
+- **`align=on` is the whole thing.** `-icount shift=N` alone only makes
+  the guest's clock a function of instructions retired — the guest
+  believes it is slow while the host runs it as fast as it likes.
+  Measured 2026-09-06: a run meant to be throttled finished in *less*
+  wall-clock time than the unthrottled one, because the guest's idle
+  waits collapse with it.
+- **A throttled machine is emulated.** `-icount` and KVM cannot coexist,
+  so `effective_accel()` returns TCG whenever a processor is chosen.
+
+Measured in a real FreeDOS guest, 200 M instructions of loop
+(`tools/dos-guest-test.py`, Linux box, 2026-09-06):
+
+| `cpu_speed` | asks for | measured | loop |
+|---|---|---|---|
+| `unthrottled` | — | 663 M/s | 0.30 s |
+| `pentium-133` | 125 M/s | (a ceiling, see below) | |
+| `486dx2-66` | 31.25 M/s | **31.3 M/s** | 6.39 s |
+| `386dx-33` | 7.8 M/s | **7.8 M/s** | 25.63 s |
+
+The cap is exact where it matters. Above ~30 M/s the alignment only
+corrects a guest that has fallen *behind*, so the fast settings are a
+ceiling the host may overshoot — which is why the era settings a 1993
+game wants are the accurate ones. Boot time barely moves (2.4 → 3.5 s):
+booting is mostly waiting, and waiting is not instructions.
+
 ## Performance expectations (set honestly in-app)
 
 | Host | Win98 | XP |

@@ -5,7 +5,7 @@
 //! machine" dialog for an existing bundle (`open_edit`); `submit` writes
 //! back in place instead of reserving a new library directory.
 
-use crate::bundle::{self, Accel, Family, Machine};
+use crate::bundle::{self, Accel, Boot, CpuSpeed, Family, Machine};
 use crate::filepicker;
 use crate::library;
 use crate::player;
@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 const DISK_FILTER: filepicker::Filter = ("Disk images", &["qcow2", "img", "raw"]);
 const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
+const FLOPPY_FILTER: filepicker::Filter = ("Floppy images", &["img", "ima", "vfd", "flp"]);
 
 /// What editing an existing bundle needs to preserve: fields this form
 /// doesn't expose (the raw shader override), so a quick edit can't
@@ -47,6 +48,15 @@ pub struct Wizard {
     /// accelerator this doesn't follow the family, so nothing has to
     /// move under a user who switched Win98 to XP.
     network: bool,
+    /// The CPU the guest should feel like (`bundle::CpuSpeed`), with the
+    /// same "until someone chooses, follow the family" rule as memory
+    /// and acceleration — it is the field that makes a DOS machine a DOS
+    /// machine, and switching family to DOS must bring it along.
+    cpu_speed: CpuSpeed,
+    cpu_speed_chosen: bool,
+    /// A floppy image in A:, or empty for an empty drive.
+    floppy: String,
+    boot: Boot,
     existing_disk: bool,
     disk_path: String,
     disk_size_gb: u32,
@@ -72,6 +82,10 @@ impl Default for Wizard {
             accel: bundle::default_accel(Family::Win98),
             accel_chosen: false,
             network: true,
+            cpu_speed: bundle::default_cpu_speed(Family::Win98),
+            cpu_speed_chosen: false,
+            floppy: String::new(),
+            boot: Boot::default(),
             existing_disk: false,
             disk_path: String::new(),
             disk_size_gb: 2,
@@ -98,6 +112,7 @@ impl Wizard {
         self.family = family;
         self.ram_mb = bundle::default_ram_mb(family);
         self.accel = bundle::default_accel(family);
+        self.cpu_speed = bundle::default_cpu_speed(family);
     }
 
     /// Open the form pre-filled from an existing bundle, to edit it in
@@ -115,6 +130,10 @@ impl Wizard {
             accel: machine.effective_accel(),
             accel_chosen: true,
             network: machine.network,
+            cpu_speed: machine.effective_cpu_speed(),
+            cpu_speed_chosen: true,
+            floppy: machine.floppy.as_ref().map(|f| f.display().to_string()).unwrap_or_default(),
+            boot: machine.effective_boot(),
             existing_disk: true,
             disk_path: machine.disk.display().to_string(),
             install_media: machine.boot_disc().map(|d| d.display().to_string()).unwrap_or_default(),
@@ -187,13 +206,11 @@ impl Wizard {
             .show(ctx, |ui| {
                 let was = self.family;
                 egui::ComboBox::from_label("Family")
-                    .selected_text(match self.family {
-                        Family::Win98 => "Win98",
-                        Family::Xp => "XP",
-                    })
+                    .selected_text(self.family.label())
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.family, Family::Win98, "Win98");
-                        ui.selectable_value(&mut self.family, Family::Xp, "XP");
+                        for f in Family::ALL {
+                            ui.selectable_value(&mut self.family, f, f.label());
+                        }
                     });
                 if self.family != was {
                     // whatever nobody has chosen follows the family
@@ -203,6 +220,9 @@ impl Wizard {
                     if !self.accel_chosen {
                         self.accel = bundle::default_accel(self.family);
                     }
+                    if !self.cpu_speed_chosen {
+                        self.cpu_speed = bundle::default_cpu_speed(self.family);
+                    }
                 }
                 ui.horizontal(|ui| {
                     ui.label("Name");
@@ -210,6 +230,7 @@ impl Wizard {
                 });
                 ui.separator();
                 self.memory_ui(ui);
+                self.cpu_speed_ui(ui);
                 self.accel_ui(ui);
                 self.network_ui(ui);
                 ui.separator();
@@ -227,6 +248,17 @@ impl Wizard {
                     }
                 }
                 filepicker::path_field(ui, "Install media (optional)", &mut self.install_media, Some(DISC_FILTER));
+                filepicker::path_field(ui, "Floppy (optional)", &mut self.floppy, Some(FLOPPY_FILTER));
+                egui::ComboBox::from_label("Boot from")
+                    .selected_text(self.boot.label())
+                    .show_ui(ui, |ui| {
+                        for b in Boot::ALL {
+                            ui.selectable_value(&mut self.boot, b, b.label());
+                        }
+                    });
+                if self.boot == Boot::Floppy && self.floppy.trim().is_empty() {
+                    ui.small("No floppy image: the machine will fall through to the hard disk.");
+                }
                 ui.separator();
                 egui::ComboBox::from_label("Shader profile")
                     .selected_text(
@@ -304,6 +336,39 @@ impl Wizard {
 
     /// The acceleration row, plus what this host can actually do — the
     /// picker alone would leave "Automatic" meaning something invisible.
+    /// The processor the guest should feel like. Named machines rather
+    /// than a number, because "how many instructions per second" is not
+    /// a thing anyone knows about their DOS game, while "it wants a 486"
+    /// is written on the box.
+    fn cpu_speed_ui(&mut self, ui: &mut egui::Ui) {
+        let default = bundle::default_cpu_speed(self.family);
+        ui.horizontal(|ui| {
+            let was = self.cpu_speed;
+            egui::ComboBox::from_label("Processor")
+                .selected_text(self.cpu_speed.label())
+                .show_ui(ui, |ui| {
+                    for s in CpuSpeed::ALL {
+                        ui.selectable_value(&mut self.cpu_speed, s, s.label());
+                    }
+                });
+            if self.cpu_speed != was {
+                self.cpu_speed_chosen = true;
+            }
+            if ui.add_enabled(self.cpu_speed != default, egui::Button::new("Default")).clicked() {
+                self.cpu_speed = default;
+                self.cpu_speed_chosen = false;
+            }
+        });
+        if self.cpu_speed == CpuSpeed::Unthrottled {
+            ui.small("Full speed. Right for Windows; most DOS software of the 486 era needs a slower one.");
+        } else {
+            // Both consequences, before the machine is created rather
+            // than after it behaves oddly.
+            ui.small("DOS-era software times itself against the CPU it finds, so this is what makes a game playable.");
+            ui.small("A chosen processor means the machine is emulated: QEMU cannot slow a CPU down under KVM.");
+        }
+    }
+
     fn accel_ui(&mut self, ui: &mut egui::Ui) {
         let have_kvm = crate::player::kvm_available();
         let default = bundle::default_accel(self.family);
@@ -381,6 +446,9 @@ impl Wizard {
                 discs: Vec::new(),
                 shader_profile: None,
                 shader: edit.shader.clone(),
+                floppy: None,
+                boot: None,
+                cpu_speed: None,
             },
             None => Machine::reference(self.family, self.name.clone(), disk),
         };
@@ -398,6 +466,10 @@ impl Wizard {
         machine.accel =
             Some(if self.accel_chosen { self.accel } else { bundle::default_accel(self.family) });
         machine.network = self.network;
+        machine.cpu_speed =
+            Some(if self.cpu_speed_chosen { self.cpu_speed } else { bundle::default_cpu_speed(self.family) });
+        machine.boot = Some(self.boot);
+        machine.floppy = Some(self.floppy.trim()).filter(|f| !f.is_empty()).map(PathBuf::from);
         machine.shader_profile = self.shader_profile.clone();
         // The single slot this form has is the machine's *boot* disc;
         // everything else lives on the shared shelf (`disc_library.rs`),
