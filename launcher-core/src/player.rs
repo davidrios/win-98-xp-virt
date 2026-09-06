@@ -20,8 +20,9 @@ pub fn player_binary() -> PathBuf {
         return p.into();
     }
     if let Some(prefix) = crate::paths::install_prefix() {
+        // Flat on Windows (paths.rs), `bin/` under a Unix prefix.
         let name = if cfg!(windows) { "2ksbox-player.exe" } else { "2ksbox-player" };
-        return prefix.join("bin").join(name);
+        return if cfg!(windows) { prefix.join(name) } else { prefix.join("bin").join(name) };
     }
     let exe = std::env::current_exe().expect("current_exe");
     let dir = exe.parent().expect("executable has a parent directory");
@@ -178,7 +179,11 @@ pub fn qemu_img_binary() -> PathBuf {
     if let Ok(bin) = std::env::var("LAUNCHER_QEMU_IMG_BIN") {
         return bin.into();
     }
-    crate::paths::resource("libexec/2ksbox/qemu-img", "build/qemu/qemu-img")
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    crate::paths::resource(
+        &format!("libexec/2ksbox/qemu-img{exe}"),
+        &format!("build/qemu/qemu-img{exe}"),
+    )
 }
 
 /// Create a new qcow2 disk image for the wizard's "new disk" path.

@@ -56,8 +56,36 @@ pub fn install_prefix() -> Option<&'static Path> {
 
 fn detect_prefix() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    if cfg!(windows) {
+        // A Windows package is one folder the user unzips and opens: the
+        // executables at the top, the DLLs beside them (which is where
+        // the loader looks), the data directories under it. So the prefix
+        // is the executable's own directory, and `pc-bios` is the marker
+        // — the one directory every package has and nothing else would
+        // put next to a stray copy of the launcher.
+        let dir = exe.parent()?;
+        return dir.join("pc-bios").is_dir().then(|| dir.to_path_buf());
+    }
     let prefix = exe.parent()?.parent()?;
     prefix.join("share").join(NAME).is_dir().then(|| prefix.to_path_buf())
+}
+
+/// A companion's place inside the prefix. Unix keeps the
+/// `bin`/`lib`/`libexec`/`share` split doc 07 documents; a Windows
+/// package is flat, so the same name loses the directory that only
+/// existed to keep a Unix prefix tidy (`share/2ksbox/pc-bios` →
+/// `pc-bios`). Written once here rather than at every call site, so both
+/// layouts are described by the same string.
+fn in_prefix(installed: &str) -> &str {
+    if !cfg!(windows) {
+        return installed;
+    }
+    for lead in ["share/2ksbox/", "lib/2ksbox/", "libexec/2ksbox/", "bin/"] {
+        if let Some(rest) = installed.strip_prefix(lead) {
+            return rest;
+        }
+    }
+    installed
 }
 
 /// A companion at `installed` under the install prefix, or at `checkout`
@@ -67,14 +95,23 @@ fn detect_prefix() -> Option<PathBuf> {
 /// (no guest-tools ISO built, no preset collection yet).
 pub fn resource(installed: &str, checkout_rel: &str) -> PathBuf {
     match install_prefix() {
-        Some(prefix) => prefix.join(installed),
+        Some(prefix) => prefix.join(in_prefix(installed)),
         None => checkout(checkout_rel),
     }
 }
 
-/// `rel` in the workspace checkout this binary was built from.
+/// `rel` in the workspace checkout this binary was built from. A Windows
+/// binary built from a Linux checkout (docs/build-windows.md) finds
+/// QEMU's own artefacts under `build/win/qemu`, since that checkout holds
+/// both builds at once.
 pub fn checkout(rel: &str) -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join(rel)
+    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    if cfg!(windows) {
+        if let Some(rest) = rel.strip_prefix("build/qemu") {
+            return root.join(format!("build/win/qemu{rest}"));
+        }
+    }
+    root.join(rel)
 }
 
 /// The user's own directory: `machines/`, `discs.toml`, `shader-profiles/`

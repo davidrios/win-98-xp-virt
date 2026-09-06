@@ -10,10 +10,28 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
-#include <dlfcn.h>
 #include <cstdlib>
 #include <string>
 #include <exception>
+
+/*
+ * The one dynamic load in here is the D3D9 implementation itself: DXVK's
+ * native library on Linux and macOS, and on Windows whatever answers to
+ * d3d9.dll -- the system one, or a DXVK build dropped next to the player,
+ * which the loader prefers because it searches the executable's own
+ * directory first.
+ */
+#ifdef _WIN32
+#include <windows.h>
+#define D3DPT_DLOPEN(p)     ((void *)LoadLibraryA(p))
+#define D3DPT_DLSYM(h, s)   ((void *)GetProcAddress((HMODULE)(h), (s)))
+#define D3DPT_DLCLOSE(h)    FreeLibrary((HMODULE)(h))
+#else
+#include <dlfcn.h>
+#define D3DPT_DLOPEN(p)     dlopen((p), RTLD_NOW | RTLD_LOCAL)
+#define D3DPT_DLSYM(h, s)   dlsym((h), (s))
+#define D3DPT_DLCLOSE(h)    dlclose(h)
+#endif
 
 #include "d3dpt_exec_int.h"
 
@@ -722,24 +740,37 @@ d3dpt_exec_t *d3dpt_exec_create(const d3dpt_exec_ops *ops)
     Exec *x = new Exec;
     x->ops = *ops;
     const char *lib = getenv("D3DPT_DXVK_LIB");
-    const char *candidates[] = { lib, "build/dxvk/src/d3d9/libdxvk_d3d9.so.0",
+    const char *candidates[] = { lib,
+#ifdef _WIN32
+        /* The loader looks in the player's own directory first, so a DXVK
+         * build placed there wins over the system implementation without
+         * anything here having to know about it. */
+        "d3d9.dll",
+#else
+        "build/dxvk/src/d3d9/libdxvk_d3d9.so.0",
 #ifdef __APPLE__
         "build/dxvk/src/d3d9/libdxvk_d3d9.0.dylib", "libdxvk_d3d9.0.dylib",
 #else
         "libdxvk_d3d9.so.0",
 #endif
+#endif
         nullptr };
     for (const char **c = candidates; *c || c == candidates; c++) {
         if (!*c) continue;
-        x->dxvk = dlopen(*c, RTLD_NOW | RTLD_LOCAL);
-        if (x->dxvk) { x->log("DXVK d3d9: %s", *c); break; }
+        x->dxvk = D3DPT_DLOPEN(*c);
+        if (x->dxvk) { x->log("d3d9: %s", *c); break; }
     }
-    if (!x->dxvk) { x->log("DXVK d3d9 library not found (D3DPT_DXVK_LIB)"); delete x; return nullptr; }
+    if (!x->dxvk) { x->log("no d3d9 library found (D3DPT_DXVK_LIB)"); delete x; return nullptr; }
+#ifdef _WIN32
+    /* DXVK only; the system d3d9 ignores it. Not overwritten if set. */
+    if (!getenv("DXVK_WSI_DRIVER")) _putenv_s("DXVK_WSI_DRIVER", "Headless");
+#else
     setenv("DXVK_WSI_DRIVER", "Headless", 0);
-    auto create = (IDirect3D9 *(*)(UINT))dlsym(x->dxvk, "Direct3DCreate9");
-    if (!create) { x->log("no Direct3DCreate9 in the DXVK library"); dlclose(x->dxvk); delete x; return nullptr; }
+#endif
+    auto create = (IDirect3D9 *(*)(UINT))D3DPT_DLSYM(x->dxvk, "Direct3DCreate9");
+    if (!create) { x->log("no Direct3DCreate9 in the d3d9 library"); D3DPT_DLCLOSE(x->dxvk); delete x; return nullptr; }
     try { x->d3d = create(D3D_SDK_VERSION); } catch (...) { x->d3d = nullptr; }
-    if (!x->d3d) { x->log("Direct3DCreate9 failed: no usable Vulkan device"); dlclose(x->dxvk); delete x; return nullptr; }
+    if (!x->d3d) { x->log("Direct3DCreate9 failed: no usable device"); D3DPT_DLCLOSE(x->dxvk); delete x; return nullptr; }
     D3DADAPTER_IDENTIFIER9 id;
     if (SUCCEEDED(x->d3d->GetAdapterIdentifier(0, 0, &id))) x->log("adapter \"%s\"", id.Description);
     return (d3dpt_exec_t *)x;

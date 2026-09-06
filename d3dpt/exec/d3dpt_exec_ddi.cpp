@@ -35,7 +35,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdarg>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
+
+/* `access(p, F_OK)` without unistd.h, which Windows does not have; the
+ * trace dumps are the only thing that asks. */
+static bool file_exists(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
 
 namespace d3dpt {
 
@@ -773,7 +785,7 @@ struct Dp2 {
         int dirlen = slash ? (int)(slash - d.trace_flag) : 1;
         const char *dir = slash ? d.trace_flag : ".";
         snprintf(path, sizeof path, "%.*s/tex-%u-l0.ppm", dirlen, dir, handle);
-        if (access(path, F_OK) == 0) return;
+        if (file_exists(path)) return;   /* one dump per handle */
         uint32_t bpp = fmt_row_bytes(s.d.format, 1);
         for (uint32_t l = 0; l < s.d.levels; l++) {
             uint32_t w = s.d.width >> l, h = s.d.height >> l;
@@ -1937,7 +1949,7 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
         const uint8_t *cmds = tail(a);
         Dp2 p = { x, *x.ddi, it->second, b, cmds, cmds + a->command_bytes, cmds + cmd_aligned, stride, stride ? a->vertex_bytes / stride : 0, a->fvf };
         x.ddi->dp2_calls++;
-        if (x.ddi->trace_flag && !x.ddi->trace && !x.ddi->trace_armed && access(x.ddi->trace_flag, F_OK) == 0) {
+        if (x.ddi->trace_flag && !x.ddi->trace && !x.ddi->trace_armed && file_exists(x.ddi->trace_flag)) {
             x.ddi->trace_armed = true;                 /* the trace starts with the next frame */
             x.log("ddi: trace: armed at dp2 call %u", x.ddi->dp2_calls);
         }

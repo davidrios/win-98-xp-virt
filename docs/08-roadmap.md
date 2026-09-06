@@ -14,7 +14,7 @@ M2, ATAPI traces and disc dumps before M5, real-GPU screenshots during M3/M4.
   qemu-3dfx submodule; `prepare-qemu.sh` (overlay + patch + sign) and
   `configure-qemu.sh` (uv-managed Python); patched QEMU builds and runs with
   glidept/glidelfb/mesapt regions live — verified on Linux x86_64 (Arch) and
-  **macOS Apple Silicon (M1 Air)**. Windows untested.
+  **macOS Apple Silicon (M1 Air)**. Windows cross-built since 2026-09-06 (M11).
 - Rust workspace: `player` (winit + wgpu 30 window, XRGB8888 test pattern
   with integer 4:3 viewport, mailbox present), `libdisc` (MSF/LBA + types),
   `launcher` stub. CI (manual trigger) for Linux/Windows/macOS-arm64.
@@ -57,7 +57,10 @@ Open before calling M1 closed:
   `PLAYER_QMP=1` logs every event, `PLAYER_QMP_EXEC='<json>'` runs
   commands after the first guest frame (verified: query-version/status/
   block, error classes, RTC_CHANGE events on FreeDOS).
-- Windows host untested throughout (stays open; not blocking M3).
+- Windows host untested throughout — closed 2026-09-06 by M11
+  (`docs/tracks/m11-windows-host.md`, `docs/build-windows.md`): the whole
+  stack cross-builds from Linux and packages as a portable zip, WHPX
+  included. Still to run on a real Windows machine.
 
 ## M3 progress (2026-09-02)
 

@@ -17,6 +17,11 @@ backend later.
 - `patches/qemu/README.md` — every QEMU patch, what it does, when to drop it.
 - `docs/build-macos.md` — Apple Silicon specifics (the M1 Air is the
   Apple test machine; the reference rig in `docs/09` is the oracle).
+- `docs/build-windows.md` — the Windows build, which is a **cross build
+  from Linux** in a container (`scripts/win-cross.sh`,
+  `scripts/build-windows.sh`, `scripts/package-windows.sh`). Windows
+  artefacts go to `build/win/` and
+  `target/x86_64-pc-windows-gnu/`, never over the native ones.
 
 ## Locked decisions (do not reopen)
 
