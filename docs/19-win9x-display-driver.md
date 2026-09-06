@@ -305,3 +305,59 @@ neutral descriptor. The 9x side is then three binaries of which only one
   the adapter.
 - The Win98 acceptance titles (doc 04) get a second path to be measured
   on: the driver against the Glide/WineD3D stack, same image, same host.
+
+### 11. The mini-VDD is not optional (measured 2026-09-06)
+
+Step 0 read this as "a ring-0 VxD for the 32-bit work and DOS-box VGA
+arbitration", i.e. something a first cut could leave out. It cannot. The
+first `.drv`-only driver was built and run in a real Win98 guest, and the
+adapter's PCI base addresses tell the story:
+
+```
+BARs  bios   BAR0: prefetchable memory at 0xf0000000  BAR1: memory at 0xfebf0000
+BARs  30s    BAR0: (not mapped)                       BAR1: (not mapped)
+```
+
+SeaBIOS maps both BARs at POST; **Windows 98 unmaps them within the first
+half-minute of boot** and never puts them back. Nothing claimed the
+device's resources, so the Configuration Manager took them away — and a
+16-bit driver that then reads the BARs out of PCI config space finds
+zeros, fails, and GDI falls back to VGA (a 16-colour desktop, which is
+how the run reports itself). Claiming those resources is the ring-0
+half's job on 9x, which is exactly why `vmdisp9x` says it moved "most
+calls to the 32-bit mini-VDD driver": the mini-VDD registers with the
+main VDD (`VDD_REGISTER_DISPLAY_DRIVER_INFO`) and hands the 16-bit driver
+a mapped frame buffer rather than letting it map anything itself.
+
+So the 9x work has a fixed order that the XP work did not: **the VxD comes
+before the display driver can do anything at all.** What the `.drv`-only
+attempt did establish, and what carries over unchanged:
+
+- Open Watcom builds a 16-bit NE display driver on Linux, and the binary
+  checks out: module `DISPLAY`, the ordinal export table, imports from
+  `KERNEL` and `DIBENG` only, no C runtime (§9's licence question
+  answered — nothing OWPL-licensed enters the binary).
+- **A display driver must carry `oembin` resources** (`config.bin`,
+  `colortab.bin`, `fonts.bin`, `fonts120.bin`): the machine metrics, the
+  Control Panel's colour table and the three system LOGFONTs live inside
+  the `.drv`, and GDI needs them. They are small fixed structures from the
+  Windows 3.1 DDK, written as C and linked to raw binaries.
+- **The INF path works with no clicks.** With `d3dpt9x.inf` and the driver
+  in `C:\WINDOWS\INF`, Win98's PnP matches `PCI\VEN_1234&DEV_3D00`,
+  installs silently, asks to restart, and writes `drv=d3dpt9x.drv` into
+  `Services\Class\Display\0000` — the registry is correct, `SYSTEM.INI`
+  keeps `display.drv=pnpdrvr.drv` and puts the device description in
+  `[boot.description]`, which is what a real driver's install looks like.
+- **`SYSTEM.INI` is not a shortcut.** Setting `[boot] display.drv=` by
+  hand and skipping the INF does not work: Windows rewrites the line when
+  it re-detects the adapter.
+- **Two debug channels, and the driver wants both.** The adapter's DEBUG
+  register cannot say anything before the register page is mapped, which
+  is where the interesting failures are, so every line also goes to port
+  0xE9 (`-debugcon file:…`). In this run both were silent, which is
+  consistent with the BARs being gone.
+
+`tools/win98-driver-test.sh` is the harness: it stages the driver into a
+raw copy of the image (never the user's qcow2), boots on the adapter, and
+prints the BARs at three points, the screen's colour count and both debug
+channels.

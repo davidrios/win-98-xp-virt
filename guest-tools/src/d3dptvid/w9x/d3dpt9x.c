@@ -13,11 +13,17 @@
  * registers, and describe the frame buffer to the DIB Engine so that GDI
  * draws directly into guest VRAM with no copy anywhere.
  *
- * What is deliberately *not* here yet (doc 19, and the track's next
- * steps): the mini-VDD, so DOS boxes and screen switching are not handled;
- * DirectDraw (the DCICOMMAND escapes and the ring-3 HAL DLL); 8 bpp
- * palettized modes; the hardware cursor. The DIB Engine's software cursor
- * is used instead, and the mode list comes from the INF.
+ * **This half cannot work alone, and the run that proved it is written up
+ * in doc 19 §11.** Windows unmaps the adapter's PCI base addresses within
+ * half a minute of boot because nothing claimed its resources, so the
+ * probe below finds zeros: on 9x the ring-0 mini-VDD claims the device and
+ * hands the frame buffer to this driver, and it has to exist first. What
+ * is here is correct and stays; what it needs is the VxD.
+ *
+ * Also not here yet: DirectDraw (the DCICOMMAND escapes and the ring-3
+ * HAL DLL), 8 bpp palettized modes, and the hardware cursor — the DIB
+ * Engine's software cursor is used instead, and the mode list comes from
+ * the INF rather than from the adapter (doc 19 §6).
  *
  * Debug output goes to the adapter's DEBUG register and so into the QEMU
  * log, exactly as the XP driver's does — no COM port, no debugger.
@@ -147,27 +153,36 @@ void RegPut(WORD off, DWORD val)
     *REG_PTR(off) = val;
 }
 
-/* The device's DEBUG register is a character port whose lines reach the
- * QEMU log; the XP driver logs the same way (doc 15). */
+/* Two debug channels, and the driver needs both. The adapter's DEBUG
+ * register is the real one — its lines reach the QEMU log exactly as the
+ * XP driver's do (doc 15) — but nothing can reach it until the register
+ * page is mapped, which is where the interesting failures are. So every
+ * line also goes to port 0xE9, QEMU's debug console (`-debugcon file:…`,
+ * ignored by anything else), which works from the first instruction. */
+static void OutE9(BYTE c);
+#pragma aux OutE9 = "out 0E9h, al" parm [al];
+
+static void dbg_ch(BYTE c)
+{
+    OutE9(c);
+    if (wRegsSel) RegPut(D3DPT_FB_REG_DEBUG, (DWORD)c);
+}
+
 void dbg_str(const char *s)
 {
-    if (!wRegsSel) return;
-    while (*s) RegPut(D3DPT_FB_REG_DEBUG, (DWORD)(BYTE)*s++);
-    RegPut(D3DPT_FB_REG_DEBUG, '\n');
+    while (*s) dbg_ch((BYTE)*s++);
+    dbg_ch('\n');
 }
 
 void dbg_val(const char *tag, DWORD v)
 {
     static const char hex[] = "0123456789abcdef";
-    char buf[16];
     int i;
 
-    if (!wRegsSel) return;
-    while (*tag) RegPut(D3DPT_FB_REG_DEBUG, (DWORD)(BYTE)*tag++);
-    RegPut(D3DPT_FB_REG_DEBUG, '=');
-    for (i = 28; i >= 0; i -= 4) buf[7 - i / 4] = hex[(v >> i) & 0xf];
-    for (i = 0; i < 8; ++i) RegPut(D3DPT_FB_REG_DEBUG, (DWORD)(BYTE)buf[i]);
-    RegPut(D3DPT_FB_REG_DEBUG, '\n');
+    while (*tag) dbg_ch((BYTE)*tag++);
+    dbg_ch('=');
+    for (i = 28; i >= 0; i -= 4) dbg_ch((BYTE)hex[(v >> i) & 0xf]);
+    dbg_ch('\n');
 }
 
 /* Find the adapter, map its BARs, and check that the device speaks the
@@ -179,25 +194,33 @@ BOOL AdapterFind(void)
 
     if (wRegsSel) return TRUE;          /* already found */
 
+    dbg_str("d3dpt9x: probing the PCI bus");
     for (dev = 0; dev < 32; ++dev) {
         id = PciCfg(dev, 0);
+        if (dev < 8) dbg_val("d3dpt9x: dev", id);
         if (id == ((DWORD)D3DPT_FB_PCI_DEVICE << 16 | D3DPT_FB_PCI_VENDOR))
             break;
     }
-    if (dev == 32) return FALSE;
+    if (dev == 32) { dbg_str("d3dpt9x: adapter not on the bus"); return FALSE; }
+    dbg_val("d3dpt9x: at device", dev);
 
     dwVramPhys = PciCfg(dev, 0x10) & 0xfffffff0uL;
     dwRegsPhys = PciCfg(dev, 0x14) & 0xfffffff0uL;
+    dbg_val("d3dpt9x: bar0", dwVramPhys);
+    dbg_val("d3dpt9x: bar1", dwRegsPhys);
     if (!dwVramPhys || !dwRegsPhys) return FALSE;
 
     /* the register page first: nothing can be reported before it exists */
     lin = DPMI_MapPhys(dwRegsPhys, D3DPT_FB_REGS_SIZE);
+    dbg_val("d3dpt9x: regs linear", lin);
     if (!lin) return FALSE;
     wRegsSel = DPMI_AllocSel(1);
+    dbg_val("d3dpt9x: regs sel", wRegsSel);
     if (!wRegsSel) return FALSE;
     DPMI_SetBase(wRegsSel, lin);
     DPMI_SetLimit(wRegsSel, D3DPT_FB_REGS_SIZE - 1);
 
+    dbg_val("d3dpt9x: magic", RegGet(D3DPT_FB_REG_MAGIC));
     if (RegGet(D3DPT_FB_REG_MAGIC) != D3DPT_FB_MAGIC) {
         wRegsSel = 0;
         return FALSE;
@@ -350,6 +373,7 @@ UINT WINAPI __loadds Enable(LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
         LPDIBENGINE  lpEng = lpDevice;
         LPBITMAPINFO lpInfo;
 
+        dbg_str("d3dpt9x: Enable (hardware)");
         lpDriverPDevice = lpDevice;
         if (!PhysicalEnable()) return 0;
         if (!bReEnabling) {
@@ -394,6 +418,9 @@ UINT WINAPI __loadds Enable(LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
     } else {
         LPGDIINFO lpInfo = lpDevice;
 
+        dbg_str("d3dpt9x: Enable (GDIINFO)");
+        AdapterFind();
+        ReadDisplayConfig();
         ZeroFar(lpInfo, sizeof(GDIINFO));
         /* the DIB Engine fills the curve/line/polygon capabilities */
         DIB_Enable(lpDevice, style, lpDeviceType, lpOutputFile, lpStuff);
@@ -518,13 +545,15 @@ extern char __based(__segname("_TEXT")) *pText;
 UINT FAR DriverInit(UINT cbHeap, UINT hModule, LPSTR lpCmdLine)
 {
     /* The code segment must not move while we are on the hardware. */
-    GlobalSmartPageLock((__segment)pText);
+    dbg_str("d3dpt9x: DriverInit entered");
 
+    /* Nothing here may fail: GDI treats a zero from DriverInit as "no
+     * driver" and silently falls back to VGA, which is indistinguishable
+     * from the module never loading. The adapter is found on the first
+     * Enable instead, where a failure is at least visible. */
+    GlobalSmartPageLock((__segment)pText);
     VDDEntryPoint = (DWORD)int2F_GetEP(0x1684, VDD_ID);
     OurVMHandle   = int2F_GetVMID(0x1683);
-
-    if (!AdapterFind()) return 0;
-    ReadDisplayConfig();
-    dbg_str("d3dpt9x: DriverInit");
+    dbg_str("d3dpt9x: DriverInit done");
     return 1;
 }

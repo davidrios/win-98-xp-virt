@@ -53,6 +53,19 @@ echo "==> d3dpt9x.obj"
 echo "==> dibthunk.obj"
 ( cd "$BUILD" && wasm -q -fo=dibthunk.obj "$SRC/dibthunk.asm" )
 
+# The resource blobs: GDI and USER read the machine metrics, the colour
+# table and the system fonts out of the .drv itself (doc 19). Each is a C
+# file of pure data, linked as a raw DOS binary to get the bytes out.
+for r in config colortab fonts fonts120; do
+  echo "==> res/$r.bin"
+  ( cd "$BUILD" && wcc -q -zu -zls -6 -I"$DDK" -I"$SRC/res" -fo=$r.obj "$SRC/res/$r.c" \
+    && wlink op quiet disable 1014, 1023 name $r.bin sys dos output raw file $r.obj )
+done
+
+echo "==> d3dpt9x.res"
+( cd "$BUILD" && cp "$SRC/res/d3dpt9x.rc" . && wrc -q -r -ad -bt=windows -fo=d3dpt9x.res \
+    -I"$WATCOM/h/win" d3dpt9x.rc )
+
 echo "==> dibeng.lib (import library, from the text list)"
 ( cd "$BUILD" && wlib -b -q -n -fo -ii @"$DDK/dibeng.lbc" dibeng.lib >/dev/null )
 
@@ -112,6 +125,9 @@ export ValidateMode.700
 import GlobalSmartPageLock KERNEL.230
 LNK
 ( cd "$BUILD" && wlink op quiet, start=DriverInit_ disable 2055 @d3dpt9x.lnk )
+
+echo "==> resources into the module"
+( cd "$BUILD" && wrc -q d3dpt9x.res d3dpt9x.drv )
 
 # The linker stamps "expected Windows 3.00" into the NE header. GDI loads the
 # driver either way, but the DIB Engine treats a 3.x module as a 3.x driver

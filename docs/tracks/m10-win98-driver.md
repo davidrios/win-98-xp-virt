@@ -38,8 +38,11 @@ Branch `track/m10-win98-driver`, worktree
 
 ## State (2026-09-06)
 
-**Step 0 is done** — the 9x driver model is established and written into
-doc 19; nothing is built yet. The findings that change the plan:
+**Step 0 is done and step 1 (the Open Watcom prerequisite) is answered:
+the toolchain works and the first driver builds, installs and runs in a
+real Win98 guest — but a `.drv` alone cannot drive the adapter, because
+Windows unmaps its PCI BARs when nothing claims them (doc 19 §11). The
+mini-VDD comes first.** The findings that shape the plan:
 
 - A 9x display driver is **three binaries**: a 16-bit `.drv` whose drawing
   exports all jump to the DIB Engine, a ring-0 mini-VDD `.vxd`, and — the
@@ -60,10 +63,25 @@ doc 19; nothing is built yet. The findings that change the plan:
   9x callback may decline and fall back to the HEL, an NT one may not. The
   caps table is per-OS, not shared.
 - **Modes come from the INF/registry on 9x**, not from the adapter.
-- **New build prerequisite: Open Watcom** for the `.drv` and the `.vxd`
-  (mingw cannot make NE or VxD binaries); not installed on this box.
-  Header provenance for the 16-bit side is an open item — our rule is no
-  Microsoft DDK.
+- **Open Watcom is the second toolchain** for the `.drv` and the `.vxd`
+  (mingw can make neither format). Settled 2026-09-06: Open Watcom v2
+  ships Linux-hosted binaries, unpacked from the Last-CI-build release's
+  `ow-snapshot.tar.xz` into `~/.local/opt/open-watcom` — no sudo, nothing
+  on the system path, `WATCOM=` points the build at it.
+- **Header provenance settled**: `vmdisp9x`'s `ddk/` carries no Microsoft
+  code or copyright (interface descriptions written from the published
+  documentation, MIT), so they are vendored under
+  `guest-tools/src/d3dptvid/ddk9x/` with the notice, the same posture as
+  the XP driver's `ddk/`. Nothing OWPL-licensed enters the binary either:
+  the driver links no C runtime.
+- **A `.drv` must carry `oembin` resources** — `config.bin`,
+  `colortab.bin`, `fonts.bin`, `fonts120.bin`: the machine metrics, the
+  Control Panel colour table and the three system LOGFONTs live inside
+  the driver and GDI needs them (`w9x/res/`).
+- **PnP installs it with no clicks**: the INF in `C:\WINDOWS\INF` matches
+  `PCI\VEN_1234&DEV_3D00`, installs silently and asks to restart.
+  Editing `SYSTEM.INI` by hand instead does not work — Windows rewrites
+  the line when it re-detects the adapter.
 
 `vmdisp9x` and `vmhal9x` are cloned to `build/ref/` (gitignored) for
 reading; nothing from them is vendored.
@@ -92,14 +110,21 @@ What the track starts from:
    driver claiming DDI 8 may leave out the pre-DP2 HAL entries
    (`RenderState`, `RenderPrimitive`, `DrawOnePrimitive`, `TextureCreate`)
    that NT dropped and `vmhal9x` still implements.
-2. **Get Open Watcom building a "hello world" `.drv` + `.vxd`** before
-   the split, because it is the one prerequisite that can fail outright:
-   install it, build a minimal 16-bit display driver over the DIB engine
-   and a dynamic VxD, and get a 98 guest to a desktop on `d3dpt-vga` with
-   them — no DirectDraw, no core. That also settles the header-provenance
-   question in practice. If this cannot be made to work, the track stops
-   here and nothing has been wasted on the split.
-3. **Step 1 — the split, XP unchanged.** Carve `core/` out of
+2. ~~**Get Open Watcom building a "hello world" `.drv`**~~ **done
+   2026-09-06**: `guest-tools/build-driver9x.sh` builds `d3dpt9x.drv`
+   (module `DISPLAY`, the ordinal exports, `oembin` resources, imports
+   `KERNEL` and `DIBENG` only, no CRT), the INF installs it through PnP,
+   and `tools/win98-driver-test.sh` runs the whole thing headless. The
+   toolchain risk is gone.
+3. **The mini-VDD** — now the first thing that must work, not a later
+   nicety (doc 19 §11). A dynamic VxD that claims the adapter's PCI
+   resources so Windows stops unmapping its BARs, registers with the main
+   VDD (`VDD_REGISTER_DISPLAY_DRIVER_INFO`), maps VRAM and the register
+   page, and hands the 16-bit driver a frame-buffer descriptor the way
+   `vmdisp9x`'s FBHDA does. The pass is `tools/win98-driver-test.sh`
+   printing BARs that survive the boot, the driver's own `guest:` lines
+   in the QEMU log, and a desktop with more than 16 colours.
+4. **Step 1 — the split, XP unchanged.** Carve `core/` out of
    `d3dptdisp.c` per doc 19, thunk NT onto it, and prove it is a
    refactor: `scripts/test.sh all` green, `d3dpt-dp2-test` and `d3d7test`
    against the same golden BMP, `shtest` / `cktest` / `ebtest` / `dxttest`
@@ -108,17 +133,17 @@ What the track starts from:
    `tools/xp-motoracer.sh`, `tools/xp-vicecity.sh`). Land this on its own
    — a 9x bug on top of an unproven refactor is two bugs wearing one
    coat.
-4. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
+5. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
    adapter, `d3dptvid: adapter found` from the device, no copy inside
    QEMU. Modes come from the INF on 9x, so decide there between an INF
    superset and a mode-list utility (doc 19 §6). Installed by INF from the
    guest-tools ISO; `SETUP.EXE` grows the component and
    `tools/setup-guest-test.sh win98`'s "never offered" check inverts.
-5. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
+6. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
    flip chain against the frame counter, `DdMapMemory`'s equivalent,
    8 bpp palettized modes. `DDTEST.EXE` and `CDTEST`-style guest probes
    run on 98 as they do on XP.
-6. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
+7. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
    under the 9x HAL. Two decisions land here, both new on 9x (doc 19 §8):
    whether the doorbell is a mapped register page or a VxD ioctl, and how
    the single command window at the top of VRAM is serialised now that
@@ -127,7 +152,7 @@ What the track starts from:
    `EBTEST` (the DX3 path, which is most of the 98 matrix), `CKTEST`,
    `DXTTEST`, and `SHTEST` — the DX8 half is in scope on 98 too, step 0
    settled that.
-7. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
+8. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
    the driver, against the same titles on the Glide/WineD3D stack: which
    is faster, which is correct, and what the launcher should default to.
 
@@ -146,10 +171,19 @@ This worktree has its own submodules but no `build/`. It needs
 `build/dxvk` may be symlinked from the main checkout rather than rebuilt.
 
 The 9x binaries need a second toolchain: **Open Watcom** (`wcc`, `wcc386`,
-`wasm`, `wlink`) for the 16-bit `.drv` and the ring-0 `.vxd`. It is not
-installed on this box and mingw cannot stand in for it; the ring-3 HAL DLL,
-which is the half that links our core, builds with the
-`i686-w64-mingw32` toolchain we already use.
+`wasm`, `wlink`) for the 16-bit `.drv` and the ring-0 `.vxd`; mingw cannot
+stand in for it, though the ring-3 HAL DLL — the half that links our core —
+builds with the `i686-w64-mingw32` toolchain we already use. Installed on
+the Linux box at `~/.local/opt/open-watcom` from the Open Watcom v2
+`Last-CI-build` release's `ow-snapshot.tar.xz` (no sudo, nothing on the
+system path):
+
+```sh
+curl -L -o ow.tar.xz https://github.com/open-watcom/open-watcom-v2/releases/download/Last-CI-build/ow-snapshot.tar.xz
+mkdir -p ~/.local/opt/open-watcom && tar xJf ow.tar.xz -C ~/.local/opt/open-watcom
+WATCOM=~/.local/opt/open-watcom guest-tools/build-driver9x.sh
+tools/win98-driver-test.sh ~/vms/win98.qcow2 install   # then `boot` on later runs
+```
 
 The reference trees read in step 0 are cloned (gitignored, not vendored):
 
