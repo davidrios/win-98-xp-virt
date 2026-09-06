@@ -103,16 +103,44 @@ static WORD CallVDD_Register(void);
 
 /* ------------------------------------------------------------ the adapter */
 
-#define REG_PTR(off) ((DWORD __far *)(((DWORD)wRegsSel << 16) | (WORD)(off)))
+/* The adapter's registers are 32 bits wide and the device accepts **nothing
+ * else**: its register BAR is `valid.min_access_size = 4`. A 16-bit compiler
+ * turns `*(DWORD __far *)p` into two word accesses, and QEMU answers those
+ * with zero and drops the writes without a word anywhere — a register set
+ * that reads as a different device, from a driver whose every write is lost
+ * (doc 19 Section 14). So both directions are one 32-bit access, written out
+ * by hand; the module is .386 throughout. The XP driver never met this: it
+ * is 32-bit code and the compiler emitted what the device wanted. */
+static DWORD RegGetSel(WORD sel, WORD off);
+#pragma aux RegGetSel =     \
+    ".386"                  \
+    "push   es"             \
+    "mov    es, cx"         \
+    "mov    eax, es:[bx]"   \
+    "mov    edx, eax"       \
+    "shr    edx, 16"        \
+    "pop    es"             \
+    parm [cx] [bx] value [dx ax] modify [ax dx];
+
+static void RegPutSel(WORD sel, WORD off, DWORD val);
+#pragma aux RegPutSel =     \
+    ".386"                  \
+    "push   es"             \
+    "mov    es, cx"         \
+    "shl    edx, 16"        \
+    "mov    dx, ax"         \
+    "mov    es:[bx], edx"   \
+    "pop    es"             \
+    parm [cx] [bx] [dx ax] modify [dx];
 
 DWORD RegGet(WORD off)
 {
-    return *REG_PTR(off);
+    return RegGetSel(wRegsSel, off);
 }
 
 void RegPut(WORD off, DWORD val)
 {
-    *REG_PTR(off) = val;
+    RegPutSel(wRegsSel, off, val);
 }
 
 /* Two debug channels, and the driver needs both. The adapter's DEBUG
@@ -154,8 +182,12 @@ BOOL AdapterFind(void)
     if (wRegsSel) return TRUE;          /* already asked */
     if (!VDDEntryPoint) { dbg_str("d3dpt9x: no VDD"); return FALSE; }
 
-    if (!CallVDD_Register()) {
+    /* Carry says no, and so does a zero selector: the main VDD answers this
+     * function itself when no mini-VDD claimed it, and then the registers
+     * are whatever its own dispatch left in them. */
+    if (!CallVDD_Register() || !wRegsSel || !wVramSel || !dwVramSize) {
         dbg_str("d3dpt9x: the mini-VDD has no adapter for us");
+        wRegsSel = wVramSel = 0;
         return FALSE;
     }
     dbg_val("d3dpt9x: regs sel", wRegsSel);
@@ -164,8 +196,10 @@ BOOL AdapterFind(void)
 
     if (RegGet(D3DPT_FB_REG_MAGIC) != D3DPT_FB_MAGIC ||
         RegGet(D3DPT_FB_REG_VERSION) != D3DPT_FB_VERSION) {
+        dbg_val("d3dpt9x: magic", RegGet(D3DPT_FB_REG_MAGIC));
+        dbg_val("d3dpt9x: version", RegGet(D3DPT_FB_REG_VERSION));
         dbg_str("d3dpt9x: register set mismatch, refusing the device");
-        wRegsSel = 0;
+        wRegsSel = wVramSel = 0;
         return FALSE;
     }
     dbg_str("d3dpt9x: adapter found");
@@ -464,8 +498,18 @@ static WORD int2F_GetVMID(WORD ax);
 
 UINT WINAPI GlobalSmartPageLock(HGLOBAL hglb);
 
-/* Dummy pointer, only to get at the _TEXT segment's selector. */
-extern char __based(__segname("_TEXT")) *pText;
+/* The code segment's selector, for the page lock below. `extern char
+ * __based(__segname("_TEXT")) *pText` — the idiom every 9x driver uses —
+ * is a trap here: it puts the reference in a *second* segment also called
+ * `_TEXT`, of class FAR_DATA, which stays empty in a driver this small.
+ * wlink then drops the empty segment from the NE segment table and leaves
+ * the relocation pointing at it, and KERNEL refuses to load a module whose
+ * relocation names a segment that is not there — silently, which cost this
+ * track several boots (doc 19 Section 13). CS is the same selector and needs
+ * no relocation at all; build-driver9x.sh now fails the build if any
+ * relocation ever points past the segment table again. */
+static WORD GetCS(void);
+#pragma aux GetCS = "mov ax, cs" value [ax];
 
 #pragma aux DriverInit parm [cx] [di] [es si]
 
@@ -478,7 +522,7 @@ UINT FAR DriverInit(UINT cbHeap, UINT hModule, LPSTR lpCmdLine)
      * driver" and silently falls back to VGA, which is indistinguishable
      * from the module never loading. The adapter is found on the first
      * Enable instead, where a failure is at least visible. */
-    GlobalSmartPageLock((__segment)pText);
+    GlobalSmartPageLock((HGLOBAL)GetCS());
     VDDEntryPoint = (DWORD)int2F_GetEP(0x1684, VDD_ID);
     OurVMHandle   = int2F_GetVMID(0x1683);
 

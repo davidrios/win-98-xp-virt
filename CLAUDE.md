@@ -245,6 +245,23 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
   missing export SHLWAPI.DLL:GetFileAttributesA* — so there is no Start
   menu and no way to drive the guest (2026-09-06). The same image is
   fine under TCG.
+- The **Win98 display driver** (M10, doc 19) is 16-bit, and that changes
+  two things nothing warns about. `d3dpt-vga`'s register BAR is
+  `valid.min_access_size = 4`: a 16-bit compiler turns `*(DWORD __far *)p`
+  into two word accesses, which QEMU answers with zero and drops — the
+  driver's registers must be hand-written 32-bit accesses. And the mini-VDD
+  maps the adapter where ring 3 can reach it — `_PageReserve(PR_SHARED)` +
+  `_PageCommitPhys(PC_USER|PC_WRITEABLE|PC_INCR)`, not `_MapPhysToLinear`,
+  which lands in the system arena — where **this VMM refuses `PC_PRESENT`**,
+  silently, and `PC_INCR` is what stops all 128 MB aliasing onto one page. Two more silent refusals are now
+  build-time checks in `build-driver9x.sh`: an NE relocation naming a
+  segment wlink dropped (KERNEL refuses the module), and a VxD whose DDB is
+  not at offset 0 of its code object (the VMM ignores it).
+- **End a scripted Win98 run with the ACPI power button** (`system_powerdown`),
+  not keystrokes: a modal dialog swallows them, and a machine that does not
+  power off leaves the FAT dirty, so the *next* boot comes up in **safe
+  mode** — no driver, no VxD, an empty debug log, which reads exactly like
+  the thing under test having failed.
 - Win98 runs `-vga cirrus` (inbox driver). XP runs `-vga none -device
   d3dpt-vga` with our driver (doc 15); without the driver installed it is a
   plain VGA (vga.sys, 800×600×4), and `-vga std` has no XP driver at all.

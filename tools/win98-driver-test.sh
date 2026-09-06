@@ -102,7 +102,34 @@ sed 's/^/          /' "$OUT/out/dbg.log" | head -20
 echo "guest:    $(grep -c 'd3dpt-vga: guest' "$OUT/out/stderr.log" || true) lines"
 grep 'd3dpt-vga' "$OUT/out/stderr.log" | sed 's/^/          /' | head -20 || true
 
-# a killed Win98 leaves the FAT dirty and the next boot runs ScanDisk
-echo "==> Start-menu shutdown"
-for k in ctrl+esc u ret; do python3 "$ROOT/tools/qmpc.py" "$SOCK" keys $k >/dev/null 2>&1 || true; sleep 3; done
-for _ in $(seq 20); do kill -0 $VM 2>/dev/null || break; sleep 3; done
+# A killed Win98 leaves the FAT dirty, and the boot after that comes up in
+# **safe mode** with no driver and no VxD — which looks exactly like the
+# driver having failed, and costs a whole run to work out. The ACPI power
+# button is the reliable way to end a run: this is an ACPI install (it has
+# to be, or the adapter is never seen), and Windows shuts down and powers
+# the machine off by itself, with no dependence on what is on screen. The
+# Start menu is the fallback for when it does not, and it starts by
+# dismissing whatever modal dialog may be swallowing the keys.
+echo "==> shutdown"
+# Escape first: a modal dialog swallows the power button too, and an
+# `install` run always ends on one ("you must restart your computer" —
+# Escape is No, and the restart is the next run's job).
+python3 "$ROOT/tools/qmpc.py" "$SOCK" keys esc >/dev/null 2>&1 || true
+sleep 3
+python3 "$ROOT/tools/qmpc.py" "$SOCK" json '{"execute":"system_powerdown"}' >/dev/null 2>&1 || true
+for _ in $(seq 30); do kill -0 $VM 2>/dev/null || break; sleep 3; done
+
+if kill -0 $VM 2>/dev/null; then
+  echo "           the power button was ignored; trying the Start menu"
+  for k in ret esc ctrl+esc u ret; do
+    python3 "$ROOT/tools/qmpc.py" "$SOCK" keys $k >/dev/null 2>&1 || true
+    sleep 4
+  done
+  for _ in $(seq 30); do kill -0 $VM 2>/dev/null || break; sleep 3; done
+fi
+
+if kill -0 $VM 2>/dev/null; then
+  echo "shutdown   the machine did not power off — the next boot will be safe mode"
+else
+  echo "shutdown   clean"
+fi

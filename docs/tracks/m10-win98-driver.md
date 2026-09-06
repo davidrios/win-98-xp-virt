@@ -46,11 +46,15 @@ Branch `track/m10-win98-driver`, worktree
 
 ## State (2026-09-06)
 
-**Steps 0–3 are done: the toolchain, the `.drv`, and the mini-VDD, which
-now claims the adapter and keeps its BARs for the whole boot (doc 19 §11,
-§12). The one thing left before a desktop is that GDI still refuses to
-load the 16-bit driver — a load failure, not a run-time one (doc 19
-§13).** The findings that shape the plan:
+**Steps 0–4 are done: the toolchain, the `.drv`, the mini-VDD, and — since
+2026-09-06 — the driver actually running. GDI loads it, it claims the
+adapter through the mini-VDD and sets the mode (`d3dpt-vga: linear mode on
+(640x480x32 pitch 2560 offset 0)`), its own `d3dpt9x:` lines arrive through
+the DEBUG register as the XP driver's do, and the DIB Engine's software
+cursor is drawn into guest VRAM at the right place and scale. The open item
+is that the shell never appears: a black desktop, the wait cursor, and a
+640×20 strip of garbage at the top of the frame buffer, unchanged between
+150 s and 200 s of boot (doc 19 §15).** The findings that shape the plan:
 
 - A 9x display driver is **three binaries**: a 16-bit `.drv` whose drawing
   exports all jump to the DIB Engine, a ring-0 mini-VDD `.vxd`, and — the
@@ -90,20 +94,35 @@ load the 16-bit driver — a load failure, not a run-time one (doc 19
   `PCI\VEN_1234&DEV_3D00`, installs silently and asks to restart.
   Editing `SYSTEM.INI` by hand instead does not work — Windows rewrites
   the line when it re-detects the adapter.
+- **Three silent failures, two now caught by the build**
+  (doc 19 §13, §14). GDI refused the `.drv` because wlink dropped an empty
+  `_TEXT`/`FAR_DATA` segment — the one the `__based(__segname("_TEXT"))
+  *pText` idiom creates — and left a relocation naming it; the VMM refused
+  the VxD, again, when a `static const` array was emitted ahead of the DDB;
+  and the adapter answered zeros because a 16-bit `*(DWORD __far *)` is
+  two word accesses, which `d3dpt-vga`'s register BAR
+  (`valid.min_access_size = 4`) drops on the floor. None of the three
+  produced a message anywhere.
+- **The adapter needed no change for 9x**, which is what this track hoped
+  for: the 16-bit half changed instead, to 32-bit register accesses written
+  out by hand.
 
 `vmdisp9x` and `vmhal9x` are cloned to `build/ref/` (gitignored) for
 reading. Nothing of their *code* is vendored; their `ddk/` headers are,
 under `ddk9x/`, for the reason in the bullet above.
 
 **Where a new session starts.** Everything is committed and pushed; the
-open item is doc 19 §13, and it is a single question — why GDI refuses to
-load `d3dpt9x.drv`. The evidence is already gathered, so do not re-derive
-it: the module's first instruction never runs (the mini-VDD, which logs
-reliably, is never called from `DriverInit`), naming the driver directly
-in `SYSTEM.INI` changes nothing, and the NE now matches the guest's own
-`CIRRUSMM.DRV` on resources, header, segment attributes and heap. Doc 19
-§13 lists what is left to try, in order, and the cheapest thing that would
-turn inference into a message is getting `BOOTLOG.TXT` to write.
+open item is doc 19 §15 — the driver runs and draws, but Windows never
+reaches the desktop. The two leads, in order: the 640×20 strip of garbage
+at the top of the frame buffer (nothing the driver draws belongs there, so
+whatever writes it is writing where it should not), and what `Enable`
+answers with — the `GDIINFO` and the `deviceBitmap` handed to the DIB
+Engine, held against `vmdisp9x`'s `enable.c` field by field. Rule out the
+dull explanation first: a 32 bpp desktop painted in software under TCG may
+simply be slower than the harness waits.
+
+Do not re-derive the three silent refusals; they are written up in doc 19
+§13 and §14 and two of them are now build-time checks.
 
 What the track starts from:
 
@@ -144,16 +163,20 @@ What the track starts from:
    everything in one CODE-class segment; a 32-bit entry-table bundle);
    they are in doc 19 §12 because a VxD the VMM dislikes is simply never
    loaded, silently.
-4. **Make GDI load `d3dpt9x.drv`** — the open blocker (doc 19 §13). Its
-   first instruction never runs, and naming it directly in `SYSTEM.INI`
-   changes nothing, so GDI is refusing the module. The NE now matches
-   `CIRRUSMM.DRV` on resources, header, segment attributes and heap;
-   what is left to try is the export/entry table, the missing `#16`
-   VERSIONINFO resource, and getting `BOOTLOG.TXT` to write so the
-   refusal can be read rather than inferred. The pass is
-   `tools/win98-driver-test.sh` printing the driver's own `d3dpt9x:`
-   lines and a desktop with more than 16 colours.
-5. **Step 1 — the split, XP unchanged.** Carve `core/` out of
+4. ~~**Make GDI load `d3dpt9x.drv`**~~ **done 2026-09-06** (doc 19 §13,
+   §14): a dangling NE relocation into a segment wlink had dropped, then a
+   ring-0-only mapping, then 16-bit accesses to a register BAR that takes
+   only 32-bit ones. `tools/win98-driver-test.sh` now prints the driver's
+   own `d3dpt9x:` lines and the device's `linear mode on (640x480x32 …)`.
+5. **Get to a desktop** — the open blocker (doc 19 §15). The driver draws,
+   but the shell never appears: a black screen, the wait cursor and a
+   640×20 strip of garbage at the top of VRAM. Where to look, in order:
+   whether the boot is merely slow at 32 bpp under TCG; what writes that
+   strip; and `Enable`'s `GDIINFO` / `deviceBitmap` against `vmdisp9x`'s
+   `enable.c`. The pass is a Win98 desktop the harness can drive — and the
+   ACPI power-button shutdown succeeding, which is the same thing said
+   another way.
+6. **Step 1 — the split, XP unchanged.** Carve `core/` out of
    `d3dptdisp.c` per doc 19, thunk NT onto it, and prove it is a
    refactor: `scripts/test.sh all` green, `d3dpt-dp2-test` and `d3d7test`
    against the same golden BMP, `shtest` / `cktest` / `ebtest` / `dxttest`
@@ -162,17 +185,17 @@ What the track starts from:
    `tools/xp-motoracer.sh`, `tools/xp-vicecity.sh`). Land this on its own
    — a 9x bug on top of an unproven refactor is two bugs wearing one
    coat.
-6. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
+7. **Step 2 — the 9x framebuffer driver** (98's M7a): the desktop on the
    adapter, `d3dptvid: adapter found` from the device, no copy inside
    QEMU. Modes come from the INF on 9x, so decide there between an INF
    superset and a mode-list utility (doc 19 §6). Installed by INF from the
    guest-tools ISO; `SETUP.EXE` grows the component and
    `tools/setup-guest-test.sh win98`'s "never offered" check inverts.
-7. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
+8. **Step 3 — the DirectDraw DDI on 9x** (98's M7b): the VRAM heap, the
    flip chain against the frame counter, `DdMapMemory`'s equivalent,
    8 bpp palettized modes. `DDTEST.EXE` and `CDTEST`-style guest probes
    run on 98 as they do on XP.
-8. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
+9. **Step 4 — the Direct3D DDI on 9x** (98's M7c): the core's DP2 walker
    under the 9x HAL. Two decisions land here, both new on 9x (doc 19 §8):
    whether the doorbell is a mapped register page or a VxD ioctl, and how
    the single command window at the top of VRAM is serialised now that
@@ -181,7 +204,7 @@ What the track starts from:
    `EBTEST` (the DX3 path, which is most of the 98 matrix), `CKTEST`,
    `DXTTEST`, and `SHTEST` — the DX8 half is in scope on 98 too, step 0
    settled that.
-9. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
+10. **Step 5 — the titles.** The doc 04 Win98 acceptance matrix through
    the driver, against the same titles on the Glide/WineD3D stack: which
    is faster, which is correct, and what the launcher should default to.
 
@@ -201,7 +224,8 @@ tools/win98-driver-test.sh ~/vms/win98.qcow2 boot                   # every run 
 ```
 
 `install` throws the scratch image away and converts a fresh raw from the
-user's qcow2, so it is also the reset button. `boot` re-stages only the two
+user's qcow2, so it is also the reset button — and the way out of safe
+mode. `boot` re-stages only the two
 binaries, which is what an edit-build-test cycle wants. `BOOT_WAIT=190`
 buys more time on a slow run; `OUT=` moves the outputs.
 

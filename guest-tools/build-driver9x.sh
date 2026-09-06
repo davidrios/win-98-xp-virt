@@ -188,6 +188,21 @@ for i in range(nobj):
 open(p, 'wb').write(f)
 PYVXD
 
+# The DDB must sit at offset 0 of the VxD's one object: that is where the
+# entry table points and where the VMM's loader looks. Anything the compiler
+# emits into the same segment ahead of it — a string literal, a const array —
+# pushes it off, and the VMM then declines the module in complete silence
+# (doc 19 Section 12). The map says where it went, so the build checks.
+awk '/^0001:00000000 +VXD_DDB$/ { found = 1 }
+     END { if (!found) {
+        print "d3dpt9v.vxd: VXD_DDB is not at 0001:00000000 — the VMM will"
+        print "  ignore this module without a word. Something in _LTEXT is"
+        print "  emitted ahead of it; see the map:"
+        exit 1 } }' "$BUILD/d3dpt9v.map" || {
+  grep -m5 -A4 'Module: d3dptvxd' "$BUILD/d3dpt9v.map"
+  exit 1
+}
+
 echo "==> resources into the module"
 ( cd "$BUILD" && wrc -q d3dpt9x.res d3dpt9x.drv )
 
@@ -208,6 +223,41 @@ f[ne+0x3f] = 4        # major -> 4.00
 struct.pack_into('<H', f, ne + 0x10, 0)
 open(p, 'wb').write(f)
 PYFIX
+
+# Every internal relocation must name a segment the NE segment table has.
+# wlink can emit one that does not: a segment that ends up empty is dropped
+# from the table while the relocations that referenced it keep its old
+# index, and KERNEL then refuses the whole module without a word — which is
+# exactly how doc 19 Section 13 was spent. Nothing downstream complains, so
+# the build does.
+python3 - "$BUILD/d3dpt9x.drv" <<'PYCHK'
+import struct, sys
+p = sys.argv[1]
+f = open(p, 'rb').read()
+ne = struct.unpack_from('<I', f, 0x3c)[0]
+segcount,  = struct.unpack_from('<H', f, ne + 0x1c)
+segtaboff, = struct.unpack_from('<H', f, ne + 0x22)
+align = 1 << (struct.unpack_from('<H', f, ne + 0x32)[0] or 9)
+bad = 0
+for s in range(segcount):
+    off, size, flags, _ = struct.unpack_from('<HHHH', f, ne + segtaboff + s * 8)
+    if not flags & 0x0100:                     # no relocation records
+        continue
+    base = off * align + size
+    n, = struct.unpack_from('<H', f, base)
+    for i in range(n):
+        r = base + 2 + i * 8
+        if f[r + 1] & 3:                       # not an internal reference
+            continue
+        seg = f[r + 4]
+        if seg != 0xff and not 1 <= seg <= segcount:
+            print("   segment %d relocation at 0x%04x names segment %d of %d"
+                  % (s + 1, struct.unpack_from('<H', f, r + 2)[0], seg, segcount))
+            bad += 1
+if bad:
+    sys.exit("d3dpt9x.drv: %d dangling relocation(s) — KERNEL will refuse to "
+             "load this module. Check the .map for an empty segment." % bad)
+PYCHK
 
 cp "$BUILD/d3dpt9x.drv" "$BUILD/d3dpt9v.vxd" "$OUT/"
 cp "$SRC/d3dpt9x.inf" "$OUT/" 2>/dev/null || true

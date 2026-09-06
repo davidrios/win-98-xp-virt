@@ -415,38 +415,113 @@ then, and its re-programming path has never had to fire. So it is
 driver set — that makes the Configuration Manager leave the device alone.
 The re-programming stays as belt and braces.
 
-### 13. The 16-bit driver still does not load (open, 2026-09-06)
+### 13. Why GDI would not load the driver (answered 2026-09-06)
 
-With the ring-0 half working, the display driver is the remaining blocker
-and it is a *load* failure, not a run-time one: `d3dpt9x.drv`'s first
-instruction is never executed. The proof is now indirect but solid —
-`DriverInit` asks the mini-VDD for the adapter, and the mini-VDD, which
-logs reliably in ring 0, is never called.
+**One dangling relocation.** `d3dpt9x.drv`'s first instruction never ran,
+and none of the things this section used to list as suspects — the export
+table, a missing `#16` VERSIONINFO, a `_TEXT` without an `_INIT` — had
+anything to do with it.
+The module was simply malformed, and the linker map said so all along:
 
-It is not the driver's selection: pointing `SYSTEM.INI`'s `[boot]
-display.drv=` straight at `d3dpt9x.drv` (binary-safe — editing that file
-through Python's text mode strips the CRLFs and eats a section header)
-changes nothing, so GDI is refusing the module rather than choosing
-another one.
+```
+_TEXT   CODE      AUTO    0001:0000   0000096e
+CONST…  DATA      DGROUP  0002:….
+_TEXT   FAR_DATA  AUTO    0003:0000   00000000     <- empty
+```
 
-What has been ruled out by making the binary match `CIRRUSMM.DRV`, the
-guest's own display driver, field for field:
+The culprit is the idiom every 9x display driver uses to lock its own code
+segment:
 
-- the `oembin` resources are present and correctly typed (§11);
-- the NE header says Windows 4.00, module `DISPLAY`, and imports only
-  `KERNEL` and `DIBENG`;
-- the code segment is PRELOAD FIXED SHAREABLE and the data segment PRELOAD
-  FIXED — wlink makes both MOVEABLE by default, and `segment class 'DATA'
-  preload fixed` is the directive that fixes the data one;
-- the local heap is 0, as every display driver on the guest has (wlink
-  gives a DLL 1 KiB and ignores `option heapsize=0`; the NE header field
-  is patched after linking).
+```c
+extern char __based(__segname("_TEXT")) *pText;
+GlobalSmartPageLock((__segment)pText);
+```
 
-What is left to look at, in order: the entry/export table (a display
-driver is called by ordinal, and ours exports 41 entries where
-`CIRRUSMM.DRV` has its own arrangement across five segments); the missing
-`#16` VERSIONINFO resource, which `CIRRUSMM.DRV` carries and we do not;
-and the possibility that GDI rejects a driver whose `_TEXT` is a single
-segment with no `_INIT`. A way to see the refusal rather than infer it
-would be worth an hour: `BOOTLOG.TXT` should say, once it can be made to
-write.
+That reference lands in a *second* segment also called `_TEXT`, of class
+`FAR_DATA`. In a driver as small as ours it stays empty, wlink drops it
+from the NE segment table — and leaves the relocation that named it
+pointing at segment 3 of a module that has two. KERNEL's loader indexes
+the segment table with that number, refuses the module, and says nothing
+anywhere: no `BOOTLOG.TXT` line, no dialog, no fallback message. It looks
+exactly like GDI choosing a different driver.
+
+vmdisp9x does not hit this because its `_TEXT`/`FAR_DATA` segment is not
+empty (`scrsw.c` puts a variable there). Ours takes `CS` instead, which is
+the same selector and needs no relocation at all.
+
+**The build now fails instead of the boot.** `build-driver9x.sh` walks the
+NE relocation records and rejects any internal reference to a segment the
+segment table does not have. It also checks the map for `VXD_DDB` at
+`0001:00000000`, the other silent-refusal trap (§12), which was reproduced
+once more in this session by adding a single `static const` array to the
+VxD: the const data was emitted ahead of the DDB and the VMM stopped
+loading the module without a word.
+
+### 14. Getting the adapter into ring 3 (2026-09-06)
+
+With the module loading, `DriverInit` ran, the mini-VDD answered, and the
+driver read its registers as **zero** — a register set that looks like a
+different device, from a driver whose every debug write vanished. Two
+things were changed to fix it, and only the second is *proven* to have
+been the cause; both are described because the first is right on the
+documentation's own terms and the second was hiding behind it.
+
+**The mapping is now one ring 3 can reach.** `_MapPhysToLinear` is the
+obvious call and, on paper, the wrong one here: it maps into the system
+arena, and the vendored header's own comment on `PC_USER` reads "make the
+pages ring 3 accessible", which a system-arena mapping is not. So the
+mini-VDD now uses `_PageReserve(PR_SHARED, …)` followed by
+`_PageCommitPhys(…, PC_USER | PC_WRITEABLE | PC_INCR)` — the shared arena,
+with the user bit set — and ring 0 may read a user page, so the one mapping
+serves the VxD and the driver both. Changing this on its own did **not**
+make the registers readable, and the page tables of the old mapping were
+never dumped, so whether it would have worked once the accesses were the
+right width is not known.
+
+The flag set is not negotiable and not obvious: **this VMM refuses
+`PC_PRESENT`**, and refuses it silently, returning zero from
+`_PageCommitPhys` with everything else correct. `PC_INCR` is required —
+without it the whole 128 MB aliases onto one physical page — and it is
+accepted only once `PC_PRESENT` is gone. `_CopyPageTable` on the first and
+last page of a mapping is the check that settles it in one boot:
+`f0000a07` … `f7fffa07` is right, the same value twice is not.
+
+**The registers are 32 bits wide and the device accepts nothing else.**
+`d3dpt-vga`'s register BAR is `valid.min_access_size = 4`. A 16-bit
+compiler turns `*(DWORD __far *)p` into two word accesses, and QEMU answers
+each of those with zero and drops the writes — no fault, no log line, on
+either side. So `RegGet` / `RegPut` are hand-written 32-bit accesses
+(`mov eax, es:[bx]`, the module is `.386` throughout). **The XP driver
+never met this**, because it is 32-bit code and the compiler emitted what
+the device wanted; any future 16-bit half of this stack has the same
+obligation. The adapter needs no change for 9x, which is what the track
+hoped for.
+
+What settled it, in order, was: read the registers through the selector
+*from ring 0* (`mov fs, ax` / `mov eax, fs:[0]` — the descriptor is fine),
+hand the driver an LDT selector as well as the GDT one (both zero from ring
+3 — not the selector), and then disassemble `RegGet` out of the NE image,
+where the two `mov ax,[es:bx]` say it.
+
+### 15. Where it stands (2026-09-06)
+
+The driver loads, claims the adapter through the mini-VDD, and sets the
+mode: `d3dpt-vga: linear mode on (640x480x32 pitch 2560 offset 0)`, and the
+driver's own `d3dpt9x:` lines now arrive through the DEBUG register exactly
+as the XP driver's do. GDI draws into guest VRAM — the DIB Engine's
+software cursor lands at the right place and the right scale, which is the
+proof that the frame buffer's address, pitch and depth all agree.
+
+**The shell does not come up.** The screen stays black apart from the wait
+cursor and a 640×20 strip of garbage at the top of the frame buffer, and it
+is unchanged between 150 s and 200 s of boot. That is the next thing to
+work out: whether GDI's `Enable` is answering with a `GDIINFO` or a
+`deviceBitmap` USER cannot work with, or whether the desktop paint is
+simply that slow at 32 bpp under TCG. The strip at the top is the first
+lead — nothing the driver draws should be there.
+
+Note for whoever runs the harness: **end a run with the ACPI power
+button**, not keystrokes. `tools/win98-driver-test.sh` now does. A run that
+does not power off leaves the FAT dirty, and the boot after it comes up in
+**safe mode** — no driver, no VxD, an empty debug log — which reads exactly
+like the driver having failed and costs a full cycle to recognise.

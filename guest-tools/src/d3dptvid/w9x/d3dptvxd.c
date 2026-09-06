@@ -67,9 +67,23 @@ DDB VXD_DDB = {
 
 /* ------------------------------------------------------------ VMM services */
 
-static ULONG __declspec(naked) __cdecl _MapPhysToLinear(ULONG phys, ULONG bytes, ULONG flags)
+static DWORD __declspec(naked) __cdecl _PageReserve(ULONG page, ULONG npages, ULONG flags)
 {
-    VMMJmp(_MapPhysToLinear);
+    VMMJmp(_PageReserve);
+}
+
+static DWORD __declspec(naked) __cdecl _PageCommitPhys(ULONG page, ULONG npages,
+                                                       ULONG physpg, ULONG flags)
+{
+    VMMJmp(_PageCommitPhys);
+}
+
+
+
+static DWORD __declspec(naked) __cdecl _CopyPageTable(ULONG lpn, ULONG npages,
+                                                      DWORD *buf, ULONG flags)
+{
+    VMMJmp(_CopyPageTable);
 }
 
 static void __declspec(naked) __cdecl BuildDesc_(ULONG base, ULONG limit, ULONG type,
@@ -83,7 +97,65 @@ static void __declspec(naked) __cdecl AllocGDT_(ULONG hi, ULONG lo, ULONG flags)
     VMMJmp(_Allocate_GDT_Selector);
 }
 
-/* A 16-bit data selector onto a ring-0 linear range, handed to the display
+
+
+void dbg_str(const char *s);
+void dbg_val(const char *tag, DWORD v);
+
+/* Map a physical range of the adapter where **ring 3 can also reach it**.
+ *
+ * `_MapPhysToLinear` is the obvious call and it is the wrong one here: it
+ * maps into the system arena, whose pages are supervisor-only, so a 16-bit
+ * display driver holding a selector onto one reads zeros and its writes go
+ * nowhere — no fault, no diagnostic, just a register set that looks like a
+ * different device (doc 19 Section 14). The shared arena with PC_USER is
+ * the mapping both halves can use, and one mapping serves both: ring 0 may
+ * read a user page.
+ *
+ * PR_FIXED / PC_FIXED because the adapter's memory is not swappable, and
+ * PC_INCR because the physical pages are consecutive. */
+/* What the page tables actually say about a mapping. */
+static void dbg_pte(const char *tag, DWORD lin)
+{
+    static DWORD pte;
+
+    pte = 0;
+    if (_CopyPageTable(lin >> 12, 1, &pte, 0)) dbg_val(tag, pte);
+    else dbg_str("d3dptvxd: no page table for that address");
+}
+
+static DWORD MapDevicePhys(DWORD phys, DWORD bytes)
+{
+    DWORD pages = (bytes + 0xfffuL) >> 12;
+    DWORD lin;
+
+    lin = _PageReserve(PR_SHARED, pages, PR_FIXED);
+    if (!lin || lin == 0xffffffffuL) { dbg_str("d3dptvxd: no shared arena"); return 0; }
+
+    /* PC_USER is the whole point of the shared-arena mapping, PC_WRITEABLE
+     * goes with it, and PC_INCR is what makes the physical pages advance —
+     * without it the whole 128 MB of VRAM aliases onto one page and the
+     * desktop is drawn 4 KB at a time on top of itself.
+     *
+     * **This VMM refuses PC_PRESENT here**, silently, returning zero with
+     * everything else correct; it refuses PC_FIXED and PC_STATIC the same
+     * way. There is no fallback on purpose: a commit without PC_INCR would
+     * succeed and give an aliased mapping, which is worse than no mapping
+     * because it looks like it worked (doc 19 Section 14). */
+    if (!_PageCommitPhys(lin >> 12, pages, phys >> 12,
+                         PC_USER | PC_WRITEABLE | PC_INCR)) {
+        dbg_val("d3dptvxd: cannot commit phys", phys);
+        return 0;
+    }
+
+    /* First and last page, because an aliased mapping is invisible from
+     * anywhere else: the same value twice means PC_INCR did not take. */
+    dbg_pte("d3dptvxd: pte 0", lin);
+    dbg_pte("d3dptvxd: pte last", lin + ((pages - 1) << 12));
+    return lin;
+}
+
+/* A 16-bit data selector onto a linear range, handed to the display
  * driver so it can address VRAM and the registers with a far pointer. */
 static WORD MakeSelector(DWORD linear, DWORD bytes)
 {
@@ -192,8 +264,8 @@ static BOOL AdapterMap(void)
     if (!AdapterClaim()) return FALSE;
 
     if (!dwRegsLin) {
-        dwRegsLin = _MapPhysToLinear(dwRegsPhys, D3DPT_FB_REGS_SIZE, 0);
-        if (dwRegsLin == 0xffffffffuL) { dwRegsLin = 0; return FALSE; }
+        dwRegsLin = MapDevicePhys(dwRegsPhys, D3DPT_FB_REGS_SIZE);
+        if (!dwRegsLin) return FALSE;
     }
     if (*(volatile DWORD *)(dwRegsLin + D3DPT_FB_REG_MAGIC) != D3DPT_FB_MAGIC) {
         dbg_str("d3dptvxd: not our adapter after all");
@@ -208,8 +280,8 @@ static BOOL AdapterMap(void)
     dwVramSize = *(volatile DWORD *)(dwRegsLin + D3DPT_FB_REG_VRAM_SIZE);
 
     if (!dwVramLin) {
-        dwVramLin = _MapPhysToLinear(dwVramPhys, dwVramSize, 0);
-        if (dwVramLin == 0xffffffffuL) { dwVramLin = 0; return FALSE; }
+        dwVramLin = MapDevicePhys(dwVramPhys, dwVramSize);
+        if (!dwVramLin) return FALSE;
     }
     dbg_val("d3dptvxd: vram", dwVramSize);
     return TRUE;
@@ -253,6 +325,8 @@ static void __stdcall register_display_driver_proc(DWORD vm, PCRS_32 state)
     if (!wRegsSel) wRegsSel = MakeSelector(dwRegsLin, D3DPT_FB_REGS_SIZE);
     if (!wVramSel) wVramSel = MakeSelector(dwVramLin, dwVramSize);
 
+    dbg_val("d3dptvxd: regs lin", dwRegsLin);
+    dbg_val("d3dptvxd: vram lin", dwVramLin);
     dbg_val("d3dptvxd: regs sel", wRegsSel);
     dbg_val("d3dptvxd: vram sel", wVramSel);
 
