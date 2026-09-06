@@ -160,12 +160,24 @@ if want qemu; then
       echo "    patch queue, overlays and submodules unchanged - skipping prepare"
     fi
 
+    # QEMU 9.2 carries no slirp of its own, so `-netdev user` — the
+    # networking every machine this project makes is configured with —
+    # exists only if libslirp was there at configure time. Meson's
+    # `slirp` option is `auto`, so its absence is silent until a guest
+    # has no network and the launcher's own command line is refused.
+    slirp_pkg=""; have pkg-config && pkg-config --exists slirp && slirp_pkg=1
+    slirp_built=""
+    grep -q '^#define CONFIG_SLIRP' build/qemu/config-host.h 2>/dev/null && slirp_built=1
+
     # configure resets meson options and is slow, so only when needed.
     # prepare-qemu.sh deliberately preserves meson.build mtimes when the
     # content is unchanged, which is what makes this comparison meaningful.
     needs_configure=""
     [ -n "$FORCE" ] && needs_configure=1
     [ -f build/qemu/build.ninja ] || needs_configure=1
+    # libslirp installed since the last configure: configure again, or
+    # installing it would look like it had done nothing.
+    [ -n "$slirp_pkg" ] && [ -z "$slirp_built" ] && [ -f build/qemu/build.ninja ] && needs_configure=1
     for f in qemu/meson.build qemu/hw/3dfx/meson.build qemu/hw/mesa/meson.build; do
       if [ -f "$f" ] && [ -f build/qemu/build.ninja ] && [ "$f" -nt build/qemu/build.ninja ]; then
         needs_configure=1
@@ -180,6 +192,13 @@ if want qemu; then
       fi
     else
       echo "    build/qemu is configured and no meson file moved - skipping configure"
+    fi
+
+    if [ -z "$slirp_pkg" ]; then
+      case "$(uname -s)" in
+        Darwin) echo "    no libslirp: guests will have no networking (brew install libslirp, then re-run)";;
+        *)      echo "    no libslirp: guests will have no networking (install libslirp-dev / libslirp-devel, then re-run)";;
+      esac
     fi
 
     if [ -f build/qemu/build.ninja ]; then

@@ -7,7 +7,7 @@ Everything below runs natively on arm64. Tested target: M1 MacBook Air.
 ```sh
 xcode-select --install                       # Apple clang + git
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install ninja meson pkg-config glib pixman sdl2 gnu-sed uv
+brew install ninja meson pkg-config glib pixman sdl2 gnu-sed uv libslirp
 brew install --cask xquartz                  # log out/in once after installing
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh      # Rust toolchain
 ```
