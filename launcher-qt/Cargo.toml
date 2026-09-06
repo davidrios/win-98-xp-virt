@@ -1,0 +1,45 @@
+[package]
+name = "launcher-qt"
+version = "0.0.1"
+edition = "2021"
+# Same reasoning as `launcher/Cargo.toml`: this binary links no QEMU code
+# (it spawns the player as a separate process) and does link permissively
+# licensed crates, so "or later" lets the combined binary go out under
+# v3. Qt 6 itself is LGPLv3 here, which GPL-2.0-only could not take and
+# GPL-2.0-or-later can — see `docs/07-launcher.md`.
+license = "GPL-2.0-or-later"
+description = "Qt/QML port of the M6 launcher (cxx-qt), for comparison against the egui build."
+
+# Deliberately its OWN workspace, excluded from the root one: a plain
+# `cargo build` at the repository root must not start needing Qt 6
+# development files (the Mac side, CI, the Flatpak runtime). Build this
+# crate explicitly, from this directory.
+[workspace]
+
+[dependencies]
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+
+# Everything below is what the nine shared `launcher/src/*.rs` modules
+# this crate re-includes verbatim already needed — the same versions
+# `launcher/Cargo.toml` pins. `eframe`/`egui`/`rfd` are the three that
+# are *not* here: the toolkit, and the file dialog Qt provides itself.
+directories = "6.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+toml = "1.1.5"
+librashader = { version = "0.12", default-features = false, features = ["presets", "preprocess"] }
+shader-chain = { path = "../shader-chain" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+ureq = "3"
+flate2 = "1"
+tar = "0.4"
+pollster = "1"
+# The preview opens its own headless device/queue here, where the egui
+# build borrowed eframe's. Must stay on the version `shader-chain` pins
+# or the two see different `wgpu::Device` types.
+wgpu = "30"
+
+[build-dependencies]
+cxx-qt-build = { version = "0.10", features = ["link_qt_object_files"] }

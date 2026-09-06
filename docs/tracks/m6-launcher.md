@@ -1418,6 +1418,78 @@ for 6b′ onwards, so rebase on `main` before the next push.
   waits on 2ksbox.com), and the Flathub submission itself, which also
   wants the sources as git rather than a local `type: dir`.
 
+## The Qt port (`launcher-qt/`, 2026-09-06)
+
+A **spike, not a replacement**, asked for as "do a version of the
+launcher in Qt to see how it would go". Findings, numbers and the
+recommendation live in doc 07's "The Qt port" section — read that first;
+this is the build and test loop.
+
+It is a second front end over the same launcher, feature-complete
+against the egui build (grid, wizard, disc shelf, snapshots, shader
+profile manager with the live preview) on Qt 6.11 + cxx-qt 0.10, views
+in QML, secondary screens as **real top-level windows**.
+
+- **Outside the workspace on purpose.** `launcher-qt/Cargo.toml`
+  declares its own `[workspace]`, so the root `cargo build` never starts
+  needing Qt 6 headers (the Mac, CI, the Flatpak runtime). Build it from
+  `launcher-qt/`; `cargo build` is the whole command (no CMake —
+  `cxx-qt-build` finds Qt via `qmake6` and runs `moc` and
+  `qmltyperegistrar` itself). Needs `qt6-base` and `qt6-declarative`.
+- **The shared half is included, not copied.** `src/main.rs` declares the
+  nine toolkit-free `launcher/src/*.rs` modules with `#[path]`, so if one
+  of them ever grows an egui dependency this crate stops compiling —
+  which is the thing worth knowing. `src/snapshots.rs` is the one copy,
+  and its header says why: the upstream file mixes a toolkit-free state
+  machine with the egui that draws it. Splitting it upstream would
+  remove the copy.
+- **Test loop.** No GUI clicking needed:
+  - `cargo build && ./target/debug/launcher-qt --paths` — the same
+    report `launcher --paths` prints, so `scripts/package-linux.sh`'s
+    check would work unchanged.
+  - `./target/debug/launcher-qt --preview-shader <preset> <image>
+    <out.png>` — the twin of the egui verb. **These two PNGs must be
+    byte-identical**; they are, which is what proves the shared
+    `shader-chain` path is the same on both.
+  - Screenshots: `LAUNCHER_QT_SHOT=<file.png>` arms a grab,
+    `LAUNCHER_QT_SCREEN=` picks the window (`wizard`, `discs`,
+    `snapshots`, `profiles`, `editor`, plus the scripted `create` and
+    `adddisc`), `LAUNCHER_QT_ARG=` is its argument, `LAUNCHER_QT_DELAY=`
+    the settle time. Point `LAUNCHER_LIBRARY_DIR` /
+    `LAUNCHER_DISC_LIBRARY` / `LAUNCHER_SHADER_PROFILES_DIR` at a
+    scratch copy — **never the real library**, since `create` and
+    `adddisc` write.
+  - `QT_QPA_PLATFORM=offscreen` renders headlessly, but `grabToImage`
+    needs a real session to return anything; the shots above were taken
+    against the box's X/Wayland session, the way the egui skeleton was
+    smoke-tested.
+- **Rebased onto `main` the same day**, after the M6 merge (`868b0ce`)
+  and the 61 commits that followed. Worth recording because it is the
+  first time the `#[path]` arrangement was tested by anything other than
+  its author: `main` had moved `shader-chain` underneath it (new
+  `parameter`/`has_parameter`, and `dump_texture` split into
+  `read_texture` + `write_png`) and the Qt crate still built with no
+  edit. The split then let `src/preview.rs` drop its own 58-line
+  readback and call `shader_chain::read_texture` instead, so the
+  row-stride and BGRA handling live in one place for the player, the
+  egui launcher and this one. The byte-identical `--preview-shader`
+  check was re-run against `main`'s egui launcher afterwards and still
+  passes.
+- **Verified 2026-09-06:** every window renders and its writes land —
+  the wizard's family switch moves memory 256→512 and acceleration to
+  Automatic (doc 06's per-family defaults), a scripted create writes a
+  real `machine.toml` and the grid picks it up, a disc added lands in
+  `discs.toml`, snapshots lists a real qcow2's tags through `qemu-img`,
+  and the shader editor renders crt-aperture live over a game frame.
+  Not click-tested by hand.
+- **Four traps that cost real time** — the notify-skipping property
+  setter, `grabToImage` refusing C++-created items, `property var` killing
+  bindings, and a `Window` that cannot be resized after the WM has mapped
+  it (which is why the shader list and its editor are two windows, not
+  one that resizes) — are written up in doc 07 and repeated in the header
+  of `src/qt/wizard.rs`, which is where the next person will be when
+  they bite.
+
 ## Next steps, in order
 
 1. ~~**The machine bundle format**~~ — done above.

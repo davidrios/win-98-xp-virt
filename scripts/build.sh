@@ -32,6 +32,12 @@
 # Running it when everything is up to date costs a couple of seconds
 # thanks to the stamps below, and needs no network -- which a bare
 # `guest` stage does, since it fetches wine9x.
+#
+# `launcher-qt/` is deliberately not a stage. It is the Qt port spike
+# (doc 07's "The Qt port"), it is its own cargo workspace, and building
+# it needs Qt 6 development files -- which is exactly what keeping it out
+# of the root workspace is for. Build it by hand when you want it:
+# `cd launcher-qt && cargo build`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
