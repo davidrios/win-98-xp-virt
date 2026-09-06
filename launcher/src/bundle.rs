@@ -276,6 +276,17 @@ fn network_enabled_default() -> bool {
     true
 }
 
+/// Whether a *new* machine of this family gets a card. DOS is the one
+/// that doesn't: it reaches a network only through a packet driver the
+/// user installs by hand, so the card would be an unused device the
+/// guest still enumerates. (An existing bundle with no `network` field
+/// is unaffected — that is `network_enabled_default`, and it stays on
+/// for every family, because turning a card off under a machine that has
+/// been running with one is a hardware change, not a default.)
+pub fn default_network(family: Family) -> bool {
+    family != Family::Dos && network_enabled_default()
+}
+
 /// The speed a family runs at unless the machine says otherwise. Only
 /// DOS is throttled: a 486DX2-66 is the machine most of the CD-ROM era
 /// was written for, and it is inside the range where the cap is exact
@@ -323,10 +334,7 @@ impl Machine {
             family,
             ram_mb: default_ram_mb(family),
             accel: Some(default_accel(family)),
-            // A DOS machine gets no card: DOS reaches a network only
-            // through a packet driver the user installs by hand, and an
-            // unused NIC is one more device the guest enumerates.
-            network: family != Family::Dos && network_enabled_default(),
+            network: default_network(family),
             disk,
             disc: None,
             discs: Vec::new(),

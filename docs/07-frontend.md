@@ -70,7 +70,13 @@ Two Rust apps (ADR-005): the **player** runs one machine in one window; the
   Automatic emits no `-boot` at all, which is what every bundle written
   before the field did and what the wizard's "boot the installer from
   the CD because the new disk is blank" case relies on.
-- **Networking** is one checkbox (`network` in the bundle, default on):
+- **Networking** is one checkbox (`network` in the bundle). It follows
+  the family for a new machine — on for Win98 and XP, **off for DOS**,
+  which reaches a network only through a packet driver the user installs
+  by hand — until someone touches the box, exactly like memory and the
+  processor. An existing bundle with no `network` field is still on
+  whatever its family: turning a card off under a machine that has been
+  running with one is a hardware change, not a default. The checkbox is:
   the machine either has doc 06's per-family NIC on QEMU's user-mode NAT
   — outbound through the host, nothing on the network able to reach the
   guest — or it has no adapter at all, so Windows never sees a card, asks
@@ -250,13 +256,23 @@ command, no CMake (`cxx-qt-build` finds Qt through `qmake6` and drives
 ### What the exercise actually measured
 
 **The launcher's logic is not egui's, and that is now proven by the
-compiler.** Nine of `launcher/src/`'s sixteen modules — `bundle`,
+compiler.** Ten of `launcher/src/`'s seventeen modules — `bundle`,
 `control`, `disc_library`, `library`, `paths`, `player`,
-`shader_library`, `shader_profile`, `shader_source`, 1,516 lines — touch
-no toolkit type, and the Qt build re-includes them *verbatim* through
-`#[path]` module declarations rather than copying them. They compiled
-unchanged. Against that, 3,261 lines of egui became 3,183 lines of Rust
-bridge plus 1,634 lines of QML.
+`shader_library`, `shader_profile`, `shader_source`, `snapshots`, 1,943
+lines — touch no toolkit type, and the Qt build re-includes them
+*verbatim* through `#[path]` module declarations rather than copying
+them. They compiled unchanged. Against that, 3,208 lines of egui became
+2,924 lines of Rust bridge plus 1,678 lines of QML.
+
+(Nine and 1,516 when the port was built. Two of the shared modules were
+reaching across the boundary they were supposed to prove: `disc_library`
+named `filepicker::Filter` for its `DISC_FILTER`, and `control` used the
+`Snapshot` type out of a file that also held an egui window, which is why
+the port had to *copy* that file's free half. Both were fixed on
+2026-09-06 — the filter is a plain `(label, extensions)` pair the shelf
+owns, and `snapshots.rs` is now the free half alone with the window in
+`snapshots_ui.rs` — so the copy and the Qt crate's `filepicker` module
+are both gone.)
 
 That "more lines, not fewer" is the honest headline, and it splits into
 three unequal parts:
@@ -373,8 +389,8 @@ windows with fixed initial sizes is both the fix and the better shape.
 
 | | egui (`launcher/`) | Qt (`launcher-qt/`) |
 |---|---|---|
-| toolkit-free Rust, shared | 1,516 lines | the same 1,516, `#[path]`-included |
-| front-end code | 3,261 lines Rust | 3,183 Rust + 1,634 QML |
+| toolkit-free Rust, shared | 1,943 lines | the same 1,943, `#[path]`-included |
+| front-end code | 3,208 lines Rust | 2,924 Rust + 1,678 QML |
 | dependencies beyond the shared set | `eframe`, `egui`, `rfd` | `cxx-qt`, `cxx-qt-lib`, system Qt 6 |
 | release binary | 39.8 MB, self-contained | 24.4 MB, **plus ~38 MB of Qt runtime** |
 | shader preview | zero-copy texture id | CPU readback → temp BMP → `Image` |

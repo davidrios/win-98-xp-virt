@@ -123,7 +123,7 @@ pub mod ffi {
     }
 }
 
-use crate::{bundle, control, disc_library, library, player, qs, shader_library};
+use crate::{control, disc_library, library, player, qs, shader_library};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant, QVector};
 use std::collections::HashMap;

@@ -12,7 +12,7 @@ use crate::player;
 use std::path::{Path, PathBuf};
 
 const DISK_FILTER: filepicker::Filter = ("Disk images", &["qcow2", "img", "raw"]);
-const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
+use crate::disc_library::DISC_FILTER;
 const FLOPPY_FILTER: filepicker::Filter = ("Floppy images", &["img", "ima", "vfd", "flp"]);
 
 /// What editing an existing bundle needs to preserve: fields this form
@@ -44,10 +44,13 @@ pub struct Wizard {
     /// emulated, XP is automatic — `bundle::default_accel`).
     accel_chosen: bool,
     /// Whether the machine gets a network adapter at all
-    /// (`Machine::network`). No `_chosen` twin: unlike memory and the
-    /// accelerator this doesn't follow the family, so nothing has to
-    /// move under a user who switched Win98 to XP.
+    /// (`Machine::network`). Follows the family until someone touches
+    /// it, like memory and the accelerator: DOS is the one family that
+    /// doesn't get a card, and without this the form and
+    /// `Machine::reference` would disagree about a new DOS machine —
+    /// which they did, briefly, on 2026-09-06.
     network: bool,
+    network_chosen: bool,
     /// The CPU the guest should feel like (`bundle::CpuSpeed`), with the
     /// same "until someone chooses, follow the family" rule as memory
     /// and acceleration — it is the field that makes a DOS machine a DOS
@@ -81,7 +84,8 @@ impl Default for Wizard {
             ram_chosen: false,
             accel: bundle::default_accel(Family::Win98),
             accel_chosen: false,
-            network: true,
+            network: bundle::default_network(Family::Win98),
+            network_chosen: false,
             cpu_speed: bundle::default_cpu_speed(Family::Win98),
             cpu_speed_chosen: false,
             floppy: String::new(),
@@ -113,6 +117,7 @@ impl Wizard {
         self.ram_mb = bundle::default_ram_mb(family);
         self.accel = bundle::default_accel(family);
         self.cpu_speed = bundle::default_cpu_speed(family);
+        self.network = bundle::default_network(family);
     }
 
     /// Open the form pre-filled from an existing bundle, to edit it in
@@ -130,6 +135,7 @@ impl Wizard {
             accel: machine.effective_accel(),
             accel_chosen: true,
             network: machine.network,
+            network_chosen: true,
             cpu_speed: machine.effective_cpu_speed(),
             cpu_speed_chosen: true,
             floppy: machine.floppy.as_ref().map(|f| f.display().to_string()).unwrap_or_default(),
@@ -165,6 +171,7 @@ impl Wizard {
 
     pub fn set_network(&mut self, network: bool) {
         self.network = network;
+        self.network_chosen = true;
     }
 
     /// Headless construction (a debug verb; see `main.rs`'s `--wizard-new`)
@@ -222,6 +229,9 @@ impl Wizard {
                     }
                     if !self.cpu_speed_chosen {
                         self.cpu_speed = bundle::default_cpu_speed(self.family);
+                    }
+                    if !self.network_chosen {
+                        self.network = bundle::default_network(self.family);
                     }
                 }
                 ui.horizontal(|ui| {
@@ -415,7 +425,9 @@ impl Wizard {
     /// in; the line under the box says so, since "networking" otherwise
     /// sounds like the guest is being put on the LAN.
     fn network_ui(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(&mut self.network, "Networking");
+        if ui.checkbox(&mut self.network, "Networking").changed() {
+            self.network_chosen = true;
+        }
         if self.network {
             ui.small("Outbound only, through the host (user-mode NAT): nothing on the network can reach the guest.");
             // Worth saying once, next to the switch: these guests stopped
@@ -423,7 +435,7 @@ impl Wizard {
             // browsers are the least safe thing on the machine.
             ui.small("These are unpatched systems — don't browse the web on one.");
         } else {
-            ui.small("No network adapter at all: Windows won't see a card or ask for its driver.");
+            ui.small("No network adapter at all: the guest won't see a card or ask for its driver.");
         }
     }
 
@@ -465,7 +477,12 @@ impl Wizard {
         // the machine gets, even when it is the family's own default.
         machine.accel =
             Some(if self.accel_chosen { self.accel } else { bundle::default_accel(self.family) });
-        machine.network = self.network;
+        // Same rule as memory and the processor, and for the same
+        // reason: `with_new_disk` (the headless verb) sets a family
+        // without going through the combo box, so an unchosen field has
+        // to be read from the family here rather than from the form.
+        machine.network =
+            if self.network_chosen { self.network } else { bundle::default_network(self.family) };
         machine.cpu_speed =
             Some(if self.cpu_speed_chosen { self.cpu_speed } else { bundle::default_cpu_speed(self.family) });
         machine.boot = Some(self.boot);

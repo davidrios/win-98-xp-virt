@@ -15,9 +15,11 @@
 //! The one module in between is `filepicker.rs`: the egui build needs
 //! `rfd` to reach an OS file dialog because egui has none, and Qt ships
 //! its own (`QtQuick.Dialogs`' `FileDialog`, which is the XDG portal on
-//! Linux just like `rfd`'s backend). So this crate keeps only the
-//! `Filter` type the shared modules refer to and lets QML do the
-//! browsing — one dependency less.
+//! Linux just like `rfd`'s backend), so the browsing is declarative in
+//! QML and this crate has no file-picker module at all — one dependency
+//! less. It had to keep one until 2026-09-06, holding nothing but the
+//! `Filter` type alias, because `disc_library.rs` named it for its
+//! `DISC_FILTER`; that constant is the shelf's own now.
 
 // --- The shared half: `launcher/src/`, unchanged. -------------------
 //
@@ -43,11 +45,15 @@ mod shader_library;
 mod shader_profile;
 #[path = "../../launcher/src/shader_source.rs"]
 mod shader_source;
+// Shared since 2026-09-06: `snapshots.rs` used to hold the `Snapshot`
+// type and an egui window in one file, so this port kept a verbatim copy
+// of the free half. The upstream file is now the free half alone
+// (`snapshots_ui.rs` is the window), and the copy is gone.
+#[path = "../../launcher/src/snapshots.rs"]
+mod snapshots;
 
 // --- The Qt half. ---------------------------------------------------
-mod filepicker;
 mod preview;
-mod snapshots;
 
 mod qt {
     pub mod diag;

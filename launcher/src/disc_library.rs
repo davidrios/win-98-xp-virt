@@ -14,11 +14,14 @@
 //! shelf of `d1.cue`, `disc2.cue`, `cd1.iso` is not a library. The label
 //! defaults to the file name and is editable.
 
-use crate::filepicker;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const DISC_FILTER: filepicker::Filter = ("Disc images", &["iso", "cue", "ccd", "mds"]);
+/// What a file dialog should offer when picking a disc. A (label,
+/// extensions) pair and nothing more: it is the *shelf's* statement about
+/// what a disc image is, so it lives here rather than in a front end's
+/// file picker — this module is shared, and a picker is not.
+pub const DISC_FILTER: (&str, &[&str]) = ("Disc images", &["iso", "cue", "ccd", "mds"]);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Disc {

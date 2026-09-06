@@ -18,6 +18,7 @@ mod shader_preview;
 mod shader_profile;
 mod shader_source;
 mod snapshots;
+mod snapshots_ui;
 mod wizard;
 
 use std::collections::HashMap;
@@ -38,7 +39,7 @@ struct LauncherApp {
     running: HashMap<PathBuf, Child>,
     wizard: wizard::Wizard,
     disc_shelf: discshelf::DiscShelf,
-    snapshots: snapshots::SnapshotWindow,
+    snapshots: snapshots_ui::SnapshotWindow,
     shader_manager: shader_manager::ShaderManager,
     /// `None` on a non-wgpu eframe backend (not expected in practice —
     /// `wgpu` is a default feature, see `docs/tracks/m6-launcher.md` —
@@ -789,7 +790,7 @@ fn main() -> eframe::Result {
             let path: PathBuf = next.expect(usage).into();
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-            let mut window = snapshots::SnapshotWindow::default();
+            let mut window = snapshots_ui::SnapshotWindow::default();
             window.open_for(&machine, dir, live);
             match (args.next().as_deref(), args.next()) {
                 (Some("take"), Some(name)) => window.take(&name),
@@ -836,7 +837,7 @@ fn main() -> eframe::Result {
 
             let machine = bundle::Machine::load(&path).expect("load bundle");
             let dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-            let mut window = snapshots::SnapshotWindow::default();
+            let mut window = snapshots_ui::SnapshotWindow::default();
             window.open_for(&machine, dir, running);
             let render_state = headless_render_state();
             diag_window_frames(&render_state, screen, &script, &out, |ctx| window.show(ctx, running));
@@ -860,25 +861,21 @@ fn main() -> eframe::Result {
             return Ok(());
         }
         Some("--diag-wizard-frame") => {
-            // The same, for the machine form: `new <win98|xp>` opens it as
-            // "New machine", `edit <machine.toml>` as "Edit machine". The
-            // dump is how the memory and acceleration rows are checked
-            // for real (they render per family, and the acceleration hint
-            // depends on this host), and a click script drives them.
+            // The same, for the machine form: `new <win98|xp|dos>` opens
+            // it as "New machine", `edit <machine.toml>` as "Edit
+            // machine". The dump is how the memory, processor and
+            // acceleration rows are checked for real — they render per
+            // family (a DOS machine opens on 64 MB and a 486DX2-66, and
+            // says out loud that a chosen processor means emulation) and
+            // the acceleration hint depends on this host — and a click
+            // script drives them.
             let usage =
-                "usage: launcher --diag-wizard-frame new <win98|xp> | edit <machine.toml> -- <out.png> [<screen WxH>] [<script>]";
+                "usage: launcher --diag-wizard-frame new <win98|xp|dos> | edit <machine.toml> -- <out.png> [<screen WxH>] [<script>]";
             let mode = args.next().expect(usage);
             let arg = args.next().expect(usage);
             let mut w = wizard::Wizard::default();
             match mode.as_str() {
-                "new" => {
-                    let family = match arg.as_str() {
-                        "win98" => bundle::Family::Win98,
-                        "xp" => bundle::Family::Xp,
-                        _ => panic!("{usage}"),
-                    };
-                    w.open_new(family);
-                }
+                "new" => w.open_new(parse_family(Some(arg.as_str()), usage)),
                 "edit" => {
                     let path: PathBuf = arg.into();
                     let machine = bundle::Machine::load(&path).expect("load bundle");
@@ -1099,7 +1096,7 @@ fn main() -> eframe::Result {
                 running: HashMap::new(),
                 wizard: wizard::Wizard::default(),
                 disc_shelf: discshelf::DiscShelf::default(),
-                snapshots: snapshots::SnapshotWindow::default(),
+                snapshots: snapshots_ui::SnapshotWindow::default(),
                 shader_manager,
                 wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
