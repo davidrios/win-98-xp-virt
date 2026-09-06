@@ -152,6 +152,11 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
   `tools/hvf-el1/` (2026-09-05): feasible, ~45 KLOC of the vCPU core
   built freestanding + cputlb rewritten as a fault-driven mirror, 4–8
   weeks; decided after the working-set measurement (track doc).
+- Patches 17–20 (2026-09-05): the REP fast path, same-value SMC stores
+  (Moto Racer's race 5×), the RCU/TLS hot paths, the inline jump-cache
+  probe (7-Zip +12 %). Patch 21, doc 18: the register file in x20–x28
+  across chained TBs — built, 7-Zip decompress +15 %, off by default
+  until two open items close (track doc).
 - **Exit:** a measured, reproducible gain on the game workload with both
   guest batteries identical and `scripts/test.sh all` green.
 

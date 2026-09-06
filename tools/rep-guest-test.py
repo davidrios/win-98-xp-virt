@@ -338,7 +338,8 @@ def build_asm(cs):
 def run_qemu(fast, img, log):
     saved = x87gt.QEMU
     p = x87gt.subprocess.Popen([
-        x87gt.QEMU, "-machine", "pc", "-cpu", "pentium3,rep-fast=" + fast, "-m", "64",
+        x87gt.QEMU, "-machine", "pc", *x87gt.tcg_opts(),
+        "-cpu", "pentium3,rep-fast=" + fast, "-m", "64",
         "-L", os.path.join(ROOT, "qemu/pc-bios"), "-display", "none", "-net", "none",
         "-fda", img, "-boot", "a", "-serial", "file:" + log, "-monitor", "none",
     ])

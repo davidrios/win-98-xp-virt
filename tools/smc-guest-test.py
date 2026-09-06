@@ -308,7 +308,7 @@ area: times 8192 db 0
 
 def run_qemu(mode, img, log):
     p = x87gt.subprocess.Popen([
-        x87gt.QEMU, "-machine", "pc", "-accel", "tcg,smc-same-value=" + mode,
+        x87gt.QEMU, "-machine", "pc", *x87gt.tcg_opts("smc-same-value=" + mode),
         "-cpu", "pentium3", "-m", "64",
         "-L", os.path.join(ROOT, "qemu/pc-bios"), "-display", "none", "-net", "none",
         "-fda", img, "-boot", "a", "-serial", "file:" + log, "-monitor", "none",

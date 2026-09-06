@@ -37,7 +37,10 @@ question about helper calls needing VM exits; not started).
   (below); `19-tls-hot-paths.patch` — the store slow path's nested RCU
   locks and the translator's `tcg_ctx` reads off macOS's TLS thunk
   (below); `20-inline-lookup.patch` — the jump-cache probe of indirect
-  branches as TCG ops (below). Later patches of the track: 21+.
+  branches as TCG ops (below); `21-pinned-regs.patch` — the guest
+  register file in callee-saved host registers across chained TBs
+  (doc 18, below; **in progress, off by default**). Later patches of the
+  track: 22+.
 - `tools/rep-guest-test.py` (the patch 17 oracle: a DOS battery of
   `rep movs`/`stos` cases, `rep-fast` on/off identical and equal to a
   Python model; `rep-guest` in the guest stage of `scripts/test.sh`);
@@ -49,7 +52,8 @@ question about helper calls needing VM exits; not started).
 - `tools/tcg-fps.py` (the guest's VGA frame rate from outside: distinct
   QMP screendumps per second, `FPS=` in the runner).
 - Docs: this file, the M9 row of the tracks table in `docs/00-status.md`,
-  the M9 section of `docs/08-roadmap.md`; a design doc (doc 18) once the
+  the M9 section of `docs/08-roadmap.md`; `docs/18-pinned-guest-registers.md`
+  (patch 21's design); a design doc once the
   optimization is chosen.
 - Shared (rebase first, edit minimally, say so in the commit):
   `tools/qmpc.py` (the typer gained `~ \` ^ @ # $ [ ] { } ?`),
@@ -876,6 +880,96 @@ the 44 ops (the SSE term alone 8 — `(exc_flags >> 4) & sse_fast_mode`
 would be 4), and the two 64-bit constants (the current TB, the epilogue)
 are materialized per TB.
 
+## Patch 21: pinned guest registers (2026-09-05, night — in progress, off by default)
+
+Item 2 of the list below, the user's pick after patch 20; the design is
+`docs/18-pinned-guest-registers.md`, the patch `21-pinned-regs.patch`.
+`eip` and the eight GPRs live in x20–x28 for the life of a chain of TBs:
+loaded by the prologue, stored by the epilogue, stored before a helper
+that may read globals (once per TB unless modified again), reloaded after
+one that may write them, stored by the `qemu_ld/st` slow path before its
+helper (through one shared thunk emitted after the epilogue). The
+allocator keeps them in their registers (outputs straight into the
+register, `deposit eax, eax, t` in place, a scratch + `mov` only when a
+constraint forbids), the liveness pass keeps them live at block ends and
+at may-fault ops instead of syncing them, and — the piece the first
+numbers asked for — `op T; mov G, T` is coalesced into `op G` when
+nothing in between reads or writes G, reads T, may fault or ends the
+block (`la_coalesce_pinned_mov`: two thirds of the `mov gpr, tmp` gone,
+1799 loads landing directly in the register on a FreeDOS boot). The
+optimizer prefers a pinned global as the canonical copy of a value.
+Because the callee-saved registers are now the globals', the aarch64
+`qemu_ld/st` slow path saves and restores the live caller-saved registers
+itself (`TCG_TARGET_LDST_SAVES_LIVE`, `TCGLabelQemuLdst.live`) so the
+fast path no longer spills temps around every memory access. The
+system-mode prologue moves to `tcg_exec_realizefn`, after the target
+created its globals. `-accel tcg,pinned-regs=on` enables it (the
+`tcg_pin_globals` flag; **the default is off until the two open items
+below are closed**), `QEMU_TCG_OPTS=pinned-regs=on` runs the DOS
+batteries under it, `QEMU_TCG_PIN_MAX=n` caps the number of pinned
+globals (an experiment knob).
+
+**Bug found on the way, fixed:** `mem_coherent` of a pinned global is
+per-path state, and the allocator carried it across labels — a branch
+that skipped a store reached the label with the flag saying the `env`
+slot was current, and the next `int 21h` saw stale registers: the SSE
+battery's `sse-fast=off` run hung at result line 125,484 every time
+(DOS looping in the kernel, no exception in `-d int`). Reset at every
+block boundary.
+
+**Results, 7-Zip 26.02 `b -mmt1` (M1 Air, same session, dict 22 / 23):**
+
+| | `pinned-regs=off` (upstream's allocation) | on, first build (no coalescing) | on, with coalescing + in-place aliases | on, 7 pinned (`PIN_MAX=7`) |
+|---|---|---|---|---|
+| compress rating (MIPS) | 1375 / 1245 | 1363 / 1228 | **1421 / 1283 (+3 %)** | 1404 / 1259 |
+| decompress rating | 1757 / 1628 | 1796 / 1659 | **2039 / 1853 (+16 % / +14 %)** | 1959 / 1778 |
+| 7-Zip's own CPU-frequency loop (MHz) | 3128 | 1574 (the `mov` per ALU op halved it) | 3132 | 3137 |
+| vCPU: generated code / helpers flags-cc | 94.6 % / 1.0 % | 91.8 % / 4.1 % | 91.1 % / 4.0 % | 90.7 % / 4.3 % |
+
+The second pass on the hot LZMA page (`7zip-p21-d` vs `7zip-p21-off-d`,
+`tools/tcg-hot.py`) corrects the profile's premise: the "guest regs"
+class fell from 39.5 % to 9.6 % of the samples and "work" rose from
+6.5 % to 32.9 % while the TLB lookup stayed at 42 % — **the 41 % of
+samples on register loads was mostly the sampler's skid off the softmmu
+chain**, not time the loads cost (they hit L1). The gain is the removed
+instructions (the hottest TB, the match-finder compare, 40 → 34 host
+instructions before coalescing) and it shows where the loop is not
+chain-bound: decompression.
+
+**Open (why the default is off):**
+
+1. A boot with `QEMU_TCG_PIN_MAX=8` (edi left in memory) crashed XP once
+   at boot (the safe-mode menu in `7zip-p21-pin8/after.png`); 9 and 7
+   pinned booted and ran every time, the DOS batteries pass at 9. A
+   reproduction run (`pin8-boot1/2`) was interrupted. Until explained,
+   a latent allocator bug is possible in the mixed case (a memory global
+   among pinned ones — the state the x86-64 backend would be in).
+2. `helper_cc_compute_c` shows 4 % of the vCPU instead of 1 %, at the
+   same call sites, 695 of its 824 samples on its first instruction: a
+   stall at the call boundary, not in the helper. Not the spills of temps
+   around the call (7 pinned leaves two callee-saved registers and the
+   share does not move). Untested theory: the `dmb` that follows the
+   call (the guest store after it) draining the spill stores;
+   `QEMU_TCG_NO_MB=1` on the same run would tell (the run was
+   interrupted).
+3. Not measured yet: Moto Racer's race (the 60-dumps/s probe is
+   saturated at 39 fps anyway — the vCPU split from `RACE_SAMPLE=` is
+   the signal), Super PI, FIFA.
+
+**Verified with pinning on (9):** `rep` and SMC batteries (final code),
+x87 and SSE batteries (the x87 on the first build, the SSE on the
+label-fix build; both rerun on the final code at the end of the session,
+see the commit), the DOS host of `scripts/test.sh` boots, XP boots and
+runs the benchmark six times. `scripts/test.sh all` runs with the
+default (off).
+
+**Follow-ups once on by default:** a cheaper pinned store/reload around
+helper calls (9 + 9 instructions inline per call without `NO_RWG`/`NO_WG`
+— a thunk pair, or a per-helper "touches GPRs" flag so the x87/SSE
+helpers skip it); `cc_dst`/`cc_src` as the next pinning candidates if a
+budget ever allows; the x86-64 backend's five callee-saved registers for
+the rig.
+
 ## Next steps, in order
 
 Done on the way: patch 13 (`-perfmap` on Darwin), patch 14 (the
@@ -907,17 +1001,15 @@ above):
 1. ~~**Inline the TB lookup for indirect branches**~~ — patch 20
    (2026-09-05): 7-Zip +12 % compress / +7 % decompress, the helper gone
    from every profile; the section above.
-2. **Pinned guest registers across chained TBs** (the big one, aarch64
-   only): `eax`–`edi` and `eip` live in x20–x28 for as long as TBs chain;
-   stored to `env` only before helper calls that may read them, in the
-   memory slow-path stubs (before `blr` — a fault never returns), and in
-   the epilogue; reloaded in the prologue and after helpers that may
-   write them. Touches the liveness pass (no `sync` of pinned globals
-   before `qemu_ld/st`), `tcg_reg_alloc_start/bb_end`, the call path,
-   the aarch64 prologue/epilogue and slow-path stubs. Design doc 18
-   first. The 41 % of generated-code samples on register traffic is the
-   ceiling; expect a good part of it plus the `eip` load/add/store at
-   every block end. Property `pinned-regs=off` as the oracle. Patch 21.
+2. **Pinned guest registers across chained TBs** — patch 21, doc 18,
+   the section above: built, 7-Zip decompress +15 % / compress +3 %,
+   **off by default** until its two open items are closed: (a) the
+   `PIN_MAX=8` boot crash reproduced or explained (`QEMU_TCG_PIN_MAX=8
+   BOOT_WAIT=90 WARM=5 SECS=5 tools/tcg-profile.sh ~/vms/winxp.qcow2
+   pin8-boot`, then `-d int` / a bisect over the allocator changes),
+   (b) the flags-helper skid (`QEMU_TCG_NO_MB=1` on the 7-Zip run first).
+   Then the race / Super PI / FIFA numbers, `tcg_pin_globals = true`,
+   and the follow-ups listed in the section.
 3. **Shorter TLB chain**: the per-mmu-index mask/table pair loaded once
    per TB (or pinned) instead of per access — one dependent load less
    per guest memory access. The probe's `pinned` kernels say this is
