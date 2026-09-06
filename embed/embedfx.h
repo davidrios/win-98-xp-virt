@@ -14,6 +14,13 @@
 /* backend (mglcntx_embed.c) */
 int embed_gl_available(void);                 /* EGL usable on this host */
 void embed_gl_drawable_size(int *w, int *h);  /* current FBO 0 size */
+/* Glide (doc 12 §5): a context of our own on the same offscreen drawable,
+ * sized to the Glide resolution. The wrapper renders into it and
+ * embed_gl_fx_present publishes FBO 0 exactly as a GL swap does. */
+int embed_gl_fx_begin(int w, int h);
+void embed_gl_fx_present(void);
+void embed_gl_fx_end(void);
+void *embed_gl_fx_proc(const char *name);
 
 /* provider (embedfx.c): register the QemuFxUiOps table; call after qemu_init */
 void embed_fx_register(void);

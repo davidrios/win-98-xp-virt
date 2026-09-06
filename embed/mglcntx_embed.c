@@ -367,14 +367,21 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
  * glDrawBuffer hook): WineD3D's ddraw presents by drawing the primary
  * surface into GL_FRONT and flushing, it never calls SwapBuffers.
  */
+static void publish_frame(void)
+{
+    if (win_ready && readback
+        && !plat_present_zero_copy()
+        && plat_readback(readback)) {
+        embed_fx_frame(readback, win_w, win_h, win_w * 4, /* bottom_up */ 1);
+    }
+}
+
 static void present_frame(void)
 {
     int w, h;
 
-    if (win_ready && readback && plat_get_current() == ctx[0]
-        && !plat_present_zero_copy()
-        && plat_readback(readback)) {
-        embed_fx_frame(readback, win_w, win_h, win_w * 4, /* bottom_up */ 1);
+    if (plat_get_current() == ctx[0]) {
+        publish_frame();
     }
     /* size follows the guest's 2D mode for the next frame (a fullscreen
      * game switches to 640x480 while the stand-in was the desktop's size) */
@@ -390,6 +397,74 @@ int MGLSwapBuffers(void)
     MesaBlitScale();
     present_frame();
     return 1;
+}
+
+/* ------------------------------------------------- Glide (doc 12 §5)
+ *
+ * The Glide wrapper does not own a drawable here: hw/3dfx hands it the
+ * table in embedfx.c, which lands on these three. grSstWinOpen binds a
+ * context of our own on the same offscreen drawable the Mesa path renders
+ * into, resized to the Glide resolution (640x480 and friends, not the
+ * guest's 2D mode); grBufferSwap publishes whatever is in FBO 0 by the
+ * same route as a wglSwapBuffers, dma-buf ring included; grSstWinClose
+ * gives it all back.
+ *
+ * The context is separate from ctx[0] so a guest that has both a GL and a
+ * Glide context open (a Glide game with a GL-drawn launcher, and the
+ * `glide_on_mesa` case ui/sdl2.c carries) does not have one destroy the
+ * other's; the drawable is shared, and only the last one out releases it.
+ */
+static void *glide_ctx;
+
+int embed_gl_fx_begin(int w, int h)
+{
+    if (!plat_open() || !plat_choose(0)) {
+        DPRINTF("GLIDE no host context: %dx%d refused", w, h);
+        return 0;
+    }
+    if (!drawable_resize(w, h)) {
+        DPRINTF("GLIDE no %dx%d drawable", w, h);
+        return 0;
+    }
+    win_ready = 1;
+    if (!glide_ctx) {
+        glide_ctx = plat_ctx_create(NULL, NULL);
+    }
+    if (!glide_ctx || !plat_make_current(glide_ctx)) {
+        DPRINTF("GLIDE context creation failed");
+        return 0;
+    }
+    DPRINTF("GLIDE drawable %dx%d", win_w, win_h);
+    return 1;
+}
+
+void embed_gl_fx_present(void)
+{
+    if (glide_ctx && plat_get_current() == glide_ctx) {
+        publish_frame();
+    }
+}
+
+void embed_gl_fx_end(void)
+{
+    if (!glide_ctx) {
+        return;
+    }
+    plat_unbind();
+    plat_ctx_destroy(glide_ctx);
+    glide_ctx = NULL;
+    /* the Mesa side may still be holding the drawable */
+    if (!ctx[0]) {
+        plat_drawable_release();
+        win_w = win_h = 0;
+        win_ready = 0;
+    }
+    DPRINTF("GLIDE released");
+}
+
+void *embed_gl_fx_proc(const char *name)
+{
+    return plat_get_proc(name);
 }
 
 static int MGLPresetPixelFormat(void)

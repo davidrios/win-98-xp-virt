@@ -63,6 +63,16 @@ backend later.
   the fallback/DX7 path only; don't sink more time into wine9x bugs. The
   reference workload is `guest-tools/src/d3dgame9.c` / `d3dgame8.c`,
   golden on the rig first.
+- **The host-side Glide wrapper is our own build of OpenGLide** (doc 12 §5,
+  2026-09-06). qemu-3dfx's `hw/3dfx` only *dispatches* -- it `dlopen`s a
+  `libglide2x` and looks up 183 entry points -- and upstream ships that
+  library to donors only, so Glide had never worked here at all. OpenGLide
+  (LGPL) is pinned at `third_party/openglide` with a patch queue and the
+  window-less platform layer in `glidept/`; it renders into the embed
+  backend's own context (patch 33's `glide_host_ops` reverses upstream's
+  window handshake) rather than opening a window. Don't propose nGlide or
+  dgVoodoo2: closed source, and D3D-targeted. `patches/openglide/README.md`
+  has the argument, the guest-side alternatives included.
 - **XP's display adapter is our `d3dpt-vga` + real display driver** (doc
   15, ADR-008): `-vga none -device d3dpt-vga`, `guest-tools/src/d3dptvid/`
   (miniport + display DLL + INF, mingw-w64 DDK headers, no Microsoft DDK),
@@ -115,6 +125,9 @@ cargo build --release
 # configure-qemu.sh also builds libdisc (the CD-ROM model) and links it into QEMU (patch 50)
 # Direct3D pass-through (doc 14) needs the executor too:
 scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja -C build/dxvk && scripts/build-d3dpt-exec.sh
+# Glide pass-through (doc 12 §5) needs the host-side wrapper, which qemu-3dfx
+# does not ship: scripts/prepare-openglide.sh && scripts/build-glide.sh
+# (QEMU finds it through QEMU_GLIDE_LIB=build/glide/libglide2x.so)
 guest-tools/build-wrappers.sh   # the guest-tools ISO (SETUP.EXE + the guest DLLs)
 ```
 
@@ -194,6 +207,7 @@ GPU); don't propose wiring it in.
 | `tools/xp-ssebench.sh` | runs `SSEBENCH.EXE` in an XP image headlessly (QMP typing, output via a floppy image), once per `-cpu` config |
 | `tools/d3dpt-dp2-test.cpp` | the display driver's records (doc 15 M7c) without a guest: VRAM surfaces, a context, the D3D7TEST scene as DX7 DP2 tokens, readback pixels checked, hostile records refused; its BMP is the oracle for the guest's `D3D7TEST` |
 | `tools/embed-3d-test.c` | drives the window-less Mesa backend without a guest: context, frame, orientation, dma-buf ring (Linux) |
+| `tools/glide-host-test.cpp` | Glide pass-through without a guest (doc 12 §5): the real host wrapper (`build/glide/libglide2x.so`) loaded by `hw/3dfx`'s own dispatcher, opened through `glidewnd.c`'s handshake on a context nobody has a window for, then a clear and a triangle through the wrapper and `grBufferSwap` -- the frame is checked at the frontend callback, corners included so Glide's upper-left origin is proved too. `GLIDE_TEST_BMP=<path>` writes the frame out; `GLIDE_HOST_LOG=<path\|->` turns on the wrapper's own log. The `glide-host` check in `scripts/test.sh` |
 | `tools/qmpc.py` | drives a guest over an extra `-qmp unix:…,server,nowait` socket: keys, typing, screendumps |
 | `guest-tools/src/d3dgame9.c`, `d3dgame8.c` | the Direct3D reference scene (doc 14): golden BMPs from the rig, diffed against every emulated path |
 | `build/crtcal-render <dir>` (`tools/crtcal-render.c`) | writes doc 09's eight CRT calibration patterns as BMPs at every era mode and checks each one's circle comes out round on the tube it is drawn for (the `crtcal` check in `scripts/test.sh`); the patterns themselves are `guest-tools/src/crtcal.h`, shared with the guest program |

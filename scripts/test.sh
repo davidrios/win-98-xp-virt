@@ -37,6 +37,10 @@
 #                  frame number, one that does not (an interlaced CRT) says so
 #                  and renders two different pictures at two frame numbers
 #   embed-3d       tools/embed-3d-test.c: the window-less Mesa backend (Linux)
+#   glide-host     tools/glide-host-test.cpp: Glide pass-through without a guest
+#                  (Linux) — the real host wrapper loaded by hw/3dfx, opened
+#                  through glidewnd.c's handshake, a triangle checked in the
+#                  frame the frontend receives, orientation included
 #   d3dpt-exec     tools/d3dpt-exec-test.cpp: guest encoder → decoder → DXVK,
 #                  frames delivered, hostile batch refused
 #   d3dpt-dp2      tools/d3dpt-dp2-test.cpp: the display driver's records (doc 15
@@ -348,6 +352,22 @@ host_stage() {
     else FAIL+=(embed-3d); echo "  FAIL embed-3d (build)"; fi
   else
     skip embed-3d "Linux with build/qemu/libqemu-embed-i386.so only"
+  fi
+
+  # Glide pass-through without a guest: the real host-side wrapper, loaded
+  # by hw/3dfx's own dispatcher, rendering into the window-less context.
+  # Linux (EGL) only, one VM per process, like embed-3d above.
+  if [ "$OS" = Linux ] && [ -f build/qemu/libqemu-embed-i386.so ] \
+     && [ -f build/glide/libglide2x.so ]; then
+    if c++ -O1 -std=c++17 -w -Iembed -Ithird_party/openglide -Iqemu/hw/3dfx \
+         -o build/glide-host-test tools/glide-host-test.cpp \
+         -Lbuild/qemu -lqemu-embed-i386 -Wl,-rpath,"$ROOT/build/qemu" -ldl; then
+      QEMU_GLIDE_LIB="$ROOT/build/glide/libglide2x.so" \
+        GLIDE_TEST_BMP="$OUT/glide-frame.bmp" \
+        run_check glide-host glide-host.log build/glide-host-test || true
+    else FAIL+=(glide-host); echo "  FAIL glide-host (build)"; fi
+  else
+    skip glide-host "Linux with build/glide/libglide2x.so only (scripts/build-glide.sh)"
   fi
 
   # decoder + executor without a guest

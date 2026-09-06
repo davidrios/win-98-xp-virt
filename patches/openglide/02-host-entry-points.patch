@@ -1,0 +1,187 @@
+diff --git a/GLutil.cpp b/GLutil.cpp
+index 1325303..a915a7c 100644
+--- a/GLutil.cpp
++++ b/GLutil.cpp
+@@ -24,6 +24,10 @@
+ #include "platform/window.h"
+ #include "platform/clock.h"
+ 
++/* 2ksbox: one log switch for the whole wrapper, and nothing written into
++ * the working directory unless it is set (patches/openglide/02). */
++#include "host.h"
++
+ // Configuration Variables
+ ConfigStruct    UserConfig;
+ ConfigStruct    InternalConfig;
+@@ -36,41 +40,32 @@ extern unsigned long    NumberOfErrors;
+ VARARGDECL(void) GlideMsg( const char *szString, ... )
+ {
+     va_list Arg;
+-    va_start( Arg, szString );
++    FILE *fHandle = GlideHost_LogFile( );
+ 
+-    FILE *fHandle = fopen( GLIDEFILE, "at" );
+     if ( !fHandle )
+     {
+         return;
+     }
++    va_start( Arg, szString );
+     vfprintf( fHandle, szString, Arg );
+     fflush( fHandle );
+-    fclose( fHandle );
+-
+     va_end( Arg );
+ }
+ 
+ VARARGDECL(void) Error( const char *szString, ... )
+ {
+     va_list Arg;
+-    va_start( Arg, szString );
++    FILE *fHandle = GlideHost_LogFile( );
+ 
+-    if ( NumberOfErrors == 0 )
+-    {
+-        GenerateErrorFile( );
+-    }
+-
+-    FILE *fHandle = fopen( ERRORFILE, "at" );
+-    if ( ! fHandle )
++    NumberOfErrors++;
++    if ( !fHandle )
+     {
+         return;
+     }
++    va_start( Arg, szString );
+     vfprintf( fHandle, szString, Arg );
+     fflush( fHandle );
+-    fclose( fHandle );
+-
+     va_end( Arg );
+-    NumberOfErrors++;
+ }
+ 
+ void GLErro( const char *Funcao )
+@@ -288,35 +283,13 @@ void GetOptions( void )
+ 
+     strcpy( Path, INIFILE );
+ 
+-    GlideMsg( "Configuration file is %s\n", Path );
+-    
++    /* 2ksbox: an absent ini leaves the defaults above in place. Upstream
++     * wrote a fresh one into the working directory here, which is the
++     * player's cwd, not a game folder (patches/openglide/02). What the
++     * host wants set comes through setConfig / setConfigRes instead. */
+     if ( access( Path, 0 ) == -1 )
+     {
+-        IniFile = fopen( Path, "w" );
+-        fprintf( IniFile, "Configuration File for OpenGLide\n\n" );
+-        fprintf( IniFile, "Info:\n" );
+-        fprintf( IniFile, "Priority goes from 0(HIGH) to 5(IDLE)\n" );
+-        fprintf( IniFile, "Output resolution: 0 = original, 1.0-16.0 = scale factor, >16 = fixed width (height calculated automatically)\n" );
+-        fprintf( IniFile, "Texture Memory goes from %d to %d\n", OGL_MIN_TEXTURE_BUFFER, OGL_MAX_TEXTURE_BUFFER );
+-        fprintf( IniFile, "Frame Buffer Memory goes from %d to %d\n", OGL_MIN_FRAME_BUFFER, OGL_MAX_FRAME_BUFFER );
+-        fprintf( IniFile, "All other fields are boolean with 1(TRUE) and 0(FALSE)\n\n" );
+-        fprintf( IniFile, "Version=%s\n\n", OpenGLideVersion );
+-        fprintf( IniFile, "[Options]\n" );
+-        fprintf( IniFile, "WrapperPriority=%d\n", UserConfig.Priority );
+-        fprintf( IniFile, "CreateWindow=%d\n", UserConfig.CreateWindow );
+-        fprintf( IniFile, "InitFullScreen=%d\n", UserConfig.InitFullScreen );
+-        fprintf( IniFile, "Resolution=%.1f\n", UserConfig.Resolution );
+-        fprintf( IniFile, "EnableMipMaps=%d\n", UserConfig.EnableMipMaps );
+-        fprintf( IniFile, "IgnorePaletteChange=%d\n", UserConfig.IgnorePaletteChange );
+-        fprintf( IniFile, "Wrap565to5551=%d\n", UserConfig.Wrap565to5551 );
+-        fprintf( IniFile, "EnablePrecisionFix=%d\n", UserConfig.PrecisionFix );
+-        fprintf( IniFile, "EnableMultiTextureEXT=%d\n", UserConfig.ARB_multitexture );
+-        fprintf( IniFile, "EnablePaletteEXT=%d\n", UserConfig.EXT_paletted_texture );
+-        fprintf( IniFile, "EnableVertexArrayEXT=%d\n", UserConfig.EXT_vertex_array );
+-        fprintf( IniFile, "TextureMemorySize=%d\n", UserConfig.TextureMemorySize );
+-        fprintf( IniFile, "FrameBufferMemorySize=%d\n", UserConfig.FrameBufferMemorySize );
+-        fprintf( IniFile, "NoSplash=%d\n", UserConfig.NoSplash );
+-        fclose( IniFile );
++        return;
+     }
+     else
+     {
+@@ -363,24 +336,17 @@ void GetOptions( void )
+ }
+ 
+ 
+-FX_ENTRY void FX_CALL setConfig(FxU32 flags)
+-{
+-    UserConfig.EnableMipMaps = ((flags & WRAPPER_FLAG_MIPMAPS) != 0);
+-}
+ 
+ 
+ bool ClearAndGenerateLogFile( void )
+ {
+-    FILE    * GlideFile;
+     char    tmpbuf[ 128 ];
+ 
+-    remove( ERRORFILE );
+-    GlideFile = fopen( GLIDEFILE, "w" );
+-    if ( ! GlideFile )
++    ClockFreq = ClockFrequency( );
++    if ( !GlideHost_LogFile( ) )
+     {
+-        return false;
++        return true;
+     }
+-    fclose( GlideFile );
+ 
+     GlideMsg( OGL_LOG_SEPARATE );
+     GlideMsg( "OpenGLide Log File\n" );
+@@ -393,10 +359,7 @@ bool ClearAndGenerateLogFile( void )
+     GlideMsg( "Time: %s\n", tmpbuf );
+     GlideMsg( OGL_LOG_SEPARATE );
+     GlideMsg( OGL_LOG_SEPARATE );
+-    ClockFreq = ClockFrequency( );
+     GlideMsg( "Clock Frequency: %-4.2f Mhz\n", ClockFreq / 1000000.0f );
+-    GlideMsg( OGL_LOG_SEPARATE );
+-    GlideMsg( OGL_LOG_SEPARATE );
+ 
+     return true;
+ }
+@@ -419,16 +382,12 @@ void CloseLogFile( void )
+ bool GenerateErrorFile( void )
+ {
+     char    tmpbuf[ 128 ];
+-    FILE    * ErrorFile;
+ 
+-    ErrorFile = fopen( ERRORFILE, "w");
+-    if( !ErrorFile )
++    if ( !GlideHost_LogFile( ) )
+     {
+         return false;
+     }
+-    fclose( ErrorFile );
+ 
+-    NumberOfErrors++;
+     Error(  OGL_LOG_SEPARATE );
+     Error(  "OpenGLide Error File\n");
+     Error(  OGL_LOG_SEPARATE );
+diff --git a/wrapper_config.h b/wrapper_config.h
+index 1ce45c9..9c038fb 100644
+--- a/wrapper_config.h
++++ b/wrapper_config.h
+@@ -8,6 +8,20 @@
+ #define WRAPPER_FLAG_PALETTED_TEXTURE_CACHE (0x4)
+ #define WRAPPER_FLAG_MANAGED_TEXTURES       (0x8)
+ 
+-FX_ENTRY void FX_CALL setConfig(FxU32 flags);
++/*
++ * 2ksbox: qemu-3dfx calls _setConfig@8 -- the flags plus a word it seeds
++ * with '$g2X' for the wrapper to sign -- and _setConfigRes@8 for the
++ * upscale width glidewnd.c computed. Both live in glidept/host/hostops.cpp
++ * (patches/openglide/03); bits 0x4 and 0x8 above are qemu-3dfx's MSAA
++ * count there, not these, and are ignored.
++ */
++#ifdef __cplusplus
++extern "C" {
++#endif
++FX_ENTRY void FX_CALL setConfig(FxU32 flags, void *magic);
++FX_ENTRY void FX_CALL setConfigRes(int res, void *swap12);
++#ifdef __cplusplus
++}
++#endif
+ 
+ #endif /* WRAPPER_CONFIG_H */

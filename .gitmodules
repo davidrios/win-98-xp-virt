@@ -10,3 +10,6 @@
 [submodule "third_party/dxvk"]
 	path = third_party/dxvk
 	url = https://github.com/doitsujin/dxvk
+[submodule "third_party/openglide"]
+	path = third_party/openglide
+	url = https://github.com/voyageur/openglide.git

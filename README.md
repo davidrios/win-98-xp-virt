@@ -102,6 +102,14 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 #   While the device is active the player shows the VGA surface again after 1 s
 #   without a presented frame if the guest drew on it (a game's error dialog,
 #   a DirectShow movie, a crashed process): "[display] no 3D frame for …".
+# Glide pass-through (doc 12 §5): the guest's GLIDE2X.DLL reaches a host-side
+#   wrapper QEMU dlopens at grGlideInit -- qemu-3dfx ships none, so ours is
+#   OpenGLide: scripts/prepare-openglide.sh && scripts/build-glide.sh. It is found
+#   at QEMU_GLIDE_LIB, else build/glide/libglide2x.so, else the loader's path;
+#   the line "glidept: wrapper <path>" says which. It renders into the same
+#   window-less context as the GL pass-through, so Glide frames go through the
+#   shader chain like any other. GLIDE_HOST_LOG=<path|-> turns on its own log.
+#   Guest side: GLIDE\ on the ISO (SETUP.EXE installs it).
 # audio: the player adds -audiodev embed,id=embed0 automatically; attach e.g.
 #   -machine pc,pcspk-audiodev=embed0   or   -device sb16,audiodev=embed0
 ```

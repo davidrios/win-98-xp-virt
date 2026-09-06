@@ -23,6 +23,24 @@ The **player** links `libqemu-embed-<target>` — QEMU (https://www.qemu.org),
 `qemu/LICENSE`, and the GPLv2 text this project distributes under is
 `COPYING`. The **launcher** does not link QEMU.
 
+## Host-side libraries built from `third_party/`
+
+Two libraries are built from vendored source and shipped beside the player.
+Neither is linked into anything: QEMU `dlopen`s them at run time.
+
+- **OpenGLide** (https://github.com/voyageur/openglide, the CVS mirror),
+  **LGPL-2.1-or-later**, built as `libglide2x` by `scripts/build-glide.sh`
+  with the patch queue in `patches/openglide/` and the window-less platform
+  layer in `glidept/host/`. It is the host side of qemu-3dfx's Glide
+  pass-through, which ships no implementation of its own. Its licence text
+  is `third_party/openglide/LICENSE`; the modified sources are the pinned
+  submodule plus that patch queue, both in this repository, which is how the
+  LGPL's "distribute the modifications" term is met.
+- **DXVK** (https://github.com/doitsujin/dxvk), **zlib/libpng**, built as
+  `libdxvk_d3d9` by `scripts/configure-dxvk.sh` with the patch queue in
+  `patches/dxvk/`. It is the host executor of the paravirtual Direct3D
+  device (doc 14). Licence text in `third_party/dxvk/LICENSE`.
+
 ## Shader presets
 
 The launcher can download libretro's `slang-shaders`

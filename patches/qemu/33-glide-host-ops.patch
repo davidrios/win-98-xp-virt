@@ -1,0 +1,236 @@
+Glide renders into the frontend's context (doc 12 §5).
+
+qemu-3dfx's Glide device is a dispatcher: at grGlideInit it dlopens a
+host-side wrapper (libglide2x) and looks up 183 gr/gu entry points in it.
+Upstream then hands the wrapper a window handle and the wrapper makes a GL
+context on it -- which the player cannot do: QEMU is a library inside it and
+the frame has to arrive as a texture, not as pixels on a window.
+
+This reverses the handshake for a wrapper that opts in. A new
+QemuFxUiOps::glide_host_ops returns the GlideHostOps table in
+glidept/glide_host.h (begin/present/end/get_proc); init_glide2x passes it to
+the wrapper's optional `setHostOps` export right after loading it, before
+anything can open a window with it. A wrapper without the symbol, or a
+frontend that returns NULL (every display but the embed one), is upstream
+unchanged -- ui/sdl2.c registers no glide_host_ops and keeps its window.
+
+The search for the library is the other half, and it is the same one
+d3dpt_exec_load.c does: QEMU_GLIDE_LIB, then build/glide/libglide2x.so, then
+the loader's own path, then /usr/local/lib. The build tree deliberately
+comes before the loader: a distribution's libglide2x is an OpenGLide without
+setHostOps and would try to open a window of its own. Each attempt names
+what it loaded, and hDll's NULL check moves above the setConfig lookups,
+which dlsym'ed on a NULL handle (RTLD_DEFAULT on glibc: the whole process)
+when nothing was found.
+
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -490,6 +490,11 @@
+     int (*glide_window_stat)(const int activate);
+     int (*glide_gui_fullscreen)(int *width, int *height);
+     void (*glide_renderer_stat)(const int activate);
++    /* doc 12 §5: the GlideHostOps table (glide_host.h) the host-side Glide
++     * wrapper is handed at load time, so it renders into the frontend's
++     * context instead of opening a window of its own. NULL = the wrapper
++     * keeps its own windowing, which is what upstream expects. */
++    const void *(*glide_host_ops)(void);
+     void (*mesa_renderer_stat)(const int activate);
+     void (*mesa_prepare_window)(int msaa, int alpha, int scale_x, void *cwnd_fn);
+     void (*mesa_release_window)(void);
+@@ -507,6 +512,7 @@
+ int fx_ui_default_mesa_gui_fullscreen(int *);
+ 
+ /* glidewnd.c */
++const void *glide_host_ops(void);
+ void glide_prepare_window(uint32_t, int, void *, void *);
+ void glide_release_window(void *, void *);
+ int glide_window_stat(const int);
+--- a/ui/fxui.c
++++ b/ui/fxui.c
+@@ -78,6 +78,12 @@
+ {
+ }
+ 
++/* No frontend context to offer: the wrapper keeps its own windowing. */
++static const void *def_glide_host_ops(void)
++{
++    return NULL;
++}
++
+ static void def_mesa_prepare_window(int msaa, int alpha, int scale_x,
+                                     void *cwnd_fn)
+ {
+@@ -140,6 +146,7 @@
+     .glide_window_stat    = def_glide_window_stat,
+     .glide_gui_fullscreen = def_glide_gui_fullscreen,
+     .glide_renderer_stat  = def_renderer_stat,
++    .glide_host_ops       = def_glide_host_ops,
+     .mesa_renderer_stat   = def_renderer_stat,
+     .mesa_prepare_window  = def_mesa_prepare_window,
+     .mesa_release_window  = def_mesa_release_window,
+@@ -182,6 +189,11 @@
+     FX_OP(glide_renderer_stat)(activate);
+ }
+ 
++const void *glide_host_ops(void)
++{
++    return FX_OP(glide_host_ops)();
++}
++
+ void mesa_renderer_stat(const int activate)
+ {
+     FX_OP(mesa_renderer_stat)(activate);
+--- a/hw/3dfx/glide2x_impl.c
++++ b/hw/3dfx/glide2x_impl.c
+@@ -21,6 +21,7 @@
+ #include "qemu/osdep.h"
+ 
+ #include "glide2x_impl.h"
++#include "glide_host.h"
+ 
+ #define DEBUG_GLIDE2X
+ 
+@@ -776,6 +777,13 @@
+ #endif
+ void __stdcall (*setConfig)(const uint32_t flags, void *magic);
+ void __stdcall (*setConfigRes)(const int res, void *swap12);
++/*
++ * Optional, ours (glide_host.h, doc 12 §5): a wrapper that exports it is
++ * told to render into the frontend's context instead of opening a window.
++ * A wrapper without it, or a frontend with no context to offer, is exactly
++ * upstream.
++ */
++static GlideSetHostOps setHostOps;
+ static int SDLSignValid(const uint32_t sign)
+ {
+     static uint32_t SDLSign;
+@@ -845,6 +853,7 @@
+ #endif
+     }
+     hDll = 0;
++    setHostOps = 0;
+     for (int i = 0; i < FEnum_zzG2xFuncEnum_max; i++) {
+         tblGlide2x[i].impl = 0;
+ 	tblGlide2x[i].ptr = 0;
+@@ -854,16 +863,34 @@
+ int init_glide2x(const char *dllname)
+ {
+     int i;
+-    
++    /*
++     * QEMU_GLIDE_LIB names the host-side wrapper outright, tried before the
++     * loader's own search. A build tree has it in build/glide, a package
++     * beside libqemu-embed; without it this is upstream's search exactly.
++     */
++    const char *host_lib = getenv("QEMU_GLIDE_LIB");
++
++    if (host_lib && !*host_lib) {
++        host_lib = NULL;
++    }
+ #ifdef CONFIG_WIN32
+-    hDll = LoadLibrary(dllname);
++    if (host_lib) {
++        hDll = LoadLibrary(host_lib);
++    }
++    if (!hDll) {
++        hDll = LoadLibrary(dllname);
++    }
+     if (!hDll) {
+         char prefix[32] = "lib";
+         const char *libname = strcat(prefix, dllname);
+         hDll = LoadLibrary(libname);
+     }
++    if (!hDll) {
++        return 1;
++    }
+     setConfig = (void (*)(const uint32_t, void *))GetProcAddress(hDll, "_setConfig@8");
+     setConfigRes = (void (*)(const int, void *))GetProcAddress(hDll, "_setConfigRes@8");
++    setHostOps = (GlideSetHostOps)GetProcAddress(hDll, GLIDE_HOST_SETOPS_SYM);
+ #endif
+ #if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
+     const char *soname[] = {
+@@ -882,21 +909,47 @@
+         enWrap3x = 1;
+     else if (strncmp(dllname, "glide2x.dll", sizeof("glide2x.dll")))
+         return 1;
+-    hDll = dlopen(soname[enWrap3x], RTLD_NOW);
++    char local_path[] = "/usr/local/lib/libglideXX.soname";
++    const char *build_path[] = {
++#ifdef CONFIG_LINUX
++        "build/glide/libglide2x.so",
++        "build/glide/libglide3x.so",
++#else
++        "build/glide/libglide2x.dylib",
++        "build/glide/libglide3x.dylib",
++#endif
++    };
++    /*
++     * The build tree comes before the loader's own search on purpose: a
++     * distribution's libglide2x is an OpenGLide with no setHostOps, and it
++     * would try to open a window of its own. Ours is the one that knows
++     * how to render into the frontend's context.
++     */
++    const char *candidates[] = {
++        host_lib,
++        build_path[enWrap3x],
++        soname[enWrap3x],
++        (local_path[strlen("/usr/local/lib/")] = '\x0',
++         strcat(local_path, soname[enWrap3x])),
++    };
++    for (i = 0; !hDll && i < ARRAY_SIZE(candidates); i++) {
++        if (candidates[i]) {
++            hDll = dlopen(candidates[i], RTLD_NOW);
++            if (hDll) {
++                fprintf(stderr, "glidept: wrapper %s\n", candidates[i]);
++            } else if (candidates[i] == host_lib) {
++                fprintf(stderr, "glidept: QEMU_GLIDE_LIB=%s: %s\n",
++                        host_lib, dlerror());
++            }
++        }
++    }
+     if (!hDll) {
+-        const char *local_lib;
+-        char local_path[] = "/usr/local/lib/libglideXX.soname";
+-        local_path[strlen("/usr/local/lib/")] = '\x0';
+-        local_lib = strcat(local_path, soname[enWrap3x]);
+-        hDll = dlopen(local_lib, RTLD_NOW);
++        return 1;
+     }
+     setConfig = (void (*)(const uint32_t, void *))dlsym(hDll, "setConfig");
+     setConfigRes = (void (*)(const int, void *))dlsym(hDll, "setConfigRes");
++    setHostOps = (GlideSetHostOps)dlsym(hDll, GLIDE_HOST_SETOPS_SYM);
+ #endif
+-    
+-    if (!hDll) {
+-        return 1;
+-    }
+ 
+     for (i = 0; i < FEnum_zzG2xFuncEnum_max; i++) {
+ #ifdef CONFIG_WIN32
+@@ -917,6 +970,16 @@
+ #endif
+     }
+ 
++    /*
++     * Hand the wrapper the frontend's context before anything opens a
++     * window with it (grSstWinOpen is several MMIO writes away). A wrapper
++     * without the export, or a frontend that returns no table, is left
++     * with upstream's behaviour.
++     */
++    if (setHostOps) {
++        setHostOps((const GlideHostOps *)glide_host_ops());
++    }
++
+     return 0;
+ }
+ 
+--- a/hw/3dfx/glide2x_impl.h
++++ b/hw/3dfx/glide2x_impl.h
+@@ -129,6 +129,7 @@
+ 
+ #ifndef CONSOLE_H
+ void glide_renderer_stat(const int);
++const void *glide_host_ops(void);
+ #endif //CONSOLE_H
+ void doGlideFunc(int, uint32_t *, uintptr_t *, uintptr_t *, int);
+ void conf_glide2x(const uint32_t, const int);

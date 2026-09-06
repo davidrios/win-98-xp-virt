@@ -49,6 +49,12 @@ rsync -rc "$FX/qemu-0/hw/3dfx" "$FX/qemu-1/hw/mesa" "$QEMU/hw/"
 echo "==> overlaying embed/ (libqemu_embed)"
 rsync -rc --delete "$ROOT/embed/" "$QEMU/embed/"
 
+# glidept/glide_host.h is the one header the Glide device (hw/3dfx, patch
+# 33), the embed provider and the host-side wrapper share -- like
+# d3dpt_proto.h for Direct3D. Both consumers get a copy beside them.
+rsync -c "$ROOT/glidept/glide_host.h" "$QEMU/embed/"
+rsync -c "$ROOT/glidept/glide_host.h" "$QEMU/hw/3dfx/"
+
 echo "==> overlaying d3dpt/ (paravirtual Direct3D device: hw/d3dpt)"
 mkdir -p "$QEMU/hw/d3dpt"
 rsync -rc --delete --exclude d3dpt_proto.h --exclude d3dpt_fb.h --exclude d3dpt_exec.h "$ROOT/d3dpt/hw/" "$QEMU/hw/d3dpt/"

@@ -17,6 +17,8 @@
 #   dxvk    prepare-dxvk.sh -> configure-dxvk.sh -> ninja
 #   exec    build-d3dpt-exec.sh: libd3dpt_exec, the D3D executor. After
 #           `dxvk`, whose headers it compiles against.
+#   glide   prepare-openglide.sh -> build-glide.sh: libglide2x, the
+#           host-side Glide wrapper hw/3dfx dlopens (doc 12 §5).
 #   guest   guest-tools/build-wrappers.sh: the guest-tools ISO (which
 #           calls build-driver.sh for the XP display driver too)
 #
@@ -70,14 +72,14 @@ while [ $# -gt 0 ]; do
     -f|--force) FORCE=1; shift ;;
     -t|--test) RUN_TEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    qemu|rust|dxvk|exec|guest) STAGES+=("$1"); shift ;;
+    qemu|rust|dxvk|exec|glide|guest) STAGES+=("$1"); shift ;;
     *) echo "build.sh: unknown argument '$1' (try --help)" >&2; exit 2 ;;
   esac
 done
 
 EXPLICIT=""
 if [ ${#STAGES[@]} -eq 0 ]; then
-  STAGES=(qemu rust dxvk exec guest)
+  STAGES=(qemu rust dxvk exec glide guest)
 else
   EXPLICIT=1
 fi
@@ -236,6 +238,30 @@ if want exec; then
     say "exec: libd3dpt_exec (the D3D decoder + DXVK executor)"
     scripts/build-d3dpt-exec.sh
     BUILT+=(exec)
+  fi
+fi
+
+# --- glide ------------------------------------------------------------
+# The host-side Glide wrapper (doc 12 §5). Independent of everything else:
+# QEMU dlopens it at grGlideInit, it is not linked into anything.
+if want glide; then
+  if [ ! -f third_party/openglide/Glide.cpp ]; then
+    say "git submodule update --init (openglide)"
+    git submodule update --init --depth 1 third_party/openglide || true
+  fi
+  if [ ! -f third_party/openglide/Glide.cpp ]; then
+    skip glide "third_party/openglide missing" || true
+  else
+    say "glide: libglide2x (the host-side Glide wrapper)"
+    if STAMP_GITS="third_party/openglide" \
+       stamp_stale glide-prepare patches/openglide scripts/prepare-openglide.sh; then
+      scripts/prepare-openglide.sh
+      stamp_save
+    else
+      echo "    patch queue and submodule unchanged - skipping prepare"
+    fi
+    scripts/build-glide.sh
+    BUILT+=(glide)
   fi
 fi
 

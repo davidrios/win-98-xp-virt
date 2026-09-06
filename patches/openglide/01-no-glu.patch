@@ -1,0 +1,60 @@
+diff --git a/PGTexture.cpp b/PGTexture.cpp
+index 9d99241..7c40730 100644
+--- a/PGTexture.cpp
++++ b/PGTexture.cpp
+@@ -23,7 +23,7 @@
+                     0, compformat, comptype, texdata );                     \
+         if ( InternalConfig.BuildMipMaps )                                  \
+         {                                                                   \
+-            gluBuild2DMipmaps( GL_TEXTURE_2D, compnum,                      \
++            ogl_build_2d_mipmaps( GL_TEXTURE_2D, compnum,                      \
+                                texVals.width, texVals.height,               \
+                                compformat, comptype, texdata );             \
+         }                                                                   \
+@@ -510,7 +510,7 @@ bool PGTexture::MakeReady( void )
+             glTexImage2D( GL_TEXTURE_2D, texVals.lod, 2, texVals.width, texVals.height, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, m_tex_temp );
+             if ( InternalConfig.BuildMipMaps )
+             {
+-                gluBuild2DMipmaps( GL_TEXTURE_2D, 2, texVals.width, texVals.height, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, m_tex_temp );
++                ogl_build_2d_mipmaps( GL_TEXTURE_2D, 2, texVals.width, texVals.height, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, m_tex_temp );
+             }
+ #endif
+             break;
+diff --git a/platform/window.h b/platform/window.h
+index 82b445b..4d9eb09 100644
+--- a/platform/window.h
++++ b/platform/window.h
+@@ -24,12 +24,18 @@
+ #include "SDL_opengl.h"
+ #elif defined(__MACOSX__)
+ #include <OpenGL/gl.h>	/* Header File For The OpenGL Library */
+-#include <OpenGL/glu.h>	/* Header File For The GLU Library */
+ #else
+ #include <GL/gl.h>
+-#include <GL/glu.h>
+ #endif
+ 
++/* GLU replaced by core GL in glidept/host/glu_shim.cpp (2ksbox): the
++ * library is deprecated and absent from some of the runtimes we ship
++ * into, and OpenGLide used exactly two of its entry points. */
++const char *ogl_error_string(GLenum error);
++GLint ogl_build_2d_mipmaps(GLenum target, GLint components,
++                           GLsizei width, GLsizei height,
++                           GLenum format, GLenum type, const void *data);
++
+ bool InitialiseOpenGLWindow(FxU wnd, int x, int y, int width, int height);
+ void FinaliseOpenGLWindow( void);
+ 
+diff --git a/GLutil.cpp b/GLutil.cpp
+index 1325303..a915a7c 100644
+--- a/GLutil.cpp
++++ b/GLutil.cpp
+@@ -79,7 +74,7 @@ void GLErro( const char *Funcao )
+ 
+     if ( Erro != GL_NO_ERROR )
+     {
+-        Error( "%s: OpenGLError = %s\n", Funcao, gluErrorString( Erro ) );
++        Error( "%s: OpenGLError = %s\n", Funcao, ogl_error_string( Erro ) );
+     }
+ }
+ 
