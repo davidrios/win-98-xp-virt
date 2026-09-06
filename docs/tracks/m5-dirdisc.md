@@ -12,9 +12,12 @@ and the M5 track doc `docs/tracks/m5-cdrom-backend.md`, whose code this
 extends. This file is the *plan and the ISO 9660 spec* for the new
 source; if it outgrows the track, its §"The layout" moves to doc 17 §8.
 
-Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`. Rebase on
-`main` before each step and keep the shared files (§Scope) to minimal
-edits.
+Opened 2026-09-06 on `track/m5-dirdisc`, branched off `main`, all five
+steps done and **merged to `main` the same day**. What is left is named
+at the end of the State section below: a guest-side check for the
+stale-file rule (host-side only for now), and Win98's `CDSHELF.EXE`
+printing nothing to a redirected stdout, which is M5's and predates this
+track.
 
 ## State (2026-09-06: steps 1–5 landed)
 
