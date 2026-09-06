@@ -95,6 +95,12 @@ fi
 if want exec; then
   say "exec: d3dpt_exec.dll (the Direct3D decoder + executor)"
   inw scripts/build-d3dpt-exec.sh --windows
+  # The WGL probe rides along: it is the same 3D stage, it is one
+  # compile, and it is the first thing to run on a Windows machine whose
+  # Win98 guest gets no OpenGL (tools/wgl-probe.c).
+  say "exec: wgl-probe.exe (the embed backend's WGL sequence, without QEMU)"
+  inw x86_64-w64-mingw32-gcc -O1 -o build/win/wgl-probe.exe tools/wgl-probe.c \
+    -lopengl32 -lgdi32 -luser32
   BUILT+=(exec)
 fi
 

@@ -57,7 +57,7 @@ base.
 |---|---|---|
 | `qemu` | `build/win/qemu/{qemu-system-i386,qemu-img,qemu-io}.exe`, `libqemu-embed-i386.dll` | `configure-qemu.sh --windows`; **WHPX detected and built in** |
 | `rust` | `target/x86_64-pc-windows-gnu/release/{launcher,player,discx}.exe` | the embed DLL is found in `build/win/qemu` by `qemu-embed/build.rs` |
-| `exec` | `build/win/d3dpt/d3dpt_exec.dll` | the Direct3D decoder + executor (doc 14) |
+| `exec` | `build/win/d3dpt/d3dpt_exec.dll`, `build/win/wgl-probe.exe` | the Direct3D decoder + executor (doc 14), and the offscreen-GL diagnostic |
 | `guest` | `guest-tools/out/guest-tools-*.iso` | guest code: host-independent, so only built if absent |
 
 ## The package
@@ -70,7 +70,7 @@ under it:
 ```
 2ksbox.exe  2ksbox-player.exe  qemu-img.exe
 libqemu-embed-i386.dll  d3dpt_exec.dll  <the mingw runtime>
-pc-bios\  guest-tools\  shaders\  doc\
+pc-bios\  guest-tools\  shaders\  tools\  doc\
 ```
 
 `launcher/src/paths.rs` knows both shapes: on Windows the prefix is the
@@ -91,6 +91,37 @@ the DLL closure, since it cannot start with one missing. Wine is not the
 target and a failure there is investigated rather than believed, but a
 package that fails these has not been built correctly for any Windows.
 
+## OpenGL for a Win98 guest
+
+A Win98 guest's 3D is qemu-3dfx's Mesa pass-through, and it needs a GL
+context **inside the embed library**, where there is no window.
+`embed/mglcntx_embed.c` gets one from EGL on Linux and CGL on macOS; on
+Windows it uses WGL with a `WGL_ARB_pbuffer` standing in for the window,
+which makes it the closest of the three to the Linux backend — macOS has
+to fake a default framebuffer with an FBO because CGL pbuffers are gone,
+while Windows has a real offscreen drawable.
+
+There is still one window: a 1×1 popup, created and never shown. WGL has
+no way to reach a device's pixel formats or its extension entry points
+without a window and a context on it, and `wglCreatePbufferARB` itself
+takes a DC to say which device to create the pbuffer on. Nothing is ever
+drawn to it.
+
+qemu-3dfx's own WGL backend (`hw/mesa/mglcntx_mingw.c`) stays where it is
+for `qemu-system-i386.exe`, which *does* have a window: patch 31 now
+marks its entry points weak on Windows too, so the embed library's
+definitions win inside the DLL exactly as they do on the other two
+platforms. COFF weak externals behave like ELF's here — the native
+object's symbols come out `w`, ours `T`, and the linker takes ours.
+
+**`tools\wgl-probe.exe`, shipped in the package, is the diagnostic.** It
+performs that whole sequence with no QEMU involved and prints where it
+stops. Run it first on a Windows machine whose Win98 guest gets no 3D:
+the answer is in its output rather than inside a VM. Under wine on the
+Linux build host it passes on an AMD card (Mesa 26.2) — green clear, red
+quad, right way up — which is how the sequence has been verified at all;
+a real Windows driver is still ahead.
+
 ## Acceleration
 
 Windows' hardware acceleration is **WHPX** (the Windows Hypervisor
@@ -110,13 +141,6 @@ emulated regardless, as everywhere else.
 
 ## What is not there yet
 
-- **The Mesa/Glide pass-through inside the embed library** —
-  `embed/mglcntx_embed.c` has an EGL backend for Linux and a CGL one for
-  macOS; Windows needs a WGL one. Without it a Win98 guest's OpenGL is
-  refused (`mesapt: no EGL on this host`) and everything else works.
-  qemu-3dfx's own WGL backend (`hw/mesa/mglcntx_mingw.c`) is compiled
-  into `qemu-system-i386.exe`, which is a different consumer: it has a
-  window, and the embed library does not.
 - **Zero-copy 3D frames.** The dma-buf ring is Linux and IOSurface is
   macOS; on Windows the executor's frames take the readback path, which
   is what the Direct3D device used everywhere until recently and is

@@ -325,3 +325,159 @@ index dce08da..0d92f09 100644
  {
      char fname[64];
      uint32_t *argsp = (uint32_t *)(name + ALIGNED((strnlen(name, sizeof(fname))+1)));
+--- a/hw/mesa/mglcntx_mingw.c
++++ b/hw/mesa/mglcntx_mingw.c
+@@ -31,6 +31,9 @@
+ 
+ 
+ #if defined(CONFIG_WIN32)
++/* 2ksbox: weak so libqemu-embed's window-less backend
++ * (embed/mglcntx_embed.c) overrides these; qemu-system keeps WGL. */
++#define MGL_API __attribute__((weak))
+ #include <GL/wgl.h>
+ #include "system/whpx.h"
+ 
+@@ -38,7 +41,7 @@
+ {
+     return 1;
+ }
+-int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
++MGL_API int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
+ {
+     int ret = (GetBufOAccelEN()
+             || (bufo_accel_en() &&
+@@ -164,9 +167,9 @@
+     int (WINAPI *GetSwapIntervalEXT)(void);
+ } wglFuncs;
+ 
+-int glwnd_ready(void) { return qatomic_read(&wnd_ready); }
++MGL_API int glwnd_ready(void) { return qatomic_read(&wnd_ready); }
+ 
+-int MGLExtIsAvail(const char *xstr, const char *str)
++MGL_API int MGLExtIsAvail(const char *xstr, const char *str)
+ { return find_xstr(xstr, str); }
+ 
+ static void MesaInitGammaRamp(void)
+@@ -211,7 +214,7 @@
+     }
+ }
+ 
+-void SetMesaFuncPtr(void *p)
++MGL_API void SetMesaFuncPtr(void *p)
+ {
+     HINSTANCE hDLL = (HINSTANCE)p;
+     wglFuncs.GetProcAddress = (PROC (WINAPI *)(LPCSTR))GetProcAddress(hDLL, "wglGetProcAddress");
+@@ -223,12 +226,12 @@
+     wglFuncs.ShareLists = (BOOL (WINAPI *)(HGLRC, HGLRC))GetProcAddress(hDLL, "wglShareLists");
+ }
+ 
+-void *MesaGLGetProc(const char *proc)
++MGL_API void *MesaGLGetProc(const char *proc)
+ {
+     return (void *)wglFuncs.GetProcAddress(proc);
+ }
+ 
+-void MGLTmpContext(void)
++MGL_API void MGLTmpContext(void)
+ {
+     HWND tmpWin = CreateMesaWindow("dummy", 640, 480, 0);
+     HDC  tmpDC = GetDC(tmpWin);
+@@ -284,7 +287,7 @@
+     if (0) { } \
+     else mesa_release_window()
+ 
+-void MGLDeleteContext(int level)
++MGL_API void MGLDeleteContext(int level)
+ {
+     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
+     wglFuncs.MakeCurrent(NULL, NULL);
+@@ -304,7 +307,7 @@
+     }
+ }
+ 
+-void MGLWndRelease(void)
++MGL_API void MGLWndRelease(void)
+ {
+     if (hwnd) {
+         if (hRC[0]) {
+@@ -322,7 +325,7 @@
+     }
+ }
+ 
+-int MGLCreateContext(uint32_t gDC)
++MGL_API int MGLCreateContext(uint32_t gDC)
+ {
+     int i, ret;
+     i = gDC & (MAX_PBUFFER - 1);
+@@ -345,7 +348,7 @@
+     return ret;
+ }
+ 
+-int MGLMakeCurrent(uint32_t cntxRC, int level)
++MGL_API int MGLMakeCurrent(uint32_t cntxRC, int level)
+ {
+     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
+     uint32_t i = cntxRC & (MAX_PBUFFER - 1);
+@@ -367,7 +370,7 @@
+     return 0;
+ }
+ 
+-int MGLSwapBuffers(void)
++MGL_API int MGLSwapBuffers(void)
+ {
+     MGLActivateHandler(1, 0);
+     MesaBlitScale();
+@@ -410,7 +413,7 @@
+     return ipixfmt;
+ }
+ 
+-int MGLChoosePixelFormat(void)
++MGL_API int MGLChoosePixelFormat(void)
+ {
+     int fmt, curr;
+     GLWINDOW_INIT();
+@@ -422,7 +425,7 @@
+     return fmt;
+ }
+ 
+-int MGLSetPixelFormat(int fmt, const void *p)
++MGL_API int MGLSetPixelFormat(int fmt, const void *p)
+ {
+     const PIXELFORMATDESCRIPTOR *ppfd = (const PIXELFORMATDESCRIPTOR *)p;
+     int curr, ret;
+@@ -454,7 +457,7 @@
+     return ret;
+ }
+ 
+-int MGLDescribePixelFormat(int fmt, unsigned int sz, void *p)
++MGL_API int MGLDescribePixelFormat(int fmt, unsigned int sz, void *p)
+ {
+     LPPIXELFORMATDESCRIPTOR ppfd = (LPPIXELFORMATDESCRIPTOR)p;
+     int curr;
+@@ -484,7 +487,7 @@
+     return curr;
+ }
+ 
+-int NumPbuffer(void)
++MGL_API int NumPbuffer(void)
+ {
+     int i, c;
+     for (i = 0, c = 0; i < MAX_PBUFFER;)
+@@ -492,7 +495,7 @@
+     return c;
+ }
+ 
+-int DrawableContext(void)
++MGL_API int DrawableContext(void)
+ {
+     return (hRC[0] == wglFuncs.GetCurrentContext());
+ }
+@@ -509,7 +512,7 @@
+     return ret;
+ }
+ 
+-void MGLFuncHandler(const char *name)
++MGL_API void MGLFuncHandler(const char *name)
+ {
+     char fname[64];
+     uint32_t *argsp = (uint32_t *)(name + ALIGNED((strnlen(name, sizeof(fname))+1)));

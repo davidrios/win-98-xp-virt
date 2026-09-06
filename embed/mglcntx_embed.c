@@ -36,12 +36,17 @@
 #define DPRINTF_COND(cond,fmt, ...) \
     if (cond) { fprintf(stderr, "glcntx: " fmt "\n" , ## __VA_ARGS__); }
 
-#if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
+#if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN) || defined(CONFIG_WIN32)
 
 /* ----------------------------------------------------- shared WGL layer */
 
 #define GL_CONTEXTALPHA 1
 
+/* The guest speaks WGL, so the layer below is written in WGL's own types
+ * and constants. Linux and macOS have no windows.h and get them here;
+ * Windows has the real ones -- identical by construction, this struct is
+ * the ABI the guest passes -- and must not see a second definition. */
+#ifndef CONFIG_WIN32
 typedef uint16_t WORD;
 typedef uint32_t DWORD;
 typedef uint8_t BYTE;
@@ -73,6 +78,7 @@ typedef struct tagPIXELFORMATDESCRIPTOR {
   DWORD dwVisibleMask;
   DWORD dwDamageMask;
 } PIXELFORMATDESCRIPTOR;
+#endif /* !CONFIG_WIN32 */
 
 #define WGL_NUMBER_PIXEL_FORMATS_ARB            0x2000
 #define WGL_DRAW_TO_WINDOW_ARB                  0x2001
@@ -118,11 +124,14 @@ typedef struct tagPIXELFORMATDESCRIPTOR {
 #define WGL_MIPMAP_LEVEL_ARB                    0x207B
 #define WGL_TEXTURE_RECTANGLE_NV                0x20A2
 
+/* What the guest asked for in wglCreatePbufferARB, per slot -- not a
+ * handle: the platform layer below keeps the real object. Named for what
+ * it is, because on Windows HPBUFFERARB is wglext.h's own handle type. */
 typedef struct tagFakePBuffer {
     int width;
     int height;
     int target, format, level;
-} HPBUFFERARB;
+} FakePBuffer;
 
 static const PIXELFORMATDESCRIPTOR pfd = {
     .nSize = sizeof(PIXELFORMATDESCRIPTOR),
@@ -166,7 +175,7 @@ static int          win_w, win_h;           /* drawable = guest 2D surface */
 static int          win_ready;              /* provider said go */
 static int          wnd_ready;              /* handshake flag for the guest */
 static const char  *xstr, *xcstr;
-static HPBUFFERARB  hPbuffer[MAX_PBUFFER];
+static FakePBuffer  hPbuffer[MAX_PBUFFER];
 static int          cAlphaBits, cDepthBits, cStencilBits;
 static int          cAuxBuffers, cSampleBuf[2];
 static int          swap_interval = 1;
@@ -634,7 +643,7 @@ void MGLFuncHandler(const char *name)
         if (plat_pbuffer_create(i, hPbuffer[i].width, hPbuffer[i].height)) {
             argsp[0] = 1;
         } else {
-            memset(&hPbuffer[i], 0, sizeof(HPBUFFERARB));
+            memset(&hPbuffer[i], 0, sizeof(FakePBuffer));
             argsp[0] = 0;
         }
         argsp[1] = i;
@@ -645,7 +654,7 @@ void MGLFuncHandler(const char *name)
         i = argsp[0] & (MAX_PBUFFER - 1);
         plat_pbuffer_destroy(i);
         argsp[0] = 1;
-        memset(&hPbuffer[i], 0, sizeof(HPBUFFERARB));
+        memset(&hPbuffer[i], 0, sizeof(FakePBuffer));
         return;
     }
     FUNCP_HANDLER("wglQueryPbufferARB") {
@@ -1996,6 +2005,388 @@ static void plat_set_func_ptr(void *h)
     front_selected = 0;
     DPRINTF("draw/read buffer + flush hooks installed (%p %p %p %p)", (void *)real_draw_buffer,
             (void *)real_read_buffer, (void *)real_flush, (void *)real_finish);
+}
+
+/* ============================================================ Windows */
+#elif defined(CONFIG_WIN32)
+#include <epoxy/wgl.h>
+#include <epoxy/gl.h>
+
+/*
+ * WGL without a visible window. Windows, unlike macOS, has a first-class
+ * offscreen drawable — a WGL_ARB_pbuffer — so this backend is shaped like
+ * the Linux one (the pbuffer is FBO 0 and the swap is a readback of its
+ * back buffer) rather than like the macOS one, which has to fake a
+ * default framebuffer with an FBO because CGL pbuffers are gone.
+ *
+ * There is still one window: a 1x1 popup that is created and never
+ * shown. WGL has no way to get at a device's pixel formats or its
+ * extension entry points without a window and a context on it, and
+ * wglCreatePbufferARB itself takes a DC to say which device to create the
+ * pbuffer on. So the window exists to be a device handle, and nothing is
+ * ever drawn to it.
+ *
+ * Every WGL and GL call here goes through epoxy, which the embed library
+ * already links: it resolves the ARB entry points through the current
+ * context, which is exactly the dance WGL requires (opengl32.dll itself
+ * exports GL 1.1 and nothing newer).
+ */
+
+/* the guest's own buffer objects are a Linux/GBM path; nothing here */
+int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add) { return 0; }
+
+static HWND        gl_wnd;          /* the invisible device handle */
+static HDC         wnd_dc;          /* its DC: pbuffers are created on it */
+static HGLRC       boot_rc;         /* the bootstrap context, kept alive */
+static int         pixfmt;          /* the ARB-chosen format */
+static HPBUFFERARB drawable;        /* the pbuffer standing in for a window */
+static HDC         drawable_dc;
+static HPBUFFERARB pb[MAX_PBUFFER]; /* the guest's own pbuffers */
+static HDC         PBDC[MAX_PBUFFER];
+static HGLRC       PBRC[MAX_PBUFFER];
+static void       *gl_dll;          /* opengl32.dll, from plat_set_func_ptr */
+static char        wgl_exts[4096];
+
+#define WERR(what) DPRINTF("%s failed, error 0x%08lx", what, GetLastError())
+
+static int make_window(void)
+{
+    static const char cls[] = "2ksbox-embed-gl";
+    HINSTANCE inst = GetModuleHandle(NULL);
+    WNDCLASSEX wc;
+
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_OWNDC;            /* the DC must outlive each call */
+    wc.lpfnWndProc = DefWindowProc;
+    wc.hInstance = inst;
+    wc.lpszClassName = cls;
+    RegisterClassEx(&wc);           /* already-registered is fine */
+
+    gl_wnd = CreateWindowEx(0, cls, cls, WS_POPUP, 0, 0, 1, 1,
+                            NULL, NULL, inst, NULL);
+    if (!gl_wnd) {
+        WERR("CreateWindowEx");
+        return 0;
+    }
+    wnd_dc = GetDC(gl_wnd);
+    if (!wnd_dc) {
+        WERR("GetDC");
+        return 0;
+    }
+    /* A window's pixel format can be set exactly once, and this one is
+     * only ever a device handle, so it gets the plainest format that
+     * supports OpenGL — the ARB-chosen format below is for the pbuffer. */
+    PIXELFORMATDESCRIPTOR boot;
+    memset(&boot, 0, sizeof(boot));
+    boot.nSize = sizeof(boot);
+    boot.nVersion = 1;
+    boot.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    boot.iPixelType = PFD_TYPE_RGBA;
+    boot.iLayerType = PFD_MAIN_PLANE;
+    boot.cColorBits = 32;
+    boot.cAlphaBits = 8;
+    boot.cDepthBits = 24;
+    boot.cStencilBits = 8;
+    int f = ChoosePixelFormat(wnd_dc, &boot);
+    if (!f || !SetPixelFormat(wnd_dc, f, &boot)) {
+        WERR("SetPixelFormat");
+        return 0;
+    }
+    boot_rc = wglCreateContext(wnd_dc);
+    if (!boot_rc) {
+        WERR("wglCreateContext");
+        return 0;
+    }
+    return 1;
+}
+
+static int plat_open(void)
+{
+    if (boot_rc) {
+        return 1;
+    }
+    if (!make_window()) {
+        return 0;
+    }
+    /* WGL extensions are only visible with a context current, so the
+     * bootstrap context is made current once, here, and epoxy resolves
+     * everything the rest of this file calls through it. */
+    if (!wglMakeCurrent(wnd_dc, boot_rc)) {
+        WERR("wglMakeCurrent (bootstrap)");
+        return 0;
+    }
+    int ok = epoxy_has_wgl_extension(wnd_dc, "WGL_ARB_pixel_format")
+          && epoxy_has_wgl_extension(wnd_dc, "WGL_ARB_pbuffer");
+    if (ok && epoxy_has_wgl_extension(wnd_dc, "WGL_ARB_extensions_string")) {
+        const char *e = wglGetExtensionsStringARB(wnd_dc);
+        if (e) {
+            snprintf(wgl_exts, sizeof(wgl_exts), "%s", e);
+        }
+    }
+    xstr = wgl_exts;
+    xcstr = (const char *)glGetString(GL_VENDOR);
+    DPRINTF("WGL %s / %s (window-less)", xcstr ? xcstr : "?",
+            (const char *)glGetString(GL_RENDERER));
+    wglMakeCurrent(NULL, NULL);
+    if (!ok) {
+        DPRINTF("WGL_ARB_pixel_format / WGL_ARB_pbuffer missing: no offscreen GL");
+        return 0;
+    }
+    if (!xcstr) {
+        xcstr = "";
+    }
+    return 1;
+}
+
+static int plat_choose(int msaa)
+{
+    /* the shared iAttribs, plus the pbuffer this backend draws into and
+     * whatever multisampling was asked for */
+    int a[ARRAY_SIZE(iAttribs) + 4];
+    int n = 0;
+    for (int i = 0; iAttribs[i]; i += 2) {
+        int v = iAttribs[i + 1];
+        if (iAttribs[i] == WGL_SAMPLE_BUFFERS_ARB) v = msaa ? 1 : 0;
+        if (iAttribs[i] == WGL_SAMPLES_ARB)        v = msaa;
+        a[n++] = iAttribs[i];
+        a[n++] = v;
+    }
+    a[n++] = WGL_DRAW_TO_PBUFFER_ARB;
+    a[n++] = 1;
+    a[n++] = 0;
+    a[n] = 0;
+
+    UINT count = 0;
+    int fmt = 0;
+    if (!wglChoosePixelFormatARB(wnd_dc, a, NULL, 1, &fmt, &count) || count < 1) {
+        DPRINTF("wglChoosePixelFormatARB(msaa %d) found nothing", msaa);
+        return 0;
+    }
+    pixfmt = fmt;
+    static const int q[] = {
+        WGL_ALPHA_BITS_ARB, WGL_DEPTH_BITS_ARB, WGL_STENCIL_BITS_ARB,
+        WGL_AUX_BUFFERS_ARB, WGL_SAMPLE_BUFFERS_ARB, WGL_SAMPLES_ARB,
+    };
+    int v[ARRAY_SIZE(q)] = { 0 };
+    wglGetPixelFormatAttribivARB(wnd_dc, pixfmt, 0, ARRAY_SIZE(q), q, v);
+    cAlphaBits = v[0];
+    cDepthBits = v[1];
+    cStencilBits = v[2];
+    cAuxBuffers = v[3];
+    cSampleBuf[0] = v[4];
+    cSampleBuf[1] = v[5];
+    DPRINTF("pixel format %d: alpha %d depth %d stencil %d samples %d/%d",
+            pixfmt, cAlphaBits, cDepthBits, cStencilBits, cSampleBuf[0], cSampleBuf[1]);
+    return 1;
+}
+
+/* the DC a context is created on and made current with: the drawable
+ * while there is one, the window before the first plat_drawable() */
+static HDC draw_dc(void)
+{
+    return drawable_dc ? drawable_dc : wnd_dc;
+}
+
+static void *plat_ctx_create(void *share, const int *wgl)
+{
+    HGLRC c;
+    /* The attribute list is already WGL's own (the guest sent it), so on
+     * the one platform whose API it belongs to it needs no translation. */
+    if (wgl && epoxy_has_wgl_extension(wnd_dc, "WGL_ARB_create_context")) {
+        c = wglCreateContextAttribsARB(draw_dc(), (HGLRC)share, wgl);
+        if (!c) {
+            WERR("wglCreateContextAttribsARB");
+        }
+        return c;
+    }
+    c = wglCreateContext(draw_dc());
+    if (!c) {
+        WERR("wglCreateContext");
+        return NULL;
+    }
+    if (share && !wglShareLists((HGLRC)share, c)) {
+        /* a context that cannot share is worse than none: the guest's
+         * textures live in the first one */
+        WERR("wglShareLists");
+        wglDeleteContext(c);
+        return NULL;
+    }
+    return c;
+}
+
+static void plat_ctx_destroy(void *c)
+{
+    wglDeleteContext((HGLRC)c);
+}
+
+static void plat_unbind(void)
+{
+    wglMakeCurrent(NULL, NULL);
+}
+
+static int plat_make_current(void *c)
+{
+    if (!wglMakeCurrent(draw_dc(), (HGLRC)c)) {
+        WERR("wglMakeCurrent");
+        return 0;
+    }
+    return 1;
+}
+
+static void *plat_get_current(void)
+{
+    return wglGetCurrentContext();
+}
+
+/* (re)create the pbuffer that plays the window; keeps the context */
+static int plat_drawable(int w, int h)
+{
+    const int a[] = { 0 };
+    HPBUFFERARB p = wglCreatePbufferARB(wnd_dc, pixfmt, w, h, a);
+    if (!p) {
+        WERR("wglCreatePbufferARB");
+        return 0;
+    }
+    HDC dc = wglGetPbufferDCARB(p);
+    if (!dc) {
+        WERR("wglGetPbufferDCARB");
+        wglDestroyPbufferARB(p);
+        return 0;
+    }
+    HPBUFFERARB old = drawable;
+    HDC old_dc = drawable_dc;
+    HGLRC cur = wglGetCurrentContext();
+    drawable = p;
+    drawable_dc = dc;
+    if (cur && !wglMakeCurrent(dc, cur)) {
+        WERR("wglMakeCurrent (new drawable)");
+    }
+    if (old) {
+        wglReleasePbufferDCARB(old, old_dc);
+        wglDestroyPbufferARB(old);
+    }
+    return 1;
+}
+
+static void plat_drawable_release(void)
+{
+    if (drawable) {
+        wglMakeCurrent(NULL, NULL);
+        wglReleasePbufferDCARB(drawable, drawable_dc);
+        wglDestroyPbufferARB(drawable);
+        drawable = NULL;
+        drawable_dc = NULL;
+    }
+}
+
+static int plat_present_zero_copy(void)
+{
+    /* No shared-surface path yet: a Windows frame is read back (the
+     * dma-buf ring is Linux, IOSurface is macOS; DXGI is the one to
+     * write here — docs/tracks/m11-windows-host.md). */
+    return 0;
+}
+
+static int plat_readback(uint32_t *dst)
+{
+    GLint prev_fbo = 0, prev_pack = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prev_pack);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, win_w, win_h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, dst);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, prev_pack);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prev_fbo);
+    return 1;
+}
+
+/* the guest's own WGL pbuffers, which here are what they say they are */
+static int plat_pbuffer_create(int i, int w, int h)
+{
+    int a[8], n = 0;
+    if (hPbuffer[i].format) {
+        a[n++] = WGL_TEXTURE_FORMAT_ARB; a[n++] = hPbuffer[i].format;
+    }
+    if (hPbuffer[i].target) {
+        a[n++] = WGL_TEXTURE_TARGET_ARB; a[n++] = hPbuffer[i].target;
+    }
+    a[n] = 0;
+    pb[i] = wglCreatePbufferARB(wnd_dc, pixfmt, w, h, a);
+    if (!pb[i]) {
+        WERR("wglCreatePbufferARB (guest)");
+        return 0;
+    }
+    PBDC[i] = wglGetPbufferDCARB(pb[i]);
+    PBRC[i] = PBDC[i] ? wglCreateContext(PBDC[i]) : NULL;
+    if (PBRC[i]) {
+        HGLRC cur = wglGetCurrentContext();
+        if (cur) {
+            wglShareLists(cur, PBRC[i]);
+        }
+        return 1;
+    }
+    plat_pbuffer_destroy(i);
+    return 0;
+}
+
+static void plat_pbuffer_destroy(int i)
+{
+    if (PBRC[i]) {
+        wglDeleteContext(PBRC[i]);
+        PBRC[i] = NULL;
+    }
+    if (PBDC[i]) {
+        wglReleasePbufferDCARB(pb[i], PBDC[i]);
+        PBDC[i] = NULL;
+    }
+    if (pb[i]) {
+        wglDestroyPbufferARB(pb[i]);
+        pb[i] = NULL;
+    }
+}
+
+static void plat_pbuffer_current(int i)
+{
+    if (PBDC[i] && PBRC[i]) {
+        wglMakeCurrent(PBDC[i], PBRC[i]);
+    }
+}
+
+static void plat_pbuffer_bind_tex(int i, int wgl_target, int wgl_format)
+{
+    int prev_binded_texture = 0;
+    HGLRC prev_rc = wglGetCurrentContext();
+    HDC prev_dc = wglGetCurrentDC();
+    if (!PBDC[i] || !PBRC[i]) {
+        return;
+    }
+    glGetIntegerv(PbufferGLBinding(wgl_target), &prev_binded_texture);
+    wglMakeCurrent(PBDC[i], PBRC[i]);
+    glBindTexture(PbufferGLAttrib(wgl_target), prev_binded_texture);
+    glCopyTexImage2D(PbufferGLAttrib(wgl_target), hPbuffer[i].level,
+        PbufferGLAttrib(wgl_format), 0, 0, hPbuffer[i].width, hPbuffer[i].height, 0);
+    wglMakeCurrent(prev_dc, prev_rc);
+}
+
+static void *plat_get_proc(const char *name)
+{
+    /* wglGetProcAddress answers for everything above GL 1.1 and nothing
+     * at or below it, which is what opengl32.dll's own exports are for. */
+    void *p = (void *)wglGetProcAddress(name);
+    if (!p) {
+        HMODULE h = gl_dll ? (HMODULE)gl_dll : GetModuleHandle("opengl32.dll");
+        p = h ? (void *)GetProcAddress(h, name) : NULL;
+    }
+    return p;
+}
+
+static void plat_set_func_ptr(void *hdll)
+{
+    gl_dll = hdll;
 }
 
 #else /* neither: no embed backend, the native (weak) one stays */

@@ -74,6 +74,13 @@ else
   echo "package-windows.sh: no build/win/d3dpt/d3dpt_exec.dll (scripts/build-windows.sh exec); packaging without Direct3D pass-through"
 fi
 
+# The diagnostic that answers "why does my Win98 guest get no OpenGL" on
+# the machine it happens on, rather than in a VM (tools/wgl-probe.c).
+if [ -f build/win/wgl-probe.exe ]; then
+  mkdir -p "$STAGE/tools"
+  install -m755 build/win/wgl-probe.exe "$STAGE/tools/"
+fi
+
 iso=$(ls -t guest-tools/out/guest-tools-*.iso 2>/dev/null | head -1 || true)
 if [ -n "$iso" ]; then
   mkdir -p "$STAGE/guest-tools"
@@ -189,6 +196,24 @@ if command -v wine >/dev/null; then
   else
     echo "package-windows.sh: the packaged qemu-img did not create a disk" >&2
     fail=1
+  fi
+  # Offscreen GL, which is what a Win98 guest's 3D needs (the embed
+  # library's WGL backend). Reported, never fatal: it is a property of
+  # the machine that runs the package, and wine's GL is not the target's
+  # — a Windows user runs tools\wgl-probe.exe there for the real answer.
+  # ... and unlike the checks above, this one needs a display: it opens a
+  # window (an invisible one, but a real one), which the `env -i` the
+  # others deliberately run under makes impossible.
+  runw_display() { (cd "$STAGE" && env -i HOME="$scratch" WINEPREFIX="$WINEPREFIX" \
+        WINEDEBUG=-all PATH="$PATH" DISPLAY="${DISPLAY:-}" \
+        WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+        wine "$@" 2>/dev/null); }
+  if [ -f "$STAGE/tools/wgl-probe.exe" ]; then
+    if out=$(runw_display tools/wgl-probe.exe); then
+      echo "wgl-probe      $(printf '%s\n' "$out" | tail -1)"
+    else
+      echo "wgl-probe      no offscreen GL under wine: $(printf '%s\n' "$out" | tail -1)"
+    fi
   fi
 else
   echo "checks         (no wine on this host; the package was not run)"
