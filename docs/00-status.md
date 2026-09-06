@@ -74,6 +74,12 @@ target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -
   -vga cirrus -net none -usb -device usb-tablet -device sb16,audiodev=embed0
 # Direct3D device: build the executor once, then the ISO after every guest change
 scripts/prepare-dxvk.sh && scripts/configure-dxvk.sh && ninja -C build/dxvk && scripts/build-d3dpt-exec.sh
+guest-tools/build-wrappers.sh   # the guest-tools ISO (the D3DPT DLLs live on it)
+# A D3DPT_PROTO_VERSION bump makes BOTH stale, and neither rebuilds itself: the
+# suite then fails as "protocol mismatch" (d3dpt-dp2, executor N vs header M) and
+# as a guest stage whose DLLs log "host protocol M, this DLL speaks N" and quietly
+# forward to XP's own d3d9 on cirrus (guest-boot: no attach). Rebuild both after a
+# pull that moves the protocol, not just QEMU.
 scripts/test.sh          # the regression suite, host stage (~30 s); `all` adds XP + DOS guests (~2 min)
 target/release/discx convert game.iso build/test/disc/game.cue --audio a.wav   # cue/bin from an ISO (+ audio tracks)
 build/qemu/qemu-img info build/test/disc/game.cue   # "file format: cdimage"; -cdrom game.cue probes to it (doc 17)
