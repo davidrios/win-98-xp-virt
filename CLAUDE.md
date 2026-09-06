@@ -20,6 +20,14 @@ backend later.
 
 ## Locked decisions (do not reopen)
 
+- **The project is named `2ksbox`** (`2ksbox.com`, ADR-011, 2026-09-05).
+  `win98-xp-virt` is the repository's working name and still names this
+  checkout, the docs and the user's data directory; only the *packaged*
+  identity moved — installed commands `2ksbox` / `2ksbox-player`,
+  resource dirs `share/2ksbox` etc., application ID
+  `com._2ksbox.Launcher` (the underscore is required: a name segment may
+  not start with a digit). Renaming the data directory needs a migration
+  and is deliberately still open.
 - QEMU base, our own fork as a **patch queue** on the pinned submodule
   (v9.2.4 + qemu-3dfx). Not VMware/VirtualBox/86Box.
 - QEMU runs **in-process** (`libqemu-embed-<target>`, `embed/`) for latency.
@@ -87,7 +95,10 @@ stale copy links the player against an old library (`undefined symbol
 _qemu_embed_…`; `qemu-embed/build.rs` warns). Run `configure-qemu.sh`
 again whenever meson files changed (keeps `werror` off). On macOS export
 `MACOSX_DEPLOYMENT_TARGET` to the running OS before both configure and
-cargo. Player env knobs (`PLAYER_*`) are listed in `README.md`.
+cargo. `QEMU_PYTHON=<interpreter>` makes `configure-qemu.sh` use that one
+and never consult uv (3.8–3.13 enforced) — for a sandboxed build that has
+a Python already and cannot fetch one, i.e. the Flatpak. Player env knobs
+(`PLAYER_*`) are listed in `README.md`.
 
 ## The QEMU patch queue
 
@@ -118,10 +129,14 @@ GPU); don't propose wiring it in.
 |---|---|
 | `scripts/test.sh [host\|guest\|all]` | the whole suite below, PASS/FAIL/SKIP per check, outputs in `build/test/`; `TEST_KEEP=1` leaves XP running on failure |
 | `tools/x87-fast-test.c` | patch 05's x87 fast path equals the real x87 (x86-64 host oracle) |
+| `scripts/package-flatpak.sh` | the Flatpak (doc 07's primary Linux target; manifest in `packaging/flatpak/`): a from-source build against `org.freedesktop.Sdk` — host binaries cannot be reused, the runtime's glibc is older than this host's — reusing the install layout via `package-linux.sh --prefix /app`, plus libslirp (absent from the runtime, and `-netdev user` needs it) and a build-only `distlib`. Then asks the *installed* app, in its own sandbox, whether every companion resolves under `/app` and the library under `~/.var/app`. The build is **offline** (Flathub's rule): `packaging/flatpak/cargo-sources.json` declares all 513 crates with checksums — regenerate with `scripts/gen-flatpak-cargo-sources.sh` after any dependency change. `FLATPAK_BUILD_DIR` moves the build tree off a full root filesystem |
+| `scripts/package-linux.sh` | the Linux package (doc 07's install layout, ADR-011's names — product `2ksbox`, application ID `com._2ksbox.Launcher`): stages launcher + player + embed library + `qemu-img` + firmware + guest-tools ISO into one relocatable prefix (`--with-shaders` adds the presets), then asks the **staged** launcher with `env -i` from `/` whether every companion resolves inside the package (`launcher --paths`), that the staged player `ldd`s to the package's own `libqemu-embed`, that the packaged `qemu-img` creates a disk and `--print-args` points `-L` at the packaged firmware, and that the desktop entry and the AppStream metainfo validate (`appstreamcli --no-net`, errors only); rolls a `.tar.zst` unless `--no-tar` (the `package` check in `scripts/test.sh`). `packaging/linux/install.sh` inside it copies a tree into a prefix |
 | `target/release/discx` (`cargo build --release -p libdisc`) | the CD-ROM model (doc 17): `selftest <dir>` writes synthetic cue/bin, CCD and ISO images and checks reads, EDC/ECC, Q synthesis and the MMC responders through them (the `libdisc` check in `scripts/test.sh`); `info` / `dump` print what a guest will see (cue, CCD, MDS, ISO); `scan` classifies and L-EC-verifies every sector of a real dump (the bad-sector map: SafeDisc's weak sectors show up here); `repair <image> <outdir>` writes the negative-control copy of a protected dump (every L-EC-failing sector's EDC/ECC regenerated over the dumped user data, nothing else touched, run-out sectors left alone) so a protection check can be watched to *fail*; `subscan` does the same for the stored subchannel (Q CRC failures and whether they cluster, and how often `subq::synthesize` reproduces the disc's own frames); `convert` makes a MODE1/2352 cue/bin (+ WAVE audio tracks) from an ISO |
-| `tools/atapi-guest-test.py` | a DOS program drives the ATAPI drive on a cdimage disc by PIO (patch 51): every reply at two byte-count limits identical to `discx dump`, the sense of a bad / audio sector, audio positions; the `atapi-guest` check |
+| `tools/atapi-guest-test.py` | a DOS program drives the ATAPI drive on a cdimage disc by PIO (patch 51): every reply at two byte-count limits identical to `discx dump`, the sense of a bad / audio sector, audio positions; then the disc shelf (patch 52): LIST/LOAD/EJECT with the sectors read before and after to prove the tray changed, and a second boot running the real `CDSHELF.COM` on the same shelf; the `atapi-guest` check |
 | `tools/xp-cdimage-test.sh <image> <disc> <ref dir>` | XP boots read-only with a `.cue`/`.ccd`/`.mds`/`.iso` as its CD-ROM (the `cdimage` block driver, doc 17), copies the whole disc through cdrom.sys to the scratch FAT and every file is compared with the reference directory (the ISO extracted with `bsdtar` or xorriso); `CDTEST=<CDTEST.EXE>` also plays track 2 through MCI into a wav on the drive's `audiodev` and checks for the 1 kHz tone; the `guest-cdimage` check |
 | `GAMEDIR\CDTEST.EXE` (guest-tools ISO; `guest-tools/src/cdtest.c`) | CD audio through MCI in XP / Win98: tracks, play track 2, positions while playing / paused / resumed, `cdtest.log` |
+| `CDSHELF\CDSHELF.EXE` / `.COM` (guest-tools ISO; `guest-tools/src/cdshelf.c`, `cdshelf.asm`) | the host's disc shelf from inside the machine (doc 07, patch 52). No arguments: a window on Windows, a key-per-disc menu in DOS. Verbs for scripts: `CDSHELF LIST`, `CDSHELF <n>`, `CDSHELF E`. One EXE for Win98 (ASPI) and XP (SPTI), a NASM `.COM` for DOS; nothing to install — it is a vendor command on the machine's own CD-ROM drive, and an insert always ejects first |
+| `tools/cdshelf-guest-test.sh <image> [xp\|win98]` | `CDSHELF.EXE` in a real Windows guest, headless: boots with an empty tray and a two-disc shelf (a generated ISO and a path that doesn't exist), lists it, loads the ISO and reads its files back with `dir`/`type` — Windows' own driver is the proof the tray changed — refuses the missing one, ejects. Local only (needs a guest image), never wired into `scripts/test.sh`; writes to a qcow2 overlay, never the image |
 | `tools/x87-guest-test.py` | DOS program under TCG: results identical with the fast path on/off (needs nasm, mtools, FreeDOS floppy); `QEMU_TCG_OPTS=pinned-regs=on` runs it and the other DOS batteries under patch 21's pinned registers (doc 18) |
 | `tools/smc-guest-test.py` | self-modifying code under TCG (patch 18): nine DOS cases (immediates patched from another block and inside the executing one, same-value rewrites, an opcode flip, partial patches, `rep movsd` over a routine, an imm32 straddling a page), `-accel tcg,smc-same-value` on/off both architecturally right; the `smc-guest` check |
 | `tools/smc-diff.py` (`build/venv-capstone/bin/python`) | two captures of a guest code page (`RACE_MEMSAVE=` in `tools/xp-moto-race.sh`, or QMP `memsave`) diffed and disassembled: which instructions and which bytes (imm/disp/opcode) a game patches |
@@ -177,6 +192,12 @@ which is frozen while 3D is active; use the headless dump for 3D frames.
 
 ## Gotchas that cost a day each (details in docs/00-status.md)
 
+- **`configure`: "found no usable distlib, please install it"** — QEMU
+  9.2's `mkvenv` imports `distlib.scripts` *and* `distlib.version`, and
+  pip ≥ 26 trimmed its vendored copy (`scripts` yes, `version` no), so
+  the fallback fails. Install the real `distlib` for that interpreter (the
+  Flatpak manifest ships a wheel as a build-only module); it is not a
+  Flatpak-specific problem, any modern-pip environment hits it.
 - macOS embed backend: never call `gl*`/`CGL*`/`IOSurface*` by link — the
   build also links XQuartz's Mesa libGL and the symbol binds there (a GLX
   library that sees no CGL context and silently no-ops). `dlsym` from the

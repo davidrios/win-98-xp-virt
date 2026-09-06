@@ -61,6 +61,9 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 # PLAYER_DUMP=frame.png PLAYER_DUMP_SEQ=150 dumps guest frame #150 and exits (headless check)
 # --shader <preset.slangp> (or PLAYER_SHADER=) runs a libretro slang preset, e.g.
 #   target/release/player --shader third_party/slang-shaders/crt/crt-lottes.slangp -- ...
+# --shader-params <name=value,...> (or PLAYER_SHADER_PARAMS=) overrides the preset's own
+#   parameter defaults by name, e.g. --shader-params BRIGHTBOOST=1.4,GAMMA_INPUT=2.4 — this is
+#   what a launcher shader profile (launcher/src/shader_profile.rs) resolves to
 # PLAYER_DUMP_OUT=out.png dumps the shaded frame (GPU readback) at PLAYER_DUMP_SEQ and exits
 # PLAYER_KEYS="120:enter,360:ctrl+g" presses keys/chords at guest frames (headless input test);
 #   each press is held PLAYER_KEYS_HOLD frames (default 6 ≈ 100 ms) — a down+up in one flush is a
@@ -100,12 +103,81 @@ target/release/player -- -L $PWD/qemu/pc-bios -machine pc -m 32 \
 
 macOS / Apple Silicon specifics: [docs/build-macos.md](docs/build-macos.md).
 
+## Packaging (Linux)
+
+The shipped product is named **2ksbox** (ADR-011); `win98-xp-virt` stays
+the repository's working name, and so does the user's data directory.
+
+```sh
+scripts/package-linux.sh              # build/package/2ksbox-<version>-linux-<arch>.tar.zst
+scripts/package-linux.sh --with-shaders   # + the ~80 MB preset collection
+```
+
+It stages the launcher, the player, the embed library, our `qemu-img`,
+QEMU's firmware and the guest-tools ISO into one relocatable prefix
+(doc 07's install layout), checks that the staged launcher resolves all of
+them *inside* the package with a scrubbed environment, and rolls a
+tarball. The extracted tree runs where it lands — `bin/2ksbox` — and the
+`install.sh` inside it copies the tree into a prefix (`~/.local` by
+default) and adds a desktop entry (`com._2ksbox.Launcher.desktop`, the
+application ID the launcher's window also reports as its `app_id`):
+
+```sh
+tar xf 2ksbox-*.tar.zst && cd 2ksbox-*
+./install.sh                 # or --prefix /usr/local, or --uninstall
+```
+
+The tarball ships no system libraries, so it wants a host much like the
+one that built it. The **Flatpak** is the portable answer — it builds
+everything from source against `org.freedesktop.Sdk`, so the ~191
+libraries come from the runtime:
+
+```sh
+scripts/package-flatpak.sh          # build, install --user, smoke check
+flatpak run com._2ksbox.Launcher
+```
+
+Set `FLATPAK_BUILD_DIR` (and flatpak's own `FLATPAK_USER_DIR`) if the
+build tree — a whole QEMU plus a release Rust workspace, ~12 GB — should
+not land on your root filesystem.
+
+The Flatpak builds with no network, as Flathub requires: every crate is a
+declared source with a checksum in `packaging/flatpak/cargo-sources.json`.
+Run `scripts/gen-flatpak-cargo-sources.sh` and commit the result whenever
+a dependency changes. `launcher --paths` prints where a given build looks for each
+companion — the first thing to ask when something says a file is missing.
+
 CI (`.github/workflows/ci.yml`) is currently manual-only — trigger it from the
 Actions tab (`workflow_dispatch`).
 
 ## License
 
-GPL-2.0. Non-negotiable in practice: the core links QEMU (GPL-2.0)
-in-process. Original code is Rust wherever possible (see ADR-004 in
+GPL-2.0, non-negotiable in practice for everything that links QEMU
+(GPL-2.0) in-process: the `player`, `qemu-embed`, and `libdisc`, which is
+compiled into QEMU itself.
+
+The **launcher** and the `shader-chain` crate it shares with the player are
+**GPL-2.0-or-later** (ADR-009). The launcher links no QEMU code — it spawns
+the player as a separate process — and it does link Apache-2.0 crates
+(egui's `ab_glyph`, winit's `dpi`, `ring` under `ureq`'s rustls) that GPLv2
+cannot take and GPLv3 can.
+
+Original code is Rust wherever possible (see ADR-004 in
 [decision records](docs/10-decisions.md)); C only inside QEMU/qemu-3dfx and
-in guest-side era code.
+in guest-side era code. The GPLv2 text is in [COPYING](COPYING), and every
+third-party component is listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+**If you package or redistribute the player, read this.** Its dependency
+tree contains **Apache-2.0-only** crates — `winit`, `cpal`, `ab_glyph`,
+`codespan-reporting` and `rspirv` among them — and Apache-2.0 is
+incompatible with GPLv2, which the player is pinned to because it links
+QEMU. This is a property of the modern Rust GUI stack rather than a
+dependency we chose carelessly (`winit` alone settles it), and removing the
+crates individually would change nothing: being clean means dropping wgpu
+and librashader, i.e. the CRT shader chain the project exists for. **We
+ship player binaries anyway**, with complete source and build scripts, and
+the reasoning — including the alternatives measured and rejected — is
+ADR-010. If your distribution's policy can't accept that, please open an
+issue rather than patching around it; the clean fix (QEMU in its own
+process) is designed and costed, not hypothetical.

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>2ksbox</title>
+  <!-- A late-90s beige CRT: the thing the whole stack is pretending to be.
+       Flat shapes only, no filters or external fonts, so it still reads at
+       16 px in a task switcher. -->
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a5fa8"/>
+      <stop offset="1" stop-color="#10203f"/>
+    </linearGradient>
+    <linearGradient id="case" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e8e0cc"/>
+      <stop offset="1" stop-color="#c3b89c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- stand -->
+  <rect x="46" y="96" width="36" height="12" rx="3" fill="#b8ad91"/>
+  <rect x="34" y="106" width="60" height="10" rx="4" fill="#d5cbb2"/>
+
+  <!-- case -->
+  <rect x="8" y="14" width="112" height="86" rx="9" fill="url(#case)"/>
+
+  <!-- screen recess -->
+  <rect x="16" y="21" width="96" height="64" rx="7" fill="#4a4436"/>
+  <rect x="19" y="24" width="90" height="58" rx="5" fill="url(#screen)"/>
+
+  <!-- scanlines: the shader chain, in one glance -->
+  <g fill="#ffffff" opacity="0.07">
+    <rect x="19" y="27" width="90" height="2"/>
+    <rect x="19" y="33" width="90" height="2"/>
+    <rect x="19" y="39" width="90" height="2"/>
+    <rect x="19" y="45" width="90" height="2"/>
+    <rect x="19" y="51" width="90" height="2"/>
+    <rect x="19" y="57" width="90" height="2"/>
+    <rect x="19" y="63" width="90" height="2"/>
+    <rect x="19" y="69" width="90" height="2"/>
+    <rect x="19" y="75" width="90" height="2"/>
+  </g>
+
+  <!-- a window on the desktop, title bar and all -->
+  <rect x="33" y="36" width="48" height="34" rx="2" fill="#d9d4c6"/>
+  <rect x="33" y="36" width="48" height="7" rx="2" fill="#1b4b91"/>
+  <rect x="36" y="47" width="30" height="3" fill="#9a958a"/>
+  <rect x="36" y="53" width="38" height="3" fill="#9a958a"/>
+  <rect x="36" y="59" width="22" height="3" fill="#9a958a"/>
+
+  <!-- power LED -->
+  <circle cx="103" cy="93" r="3" fill="#5fd06a"/>
+</svg>

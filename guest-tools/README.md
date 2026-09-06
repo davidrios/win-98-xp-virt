@@ -17,6 +17,7 @@ GAMEDIR\  OPENGL32.DLL WGLGEARS.EXE                        → next to each Open
           DDRAW.DLL WINED3D.DLL                            → next to a DirectX 5–7 game's EXE (DirectDraw / Direct3D ≤7 via WineD3D)
 WINED3D\  the full WineD3D set + per-OS switcher DLLs       → system-wide install, see WINE9X.TXT
 D3DPT\    D3D9.DLL D3D8.DLL + D3D9TEST D3DGAME9 D3DFEAT9 D3DGAME8 → paravirtual Direct3D 8/9 (our device, doc 14): D3D9.DLL or D3D8.DLL next to the game's EXE; needs FXPTL.SYS / FXMEMMAP.VXD like OPENGL32.DLL. Never together with WINED3D's D3D9.DLL. Log in d3dpt.log next to the EXE (C:\d3dpt.log from the CD)
+CDSHELF\  CDSHELF.EXE (98/2000/XP) CDSHELF.COM (DOS)       → the host's disc shelf from inside the machine; copy anywhere and run
 ```
 
 **WineD3D (Direct3D 8/9 → OpenGL → pass-through):** built from
@@ -65,6 +66,59 @@ shut-down guest the logs are read from the qcow2 on the host:
 (NTFS is read-only on macOS); Dr Watson's `drwtsn32.log` (UTF-16) names the
 faulting module. `guest-tools/out/wined3d-debug.iso` was such a set
 (2026-09-03); rebuild it the same way when needed.
+
+**CDSHELF — the host's disc shelf, from inside the machine** (doc 07's
+shelf, `cdshelf/cdshelf_proto.h`, device side patch 52). `CDSHELF` lists
+the discs the user keeps on the launcher's shelf, `CDSHELF <n>` puts one
+in the drive, `CDSHELF E` empties it — no launcher window, no host
+keyboard, from a guest that may be mid-game.
+
+Both builds talk to the machine's *own CD-ROM drive*, which answers a
+vendor ATAPI opcode with the shelf: that is the one channel DOS, Win98
+and XP can all reach, and we own the drive's firmware, so there is no new
+device and nothing to install in the guest.
+
+- `CDSHELF.EXE` (`guest-tools/src/cdshelf.c`) — one binary for both
+  Windows families. XP/2000 use SPTI (`IOCTL_SCSI_PASS_THROUGH_DIRECT` on
+  `\\.\<letter>:`); Win98/Me use ASPI, with `WNASPI32.DLL` loaded at *run
+  time* (it does not exist on XP, and linking it would make the EXE
+  unloadable there). Every CD-ROM drive is asked for the shelf and the
+  one that answers is used, so a machine with two drives needs no
+  argument; `-d E:` overrides on XP, `-v` shows each CDB. Writes
+  `cdshelf.log` next to itself when it can.
+
+  **With no arguments it opens a window** — a list of the shelf with
+  Insert / Eject / Refresh — because swapping a disc is something you do
+  while a game is asking for disc 2, not a command line you retype. Plain
+  USER32 controls created in code (no resource file, nothing newer than
+  Windows 95), and the insert runs on a worker thread so the window keeps
+  painting while the drive settles. The verbs below still work for
+  scripting, and still write to a redirected stdout even though the EXE
+  is `-mwindows`.
+- `CDSHELF.COM` (`guest-tools/src/cdshelf.asm`) — the DOS build, NASM,
+  driving the drive by PIO exactly as `tools/atapi-guest-test.py` does
+  (there is no DOS C toolchain in this build). It finds the drive with
+  IDENTIFY PACKET DEVICE rather than by reading the ATAPI signature out
+  of the cylinder registers: by the time a DOS program runs, the BIOS has
+  long since detected the drive and left those at zero.
+
+  DOS gets no window, so with no arguments it prints the shelf and waits
+  for a key: **0-9 puts that disc in the drive**, `E` empties it, `R`
+  re-reads the shelf, Esc quits, and the listing is reprinted after each
+  one. `CDSHELF LIST` is the non-interactive form for a batch file or a
+  redirect.
+
+Both **empty the drive before inserting**, and wait for the drive to
+confirm the tray is empty before loading. Two reasons: Windows and MSCDEX
+cache what they last saw, so a swap they never observed as a removal
+leaves the old disc's files on screen; and the device runs the medium
+change from a single bottom half (patch 52), so an eject and a load sent
+back to back without waiting collapse into one.
+
+Both are exercised on every `tools/atapi-guest-test.py` run: the opcode
+itself through the test's own PIO program, and then `CDSHELF.COM` for
+real on a FreeDOS floppy, its output captured over COM1. `CDSHELF.EXE`
+was verified by hand in a real XP guest (see the M6 track doc).
 
 `MODETEST.EXE` (`guest-tools/src/modetest.c`) prints the current desktop
 mode, the driver's mode list and the result of the `ChangeDisplaySettingsEx`

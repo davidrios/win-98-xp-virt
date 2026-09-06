@@ -2,7 +2,54 @@
 name = "launcher"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-description = "Companion launcher: machine library, guided creation, disc shelf (doc 07). M0: stub."
+# Deliberately NOT the workspace's `GPL-2.0-only` (ADR-009): this binary
+# links no QEMU code — it spawns the player as a separate process — and
+# it does link Apache-2.0 crates (egui's `ab_glyph`, winit's `dpi`,
+# `ring` under `ureq`'s rustls), which GPLv2 cannot take and GPLv3 can.
+# "or-later" lets the combined binary be distributed under v3.
+license = "GPL-2.0-or-later"
+description = "Companion launcher: machine library, guided creation, disc shelf (doc 07). M6: egui skeleton."
 
 [dependencies]
+directories = "6.0.0"
+eframe = "0.36.1"
+egui = "0.36.1"
+# Native system file dialog for the wizard's path fields — NSOpenPanel on
+# macOS, the Win32 IFileDialog on Windows, the XDG desktop portal (over
+# D-Bus) on Linux/BSD. `xdg-portal` (not the default `gtk3`) selects the
+# portal backend so the Linux build needs no GTK; `default-features =
+# false` also drops rfd's `wayland` feature (the dialog isn't parented to
+# our window on Wayland, but is still a normal top-level). Needs a
+# running xdg-desktop-portal service at runtime, standard on modern
+# desktops.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+serde = { version = "1.0.229", features = ["derive"] }
+# `qemu-img info --output=json` for the snapshot list (a stable interface;
+# `qemu-img snapshot -l`'s table is formatted for humans and doesn't
+# escape a tag with a space in it). Same crate the player uses for QMP.
+serde_json = "1"
+toml = "1.1.5"
+# Preset/parameter introspection only (no runtime backend) — the profile
+# manager lists a `.slangp`'s parameters to draw sliders. Actually
+# running the filter chain (the live preview) goes through `shader-chain`
+# instead, on the `wgpu::Device`/`Queue` eframe itself already opened for
+# egui (`egui_wgpu::RenderState`, via `eframe::wgpu`/`eframe::egui_wgpu` —
+# no separate `wgpu` pin needed here, Cargo unifies it with `shader-chain`'s).
+librashader = { version = "0.12", default-features = false, features = ["presets", "preprocess"] }
+shader-chain = { path = "../shader-chain" }
+# Decodes a preview screenshot (PNG/JPEG/BMP) into RGBA8 for the shader
+# preview's input texture.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Fetching the upstream shader collection when it isn't on disk
+# (`shader_source.rs`): a ~50 MB tarball over HTTPS, streamed through the
+# gzip/tar decoders straight onto disk rather than held in memory. `ureq`
+# is blocking, which suits a plain synchronous egui app with no async
+# runtime (the same reasoning as `rfd` above) — the download runs on its
+# own thread. Its default TLS is rustls, so no system OpenSSL.
+ureq = "3"
+flate2 = "1"
+tar = "0.4"
+# Blocks on `egui_wgpu::RenderState::create` for the `--preview-shader`
+# debug verb (a headless render state, no window) — matches the player's
+# own use for its (windowed) adapter/device request.
+pollster = "1"

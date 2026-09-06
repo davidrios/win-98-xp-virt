@@ -11,6 +11,19 @@ guest must see exactly the bytes libdisc computed, at byte-count limits 512
 (every reply split into elementary transfers) and 65534. Also checks the
 audio position replies around PLAY / PAUSE / RESUME / STOP.
 
+The same run covers the disc shelf (patch 52, cdshelf/cdshelf_proto.h): the
+drive is given a `shelf=` file, and the vendor opcode 0xD0 is driven through
+the same PIO program — LIST at several allocation lengths, a bad subcommand,
+a slot that isn't there, then LOAD / EJECT with the medium actually read
+before and after, so "the tray changed" is proven by the sectors the guest
+sees and not just by a good status.
+
+A second boot then runs the real DOS program (guest-tools/src/cdshelf.asm,
+the one shipped on the guest-tools ISO) against the same shelf, with its
+output redirected to COM1: the list it prints, and a load it performs, are
+checked the same way. That is the DOS half of the in-guest CDSHELF program;
+the Win98/XP half is guest-tools/src/cdshelf.c.
+
     tools/atapi-guest-test.py            # needs nasm, mtools, build/qemu, target/release/discx
 
 The FreeDOS 1.3 boot floppy (build/images/144m/x86BOOT.img, git-ignored)
@@ -30,6 +43,8 @@ OUT = os.path.join(ROOT, "build/atapi-guest")
 DISC_DIR = os.path.join(ROOT, "build/test/disc")
 DISC = os.path.join(DISC_DIR, "lec.cue")       # mixed.cue with sector 1000 flipped
 TOC_DISC = os.path.join(DISC_DIR, "mixed.cue")  # same layout, for the responders
+SHELF = os.path.join(OUT, "shelf.txt")         # what -device ide-cd,shelf= reads
+CD_ID = "ide1-cd0"                             # the id a medium change addresses
 
 # the selftest disc (discx.rs): track 1 data 0..2000, track 2 audio index 0 at
 # 2000, index 1 at 2150, track 3 index 0 at 5150 / index 1 at 5300, lead-out 6800
@@ -88,6 +103,35 @@ def read_cd_msf(start, end, ty, b9, b10):
 
 def read10(lba, n):
     return pkt(0x28, 0, *be32(lba), 0, *be16(n))
+
+
+# ---------------------------------------------------------------- the disc shelf
+
+# cdshelf/cdshelf_proto.h. The shelf the drive is given below: slot 0 is the
+# disc the machine boots with (lec.cue, sector 1000 deliberately corrupt), slot
+# 1 the same layout without the corruption — which is how a LOAD is proven to
+# have actually changed the medium and not just returned a good status. Slot 2's
+# label is longer than the protocol's 64 bytes (it must come back truncated, not
+# split across the next entry) and slot 3's file does not exist (it must be
+# listed, flagged MISSING, rather than silently dropped).
+SHELF_VERSION = 1
+SHELF_HDR = 12
+SHELF_ENTRY = 68
+SHELF_LABEL_MAX = 64
+SHELF_NO_SLOT = 0xFFFF
+SHELF_FLAG_LOADED = 0x01
+SHELF_FLAG_MISSING = 0x02
+LONG_LABEL = "A label longer than the protocol's sixty-four bytes, which must come back truncated"
+SHELF_DISCS = [
+    ("Selftest disc", DISC),
+    ("Mixed disc", TOC_DISC),
+    (LONG_LABEL, TOC_DISC),
+    ("Not on the host", os.path.join(OUT, "not-here.iso")),
+]
+
+
+def cdshelf(sub, slot=0, alloc=0):
+    return pkt(0xD0, sub, *be16(slot), 0, 0, 0, *be16(alloc))
 
 
 # expectations: ("dump", [discx args...] per sector / once, alloc), ("err", key, asc, ascq),
@@ -180,6 +224,37 @@ TESTS = [
     ("mode select 0e restore", (pkt(0x55, 0x10, 0, 0, 0, 0, 0, 0, 24), [0, 22, 0, 0, 0, 0, 0, 0, 0x0E, 14, 4, 0, 0, 0, 0, 0, 1, 255, 2, 255, 0, 0, 0, 0]), ("len", 0)),
     ("mode sense 0e restored", pkt(0x5A, 0, 0x0E, 0, 0, 0, 0, 0, 64), ("page0e",)),
     ("mode select short list", (pkt(0x55, 0x10, 0, 0, 0, 0, 0, 0, 4), [0, 0, 0, 0]), ("err", 5, 0x1a, 0)),
+    # the disc shelf (patch 52). Listing first, then a real medium change and
+    # back again — the sequence has to end on slot 0 (the disc every test above
+    # expects), because the whole table runs a second time at the other BCL.
+    ("cdshelf header only", cdshelf(0, alloc=SHELF_HDR), ("shelf", 0, None)),
+    ("cdshelf list", cdshelf(0, alloc=SHELF_HDR + 4 * SHELF_ENTRY), ("shelf", 4, None)),
+    ("cdshelf list one entry", cdshelf(0, alloc=SHELF_HDR + SHELF_ENTRY), ("shelf", 1, None)),
+    ("cdshelf list partial entry", cdshelf(0, alloc=SHELF_HDR + SHELF_ENTRY + 40), ("shelf", 1, None)),
+    ("cdshelf list alloc below the header", cdshelf(0, alloc=4), ("len", 4)),
+    ("cdshelf bad subcommand", cdshelf(0x7F), ("err", 5, 0x24, 0)),
+    ("cdshelf load past the end", cdshelf(1, slot=4), ("err", 5, 0x24, 0)),
+    # a disc the host cannot open is refused outright, not accepted and then
+    # dropped in a bottom half where the guest would never hear about it
+    ("cdshelf load a disc the host lost", cdshelf(1, slot=3), ("err", 2, 0x3a, 0)),
+    ("read10 1000 still the flipped disc", read10(1000, 1), ("err", 3, 0x11, 5)),
+    ("cdshelf load slot 1", cdshelf(1, slot=1), ("len", 0)),
+    ("delay", 4, None),
+    # a medium change is announced as "no medium" and then UNIT ATTENTION, one
+    # command each, before the new disc can be read (ide_atapi_cmd())
+    ("read10 after load: medium removed", read10(20, 1), ("err", 2, 0x3a, 0)),
+    ("read10 after load: unit attention", read10(20, 1), ("err", 6, 0x28, 0)),
+    ("read10 1000 on the loaded disc", read10(1000, 1), ("dump", [["readcooked", "1000"]], None, TOC_DISC)),
+    ("cdshelf list after load", cdshelf(0, alloc=SHELF_HDR + 4 * SHELF_ENTRY), ("shelf", 4, 1)),
+    ("cdshelf eject", cdshelf(2), ("len", 0)),
+    ("delay", 4, None),
+    ("read10 with an empty tray", read10(20, 1), ("err", 2, 0x3a, 0)),
+    ("cdshelf list with an empty tray", cdshelf(0, alloc=SHELF_HDR + 4 * SHELF_ENTRY), ("shelf", 4, SHELF_NO_SLOT)),
+    ("cdshelf load slot 0 back", cdshelf(1, slot=0), ("len", 0)),
+    ("delay", 4, None),
+    ("read10 after reload: medium removed", read10(20, 1), ("err", 2, 0x3a, 0)),
+    ("read10 after reload: unit attention", read10(20, 1), ("err", 6, 0x28, 0)),
+    ("read10 1000 flipped again", read10(1000, 1), ("err", 3, 0x11, 5)),
 ]
 
 # ---------------------------------------------------------------- asm
@@ -568,16 +643,37 @@ def sh(*cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def run_qemu(img, log):
+def write_fdconfig():
+    """FreeDOS boots straight into FDAUTO.BAT on the test floppy."""
+    cfg = os.path.join(OUT, "FDCONFIG.SYS")
+    with open(cfg, "w") as f:
+        f.write("!LASTDRIVE=Z\r\n!BUFFERS=20\r\n!FILES=40\r\n"
+                "SHELL=\\FREEDOS\\BIN\\COMMAND.COM \\FREEDOS\\BIN /E:2048 /P=\\FDAUTO.BAT\r\n")
+    return cfg
+
+
+def write_shelf():
+    """The flat shelf file the drive answers CDSHELF from — the same format
+    the launcher writes beside a machine's monitor socket (disc_library.rs,
+    cdshelf/cdshelf_proto.h)."""
+    with open(SHELF, "w") as f:
+        for label, path in SHELF_DISCS:
+            f.write("%s\t%s\n" % (label, path))
+
+
+def run_qemu(img, log, done=b"DONE", qemu_log="qemu.log"):
     if os.path.exists(log):
         os.unlink(log)
     p = subprocess.Popen([
         QEMU, "-machine", "pc", "-cpu", "pentium3", "-m", "64",
         "-L", os.path.join(ROOT, "qemu/pc-bios"), "-display", "none", "-net", "none",
         "-fda", img, "-boot", "a", "-serial", "file:" + log, "-monitor", "none",
-        "-drive", "if=none,id=cd0,media=cdrom,file=" + DISC, "-device", "ide-cd,bus=ide.1,drive=cd0,audiodev=w0",
+        "-drive", "if=none,id=cd0,media=cdrom,file=" + DISC,
+        # id= so a shelf LOAD has something to address the medium change to,
+        # shelf= so the vendor opcode answers at all (patch 52)
+        "-device", "ide-cd,bus=ide.1,id=%s,drive=cd0,audiodev=w0,shelf=%s" % (CD_ID, SHELF),
         "-audiodev", "none,id=w0",
-    ], stderr=open(os.path.join(OUT, "qemu.log"), "w"))
+    ], stderr=open(os.path.join(OUT, qemu_log), "w"))
     t0 = time.time()
     try:
         while time.time() - t0 < 300:
@@ -588,11 +684,11 @@ def run_qemu(img, log):
                 with open(log, "rb") as f:
                     f.seek(0, 2)
                     n = f.tell()
-                    f.seek(max(0, n - 16))
-                    if b"DONE" in f.read():
+                    f.seek(max(0, n - 64))
+                    if done in f.read():
                         break
         else:
-            raise SystemExit("timeout waiting for DONE")
+            raise SystemExit("timeout waiting for %s" % done.decode())
     finally:
         if p.poll() is None:
             p.terminate()
@@ -654,6 +750,47 @@ def parse_log(text):
     return runs
 
 
+def check_shelf(name, data, count, loaded):
+    """A CDSHELF LIST reply against SHELF_DISCS (cdshelf/cdshelf_proto.h)."""
+    out = []
+    if len(data) != SHELF_HDR + count * SHELF_ENTRY:
+        out.append("%s: %d bytes, want a header + %d entries (%d)"
+                   % (name, len(data), count, SHELF_HDR + count * SHELF_ENTRY))
+        return out
+    ver, entry_size, n, total, got_loaded = (
+        int.from_bytes(data[i:i + 2], "little") for i in (0, 2, 4, 6, 8))
+    if ver != SHELF_VERSION:
+        out.append("%s: protocol version %d, want %d" % (name, ver, SHELF_VERSION))
+    if entry_size != SHELF_ENTRY:
+        out.append("%s: entry size %d, want %d" % (name, entry_size, SHELF_ENTRY))
+    if (n, total) != (count, len(SHELF_DISCS)):
+        out.append("%s: count %d total %d, want %d / %d" % (name, n, total, count, len(SHELF_DISCS)))
+    if loaded is not None and got_loaded != loaded:
+        out.append("%s: loaded slot %#x, want %#x" % (name, got_loaded, loaded))
+    for i in range(n):
+        e = data[SHELF_HDR + i * SHELF_ENTRY:SHELF_HDR + (i + 1) * SHELF_ENTRY]
+        slot = int.from_bytes(e[0:2], "little")
+        flags, label_len = e[2], e[3]
+        want_label = SHELF_DISCS[i][0][:SHELF_LABEL_MAX].encode()
+        want_flags = SHELF_FLAG_MISSING if not os.path.exists(SHELF_DISCS[i][1]) else 0
+        if loaded is not None and loaded == i:
+            want_flags |= SHELF_FLAG_LOADED
+        if slot != i:
+            out.append("%s: entry %d says slot %d" % (name, i, slot))
+        if label_len != len(want_label) or e[4:4 + label_len] != want_label:
+            out.append("%s: entry %d label %r (%d bytes), want %r"
+                       % (name, i, bytes(e[4:4 + label_len]), label_len, want_label))
+        if e[4 + label_len:] != b"\0" * (SHELF_LABEL_MAX - label_len):
+            out.append("%s: entry %d has trailing junk after the label: %s"
+                       % (name, i, bytes(e[4 + label_len:]).hex()))
+        if loaded is not None and flags != want_flags:
+            out.append("%s: entry %d flags %#x, want %#x" % (name, i, flags, want_flags))
+        elif flags & ~SHELF_FLAG_LOADED != want_flags & ~SHELF_FLAG_LOADED:
+            out.append("%s: entry %d flags %#x, want %#x (LOADED not checked here)"
+                       % (name, i, flags, want_flags))
+    return out
+
+
 def sub_position(data):
     """(audio status, absolute LBA) of a READ SUB-CHANNEL format 1 reply (LBA form)"""
     return data[1], int.from_bytes(data[8:12], "big")
@@ -701,8 +838,13 @@ def check(bcl, entries):
             if list(data[at:at + len(want)]) != want:
                 failures.append("%s: %s at %d, want %s" % (name, data[at:at + len(want)].hex(), at, bytes(want).hex()))
         elif kind == "dump":
-            _, reqs, alloc = expect
-            want = b"".join(dump(TOC_DISC if r[0] in ("toc", "subq", "discinfo") else DISC, r) for r in reqs)
+            _, reqs, alloc = expect[:3]
+            # the responders are the same on both images; a fourth element
+            # names the disc explicitly, for the sectors read after a shelf
+            # LOAD changed the medium under us
+            src = expect[3] if len(expect) > 3 else None
+            want = b"".join(dump(src or (TOC_DISC if r[0] in ("toc", "subq", "discinfo") else DISC), r)
+                            for r in reqs)
             if alloc is not None:
                 want = want[:alloc]
             if data != want:
@@ -720,6 +862,8 @@ def check(bcl, entries):
         elif kind == "page0e":
             if n < 24 or data[8] != 0x0E or data[16:20] != bytes([1, 255, 2, 255]):
                 failures.append("%s: %s" % (name, data[:24].hex()))
+        elif kind == "shelf":
+            failures.extend(check_shelf(name, data, expect[1], expect[2]))
         elif kind == "pos":
             positions[expect[1]] = sub_position(data)
     # the audio sequence
@@ -750,9 +894,85 @@ def check(bcl, entries):
     return failures
 
 
+# ---------------------------------------------------------------- CDSHELF.COM
+
+# What FDAUTO.BAT runs, each line's output redirected to COM1 (DOS function
+# 02h goes through STDOUT, so the program needs nothing special for this).
+# `list` rather than no argument: with no argument the program is a menu
+# that waits for a key, which is the right thing for a person and no use to
+# a batch file.
+CDSHELF_RUNS = ["list", "1", "list", "E", "list", "0", "list"]
+
+
+def check_cdshelf(text):
+    """The DOS program's own output: guest-tools/src/cdshelf.asm."""
+    failures = []
+    banner = "CDSHELF - the host's disc shelf"
+    runs = [s for s in text.split(banner)[1:]]
+    if len(runs) != len(CDSHELF_RUNS):
+        return ["CDSHELF.COM: %d runs in the log, want %d" % (len(runs), len(CDSHELF_RUNS))]
+
+    def want(i, *needles):
+        for n in needles:
+            if n not in runs[i]:
+                failures.append("CDSHELF.COM run %d (%r): %r missing from the output"
+                                % (i + 1, CDSHELF_RUNS[i] or "no argument", n))
+
+    def unwanted(i, *needles):
+        for n in needles:
+            if n in runs[i]:
+                failures.append("CDSHELF.COM run %d (%r): %r in the output"
+                                % (i + 1, CDSHELF_RUNS[i] or "no argument", n))
+
+    def loaded_line(i, label):
+        for line in runs[i].splitlines():
+            if label in line:
+                if "[in the drive]" not in line:
+                    failures.append("CDSHELF.COM run %d: %r is not marked as loaded: %r"
+                                    % (i + 1, label, line.strip()))
+                return
+        failures.append("CDSHELF.COM run %d: no line for %r" % (i + 1, label))
+
+    # the plain listing: our drive, every label, the truncation and the flags
+    want(0, "secondary master (170h)", "%d discs." % len(SHELF_DISCS),
+         "[missing on the host]", LONG_LABEL[:SHELF_LABEL_MAX])
+    unwanted(0, "[in the drive]", LONG_LABEL[:SHELF_LABEL_MAX + 1])
+    for i, (label, _) in enumerate(SHELF_DISCS):
+        want(0, "%3d  %s" % (i, label[:SHELF_LABEL_MAX]))
+    # a load, seen by the program itself and then in the next listing
+    want(1, "loading slot 1: Mixed disc", "the disc is in the drive.")
+    loaded_line(2, "Mixed disc")
+    want(3, "the drive is empty.")
+    unwanted(4, "[in the drive]")
+    want(5, "loading slot 0: Selftest disc", "the disc is in the drive.")
+    loaded_line(6, "Selftest disc")
+    return failures
+
+
+def run_cdshelf_stage():
+    com = os.path.join(OUT, "CDSHELF.COM")
+    sh("nasm", "-f", "bin", "-o", com, os.path.join(ROOT, "guest-tools/src/cdshelf.asm"))
+    img = os.path.join(OUT, "cdshelf.img")
+    shutil.copy(FLOPPY, img)
+    cfg = write_fdconfig()
+    bat = os.path.join(OUT, "FDAUTO.BAT")
+    with open(bat, "w") as f:
+        f.write("@echo off\r\n")
+        for arg in CDSHELF_RUNS:
+            f.write(("CDSHELF.COM %s > COM1\r\n" % arg).replace("  ", " "))
+        f.write("ECHO CDSHELFDONE>COM1\r\n")
+    sh("mcopy", "-o", "-i", img, cfg, "::FDCONFIG.SYS")
+    sh("mcopy", "-o", "-i", img, bat, "::FDAUTO.BAT")
+    sh("mcopy", "-o", "-i", img, com, "::CDSHELF.COM")
+    log = os.path.join(OUT, "cdshelf-serial.log")
+    run_qemu(img, log, done=b"CDSHELFDONE", qemu_log="qemu-cdshelf.log")
+    return check_cdshelf(open(log, "r", errors="replace").read()), log
+
+
 def main():
     ensure_prereqs()
     os.makedirs(OUT, exist_ok=True)
+    write_shelf()
     asm = os.path.join(OUT, "atapitst.asm")
     com = os.path.join(OUT, "ATAPITST.COM")
     with open(asm, "w") as f:
@@ -760,10 +980,7 @@ def main():
     sh("nasm", "-O0", "-f", "bin", "-o", com, asm)
     img = os.path.join(OUT, "atapitst.img")
     shutil.copy(FLOPPY, img)
-    cfg = os.path.join(OUT, "FDCONFIG.SYS")
-    with open(cfg, "w") as f:
-        f.write("!LASTDRIVE=Z\r\n!BUFFERS=20\r\n!FILES=40\r\n"
-                "SHELL=\\FREEDOS\\BIN\\COMMAND.COM \\FREEDOS\\BIN /E:2048 /P=\\FDAUTO.BAT\r\n")
+    cfg = write_fdconfig()
     bat = os.path.join(OUT, "FDAUTO.BAT")
     with open(bat, "w") as f:
         f.write("@echo off\r\nATAPITST.COM\r\n")
@@ -790,6 +1007,18 @@ def main():
             print("  " + f)
         return 1
     print("atapi guest test: %d replies over two byte-count limits identical to discx; audio positions consistent" % n)
+
+    # the real DOS program on the same shelf (guest-tools/src/cdshelf.asm)
+    t0 = time.time()
+    shelf_failures, shelf_log = run_cdshelf_stage()
+    print("CDSHELF.COM run: %.1f s" % (time.time() - t0))
+    if shelf_failures:
+        print("cdshelf guest test: FAIL (%s)" % shelf_log)
+        for f in shelf_failures[:20]:
+            print("  " + f)
+        return 1
+    print("cdshelf guest test: CDSHELF.COM listed %d discs, loaded and ejected through the drive"
+          % len(SHELF_DISCS))
     return 0
 
 

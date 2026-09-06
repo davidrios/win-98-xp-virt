@@ -14,7 +14,6 @@ mod mode;
 mod pattern;
 mod qemu_vm;
 mod qmp;
-mod shader;
 
 use pattern::Pattern;
 use qemu_embed::Qemu;
@@ -43,7 +42,7 @@ struct Gpu {
     ext_current: Option<usize>,
     zero_copy: bool,
     adapter_info: wgpu::AdapterInfo,
-    chain: Option<shader::Chain>,
+    chain: Option<shader_chain::Chain>,
     chain_bg: Option<(wgpu::BindGroup, u32, u32)>,
     /// mode analysis of the guest surface on show (doc 03 rules 2 and 3)
     mode: mode::Mode,
@@ -185,8 +184,8 @@ impl Gpu {
         }
     }
 
-    fn load_shader(&mut self, path: &std::path::Path) {
-        match shader::Chain::load(
+    fn load_shader(&mut self, path: &std::path::Path, params: &[(String, f32)]) {
+        match shader_chain::Chain::load(
             path,
             &self.device,
             &self.queue,
@@ -194,6 +193,7 @@ impl Gpu {
             self.config.format,
         ) {
             Ok(c) => {
+                c.set_parameters(params);
                 eprintln!("[shader] loaded {}", path.display());
                 self.chain = Some(c);
             }
@@ -468,7 +468,7 @@ impl Gpu {
                 None => &self.fb_tex.as_ref().unwrap().0,
             };
             match chain.run(&self.device, &mut enc, input, vw, vh) {
-                Ok(out) => {
+                Ok((out, _)) => {
                     let out_tex = out.clone();
                     if !matches!(&self.chain_bg, Some((_, w, h)) if *w == vw && *h == vh) {
                         let view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -496,7 +496,7 @@ impl Gpu {
                             .unwrap_or(60);
                         if chain.frame_count() == want {
                             self.queue.submit(Some(chain_enc.take().unwrap().finish()));
-                            shader::dump_texture(&self.device, &self.queue, &out_tex, &path);
+                            shader_chain::dump_texture(&self.device, &self.queue, &out_tex, &path);
                             hard_exit(0);
                         }
                     }
@@ -571,6 +571,7 @@ enum Source {
 struct App {
     qemu_args: Vec<String>,
     shader: Option<std::path::PathBuf>,
+    shader_params: Vec<(String, f32)>,
     gpu: Option<Gpu>,
     source: Option<Source>,
     audio: Option<audio::Output>,
@@ -806,8 +807,8 @@ fn sweep_step(gpu: &mut Gpu, s: &mut Sweep) -> bool {
     // drew and hold them against the ones the tube scanned. The dump is for
     // the eye — the circle is round when the geometry is right.
     let mut drawn = String::new();
-    if let Some(tex) = gpu.chain.as_ref().and_then(|c| c.output()) {
-        let (ow, oh, rgb) = shader::read_texture(&gpu.device, &gpu.queue, tex);
+    if let Some(tex) = gpu.chain.as_ref().and_then(|c| c.output_texture()) {
+        let (ow, oh, rgb) = shader_chain::read_texture(&gpu.device, &gpu.queue, tex);
         // Below three output pixels per scanline there is nothing to count:
         // at two the preset has no room for a gap and draws a flat field
         // (measured — one LSB of modulation at 1152x864 and above).
@@ -831,7 +832,7 @@ fn sweep_step(gpu: &mut Gpu, s: &mut Sweep) -> bool {
             }
         }
         let path = s.out.join(format!("{w}x{h}.png"));
-        shader::write_png(&path.to_string_lossy(), ow, oh, &rgb);
+        shader_chain::write_png(&path.to_string_lossy(), ow, oh, &rgb);
     }
 
     if bad.is_empty() {
@@ -1057,7 +1058,7 @@ impl ApplicationHandler for App {
         let mut gpu = Gpu::new(window);
 
         if let Some(p) = &self.shader {
-            gpu.load_shader(p);
+            gpu.load_shader(p, &self.shader_params);
         }
 
         if let Some(target) = self.calib.clone() {
@@ -1320,12 +1321,12 @@ impl ApplicationHandler for App {
                         c.last_surface = gpu.surface_size();
                     } else {
                         let src = c.files[c.i].clone();
-                        match gpu.chain.as_ref().and_then(|ch| ch.output()) {
+                        match gpu.chain.as_ref().and_then(|ch| ch.output_texture()) {
                             Some(tex) => {
                                 let (ow, oh, rgb) =
-                                    shader::read_texture(&gpu.device, &gpu.queue, tex);
+                                    shader_chain::read_texture(&gpu.device, &gpu.queue, tex);
                                 let out = src.with_extension("shaded.png");
-                                shader::write_png(&out.to_string_lossy(), ow, oh, &rgb);
+                                shader_chain::write_png(&out.to_string_lossy(), ow, oh, &rgb);
                                 println!("  {} → {} ({ow}x{oh})",
                                          src.file_name().unwrap_or_default().to_string_lossy(),
                                          out.display());
@@ -1483,16 +1484,44 @@ pub fn maybe_dump(pixels: &[u32], w: usize, h: usize, seq: u64) {
     hard_exit(0);
 }
 
+/// Parse a `--shader-params`/`PLAYER_SHADER_PARAMS` value: comma-separated
+/// `name=value` pairs (the launcher's shader-profile overrides), e.g.
+/// `BRIGHTBOOST=1.2,GAMMA_INPUT=2.4`. A malformed entry is skipped with a
+/// stderr line rather than failing the whole player over one typo.
+fn parse_shader_params(s: &str) -> Vec<(String, f32)> {
+    s.split(',')
+        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(|entry| {
+            let (name, value) = entry.split_once('=')?;
+            match value.trim().parse::<f32>() {
+                Ok(v) => Some((name.trim().to_string(), v)),
+                Err(e) => {
+                    eprintln!("[shader] bad --shader-params entry {entry:?}: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 fn main() {
-    // player [--shader <preset.slangp>] [--mode-sweep <dir>] [--calib <bmp|dir>]
-    //        [--] <qemu args...>
+    // player [--shader <preset.slangp>] [--shader-params <k=v,...>]
+    //        [--mode-sweep <dir>] [--calib <bmp|dir>] [--] <qemu args...>
     //   no args: the M0 test pattern; --mode-sweep: doc 03's mode sweep;
     //   --calib: shade doc 09's calibration patterns. All three: no guest.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut shader: Option<std::path::PathBuf> =
         std::env::var("PLAYER_SHADER").ok().map(Into::into);
+    let mut shader_params = std::env::var("PLAYER_SHADER_PARAMS")
+        .ok()
+        .map(|s| parse_shader_params(&s))
+        .unwrap_or_default();
     if args.first().map(String::as_str) == Some("--shader") && args.len() >= 2 {
         shader = Some(args[1].clone().into());
+        args.drain(0..2);
+    }
+    if args.first().map(String::as_str) == Some("--shader-params") && args.len() >= 2 {
+        shader_params = parse_shader_params(&args[1]);
         args.drain(0..2);
     }
     let mut sweep = None;
@@ -1513,6 +1542,7 @@ fn main() {
     let mut app = App {
         qemu_args: args,
         shader,
+        shader_params,
         sweep,
         calib,
         proxy: Some(event_loop.create_proxy()),
