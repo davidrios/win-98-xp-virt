@@ -658,7 +658,8 @@ def run_qemu(fast, img, log):
     if os.path.exists(log):
         os.unlink(log)
     p = subprocess.Popen([
-        QEMU, "-machine", "pc", "-cpu", "pentium3,+sse2,sse-fast=%s,simd-fast=%s" % (fast, fast), "-m", "64",
+        QEMU, "-machine", "pc", *x87.tcg_opts(),
+        "-cpu", "pentium3,+sse2,sse-fast=%s,simd-fast=%s" % (fast, fast), "-m", "64",
         "-L", os.path.join(ROOT, "qemu/pc-bios"), "-display", "none", "-net", "none",
         "-fda", img, "-boot", "a", "-serial", "file:" + log, "-monitor", "none",
     ])

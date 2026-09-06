@@ -2,7 +2,7 @@
 """Tiny QMP client: qmpc.py <socket> <cmd> [args...]
   screendump <out.png>         -> PPM via QMP, converted to PNG (pure python)
   keys <k1> <k2> ...           -> send-key one at a time (QKeyCode names; 'a+b' = chord)
-  type <text>                  -> types ASCII text (letters, digits, \\ : . / space _ - & ( ) , ; = ' \" * % + ! > < |; US layout)
+  type <text>                  -> types ASCII text (letters, digits, \\ : . / space _ - & ( ) , ; = ' \" * % + ! > < | ~ ` ^ @ # $ [ ] { } ?; US layout)
   click <x> <y> [w h]          -> absolute pointer (usb-tablet) to x,y of a w×h screen (default 640×480), left click
   json <json>                  -> raw request
 """
@@ -48,7 +48,13 @@ KEYMAP = {" ": "spc", "\\": "backslash", ":": ("shift", "semicolon"), ".": "dot"
           "&": ("shift", "7"), "(": ("shift", "9"), ")": ("shift", "0"), ",": "comma",
           ";": "semicolon", "=": "equal", "'": "apostrophe", '"': ("shift", "apostrophe"),
           "*": ("shift", "8"), "%": ("shift", "5"), "+": ("shift", "equal"), "!": ("shift", "1"),
-          ">": ("shift", "dot"), "<": ("shift", "comma"), "|": ("shift", "backslash")}
+          ">": ("shift", "dot"), "<": ("shift", "comma"), "|": ("shift", "backslash"),
+          "~": ("shift", "grave_accent"), "`": "grave_accent", "^": ("shift", "6"), "@": ("shift", "2"),
+          "#": ("shift", "3"), "$": ("shift", "4"), "[": "bracket_left", "]": "bracket_right",
+          "{": ("shift", "bracket_left"), "}": ("shift", "bracket_right"), "?": ("shift", "slash")}
+# US-International guests (the Brazilian XP images): " ' ^ ~ ` are dead keys
+# there; a following space yields the character itself, so type '~ 1' for
+# '~1' only on a US layout -- prefer 8.3 names with ~ (dead key + digit = both).
 
 def send(f, names, hold=60):
     keys = [{"type": "qcode", "data": n} for n in names]
@@ -75,7 +81,7 @@ def main():
         for ch in sys.argv[3]:
             k = KEYMAP.get(ch)
             if k is None:
-                k = ch.lower()
+                k = ("shift", ch.lower()) if ch.isupper() else ch
             send(f, list(k) if isinstance(k, tuple) else [k])
     elif what == "click":
         x, y = int(sys.argv[3]), int(sys.argv[4])

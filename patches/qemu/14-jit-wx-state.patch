@@ -1,0 +1,61 @@
+JIT write-protect toggles only when the state changes (M9 track,
+docs/tracks/m9-tcg-aarch64.md). On macOS the code buffer is MAP_JIT and each
+thread flips it between writable and executable with
+pthread_jit_write_protect_np(); QEMU calls the executable side before every TB
+it runs from the main loop (cpu_tb_exec) and the writable side around every
+jump patch, translation and invalidation, without remembering the state. A
+guest that returns to the main loop often (Super PI: x87 helpers that end their
+TB) spent 12 % of its vCPU thread in that call on an M1. A per-thread state
+skips the redundant calls; it starts as unknown, so a thread's first request in
+either direction is made for real (the main thread is in execute mode when
+tcg_prologue_init asks for write; a skipped call there faults and spins).
+
+--- a/include/qemu/osdep.h
++++ b/include/qemu/osdep.h
+@@ -802,14 +802,31 @@ size_t qemu_get_host_physmem(void);
+  * for the current thread.
+  */
+ #ifdef __APPLE__
++/*
++ * The state is tracked per thread so that the switch is only made when
++ * it changes: cpu_tb_exec() asks for execute before every TB it runs from
++ * the main loop, and a guest that returns to the main loop often (x87
++ * helpers that end their TB, unchained exits) spent 12 % of its vCPU time
++ * in pthread_jit_write_protect_np() on an M1 (M9 track profile, Super PI).
++ * A thread's real state is unknown until it asked once (-1): the first
++ * request in either direction makes the call.
++ */
++extern __thread int qemu_thread_jit_state;   /* -1 unknown, 0 execute, 1 write */
++
+ static inline void qemu_thread_jit_execute(void)
+ {
+-    pthread_jit_write_protect_np(true);
++    if (qemu_thread_jit_state != 0) {
++        pthread_jit_write_protect_np(true);
++        qemu_thread_jit_state = 0;
++    }
+ }
+ 
+ static inline void qemu_thread_jit_write(void)
+ {
+-    pthread_jit_write_protect_np(false);
++    if (qemu_thread_jit_state != 1) {
++        pthread_jit_write_protect_np(false);
++        qemu_thread_jit_state = 1;
++    }
+ }
+ #else
+ static inline void qemu_thread_jit_write(void) {}
+--- a/util/osdep.c
++++ b/util/osdep.c
+@@ -31,6 +31,10 @@
+ #include "qemu/hw-version.h"
+ #include "monitor/monitor.h"
+ 
++#ifdef __APPLE__
++__thread int qemu_thread_jit_state = -1;
++#endif
++
+ static const char *hw_version = QEMU_HW_VERSION;
+ 
+ int socket_set_cork(int fd, int v)

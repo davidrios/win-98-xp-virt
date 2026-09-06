@@ -1,0 +1,20 @@
+[package]
+name = "payload"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "hvf-el1 probe: the bare-metal EL1 guest (doc: docs/tracks/m9-tcg-aarch64.md)"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+debug = 1
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

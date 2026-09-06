@@ -72,9 +72,16 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
 
 ## M2 — Pixel accuracy + input polish
 
-- Mode analysis table (doc 03): pixel aspect, double-scan shader params, text
-  modes; geometry updates on mode change; golden-image tests; curated preset
-  pack v1 calibrated against rig CRT photos.
+- ~~Mode analysis table (doc 03): pixel aspect, double-scan shader params, text
+  modes~~ ✅ 2026-09-05 (`player/src/mode.rs`, doc 03 "Mode analysis"): the
+  geometry stage takes the display aspect from the table, and the scanline
+  count reaches the preset through `vga_mode` / `inter` — 320×200 draws its
+  400 scanlines instead of 200, 640×480 its 480 instead of the 240 the
+  preset's interlace guess gave it. `player --mode-sweep` is the check
+  (`scripts/test.sh`), `PLAYER_MODE_PARAMS=0` the control. Left: presets with
+  no resolution override (crt-lottes, crt-royale) cannot be told — see doc 03.
+- Geometry updates driven off the QEMU surface change; golden-image tests;
+  overscan crop; curated preset pack v1 calibrated against rig CRT photos.
 - Relative-mouse grab, fullscreen, hotkeys, overlay basics.
 - **Exit:** mode-sweep test passes; a DOS game under Win98 looks right and
   mouselook feels right.
@@ -132,6 +139,33 @@ Vulkan import, API v5): 575–600 fps; **zero-copy on macOS** (IOSurface ring
   builds / Flatpak; shader pack release; docs site from these documents.
 - **Exit:** a stranger can go from install → playing a disc dump of a 1999
   game with a CRT shader in under an hour, on any of the three platforms.
+
+## M9 — TCG on Apple Silicon (track opened 2026-09-05: `docs/tracks/m9-tcg-aarch64.md`)
+
+- Profile first: XP idle / 7-Zip / a game under TCG on the Air, the vCPU
+  thread split into generated code, helpers, softmmu, translation; the hot
+  guest instructions' host code classified (`tools/tcg-profile.sh`,
+  `tools/tcg-hot.py`).
+- Then the optimization the data picks (candidates: flags in NZCV in the
+  aarch64 backend, barrier elision on one vCPU, cheaper TLB lookups),
+  with M8's on/off-oracle methodology. First results (2026-09-05, from
+  the Moto Racer profile): patch 15 (TB invalidation: the vAPIC ROM page
+  storm at every interrupt, per-page code ranges, no jump-cache flush per
+  TB) and patch 16 (a 4096-entry floor for the dynamic TLB, which XP's
+  context-switch flushes had shrunk to 64–256 entries) — the game's vCPU
+  from 14 % to 57 % generated code.
+- The structural option — TCG's output inside a Hypervisor.framework VM
+  with the x86 page tables mirrored in stage 1 — measured by
+  `tools/hvf-el1/` (2026-09-05): feasible, ~45 KLOC of the vCPU core
+  built freestanding + cputlb rewritten as a fault-driven mirror, 4–8
+  weeks; decided after the working-set measurement (track doc).
+- Patches 17–20 (2026-09-05): the REP fast path, same-value SMC stores
+  (Moto Racer's race 5×), the RCU/TLS hot paths, the inline jump-cache
+  probe (7-Zip +12 %). Patch 21, doc 18: the register file in x20–x28
+  across chained TBs — built, 7-Zip decompress +15 %, off by default
+  until two open items close (track doc).
+- **Exit:** a measured, reproducible gain on the game workload with both
+  guest batteries identical and `scripts/test.sh all` green.
 
 ## Post-v1 candidates
 

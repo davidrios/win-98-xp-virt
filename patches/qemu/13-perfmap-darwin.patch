@@ -1,0 +1,53 @@
+perfmap on every host (M9 track, docs/tracks/m9-tcg-aarch64.md).
+Upstream compiles tcg/perf.c and accepts -perfmap / -jitdump only on Linux
+because Linux perf is the consumer; the map writer itself is plain stdio
+(/tmp/perf-<pid>.map, one line per translated guest instruction: host pc,
+size, guest-0x<pc>). tools/tcg-profile.py uses that map on macOS to
+attribute `sample` hits in the code buffer to guest addresses.
+
+--- a/include/tcg/perf.h
++++ b/include/tcg/perf.h
+@@ -7,7 +7,7 @@
+ #ifndef TCG_PERF_H
+ #define TCG_PERF_H
+ 
+-#if defined(CONFIG_TCG) && defined(CONFIG_LINUX)
++#if defined(CONFIG_TCG)
+ /* Start writing perf-<pid>.map. */
+ void perf_enable_perfmap(void);
+ 
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -5221,7 +5221,7 @@ SRST
+     Enable synchronization profiling.
+ ERST
+ 
+-#if defined(CONFIG_TCG) && defined(CONFIG_LINUX)
++#if defined(CONFIG_TCG)
+ DEF("perfmap", 0, QEMU_OPTION_perfmap,
+     "-perfmap        generate a /tmp/perf-${pid}.map file for perf\n",
+     QEMU_ARCH_ALL)
+--- a/tcg/meson.build
++++ b/tcg/meson.build
+@@ -23,9 +23,7 @@ if get_option('tcg_interpreter')
+ endif
+ 
+ tcg_ss.add(when: libdw, if_true: files('debuginfo.c'))
+-if host_os == 'linux'
+-  tcg_ss.add(files('perf.c'))
+-endif
++tcg_ss.add(files('perf.c'))
+ 
+ tcg_ss = tcg_ss.apply({})
+ 
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -3034,7 +3042,7 @@ void qemu_init(int argc, char **argv)
+             case QEMU_OPTION_DFILTER:
+                 qemu_set_dfilter_ranges(optarg, &error_fatal);
+                 break;
+-#if defined(CONFIG_TCG) && defined(CONFIG_LINUX)
++#if defined(CONFIG_TCG)
+             case QEMU_OPTION_perfmap:
+                 perf_enable_perfmap();
+                 break;

@@ -10,6 +10,7 @@ mod dmabuf;
 #[cfg(target_os = "macos")]
 mod iosurface;
 mod keymap;
+mod mode;
 mod pattern;
 mod qemu_vm;
 mod qmp;
@@ -44,6 +45,13 @@ struct Gpu {
     adapter_info: wgpu::AdapterInfo,
     chain: Option<shader::Chain>,
     chain_bg: Option<(wgpu::BindGroup, u32, u32)>,
+    /// mode analysis of the guest surface on show (doc 03 rules 2 and 3)
+    mode: mode::Mode,
+    /// the loaded preset has no parameter to carry a scanline count: said once
+    warned_no_scanline_params: bool,
+    /// the mode sweep renders to a fixed surface size instead of the window's,
+    /// so what it checks does not depend on what the compositor handed us
+    forced_surface: Option<(u32, u32)>,
 }
 
 impl Gpu {
@@ -171,6 +179,9 @@ impl Gpu {
             adapter_info,
             chain: None,
             chain_bg: None,
+            mode: mode::Mode::analyse(0, 0),
+            warned_no_scanline_params: false,
+            forced_surface: None,
         }
     }
 
@@ -334,18 +345,90 @@ impl Gpu {
         );
     }
 
-    /// Largest integer-scaled 4:3 rect that fits the surface, centered
-    /// (doc 03 geometry stage; pixel-aspect table comes in M2).
+    /// Largest rect of the mode's own display aspect that fits the surface,
+    /// centered (doc 03 geometry stage, rules 2 and 4).
+    ///
+    /// The height is an integer multiple of the guest's rows so scanlines
+    /// stay even, and the width then follows the display aspect rather than
+    /// the framebuffer's ratio — which is the whole point of rule 2: a
+    /// 320x200 mode is a 4:3 picture, not a 1.6:1 one, and integer-scaling
+    /// both axes would show it stretched. Square-pixel 4:3 modes (640x480,
+    /// 800x600, …) come out exactly as they did before.
     fn viewport(&self) -> (f32, f32, f32, f32) {
         let Some((_, _, tw, th)) = self.current() else {
             return (0.0, 0.0, 1.0, 1.0);
         };
         let (tw, th) = (*tw, *th);
-        let (sw, sh) = (self.config.width as f32, self.config.height as f32);
-        let (gw, gh) = (tw as f32, th as f32);
-        let scale = (sw / gw).min(sh / gh).floor().max(1.0);
-        let (vw, vh) = (gw * scale, gh * scale);
+        let (sw, sh) = self.surface_size();
+        let (sw, sh) = (sw as f32, sh as f32);
+        let m = mode::Mode::analyse(tw, th);
+        let dar = m.display_aspect;
+        // The vertical quantum is the scanline, not the guest row: on a
+        // double-scanned mode they differ, and it is the scanline pitch that
+        // has to come out even — 320x200 in a 2400-line surface is 6 pixels
+        // per scanline this way and 5.5 if the rows are quantised instead.
+        // Every whole scale of the scanlines is a whole scale of the rows
+        // too, so this only ever refines the old rule.
+        let gh = m.scanlines as f32;
+        // bounded by both axes once the width is corrected; when even 1x does
+        // not fit, fall back to a free fit so the picture is letterboxed
+        // rather than clipped
+        let scale = (sh / gh).floor().min((sw / (gh * dar)).floor());
+        let (vw, vh) = if scale >= 1.0 {
+            (gh * scale * dar, gh * scale)
+        } else if sw / sh > dar {
+            (sh * dar, sh)
+        } else {
+            (sw, sw / dar)
+        };
         ((sw - vw) / 2.0, (sh - vh) / 2.0, vw, vh)
+    }
+
+    /// The surface the geometry stage fits the picture into.
+    fn surface_size(&self) -> (u32, u32) {
+        self.forced_surface
+            .unwrap_or((self.config.width, self.config.height))
+    }
+
+    /// Re-analyse when the guest changes mode: log what the surface means
+    /// and tell the CRT preset this mode's scanline count (doc 03 rule 3).
+    fn update_mode(&mut self) {
+        let Some((_, _, tw, th)) = self.current() else {
+            return;
+        };
+        let (tw, th) = (*tw, *th);
+        if self.mode.width == tw && self.mode.height == th {
+            return;
+        }
+        self.mode = mode::Mode::analyse(tw, th);
+        eprintln!("[display] mode {}", self.mode.describe());
+        let params = self.mode.shader_params();
+        let Some(chain) = self.chain.as_ref() else {
+            return;
+        };
+        // the A/B control: the preset left to its own resolution guess, which
+        // is what every scanline preset did before mode analysis existed
+        if std::env::var("PLAYER_MODE_PARAMS").as_deref() == Ok("0") {
+            eprintln!("[shader] PLAYER_MODE_PARAMS=0: preset left to guess the scanline count");
+            return;
+        }
+        if params.iter().all(|(n, _)| chain.has_parameter(n)) {
+            chain.set_parameters(&params);
+            let set: Vec<String> = params.iter().map(|(n, v)| format!("{n}={v}")).collect();
+            eprintln!("[shader] mode parameters {}", set.join(" "));
+        } else if !self.warned_no_scanline_params {
+            self.warned_no_scanline_params = true;
+            eprintln!(
+                "[shader] this preset exposes no scanline-count parameter \
+                 ({}): a double-scanned mode will be drawn with one scanline \
+                 per guest row instead of the two per row the tube drew",
+                params
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
     }
 
     /// Next swapchain image. With FIFO this blocks until one is free; call
@@ -368,6 +451,7 @@ impl Gpu {
         if self.current().is_none() {
             return;
         }
+        self.update_mode();
         // CRT chain: guest texture → viewport-sized output texture (doc 03)
         let (_, _, vw, vh) = self.viewport();
         let (vw, vh) = (vw.max(1.0) as u32, vh.max(1.0) as u32);
@@ -471,6 +555,8 @@ impl Gpu {
 
 enum Source {
     Pattern(Pattern),
+    Sweep(Sweep),
+    Calib(Calib),
     Qemu {
         vm: Qemu,
         display: qemu_vm::Display,
@@ -514,6 +600,10 @@ struct App {
     pointer_inside: bool,
     /// What the window's cursor was last set to (wakes come every frame).
     cursor_applied: HostCursor,
+    /// `--mode-sweep <dir>`: run the mode sweep instead of a guest.
+    sweep: Option<std::path::PathBuf>,
+    /// `--calib <bmp|dir>`: shade the calibration patterns and exit.
+    calib: Option<std::path::PathBuf>,
 }
 
 /// The host window's cursor state the player last applied.
@@ -524,6 +614,238 @@ enum HostCursor {
     Hidden,
     /// the guest's shape of this sequence number
     Guest(u64),
+}
+
+/// Shade the calibration patterns (doc 09): each BMP that
+/// `tools/crtcal-render` wrote goes through the loaded preset at the size it
+/// was drawn at, and the shaded frame lands beside it as a PNG. That is the
+/// other half of the comparison — one photograph of the tube showing the
+/// pattern, one shaded frame of the same pattern, held side by side.
+struct Calib {
+    files: Vec<std::path::PathBuf>,
+    i: usize,
+    last_surface: (u32, u32),
+}
+
+/// The 24-bit bottom-up BMPs `crtcal-render` writes. Deliberately not a
+/// general decoder: anything else is a mistake worth reporting, not
+/// something to guess at.
+fn read_bmp(path: &std::path::Path) -> Result<(u32, u32, Vec<u32>), String> {
+    let d = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if d.len() < 54 || d[0] != b'B' || d[1] != b'M' {
+        return Err(format!("{}: not a BMP", path.display()));
+    }
+    let u32le = |o: usize| u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
+    let (off, w, h) = (u32le(10) as usize, u32le(18), u32le(22));
+    let bpp = u16::from_le_bytes([d[28], d[29]]);
+    if bpp != 24 {
+        return Err(format!("{}: {bpp}-bit BMP, expected 24", path.display()));
+    }
+    let stride = (w as usize * 3 + 3) & !3;
+    if off + stride * h as usize > d.len() {
+        return Err(format!("{}: truncated", path.display()));
+    }
+    let mut px = vec![0u32; (w * h) as usize];
+    for y in 0..h as usize {
+        let src = off + (h as usize - 1 - y) * stride; // BMP rows run bottom-up
+        for x in 0..w as usize {
+            let p = &d[src + x * 3..src + x * 3 + 3];
+            px[y * w as usize + x] =
+                (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32;
+        }
+    }
+    Ok((w, h, px))
+}
+
+/// The surface the sweep fits its pictures into: 1600x1200, the tallest mode
+/// in the table, needs 2400 lines for its 1200 scanlines to be countable.
+const SWEEP_SURFACE: (u32, u32) = (3200, 2400);
+
+/// The mode sweep (doc 03's "mode-sweep test", M2): step through every mode
+/// the table knows, upload a geometry pattern at that size and run the real
+/// display path — mode analysis, the geometry stage, the loaded preset —
+/// then check what each did with it. No guest and no QEMU: the boundary
+/// under test is the player's own display path.
+struct Sweep {
+    out: std::path::PathBuf,
+    sizes: Vec<(u32, u32)>,
+    i: usize,
+    fails: Vec<String>,
+    /// a preset was asked for on the command line
+    want_chain: bool,
+    /// surface size at the last redraw: the compositor settles on one a
+    /// frame or two in, and a mode measured against a size that is about to
+    /// change is measured against nothing
+    last_surface: (u32, u32),
+}
+
+impl Sweep {
+    fn new(out: std::path::PathBuf, want_chain: bool) -> Sweep {
+        Sweep {
+            out,
+            sizes: mode::sweep_sizes(),
+            i: 0,
+            fails: Vec::new(),
+            want_chain,
+            last_surface: (0, 0),
+        }
+    }
+}
+
+/// Upload the geometry pattern for the mode about to be checked.
+fn sweep_upload(gpu: &mut Gpu, s: &Sweep) {
+    let (w, h) = s.sizes[s.i];
+    let m = mode::Mode::analyse(w, h);
+    let fb = pattern::geometry(w as usize, h as usize, m.display_aspect);
+    gpu.upload(&fb, w, h);
+}
+
+/// The number of scanlines a shaded frame actually has: count the bright
+/// bands down one column of flat picture (left edge, below the line-pair
+/// block and clear of the circle) and scale to the full height.
+///
+/// Counted rather than measured as a repeat period, because the pitch need
+/// not be a whole number of output pixels — 400 scanlines in a 2200-pixel
+/// viewport alternate 5 and 6 pixels, and their *period* is then two
+/// scanlines, which would read as half the count.
+fn measure_scanlines(w: u32, h: u32, rgb: &[u8]) -> Option<u32> {
+    let x = (w as f32 * 0.08) as u32;
+    let (y0, y1) = (h * 2 / 5, h * 7 / 10);
+    let lum: Vec<f32> = (y0..y1)
+        .map(|y| {
+            let i = ((y * w + x) * 3) as usize;
+            0.299 * rgb[i] as f32 + 0.587 * rgb[i + 1] as f32 + 0.114 * rgb[i + 2] as f32
+        })
+        .collect();
+    let (lo, hi) = lum.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    if hi - lo < 4.0 {
+        return None; // no scanline structure to count
+    }
+    // upward crossings of the midpoint, with hysteresis so the shader's own
+    // dithering cannot add a band
+    let mid = (lo + hi) / 2.0;
+    let (up, down) = (mid + (hi - lo) * 0.15, mid - (hi - lo) * 0.15);
+    let mut crossings: Vec<f32> = Vec::new();
+    let mut armed = false;
+    for (i, v) in lum.iter().enumerate() {
+        if *v < down {
+            armed = true;
+        } else if *v > up && armed {
+            // where the rise crossed the midpoint, to sub-pixel precision
+            let (prev, here) = (lum[i.saturating_sub(1)], *v);
+            let frac = if here > prev {
+                ((mid - prev) / (here - prev)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            crossings.push(i as f32 - 1.0 + frac);
+            armed = false;
+        }
+    }
+    if crossings.len() < 4 {
+        return None;
+    }
+    // the pitch from the span between the first and last band, not from the
+    // count over the sampled strip: the strip's own length would round in
+    let pitch = (crossings[crossings.len() - 1] - crossings[0]) / (crossings.len() - 1) as f32;
+    Some((h as f32 / pitch).round() as u32)
+}
+
+/// Check the frame just rendered, dump it, and step to the next mode.
+/// Returns true when the sweep is finished.
+fn sweep_step(gpu: &mut Gpu, s: &mut Sweep) -> bool {
+    let (w, h) = s.sizes[s.i];
+    let m = mode::Mode::analyse(w, h);
+    if s.last_surface != gpu.surface_size() {
+        s.last_surface = gpu.surface_size();
+        return false; // measure this mode once the surface has settled
+    }
+    let (vx, vy, vw, vh) = gpu.viewport();
+    let (sw, sh) = gpu.surface_size();
+    let (sw, sh) = (sw as f32, sh as f32);
+    let mut bad: Vec<String> = Vec::new();
+
+    // rule 2: the picture on screen has the mode's display aspect, whatever
+    // the framebuffer's own ratio is
+    let got = vw / vh;
+    if (got - m.display_aspect).abs() > m.display_aspect * 0.005 {
+        bad.push(format!(
+            "on-screen aspect {got:.4}, want {:.4}",
+            m.display_aspect
+        ));
+    }
+    // it is inside the window, centered
+    if vw > sw + 0.5 || vh > sh + 0.5 || vx < -0.5 || vy < -0.5 {
+        bad.push(format!("viewport {vw}x{vh}+{vx}+{vy} does not fit {sw}x{sh}"));
+    }
+    // rule 4: where a whole multiple of the scanlines fits, the height is one
+    let scale = vh / m.scanlines as f32;
+    if scale >= 1.0 && (scale - scale.round()).abs() > 0.001 {
+        bad.push(format!("scanline pitch {scale:.4} px is not a whole number"));
+    }
+    // rule 3: the preset was told this mode's scanline count (skipped under
+    // the PLAYER_MODE_PARAMS=0 control, where by definition it was not)
+    let params = m.shader_params();
+    let control = std::env::var("PLAYER_MODE_PARAMS").as_deref() == Ok("0");
+    match gpu.chain.as_ref() {
+        _ if control => {}
+        Some(chain) if params.iter().all(|(n, _)| chain.has_parameter(n)) => {
+            for (name, want) in &params {
+                let got = chain.parameter(name).unwrap_or(f32::NAN);
+                if (got - want).abs() > 0.001 {
+                    bad.push(format!("preset parameter {name} is {got}, want {want}"));
+                }
+            }
+        }
+        Some(_) => {} // preset has no scanline control; update_mode said so
+        None if s.want_chain => bad.push("the preset did not load".to_string()),
+        None => {}
+    }
+
+    // rule 3, end to end: count the scanlines in the frame the preset just
+    // drew and hold them against the ones the tube scanned. The dump is for
+    // the eye — the circle is round when the geometry is right.
+    let mut drawn = String::new();
+    if let Some(tex) = gpu.chain.as_ref().and_then(|c| c.output()) {
+        let (ow, oh, rgb) = shader::read_texture(&gpu.device, &gpu.queue, tex);
+        // Below three output pixels per scanline there is nothing to count:
+        // at two the preset has no room for a gap and draws a flat field
+        // (measured — one LSB of modulation at 1152x864 and above).
+        let countable = oh >= m.scanlines * 3;
+        let measured = if countable {
+            measure_scanlines(ow, oh, &rgb)
+        } else {
+            None
+        };
+        if let Some(got) = measured {
+            drawn = format!(", {got} drawn");
+        }
+        if countable && !control {
+            match measured {
+                Some(got) if got == m.scanlines => {}
+                Some(got) => bad.push(format!(
+                    "the frame has {got} scanlines, the tube scanned {}",
+                    m.scanlines
+                )),
+                None => bad.push("the frame has no scanline structure to count".to_string()),
+            }
+        }
+        let path = s.out.join(format!("{w}x{h}.png"));
+        shader::write_png(&path.to_string_lossy(), ow, oh, &rgb);
+    }
+
+    if bad.is_empty() {
+        println!("  ok   {} → viewport {vw:.0}x{vh:.0}{drawn}", m.describe());
+    } else {
+        println!("  FAIL {} → viewport {vw:.0}x{vh:.0}{drawn}", m.describe());
+        for b in &bad {
+            println!("         {b}");
+        }
+        s.fails.push(format!("{w}x{h}: {}", bad.join("; ")));
+    }
+
+    s.i += 1;
+    s.i >= s.sizes.len()
 }
 
 /// Pull the newest guest frame into the GPU: an imported dma-buf slot is
@@ -738,6 +1060,58 @@ impl ApplicationHandler for App {
             gpu.load_shader(p);
         }
 
+        if let Some(target) = self.calib.clone() {
+            let mut files: Vec<std::path::PathBuf> = if target.is_dir() {
+                std::fs::read_dir(&target)
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok().map(|e| e.path()))
+                            .filter(|p| {
+                                p.extension().and_then(|e| e.to_str()) == Some("bmp")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![target.clone()]
+            };
+            files.sort();
+            if files.is_empty() {
+                eprintln!("calib: no .bmp in {}", target.display());
+                hard_exit(1);
+            }
+            if self.shader.is_none() {
+                eprintln!("calib: --shader is the whole point; nothing to shade with");
+                hard_exit(1);
+            }
+            gpu.forced_surface = Some(SWEEP_SURFACE);
+            println!("shading {} calibration pattern(s)", files.len());
+            self.gpu = Some(gpu);
+            self.source = Some(Source::Calib(Calib {
+                files,
+                i: 0,
+                last_surface: (0, 0),
+            }));
+            return;
+        }
+        if let Some(dir) = self.sweep.clone() {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("mode sweep: {}: {e}", dir.display());
+                hard_exit(1);
+            }
+            // big enough that every mode in the table gets at least two
+            // output pixels per scanline, so the count is measurable for all
+            // of them rather than only the low-resolution ones
+            gpu.forced_surface = Some(SWEEP_SURFACE);
+            self.gpu = Some(gpu);
+            println!(
+                "mode sweep into {} at {}x{}",
+                dir.display(),
+                SWEEP_SURFACE.0,
+                SWEEP_SURFACE.1
+            );
+            self.source = Some(Source::Sweep(Sweep::new(dir, self.shader.is_some())));
+            return;
+        }
         self.gpu = Some(gpu);
         self.source = Some(if self.qemu_args.is_empty() {
             Source::Pattern(Pattern::new())
@@ -884,13 +1258,37 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let sprite = !self.host_cursor_possible();
                 let Some(gpu) = self.gpu.as_mut() else { return };
-                let Some(frame) = gpu.acquire() else { return };
+                // The sweep never presents: it reads the chain's output
+                // texture back instead. It must not acquire either — with
+                // FIFO the second acquire blocks until the first image has
+                // been scanned out, which an occluded window (a test run
+                // behind a terminal, the usual case) never does.
+                let sweeping = matches!(
+                    self.source,
+                    Some(Source::Sweep(_)) | Some(Source::Calib(_))
+                );
+                let frame = if sweeping {
+                    None
+                } else {
+                    match gpu.acquire() {
+                        Some(f) => Some(f),
+                        None => return,
+                    }
+                };
                 let mut published = None;
                 match self.source.as_mut() {
                     Some(Source::Pattern(p)) => {
                         p.render();
                         gpu.upload(&p.fb, pattern::WIDTH as u32, pattern::HEIGHT as u32);
                     }
+                    Some(Source::Sweep(s)) => sweep_upload(gpu, s),
+                    Some(Source::Calib(c)) => match read_bmp(&c.files[c.i]) {
+                        Ok((w, h, px)) => gpu.upload(&px, w, h),
+                        Err(e) => {
+                            eprintln!("calib: {e}");
+                            hard_exit(1);
+                        }
+                    },
                     Some(Source::Qemu {
                         display, last_seq, ..
                     }) => {
@@ -898,7 +1296,7 @@ impl ApplicationHandler for App {
                     }
                     None => {}
                 }
-                gpu.render(Some(frame));
+                gpu.render(frame);
                 if let Some(t) = published {
                     // publish→present (measured after the present call) — doc 03 latency gate
                     self.latency.push(t.elapsed().as_secs_f32() * 1000.0);
@@ -917,7 +1315,46 @@ impl ApplicationHandler for App {
                         self.latency.clear();
                     }
                 }
-                if matches!(self.source, Some(Source::Pattern(_))) {
+                if let Some(Source::Calib(c)) = self.source.as_mut() {
+                    if c.last_surface != gpu.surface_size() {
+                        c.last_surface = gpu.surface_size();
+                    } else {
+                        let src = c.files[c.i].clone();
+                        match gpu.chain.as_ref().and_then(|ch| ch.output()) {
+                            Some(tex) => {
+                                let (ow, oh, rgb) =
+                                    shader::read_texture(&gpu.device, &gpu.queue, tex);
+                                let out = src.with_extension("shaded.png");
+                                shader::write_png(&out.to_string_lossy(), ow, oh, &rgb);
+                                println!("  {} → {} ({ow}x{oh})",
+                                         src.file_name().unwrap_or_default().to_string_lossy(),
+                                         out.display());
+                            }
+                            None => {
+                                eprintln!("calib: the preset did not load");
+                                hard_exit(1);
+                            }
+                        }
+                        c.i += 1;
+                        if c.i >= c.files.len() {
+                            hard_exit(0);
+                        }
+                    }
+                }
+                if let Some(Source::Sweep(s)) = self.source.as_mut() {
+                    if sweep_step(gpu, s) {
+                        if s.fails.is_empty() {
+                            println!("mode sweep: {} modes OK", s.sizes.len());
+                            hard_exit(0);
+                        }
+                        println!("mode sweep: {} of {} modes failed", s.fails.len(), s.sizes.len());
+                        hard_exit(1);
+                    }
+                }
+                if matches!(
+                    self.source,
+                    Some(Source::Pattern(_)) | Some(Source::Sweep(_)) | Some(Source::Calib(_))
+                ) {
                     gpu.window.request_redraw();
                 }
             }
@@ -1047,12 +1484,25 @@ pub fn maybe_dump(pixels: &[u32], w: usize, h: usize, seq: u64) {
 }
 
 fn main() {
-    // player [--shader <preset.slangp>] [--] <qemu-system-i386 args...>   (no args: test pattern)
+    // player [--shader <preset.slangp>] [--mode-sweep <dir>] [--calib <bmp|dir>]
+    //        [--] <qemu args...>
+    //   no args: the M0 test pattern; --mode-sweep: doc 03's mode sweep;
+    //   --calib: shade doc 09's calibration patterns. All three: no guest.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut shader: Option<std::path::PathBuf> =
         std::env::var("PLAYER_SHADER").ok().map(Into::into);
     if args.first().map(String::as_str) == Some("--shader") && args.len() >= 2 {
         shader = Some(args[1].clone().into());
+        args.drain(0..2);
+    }
+    let mut sweep = None;
+    if args.first().map(String::as_str) == Some("--mode-sweep") && args.len() >= 2 {
+        sweep = Some(std::path::PathBuf::from(args[1].clone()));
+        args.drain(0..2);
+    }
+    let mut calib = None;
+    if args.first().map(String::as_str) == Some("--calib") && args.len() >= 2 {
+        calib = Some(std::path::PathBuf::from(args[1].clone()));
         args.drain(0..2);
     }
     if args.first().map(String::as_str) == Some("--") {
@@ -1063,6 +1513,8 @@ fn main() {
     let mut app = App {
         qemu_args: args,
         shader,
+        sweep,
+        calib,
         proxy: Some(event_loop.create_proxy()),
         ..Default::default()
     };

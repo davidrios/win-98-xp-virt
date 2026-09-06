@@ -379,21 +379,114 @@ three observations together — original disc runs, repaired disc runs, no disc
 refuses — are equally consistent with a presence check that always ran and an
 authentication that never did.
 
-**What is left to separate, and the run that does it.** Trace a launch on the
-original dump (`-trace 'ide_atapi*'`, or a per-command log behind
-`CDIMAGE_TRACE=1` in atapi.c) and look for the band's LBAs: 811 for FIFA,
-195539 for Settlers. If the launch never requests them, the authentication is
-not reaching the disc and reading 2 stands; if it does request them, it reads
-our errors and accepts a repaired disc anyway, which is a different and more
-interesting finding about the scheme. Worth pairing with an offline look at
-the installed tree (`qemu-img convert` + `7z x`, doc 15's recipe) for whether
-the EXE is actually SafeDisc-wrapped and whether `secdrv.sys` is present —
-an unwrapped binary would explain everything at once. Settlers has not had
-the empty-drive run yet; do it for symmetry.
+**Both binaries are genuinely wrapped** (offline, `7z` reads the qcow2
+directly — no conversion needed): `fifa2002.exe` has the `stxt371` and
+`stxt774` sections and the `BoG_` marker of SafeDisc 2, `S3.EXE` has
+ProtectCD's `.ficken` section. A cracked or unwrapped binary is not the
+explanation.
 
-Until then, the drive model's error delivery is proven only host-side and by
-`atapi-guest-test.py` — which is real evidence, just not evidence about
-protections.
+**The ATAPI trace, 2026-09-05.** `tools/xp-game-test.sh` with
+`QEMU_EXTRA="-trace ide_atapi_cmd_packet -trace ide_atapi_cmd_error -D log"`
+over a FIFA 2002 launch from the original `.mds` (KVM, `-cpu pentium3`):
+
+- SafeDisc's probe is unmistakable and is **not** an error-pattern check. It
+  reads **LBA 800, then one pseudo-random single sector, and repeats** — 22
+  such pairs in one launch, the probes scattered over ~1300–9900, every one a
+  single-sector `READ(10)`.
+- **Not one of the 584 corrupt sectors is ever read.** 0 of 506 reads in the
+  whole session touch a band LBA. The check is measuring something about
+  *reading* — timing is the obvious candidate for an anchor-then-seek pattern
+  — and not the L-EC failures we spent the design on.
+
+That is why a repaired disc passes: the repaired sectors are never looked at.
+
+**And the check does fail — we have finally seen it.** In this configuration
+FIFA 2002 refuses: *"Por favor insira o CD FIFA 2002"*, reproducibly, with and
+without QEMU's default empty CD-ROM drive (which the first run showed
+answering 263 `NOT READY / MEDIUM NOT PRESENT`; removing it with `-nodefaults`
+changed nothing). So the authentication is live and environment-sensitive —
+the negative control we could not get from the disc contents arrived from the
+harness instead. The player passes with the same disc, so the difference is
+the player's path versus bare QEMU, not the bytes on the medium.
+
+**The passing launch, traced in the player** (`-trace ide_atapi_cmd_packet`
+works through the player's QEMU args; FIFA 2002 reached its intro, `d3dpt-vga`
+logging page flips, screendump confirms). Four runs on one image and one disc:
+
+| Run | CD on | Display | Outcome | Reads | Multi-sector | Max LBA | Band sectors read |
+|---|---|---|---|---|---|---|---|
+| bare QEMU | ide0 slave | cirrus | *"insira o CD"* | 488 | 1 | 13272 | **0** |
+| bare QEMU `-nodefaults` | ide0 slave | cirrus | *"insira o CD"* | 506 | 1 | 13272 | **0** |
+| bare QEMU | **ide.1** | cirrus | no dialog, then crash | 505 | — | — | **0** |
+| **player** | **ide.1** | d3dpt-vga | **runs** | 781 | **281** | **250230** | **0** |
+
+The passing run is unmistakable in the trace: 281 multi-sector reads out to LBA
+250230, 9069 sectors in all — the game loading its content after the check let
+it through, where every failing run stops at 13272 with essentially only
+single-sector reads. It does 13 anchor-and-probe pairs on the way.
+
+**And it still never reads a corrupt sector: 0 of 781.** So the conclusion
+holds from the inside, not merely by inference from a repaired disc passing.
+FIFA 2002's SafeDisc 2 authentication completes without once looking at the
+584-sector band. The band is not what this title's check reads, and the
+`repair` control was reporting the truth.
+
+**Settlers 3, traced the same way — and it is the cleaner result of the two.**
+`CD01.ccd` in the player: the game launches, plays its intro and reaches its
+main menu, so ProtectCD's check is satisfied. In 1196 reads (1181 of them
+multi-sector, 8964 sectors) it **never goes near the band**: 0 reads in the
+547-sector region, 0 reads anywhere above LBA 195000, and exactly one READ
+SUB-CHANNEL in the whole session, so the Q anomaly is not read either. The
+game's content reads stop at **LBA 191776**, below the band's 195539 — the
+protection region sits past everything the game uses, so nothing but a check
+would ever read it, and nothing did.
+
+Where FIFA at least probed single sectors *inside* the band's LBA span (just
+never a corrupt one), Settlers does not touch the region at all. **So for both
+schemes we have tested, the L-EC band is not what the check reads**, and doc
+05's ProtectCD row premise — "a dump carrying both the data and the Q anomaly"
+— is wrong twice over: neither anomaly is read.
+
+This does not make §2.5 wrong; verifying L-EC and never correcting it is still
+the right drive behaviour, and `atapi-guest-test.py` proves we deliver the
+errors. It means no protection we have yet met depends on it. The scheme that
+does is still to be found.
+
+**A harness finding worth its own line:** the check *rejects* when the CD
+shares the boot disk's IDE channel (`-drive media=cdrom` lands at index 1 =
+ide0 slave) and passes when the CD is on `ide.1`, which is where the player
+puts it. One variable between runs 2 and 3, same display, same disc. An
+anchor-then-probe pattern is consistent with a timing measurement, and sharing
+a channel with the boot disk is exactly what would perturb one — but that is a
+hypothesis, not a measurement. What is established is the correlation, and
+that `tools/xp-game-test.sh`'s default CD placement makes a protected title
+fail for reasons that have nothing to do with the disc image.
+
+**A defect reported here on 2026-09-05 and withdrawn the same day.** The
+first trace showed `GET CONFIGURATION` RT=10b answered `ILLEGAL REQUEST /
+INVALID FIELD IN CDB` for features including 0x1e (CD Read), and that was read
+as a bug in our model. It is not ours. Attributing every sense reply to its
+IDEState across all five traces shows **every one of those came from the
+*empty* default CD-ROM drive**, which has no disc model, so `atapi_disc(s)` is
+NULL and the command falls through to QEMU's stock `cmd_get_configuration` —
+which supports feature 0 only. Our path returned **0** GET CONFIGURATION
+errors in all five runs; `atapi_disc_get_configuration` already answers an
+unsupported starting feature with the header alone, which is what MMC wants.
+
+The one sense reply our drive does return in every run is on `0x5a`, MODE
+SENSE(10) page 0x1b, which we do not implement — and `ILLEGAL REQUEST /
+INVALID FIELD IN CDB` is the *correct* SPC reply to an unsupported mode page,
+not a defect either.
+
+The stock path is also what a plain `.iso` uses (it probes to `raw`, doc 17
+§5.2), so an ISO-backed disc answers per-feature probes the same way. Leave it:
+patch 51's stated invariant is that a NULL model behaves like today's QEMU byte
+for byte, which is what keeps every number recorded on the ISO path valid, and
+XP has never minded.
+
+Until the passing trace exists, the drive model's error delivery is proven
+only host-side and by `atapi-guest-test.py` — real evidence, just not evidence
+about protections.
 
 The lesson meanwhile is that anything
 which actually reads subchannel wants a dump that *carries* it (CCD `.sub`,

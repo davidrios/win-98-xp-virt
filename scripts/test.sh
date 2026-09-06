@@ -40,6 +40,12 @@
 #   x87-guest      tools/x87-guest-test.py: a DOS x87 battery under TCG,
 #                  identical with the fast path on and off (needs nasm,
 #                  mtools and the FreeDOS floppy the tool fetches on first use)
+#   rep-guest      tools/rep-guest-test.py: a DOS rep movs/stos battery (widths,
+#                  address sizes, DF, page crossings, overlaps), rep-fast on/off
+#                  identical and equal to a model of the instruction (patch 17)
+#   smc-guest      tools/smc-guest-test.py: self-modifying code (patched immediates,
+#                  same-value rewrites, opcode flips, a crossing store), smc-same-value
+#                  on/off both architecturally right (patch 18)
 #   guest-cdimage  tools/xp-cdimage-test.sh: XP boots with the guest-tools ISO
 #                  converted to a cue (+ a 1 kHz tone track) as its CD-ROM and
 #                  copies the whole disc through cdrom.sys; every file must
@@ -163,6 +169,25 @@ host_stage() {
     skip d3dpt-dp2 "needs $D3DPT_EXEC_LIB and $D3DPT_DXVK_LIB"
   fi
 
+  # the calibration patterns (doc 09): they render at every era mode, and the
+  # circle in `grid` comes out round on the tube it is drawn for
+  if cc -O2 -w -o build/crtcal-render tools/crtcal-render.c -lm; then
+    mkdir -p "$OUT/crtcal"
+    run_check crtcal crtcal.log build/crtcal-render "$OUT/crtcal" || true
+  else FAIL+=(crtcal); echo "  FAIL crtcal (build)"; fi
+
+  # the player's display path without a guest: mode analysis, the geometry
+  # stage and the CRT preset over every mode in the table (doc 03, M2)
+  local preset=third_party/slang-shaders/crt/crt-guest-advanced.slangp
+  if have_display && [ -f "$preset" ]; then
+    if cargo build --release -p player -q 2>"$OUT/player-build.log"; then
+      run_check mode-sweep mode-sweep.log \
+        target/release/player --shader "$preset" --mode-sweep "$OUT/mode-sweep" || true
+    else FAIL+=(mode-sweep); echo "  FAIL mode-sweep (build)"; tail -5 "$OUT/player-build.log"; fi
+  else
+    skip mode-sweep "needs a display and the slang-shaders submodule"
+  fi
+
   # the reference scene and the feature test natively over DXVK (SDL2 needs a display)
   if [ -f "$D3DPT_DXVK_LIB" ] && have_display && pkg-config --exists sdl2; then
     local flags=(-I"$DX" -I"$DX/windows" -I"$DX/directx" -Lbuild/dxvk/src/d3d9 -ldxvk_d3d9 \
@@ -205,6 +230,8 @@ guest_stage() {
   if command -v nasm >/dev/null && command -v mcopy >/dev/null && [ -x build/qemu/qemu-system-i386 ]; then
     if [ -f build/images/144m/x86BOOT.img ]; then
       run_check x87-guest x87-guest.log python3 tools/x87-guest-test.py || true
+      run_check rep-guest rep-guest.log python3 tools/rep-guest-test.py || true
+      run_check smc-guest smc-guest.log python3 tools/smc-guest-test.py || true
       run_check sse-guest sse-guest.log python3 tools/sse-guest-test.py || true
       run_check atapi-guest atapi-guest.log python3 tools/atapi-guest-test.py || true
     else skip x87-guest "no FreeDOS floppy yet: run tools/x87-guest-test.py once to fetch it"; fi

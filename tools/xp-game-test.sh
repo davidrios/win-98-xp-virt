@@ -31,6 +31,10 @@
 #                       thread's stack in drwtsn32.log (the game is killed by it)
 #   WAIT_MAX=s          give up waiting for the game to exit (default 300)
 #   STICK_MB=n          USB stick size (default 64)
+#   QEMU_EXTRA="args"    extra qemu arguments, word-split (e.g. QEMU_EXTRA="-trace ide_atapi_cmd_packet
+#                       -D $PWD/atapi.log" to see every ATAPI command a protection issues)
+#   NO_ATTACH=1         the run expects no D3D device: type RUN.BAT once instead of waiting
+#                       for an attach (a CD-protection run, where the game never creates a device)
 #   ACCEL=kvm|tcg       default: kvm when /dev/kvm is writable
 #   OUT=dir             default build/xp-game-test/<name>
 #
@@ -106,7 +110,8 @@ D3DPT_DUMP_DIR="$OUT/frames" D3DPT_DUMP_EVERY="${DUMP_EVERY:-0}" \
 build/qemu/qemu-system-i386 -L qemu/pc-bios -accel "$ACCEL" "${CPU[@]}" -machine pc -m "${MEM:-1024}" \
   "${DRIVES[@]}" -drive "file=$STICK,format=raw,if=none,id=stick" -device usb-storage,drive=stick \
   -vga cirrus -net none -device AC97,audiodev=a0 -audiodev none,id=a0 -usb -device usb-tablet \
-  -display none -serial none -monitor none -qmp "unix:$SOCK,server,nowait" >"$QLOG" 2>&1 &
+  -display none -serial none -monitor none -qmp "unix:$SOCK,server,nowait" \
+  ${QEMU_EXTRA:+$QEMU_EXTRA} >"$QLOG" 2>&1 &
 QEMU=$!
 cleanup() { kill -0 $QEMU 2>/dev/null && { python3 tools/qmpc.py "$SOCK" json '{"execute":"quit"}' >/dev/null 2>&1 || kill $QEMU; }; rm -f "$SOCK"; }
 trap cleanup EXIT
@@ -115,13 +120,18 @@ shot() { python3 tools/qmpc.py "$SOCK" screendump "$OUT/$1.png" >/dev/null 2>&1 
 for _ in $(seq 50); do [ -S "$SOCK" ] && break; sleep 0.2; done
 sleep "${BOOT_WAIT:-30}"
 t0=$(date +%s)
-while ! grep -q ", attached (" "$QLOG"; do
+if [ "${NO_ATTACH:-0}" = 1 ]; then
+  qmp keys meta_l+r; sleep 1; qmp keys ctrl+a
+  qmp type 'cmd /c for %d in (D E F G H I) do if exist %d:\RUN.BAT %d:\RUN.BAT'; qmp keys ret
+  echo "  RUN.BAT typed, no device attach expected"
+fi
+while [ "${NO_ATTACH:-0}" != 1 ] && ! grep -q ", attached (" "$QLOG"; do
   if [ $(( $(date +%s) - t0 )) -gt 240 ] || ! kill -0 $QEMU 2>/dev/null; then echo "  no device attach within 240 s"; shot no-attach; break; fi
   qmp keys meta_l+r; sleep 1; qmp keys ctrl+a
   qmp type 'cmd /c for %d in (D E F G H I) do if exist %d:\RUN.BAT %d:\RUN.BAT'; qmp keys ret
   for _ in $(seq 20); do grep -q ", attached (" "$QLOG" && break; sleep 1; done
 done
-grep -q ", attached (" "$QLOG" && echo "  device attached after $(( $(date +%s) - t0 )) s"
+[ "${NO_ATTACH:-0}" = 1 ] || { grep -q ", attached (" "$QLOG" && echo "  device attached after $(( $(date +%s) - t0 )) s"; }
 IFS=, read -ra KS <<< "${KEYS:-}"
 for k in "${KS[@]}"; do sleep "${k%%:*}"; echo "  key ${k#*:} at $(( $(date +%s) - t0 )) s ($(grep -c 'present #' "$QLOG") k presents)"; qmp keys "${k#*:}"; done
 n=0

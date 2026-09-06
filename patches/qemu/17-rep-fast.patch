@@ -1,0 +1,360 @@
+REP MOVS / STOS fast path (M9 track, docs/tracks/m9-tcg-aarch64.md): a run
+inside one page of the source and of the destination probed once and done
+with the host libc, the instruction re-entered per page; `-cpu …,rep-fast=off`
+keeps the per-element loop. See the comments in mem_helper.c / translate.c and
+the patch README row. Test: tools/rep-guest-test.py.
+
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index 73c2f45..1208a39 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8498,6 +8498,7 @@ static Property x86_cpu_properties[] = {
+     DEFINE_PROP_BOOL("x87-fast", X86CPU, x87_fast, true),
+     DEFINE_PROP_BOOL("sse-fast", X86CPU, sse_fast, true),
+     DEFINE_PROP_BOOL("simd-fast", X86CPU, simd_fast, true),
++    DEFINE_PROP_BOOL("rep-fast", X86CPU, rep_fast, true),
+     DEFINE_PROP_BOOL("x-force-features", X86CPU, force_features, false),
+     DEFINE_PROP_BOOL("kvm", X86CPU, expose_kvm, true),
+     DEFINE_PROP_UINT32("phys-bits", X86CPU, phys_bits, 0),
+diff --git a/target/i386/cpu.h b/target/i386/cpu.h
+index dde2310..a69018c 100644
+--- a/target/i386/cpu.h
++++ b/target/i386/cpu.h
+@@ -2132,6 +2132,8 @@ struct ArchCPU {
+     bool sse_fast;
+     /* MMX/SSE integer and permutation ops inline (target/i386/tcg/simd-fast.c.inc) */
+     bool simd_fast;
++    /* REP MOVS/STOS as a host memcpy/memset per page run (target/i386/tcg/mem_helper.c) */
++    bool rep_fast;
+     /*
+      * Force features to be enabled even if the host doesn't support them.
+      * This is dangerous and should be done only for testing CPUID
+diff --git a/target/i386/helper.h b/target/i386/helper.h
+index 3f67098..75a5e66 100644
+--- a/target/i386/helper.h
++++ b/target/i386/helper.h
+@@ -192,6 +192,10 @@ DEF_HELPER_FLAGS_3(xsetbv, TCG_CALL_NO_WG, void, env, i32, i64)
+ DEF_HELPER_FLAGS_2(rdpkru, TCG_CALL_NO_WG, i64, env, i32)
+ DEF_HELPER_FLAGS_3(wrpkru, TCG_CALL_NO_WG, void, env, i32, i64)
+ 
++/* REP MOVS/STOS fast path (mem_helper.c): elements done in one page run, 0 = per-element loop */
++DEF_HELPER_FLAGS_5(rep_movs_fast, TCG_CALL_NO_WG, tl, env, tl, tl, tl, i32)
++DEF_HELPER_FLAGS_5(rep_stos_fast, TCG_CALL_NO_WG, tl, env, tl, tl, tl, i32)
++
+ DEF_HELPER_FLAGS_2(pdep, TCG_CALL_NO_RWG_SE, tl, tl, tl)
+ DEF_HELPER_FLAGS_2(pext, TCG_CALL_NO_RWG_SE, tl, tl, tl)
+ 
+diff --git a/target/i386/tcg/mem_helper.c b/target/i386/tcg/mem_helper.c
+index 3ef84e9..d912b7a 100644
+--- a/target/i386/tcg/mem_helper.c
++++ b/target/i386/tcg/mem_helper.c
+@@ -55,3 +55,182 @@ void helper_boundl(CPUX86State *env, target_ulong a0, int v)
+         raise_exception_ra(env, EXCP05_BOUND, GETPC());
+     }
+ }
++
++/*
++ * REP MOVS / STOS fast path (patch 17, docs/tracks/m9-tcg-aarch64.md).
++ *
++ * do_gen_rep() calls one of these before its per-element loop when enough
++ * elements are left.  The helper takes the run that stays inside the current
++ * page of the source and of the destination (direction from env->df), probes
++ * each page once — the probe fills the TLB, marks the destination dirty and
++ * invalidates the TBs it covers exactly as the per-element stores would, and
++ * refuses MMIO, watchpoint and unmapped pages without faulting — copies or
++ * fills with the host libc and returns the number of elements done.  The
++ * translator advances ESI/EDI/ECX by that and re-enters the instruction for
++ * the next page; 0 means "nothing done, use the per-element loop", which
++ * then runs at most a few elements before the instruction is re-entered and
++ * the next page gets its try.  Nothing is written to env here, so a longjmp
++ * out of the probe (the current TB invalidated by the write) resumes with
++ * the state of the instruction's start, and a fault on either page is left
++ * to the per-element loop, which raises it at the right element.
++ */
++
++/* fewer elements than this and the call costs more than the loop */
++#define REP_FAST_MIN 8
++
++/* elements of a run at addr in direction df that stay inside the page */
++static target_ulong rep_fast_run(target_ulong addr, int ot, int df,
++                                 target_ulong count)
++{
++    unsigned off = addr & ~TARGET_PAGE_MASK;
++    unsigned width = 1u << ot;
++    target_ulong n;
++
++    if (off + width > TARGET_PAGE_SIZE) {
++        return 0;               /* the first element straddles the page */
++    }
++    n = df < 0 ? (off >> ot) + 1 : (TARGET_PAGE_SIZE - off) >> ot;
++    return MIN(n, count);
++}
++
++/* the lowest byte of a run of n elements at addr in direction df */
++static target_ulong rep_fast_base(target_ulong addr, int ot, int df,
++                                  target_ulong n)
++{
++    return df < 0 ? addr - ((n - 1) << ot) : addr;
++}
++
++static void *rep_fast_probe(CPUX86State *env, target_ulong base,
++                            target_ulong bytes, MMUAccessType type,
++                            int mmu_idx, uintptr_t ra)
++{
++    void *host = NULL;
++    int flags = probe_access_flags(env, base, bytes, type, mmu_idx,
++                                   true, &host, ra);
++
++    return (flags || !host) ? NULL : host;
++}
++
++static inline void rep_fast_copy_elem(uint8_t *d, const uint8_t *s,
++                                      target_ulong i, int ot)
++{
++    /* load, then store: the element's own bytes may overlap */
++    switch (ot) {
++    case MO_8:
++        d[i] = s[i];
++        break;
++    case MO_16:
++        stw_p(d + (i << 1), lduw_p(s + (i << 1)));
++        break;
++    case MO_32:
++        stl_p(d + (i << 2), ldl_p(s + (i << 2)));
++        break;
++    default:
++        stq_p(d + (i << 3), ldq_p(s + (i << 3)));
++        break;
++    }
++}
++
++target_ulong helper_rep_movs_fast(CPUX86State *env, target_ulong dst,
++                                  target_ulong src, target_ulong count,
++                                  uint32_t desc)
++{
++    uintptr_t ra = GETPC();
++    int ot = desc & 3, mmu_idx = desc >> 2, df = env->df;
++    target_ulong n, bytes, sbase, dbase, i;
++    uint8_t *s, *d;
++
++    n = MIN(rep_fast_run(src, ot, df, count), rep_fast_run(dst, ot, df, count));
++    if (n < REP_FAST_MIN) {
++        return 0;
++    }
++    bytes = n << ot;
++    sbase = rep_fast_base(src, ot, df, n);
++    dbase = rep_fast_base(dst, ot, df, n);
++    s = rep_fast_probe(env, sbase, bytes, MMU_DATA_LOAD, mmu_idx, ra);
++    if (!s) {
++        return 0;
++    }
++    d = rep_fast_probe(env, dbase, bytes, MMU_DATA_STORE, mmu_idx, ra);
++    if (!d) {
++        return 0;
++    }
++
++    if (dbase + bytes <= sbase || sbase + bytes <= dbase) {
++        memcpy(d, s, bytes);
++    } else if (df > 0 ? dbase < sbase : dbase > sbase) {
++        /* the guest's order never reads a byte it has already written */
++        memmove(d, s, bytes);
++    } else if (df > 0) {
++        /* overlapping the other way: a pattern fill, element by element */
++        for (i = 0; i < n; i++) {
++            rep_fast_copy_elem(d, s, i, ot);
++        }
++    } else {
++        for (i = n; i-- > 0;) {
++            rep_fast_copy_elem(d, s, i, ot);
++        }
++    }
++    return n;
++}
++
++target_ulong helper_rep_stos_fast(CPUX86State *env, target_ulong dst,
++                                  target_ulong val, target_ulong count,
++                                  uint32_t desc)
++{
++    uintptr_t ra = GETPC();
++    int ot = desc & 3, mmu_idx = desc >> 2, df = env->df;
++    target_ulong n, bytes, i;
++    uint8_t *d;
++
++    n = rep_fast_run(dst, ot, df, count);
++    if (n < REP_FAST_MIN) {
++        return 0;
++    }
++    bytes = n << ot;
++    d = rep_fast_probe(env, rep_fast_base(dst, ot, df, n), bytes,
++                       MMU_DATA_STORE, mmu_idx, ra);
++    if (!d) {
++        return 0;
++    }
++
++    switch (ot) {
++    case MO_8:
++        memset(d, val, bytes);
++        break;
++    case MO_16: {
++        uint16_t v = val;
++        if ((v & 0xff) == (v >> 8)) {
++            memset(d, v, bytes);
++        } else {
++            for (i = 0; i < n; i++) {
++                stw_le_p(d + (i << 1), v);
++            }
++        }
++        break;
++    }
++    case MO_32: {
++        uint32_t v = val;
++        if (v == (v & 0xff) * 0x01010101u) {
++            memset(d, v, bytes);
++        } else {
++            for (i = 0; i < n; i++) {
++                stl_le_p(d + (i << 2), v);
++            }
++        }
++        break;
++    }
++    default: {
++        uint64_t v = val;
++        if (v == (v & 0xff) * 0x0101010101010101ull) {
++            memset(d, v, bytes);
++        } else {
++            for (i = 0; i < n; i++) {
++                stq_le_p(d + (i << 3), v);
++            }
++        }
++        break;
++    }
++    }
++    return n;
++}
+diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
+index 892a4ef..c6a6e66 100644
+--- a/target/i386/tcg/translate.c
++++ b/target/i386/tcg/translate.c
+@@ -174,6 +174,7 @@ typedef struct DisasContext {
+     bool sses_guarded;          /* runtime guard emitted */
+     bool sses_pending;          /* hand-over check due at the end of the insn */
+     bool simd_on;               /* simd-fast.c.inc: integer/permute ops inline */
++    bool rep_fast;              /* REP MOVS/STOS page runs through mem_helper.c */
+ 
+     /* TCG local temps */
+     TCGv cc_srcT;
+@@ -1381,6 +1382,69 @@ static void gen_outs(DisasContext *s, MemOp ot, TCGv dshift)
+ 
+ #define REP_MAX 65535
+ 
++/*
++ * Patch 17: the REP MOVS/STOS fast path (target/i386/tcg/mem_helper.c).
++ * Emitted before the per-element loop: with at least REP_FAST_MIN elements
++ * to go, the helper does the run inside the current page of the source and
++ * the destination with the host libc and returns the elements done; the
++ * registers advance by that and the instruction is re-entered for the next
++ * page (RF set, as between iterations).  0 falls into the per-element loop,
++ * which is then capped at REP_FAST_LOOP_MASK iterations per entry so that
++ * the next page gets another try.  Returns whether the path was emitted.
++ */
++#define REP_FAST_MIN 8
++#define REP_FAST_LOOP_MASK 15
++
++static bool gen_rep_fast(DisasContext *s, MemOp ot, TCGv dshift,
++                         void (*fn)(DisasContext *s, MemOp ot, TCGv dshift),
++                         target_ulong cx_mask, TCGLabel *done,
++                         TCGLabel *reenter)
++{
++    bool movs = fn == gen_movs;
++    TCGLabel *slow;
++    TCGv_i32 desc;
++    TCGv cnt, dst, n, delta, src = NULL;
++
++    if (!s->rep_fast || !(movs || fn == gen_stos)) {
++        return false;
++    }
++    slow = gen_new_label();
++    desc = tcg_constant_i32(ot | (s->mem_index << 2));
++    cnt = tcg_temp_new();
++    dst = tcg_temp_new();
++    n = tcg_temp_new();
++    delta = tcg_temp_new();
++
++    tcg_gen_andi_tl(cnt, cpu_regs[R_ECX], cx_mask);
++    tcg_gen_brcondi_tl(TCG_COND_LTU, cnt, REP_FAST_MIN, slow);
++    if (movs) {
++        src = tcg_temp_new();
++        gen_string_movl_A0_ESI(s);
++        tcg_gen_mov_tl(src, s->A0);
++    }
++    gen_string_movl_A0_EDI(s);
++    tcg_gen_mov_tl(dst, s->A0);
++    if (movs) {
++        gen_helper_rep_movs_fast(n, tcg_env, dst, src, cnt, desc);
++    } else {
++        gen_helper_rep_stos_fast(n, tcg_env, dst, s->T0, cnt, desc);
++    }
++    tcg_gen_brcondi_tl(TCG_COND_EQ, n, 0, slow);
++
++    tcg_gen_mul_tl(delta, n, dshift);
++    if (movs) {
++        gen_op_add_reg(s, s->aflag, R_ESI, delta);
++    }
++    gen_op_add_reg(s, s->aflag, R_EDI, delta);
++    tcg_gen_neg_tl(n, n);
++    gen_op_add_reg(s, s->aflag, R_ECX, n);
++    tcg_gen_brcondi_tl(TCG_COND_TSTEQ, cpu_regs[R_ECX], cx_mask, done);
++    tcg_gen_br(reenter);
++
++    gen_set_label(slow);
++    return true;
++}
++
+ static void do_gen_rep(DisasContext *s, MemOp ot, TCGv dshift,
+                        void (*fn)(DisasContext *s, MemOp ot, TCGv dshift),
+                        bool is_repz_nz)
+@@ -1388,6 +1452,8 @@ static void do_gen_rep(DisasContext *s, MemOp ot, TCGv dshift,
+     TCGLabel *last = gen_new_label();
+     TCGLabel *loop = gen_new_label();
+     TCGLabel *done = gen_new_label();
++    TCGLabel *reenter = gen_new_label();
++    target_ulong loop_mask = REP_MAX;
+ 
+     target_ulong cx_mask = MAKE_64BIT_MASK(0, 8 << s->aflag);
+     TCGv cx_next = tcg_temp_new();
+@@ -1425,6 +1491,10 @@ static void do_gen_rep(DisasContext *s, MemOp ot, TCGv dshift,
+     /* Any iteration at all?  */
+     tcg_gen_brcondi_tl(TCG_COND_TSTEQ, cpu_regs[R_ECX], cx_mask, done);
+ 
++    if (can_loop && gen_rep_fast(s, ot, dshift, fn, cx_mask, done, reenter)) {
++        loop_mask = REP_FAST_LOOP_MASK;
++    }
++
+     /*
+      * From now on we operate on the value of CX/ECX/RCX that will be written
+      * back, which is stored in cx_next.  There can be no carry, so we can zero
+@@ -1461,7 +1531,7 @@ static void do_gen_rep(DisasContext *s, MemOp ot, TCGv dshift,
+ 
+     if (can_loop) {
+         tcg_gen_subi_tl(cx_next, cx_next, 1);
+-        tcg_gen_brcondi_tl(TCG_COND_TSTNE, cx_next, REP_MAX, loop);
++        tcg_gen_brcondi_tl(TCG_COND_TSTNE, cx_next, loop_mask, loop);
+         tcg_gen_brcondi_tl(TCG_COND_TSTEQ, cx_next, cx_mask, last);
+     }
+ 
+@@ -1470,6 +1540,7 @@ static void do_gen_rep(DisasContext *s, MemOp ot, TCGv dshift,
+      * but the last.  Set it here before giving the main loop a chance to
+      * execute.  (For faults, seg_helper.c sets the flag as usual).
+      */
++    gen_set_label(reenter);
+     if (!had_rf) {
+         gen_set_eflags(s, RF_MASK);
+     }
+@@ -3891,6 +3962,7 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
+     dc->sses_guarded = false;
+     dc->sses_pending = false;
+     dc->simd_on = env_archcpu(env)->simd_fast;
++    dc->rep_fast = env_archcpu(env)->rep_fast;
+     /* select memory access functions */
+     dc->mem_index = cpu_mmu_index(cpu, false);
+     dc->cpuid_features = env->features[FEAT_1_EDX];

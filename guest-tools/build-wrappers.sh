@@ -161,6 +161,16 @@ i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3d9test.exe" "$ROOT/guest-tools/s
 # Display-mode probe (guest-tools/src/modetest.c): current mode, mode list,
 # ChangeDisplaySettingsEx results for the switches ddraw/wined3d make.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/modetest.exe" "$ROOT/guest-tools/src/modetest.c" -luser32
+# CRT calibration patterns (doc 09, guest-tools/src/crtcal.c + crtcal.h): the
+# same patterns tools/crtcal-render writes for the shader side, put on a real
+# tube at the exact mode through an exclusive full-screen DirectDraw primary.
+i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/crtcal.exe" "$ROOT/guest-tools/src/crtcal.c" \
+  -lddraw -ldxguid -luser32
+# The 720x400 text-mode patterns (doc 09, guest-tools/src/textcal.asm). DOS
+# only: 720x400 is the VGA *text* mode, which no Windows display driver
+# offers, so it is reachable from FreeDOS or a "Restart in MS-DOS mode"
+# screen and nowhere else.
+nasm -f bin -o "$OUT/iso/GAMEDIR/textcal.com" "$ROOT/guest-tools/src/textcal.asm"
 # Reference workloads (doc 14 P0a): the same deterministic game-like scene on
 # Direct3D 9 and Direct3D 8; -frames N -dump N x.bmp for golden images.
 i686-w64-mingw32-gcc -O2 -o "$OUT/iso/GAMEDIR/d3dgame9.exe" "$ROOT/guest-tools/src/d3dgame9.c" -ld3d9 -lgdi32 -luser32
