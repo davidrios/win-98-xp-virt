@@ -202,6 +202,17 @@ if want qemu; then
     fi
 
     if [ -f build/qemu/build.ninja ]; then
+      # block/cdimage.c links libdisc's Rust staticlib (patch 50) and meson
+      # takes it from target/release — which the rust stage below writes,
+      # too late for this link. So build that one crate here: a pull that
+      # only touched libdisc/src would otherwise leave qemu-system-i386 on
+      # the previous staticlib until the *next* build.sh, and it fails at
+      # run time rather than at the link ("isodir: I/O error: Is a
+      # directory" is what an old libdisc says about a folder disc).
+      if have cargo; then
+        say "qemu: cargo build --release -p libdisc (linked into qemu)"
+        cargo build --release -p libdisc ${JOBS[@]+"${JOBS[@]}"}
+      fi
       say "qemu: ninja"
       ninja -C build/qemu ${JOBS[@]+"${JOBS[@]}"} \
         qemu-system-i386 qemu-img qemu-io "libqemu-embed-i386.$SO"
