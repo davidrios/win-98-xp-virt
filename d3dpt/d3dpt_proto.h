@@ -30,7 +30,7 @@
 
 #include <stdint.h>
 
-#define D3DPT_PROTO_VERSION   8u
+#define D3DPT_PROTO_VERSION   9u
 #define D3DPT_MAGIC           0x54503344u          /* "D3PT" read at REG_MAGIC */
 
 /* guest-physical map: below mesapt's 0xe0000000+ windows and SeaBIOS' BAR area */
@@ -166,6 +166,9 @@ enum d3dpt_op {
     D3DPT_OP_VRAM_COLORKEY = 105,       /* body: d3dpt_u32x4 (surface handle, key low, key high, flags: 1 = the surface has a
                                          * source colour key): texels in [low, high] (the surface's own pixel value) render
                                          * transparent while render state 41 (COLORKEYENABLE) is on (v8; forward) */
+    D3DPT_OP_VRAM_DIRTY_RANGE = 106,    /* body: d3dpt_u32x3 (handle, byte offset, bytes): the guest wrote that range of a
+                                         * VRAM buffer (D3DPT_VS_BUFFER; v9; forward). Informational for now: a DRAW8 reads
+                                         * its buffers straight from VRAM, so nothing is cached that the range would refresh */
     D3DPT_OP_MAX
 };
 
@@ -297,6 +300,9 @@ typedef struct d3dpt_vram_surface {
 #define D3DPT_VS_RENDER_TARGET  0x2u
 #define D3DPT_VS_ZBUFFER        0x4u
 #define D3DPT_VS_PRIMARY        0x8u     /* part of the primary flip chain */
+#define D3DPT_VS_BUFFER         0x10u    /* v9: a vertex / index buffer in VRAM (D3DDEVCAPS_HWVERTEXBUFFER /
+                                          * HWINDEXBUFFER): width = pitch = its bytes, height 1, format 0, no levels;
+                                          * a DRAW8 names it by handle and the host reads the range from VRAM */
 
 typedef struct d3dpt_ctx_create {
     uint32_t handle, ret_off;       /* the context handle the guest chose; ret: d3dpt_ret */
@@ -339,13 +345,22 @@ typedef struct d3dpt_dp2 {
  * stream unchanged, the host keeps the shaders per context (a
  * declaration-only shader is the fixed function on that declaration) and
  * reads the copied vertices through the shader's declaration at the
- * stream's stride (stream 0 only). */
+ * stream's stride (stream 0 only).
+ *
+ * v9: a buffer the driver placed in VRAM (D3DPT_VS_BUFFER) is not copied.
+ * With D3DPT_DRAW8_VRAM_VB in flags the vertex bytes are replaced by one
+ * d3dpt_u32x2 {buffer handle, byte offset of vertex 0}; with
+ * D3DPT_DRAW8_VRAM_IB the index bytes by one {handle, byte offset of index
+ * 0}. The host reads nverts * stride (nindices * 2) bytes from the buffer's
+ * VRAM at that offset, checked against the buffer's size. */
 #define D3DPT_DP2_DRAW8 200u
+#define D3DPT_DRAW8_VRAM_VB 0x1u
+#define D3DPT_DRAW8_VRAM_IB 0x2u
 typedef struct d3dpt_dp2_draw8 {
     uint32_t prim_type, prim_count;     /* D3DPRIMITIVETYPE, primitives */
-    uint32_t fvf, stride;               /* the copied vertices' format (an FVF or a vertex shader handle), stride */
-    uint32_t nverts, nindices;          /* copied vertices; copied indices (0 = not indexed) */
-    uint32_t min_index, pad;
+    uint32_t fvf, stride;               /* the vertices' format (an FVF or a vertex shader handle), stride */
+    uint32_t nverts, nindices;          /* vertices; indices (0 = not indexed) */
+    uint32_t min_index, flags;          /* D3DPT_DRAW8_* (v9; 0 before: everything inline) */
 } d3dpt_dp2_draw8;
 
 #endif /* D3DPT_PROTO_H */

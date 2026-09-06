@@ -175,7 +175,8 @@ struct Ddi {
     /* a rate line every 5 s of host time while frames are read back (the
      * frame rate of the guest's Direct3D, one readback per presented frame) */
     std::chrono::steady_clock::time_point stat_t0{};
-    uint32_t stat_dp2 = 0, stat_draws = 0, stat_rb = 0, stat_untracked = 0;
+    uint32_t stat_dp2 = 0, stat_draws = 0, stat_rb = 0, stat_untracked = 0, stat_bw = 0, stat_bb = 0;
+    uint32_t buffer_writes = 0, buffer_bytes = 0;   /* v9: VRAM_DIRTY_RANGE records (the guest's vertex / index buffer writes) */
 
     bool warn_once(uint32_t key) {
         for (uint32_t k : warned) if (k == key) return false;
@@ -300,6 +301,7 @@ static bool ensure_device(Exec &x, uint32_t w, uint32_t h) {
 /* the host object behind a surface, created on first use */
 static bool ensure_object(Exec &x, VramSurf &s) {
     if (s.tex || s.rt) return true;
+    if (s.d.caps & D3DPT_VS_BUFFER) return false;       /* a vertex / index buffer: read from VRAM at each draw, no host object */
     if (!ensure_device(x, s.d.width, s.d.height)) return false;
     HRESULT hr;
     if (s.d.caps & D3DPT_VS_ZBUFFER) {
@@ -460,12 +462,15 @@ static HRESULT readback(Exec &x, Ddi &d, VramSurf &s) {
     if (d.stat_t0 == std::chrono::steady_clock::time_point{}) d.stat_t0 = now;
     double dt = std::chrono::duration<double>(now - d.stat_t0).count();
     if (dt >= 5.0) {
-        char extra[64] = "";
-        if (d.untracked != d.stat_untracked) snprintf(extra, sizeof extra, ", %u untracked guest pixels", d.untracked - d.stat_untracked);
+        char extra[128] = "";
+        size_t n = 0;
+        if (d.untracked != d.stat_untracked) n += (size_t)snprintf(extra + n, sizeof extra - n, ", %u untracked guest pixels", d.untracked - d.stat_untracked);
+        if (d.buffer_writes != d.stat_bw) snprintf(extra + n, sizeof extra - n, ", %u buffer writes of %u KiB", d.buffer_writes - d.stat_bw, (d.buffer_bytes - d.stat_bb) >> 10);
         x.log("ddi: %.1f frames/s (%u readbacks, %u dp2 calls, %u draws%s in %.1f s)",
               (d.readbacks - d.stat_rb) / dt, d.readbacks - d.stat_rb, d.dp2_calls - d.stat_dp2, d.draws - d.stat_draws, extra, dt);
         d.stat_t0 = now;
         d.stat_rb = d.readbacks; d.stat_dp2 = d.dp2_calls; d.stat_draws = d.draws; d.stat_untracked = d.untracked;
+        d.stat_bw = d.buffer_writes; d.stat_bb = d.buffer_bytes;
     }
     if (x.ops.vram_dirty) x.ops.vram_dirty(x.ops.ud, s.d.offset, s.d.pitch * s.d.height);
     return S_OK;
@@ -952,12 +957,30 @@ struct Dp2 {
         default: return 0;
         }
     }
-    /* the driver's self-contained DX8 draw: vertices and 16-bit indices inline */
+    /* v9: a range of a VRAM buffer (D3DPT_VS_BUFFER) named by a DRAW8, or
+     * null (the draw is skipped, once logged) */
+    const uint8_t *vram_range(uint32_t handle, uint32_t off, size_t bytes, const char *what) {
+        VramSurf *s = surf(x, handle);
+        if (!s || !(s->d.caps & D3DPT_VS_BUFFER)) {
+            if (d.warn_once(0xa0100)) x.log("ddi: dp2: draw8 %s buffer %u unknown%s (draw skipped)", what, handle, s ? " (not a buffer)" : "");
+            return nullptr;
+        }
+        if (off > s->d.width || bytes > s->d.width - off) {
+            if (d.warn_once(0xa0101)) x.log("ddi: dp2: draw8 %s range %u+%zu beyond buffer %u (%u bytes; draw skipped)", what, off, bytes, handle, s->d.width);
+            return nullptr;
+        }
+        return x.vram + s->d.offset + off;
+    }
+    /* the driver's self-contained DX8 draw: vertices and 16-bit indices
+     * inline, or (v9) in VRAM buffers it names by handle and offset */
     bool draw8(const uint8_t *q, size_t left, size_t &need) {
         d3dpt_dp2_draw8 h;
         if (left < sizeof h) return fail("truncated DRAW8");
         memcpy(&h, q, sizeof h);
-        size_t vb = ((size_t)h.nverts * h.stride + 3) & ~(size_t)3, ib = ((size_t)h.nindices * 2 + 3) & ~(size_t)3;
+        if (h.flags & ~(D3DPT_DRAW8_VRAM_VB | D3DPT_DRAW8_VRAM_IB)) return fail("bad DRAW8 flags");
+        bool ext_vb = (h.flags & D3DPT_DRAW8_VRAM_VB) != 0, ext_ib = (h.flags & D3DPT_DRAW8_VRAM_IB) != 0;
+        size_t vb = ext_vb ? 8 : ((size_t)h.nverts * h.stride + 3) & ~(size_t)3;
+        size_t ib = !h.nindices ? 0 : ext_ib ? 8 : ((size_t)h.nindices * 2 + 3) & ~(size_t)3;
         need = sizeof h + vb + ib;
         if (need > left) return fail("truncated DRAW8 data");
         bool shader = (h.fvf & 1) != 0;
@@ -967,7 +990,16 @@ struct Dp2 {
         const uint8_t *vd = q + sizeof h, *id = vd + vb;
         D3DPRIMITIVETYPE t = (D3DPRIMITIVETYPE)h.prim_type;
         uint32_t nv = prim_verts(t, h.prim_count);
-        tr("draw8 type %u prims %u %s 0x%x stride %u vertices %u indices %u (min %u)", h.prim_type, h.prim_count, shader ? "shader" : "fvf", h.fvf, h.stride, h.nverts, h.nindices, h.min_index);
+        tr("draw8 type %u prims %u %s 0x%x stride %u vertices %u%s indices %u%s (min %u)", h.prim_type, h.prim_count, shader ? "shader" : "fvf", h.fvf, h.stride,
+           h.nverts, ext_vb ? " (vram)" : "", h.nindices, ext_ib && h.nindices ? " (vram)" : "", h.min_index);
+        if (ext_vb) {
+            vd = vram_range(u32(q + sizeof h), u32(q + sizeof h + 4), (size_t)h.nverts * h.stride, "vertex");
+            if (!vd) return true;
+        }
+        if (h.nindices && ext_ib) {
+            id = vram_range(u32(q + sizeof h + vb), u32(q + sizeof h + vb + 4), (size_t)h.nindices * 2, "index");
+            if (!id) return true;
+        }
         if (shader) {
             /* the vertices are read through the shader's declaration: it
              * must be known, read stream 0 only (the driver copies one
@@ -1693,7 +1725,7 @@ struct Dp2 {
                 if (need > left) return fail("truncated VOLUMEBLT");
                 if (d.warn_once(0xc0000 | op)) x.log("ddi: dp2: volume textures are not supported: VOLUMEBLT dropped");
                 break;
-            case DP2_BUFFERBLT:
+            case DP2_BUFFERBLT:                                  /* done in the driver (VRAM buffers, v9); 24 bytes: dst, src, dst offset, D3DRANGE, one more */
                 need = count * 24u;
                 if (need > left) return fail("truncated BUFFERBLT");
                 break;
@@ -1735,6 +1767,24 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
     case D3DPT_OP_VRAM_SURFACE: {
         auto *a = body<d3dpt_vram_surface>(c, 0, b); if (!a) return true;
         if (!x.vram) { b.err = D3DPT_ERR_NO_DEVICE; return true; }
+        if (a->caps & D3DPT_VS_BUFFER) {
+            /* v9: a vertex / index buffer in VRAM: width = pitch = bytes,
+             * height 1, no format, no levels, nothing else; no host object
+             * (a DRAW8 reads its range from VRAM) */
+            if (!a->handle || !a->width || a->height != 1 || a->pitch != a->width || a->format || a->levels > 1 ||
+                (a->caps & ~D3DPT_VS_BUFFER) || (uint64_t)a->offset + a->width > x.vram_size ||
+                c->size < sizeof(d3dpt_cmd) + sizeof *a) { b.err = D3DPT_ERR_BAD_ARG; return true; }
+            Ddi &d = ddi(x);
+            VramSurf &s = d.surfs[a->handle];
+            if (s.tex || s.rt) s.release();                 /* the handle was a texture / target before */
+            s.shadow.clear();
+            s.levels.clear();
+            s.d = *a;
+            s.d.levels = 1;
+            s.dirty = true;
+            s.rendered = false;
+            break;
+        }
         uint32_t levels = a->levels ? a->levels : 1;
         uint32_t row = fmt_row_bytes(a->format, a->width), rows = fmt_rows(a->format, a->height);
         if (!a->handle || !a->width || !a->height || a->width > 8192 || a->height > 8192 || levels > 16 ||
@@ -1787,6 +1837,15 @@ bool exec_ddi_op(Batch &b, const d3dpt_cmd *c)
         auto *a = body<d3dpt_handle>(c, 0, b); if (!a) return true;
         VramSurf *s = surf(x, a->handle);
         if (s) { s->dirty = true; s->rendered = false; }
+        break;
+    }
+    case D3DPT_OP_VRAM_DIRTY_RANGE: {
+        /* v9: a range of a VRAM buffer the guest wrote (Unlock, BUFFERBLT).
+         * Nothing is cached of a buffer yet — a DRAW8 reads it from VRAM —
+         * so this only keeps the flag honest (and counts, for the log) */
+        auto *a = body<d3dpt_u32x3>(c, 0, b); if (!a) return true;
+        VramSurf *s = surf(x, a->a);
+        if (s) { s->dirty = true; ddi(x).buffer_writes++; ddi(x).buffer_bytes += a->c; }
         break;
     }
     case D3DPT_OP_VRAM_COLORKEY: {

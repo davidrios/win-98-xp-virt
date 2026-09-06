@@ -44,7 +44,9 @@ static void doorbell(d3dpt_enc *e) { p_submit(X, e->shm, D3DPT_SHM_SIZE); }
 
 /* --- the scene, shared with guest-tools/src/d3dptvid/d3d7test.c --- */
 enum { W = 640, H = 480, TEX = 64 };
-enum { RT_OFF = 0, RT_PITCH = W * 4, Z_OFF = 0x200000, Z_PITCH = W * 2, TEX_OFF = 0x300000, TEX_PITCH = TEX * 4, RT2_OFF = 0x400000, VRAM_SIZE = 0x600000 };
+enum { RT_OFF = 0, RT_PITCH = W * 4, Z_OFF = 0x200000, Z_PITCH = W * 2, TEX_OFF = 0x300000, TEX_PITCH = TEX * 4, RT2_OFF = 0x400000,
+       VB_OFF = 0x580000, VB_SIZE = 0x10000, IB_OFF = 0x590000, IB_SIZE = 0x1000, VRAM_SIZE = 0x600000 };   /* VB / IB: v9 VRAM buffers */
+enum { H_VB = 6, H_IB = 7 };
 enum { TEX16_OFF = 0x310000, TEX16_PITCH = TEX * 2, TEXP8_OFF = 0x320000, TEXP8_PITCH = TEX };   /* v8: a 16-bit keyed texture, a palettized one */
 enum { H_RT = 1, H_Z = 2, H_TEX = 3, H_TEX16 = 4, H_TEXP8 = 5, CTX = 1 };
 #define CLEAR_COLOR 0xff203040u
@@ -91,6 +93,21 @@ struct Dp2Buf {
         while (b.size() % 4) b.push_back(0xcc);
         for (uint16_t i : idx) u16(i);
         while (b.size() % 4) b.push_back(0xcc);
+    }
+    /* the same draw with its vertices (vb != 0: handle + byte offset) and /
+     * or its indices (ib != 0) in VRAM buffers the host reads (protocol v9);
+     * what is not in VRAM travels inline as above */
+    template <class T> void draw8x(uint32_t prim, uint32_t prims, uint32_t fvf, const std::vector<T> &v, uint32_t vb, uint32_t voff,
+                                   const std::vector<uint16_t> &idx, uint32_t ib, uint32_t ioff, uint32_t min_index = 0, uint32_t flags_lie = 0) {
+        cmd(D3DPT_DP2_DRAW8, 0);
+        u32(prim); u32(prims); u32(fvf); u32((uint32_t)sizeof(T));
+        u32((uint32_t)v.size()); u32((uint32_t)idx.size()); u32(min_index);
+        u32(flags_lie ? flags_lie : (vb ? D3DPT_DRAW8_VRAM_VB : 0) | (ib && !idx.empty() ? D3DPT_DRAW8_VRAM_IB : 0));
+        if (vb) { u32(vb); u32(voff); }
+        else { for (const T &e : v) { const uint8_t *q = (const uint8_t *)&e; b.insert(b.end(), q, q + sizeof(T)); } while (b.size() % 4) b.push_back(0xcc); }
+        if (idx.empty()) return;
+        if (ib) { u32(ib); u32(ioff); }
+        else { for (uint16_t i : idx) u16(i); while (b.size() % 4) b.push_back(0xcc); }
     }
     void stateset(uint32_t op, uint32_t handle, uint32_t type = 0) { cmd(39, 1); u32(op); u32(handle); u32(type); }
     /* the DX8 shader tokens as the runtime lays them out (protocol v7: the
@@ -335,6 +352,56 @@ int main(int argc, char **argv) {
         lie8.draw8(4, 2, FVF_TLVERTEX, quad, {}, 0, 20);                        /* a stride that is not the FVF's */
         hr = send_dp2(&enc, lie8, vtx, 0, &err_off);
         CHECK(hr == 0x88760BB8u, "DRAW8 lying about its stride -> D3DERR_COMMAND_UNPARSED (0x%08x)", hr);
+
+        /* --- v9: vertex / index buffers in VRAM (D3DPT_VS_BUFFER), named by
+         * the draws instead of copied: the quad's vertices at an offset of a
+         * VRAM buffer, its indices in another, both / either in VRAM --- */
+        memcpy(vram + VB_OFF + 64, quad.data(), quad.size() * sizeof(tlv));
+        const uint16_t qidx[6] = { 10, 11, 12, 13, 14, 15 };
+        memcpy(vram + IB_OFF + 32, qidx, sizeof qidx);
+        vram_surface(&enc, H_VB, VB_OFF, VB_SIZE, 1, VB_SIZE, 0, D3DPT_VS_BUFFER);
+        vram_surface(&enc, H_IB, IB_OFF, IB_SIZE, 1, IB_SIZE, 0, D3DPT_VS_BUFFER);
+        Dp2Buf v8;
+        v8.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        v8.tss(0, 0, H_TEX); v8.tss(0, D3DTSS_COLOROP, D3DTOP_MODULATE); v8.tss(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        v8.tss(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE); v8.tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1); v8.tss(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        v8.draw8x(4, 2, FVF_TLVERTEX, quad, H_VB, 64, { 10, 11, 12, 13, 14, 15 }, H_IB, 32, 10);
+        hr = send_dp2(&enc, v8, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x404040, 2) && near_(px(124, 84), 0x404040, 2) && near_(px(480, 240), CLEAR_COLOR & 0xffffff, 2),
+              "DRAW8 from VRAM buffers: vertices and indices read at their offsets (0x%06x 0x%06x, background 0x%06x)", px(104, 84), px(124, 84), px(480, 240));
+        Dp2Buf m8;                                              /* mixed: VRAM vertices + inline indices, inline vertices + VRAM indices */
+        m8.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        m8.draw8x(4, 1, FVF_TLVERTEX, quad, H_VB, 64, { 10, 11, 12 }, 0, 0, 10);
+        m8.draw8x(4, 1, FVF_TLVERTEX, quad, 0, 0, { 13, 14, 15 }, H_IB, 32 + 6, 10);
+        hr = send_dp2(&enc, m8, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), 0x404040, 2) && near_(px(124, 84), 0x404040, 2),
+              "DRAW8 mixed inline / VRAM vertices and indices (0x%06x 0x%06x)", px(104, 84), px(124, 84));
+        /* the guest wrote the buffer (VRAM_DIRTY_RANGE) and the draw sees the
+         * new bytes: the quad moved right by 300 pixels */
+        for (size_t i = 0; i < quad.size(); i++) ((tlv *)(vram + VB_OFF + 64))[i].x += 300.0f;
+        { d3dpt_u32x3 *dr = (d3dpt_u32x3 *)d3dpt_enc_cmd(&enc, D3DPT_OP_VRAM_DIRTY_RANGE, sizeof *dr, 0); *dr = { H_VB, 64, (uint32_t)(quad.size() * sizeof(tlv)), 0 }; }
+        Dp2Buf w8;
+        w8.clear(D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, CLEAR_COLOR, 1.0f);
+        w8.draw8x(4, 2, FVF_TLVERTEX, quad, H_VB, 64, { 10, 11, 12, 13, 14, 15 }, H_IB, 32, 10);
+        hr = send_dp2(&enc, w8, vtx);
+        hr |= readback(&enc, H_RT);
+        CHECK(hr == 0 && near_(px(104, 84), CLEAR_COLOR & 0xffffff, 2) && near_(px(404, 84), 0x404040, 2),
+              "DRAW8 after the guest rewrote the VRAM buffer: the quad moved (0x%06x at the old place, 0x%06x at the new)", px(104, 84), px(404, 84));
+        /* hostile: a range beyond the buffer, an unknown buffer, a texture
+         * named as a buffer, a flag the host does not know — the first three
+         * skip the draw, the last refuses the record */
+        Dp2Buf h8;
+        h8.draw8x(4, 2, FVF_TLVERTEX, quad, H_VB, VB_SIZE - 32, { 10, 11, 12, 13, 14, 15 }, H_IB, 32, 10);
+        h8.draw8x(4, 2, FVF_TLVERTEX, quad, 4242, 0, { 10, 11, 12, 13, 14, 15 }, H_IB, 32, 10);
+        h8.draw8x(4, 2, FVF_TLVERTEX, quad, H_TEX, 0, { 10, 11, 12, 13, 14, 15 }, H_IB, IB_SIZE, 10);
+        hr = send_dp2(&enc, h8, vtx);
+        CHECK(hr == 0, "DRAW8 naming a range beyond its buffer, an unknown buffer, a texture: skipped, not fatal (0x%08x)", hr);
+        Dp2Buf f8;
+        f8.draw8x(4, 2, FVF_TLVERTEX, quad, H_VB, 64, {}, 0, 0, 0, 0x80);
+        hr = send_dp2(&enc, f8, vtx, 0, &err_off);
+        CHECK(hr == 0x88760BB8u, "DRAW8 with an unknown flag -> D3DERR_COMMAND_UNPARSED (0x%08x)", hr);
     }
 
     /* --- the DX8 DDI: vertex and pixel shaders 1.x (protocol v7) --- */
@@ -675,6 +742,12 @@ int main(int argc, char **argv) {
     vram_surface(&enc, 9, VRAM_SIZE - 4096, 64, 64, 256, D3DFMT_X8R8G8B8, D3DPT_VS_TEXTURE);
     d3dpt_enc_flush(&enc);
     CHECK(enc.last_status == D3DPT_ERR_BAD_ARG, "surface beyond VRAM refused (status %u)", enc.last_status);
+    vram_surface(&enc, 9, VRAM_SIZE - 4096, 8192, 1, 8192, 0, D3DPT_VS_BUFFER);           /* v9: a buffer beyond VRAM */
+    d3dpt_enc_flush(&enc);
+    CHECK(enc.last_status == D3DPT_ERR_BAD_ARG, "buffer beyond VRAM refused (status %u)", enc.last_status);
+    vram_surface(&enc, 9, VB_OFF, 4096, 1, 4096, 0, D3DPT_VS_BUFFER | D3DPT_VS_TEXTURE);  /* a buffer that is also a texture */
+    d3dpt_enc_flush(&enc);
+    CHECK(enc.last_status == D3DPT_ERR_BAD_ARG, "buffer with texture caps refused (status %u)", enc.last_status);
     hr = send_dp2(&enc, d, vtx, (uint32_t)d.b.size() + 4096);
     CHECK(hr == (0xffff0000u | D3DPT_ERR_BAD_ARG), "DP2 record lying about its command bytes refused (0x%08x)", hr);
     Dp2Buf bad; bad.rs(D3DRS_ZENABLE, 1); bad.cmd(18, 3);           /* TRIANGLELIST without its start vertex */

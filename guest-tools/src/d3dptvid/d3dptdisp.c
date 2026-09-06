@@ -67,6 +67,15 @@
 #define DDF_CKEY_NOBLTCB       0x20000 /* the repro: the colour-key caps without a Blt callback make dxg drop the HAL */
 #define DDF_EB_MAXVERT_65535   0x40000 /* the repro: dwMaxVertexCount 65535 makes every DX3 Execute fail with E_OUTOFMEMORY (doc 15) */
 #define DDF_NO_PARSEUNKNOWN_CALL 0x80000 /* bisection: never call the runtime's D3DParseUnknownCommand (legacy tokens reach the host) */
+#define DDF_NO_HWVB            0x100000 /* the A/B: no video-memory vertex / index buffers (every buffer in system memory, every
+                                         * draw's vertices copied into the record, as before protocol v9) */
+
+/* DDI-only DX8 device caps (d3dhal.h): the runtime puts vertex / index
+ * buffers in video memory through the buffer callbacks when they are set */
+#define D3DDEVCAPS_HWVERTEXBUFFER_ 0x02000000
+#define D3DDEVCAPS_HWINDEXBUFFER_  0x04000000
+#define DDSCAPS2_VERTEXBUFFER_ 0x02000000
+#define DDSCAPS2_INDEXBUFFER_  0x04000000
 
 #define D3D_MAX_CTX 16
 
@@ -74,7 +83,30 @@
 typedef struct _DP2STREAM {
     ULONG_PTR mem;
     ULONG bytes, stride;
+    ULONG handle;               /* the buffer's surface handle (0: the DP2 call's own vertex buffer) */
+    BOOL vram;                  /* the buffer lives in VRAM (v9): a draw names it instead of copying it */
 } DP2STREAM;
+
+/* the surface table's entries (DX8 DDI; the table itself is below, with
+ * the Direct3D surface code): every surface dxg told us about, by handle */
+typedef struct _SURF_LEVEL {
+    ULONG_PTR mem;
+    ULONG pitch;
+} SURF_LEVEL;
+
+typedef struct _SURF {
+    ULONG_PTR mem;              /* system memory: the user pointer; VRAM: the mapped address */
+    ULONG size;                 /* bytes (the linear size of a buffer, pitch * height otherwise) */
+    ULONG pitch, w, h, fmt;
+    UCHAR used, sysmem, buffer, levels;
+    SURF_LEVEL lv[15];          /* mip levels 1.. */
+    PDD_SURFACE_LOCAL lcl;      /* dxg's surface (valid until DestroySurface): the colour key lives in it */
+    UCHAR ck_on;                /* the key the host was told (0xff: not yet) */
+    ULONG ck_lo, ck_hi;
+    ULONG vram_off;             /* VRAM: the offset the host knows the surface at */
+    ULONG lock_off, lock_len;   /* a VRAM buffer: the range of the current Lock (the whole buffer when the
+                                 * runtime gave none), reported as VRAM_DIRTY_RANGE at Unlock */
+} SURF;
 
 typedef struct _D3DCTX {
     ULONG pid;
@@ -106,6 +138,7 @@ typedef struct _PDEV {
     ULONG pal[256];             /* 8 bpp: GDI's default palette (PALETTEENTRY form) */
 
     ULONG refusals;             /* pixel formats logged by DdCanCreateSurface */
+    ULONG bufblt_lines;         /* BUFFERBLTs logged (the first few, v9) */
 
     /* the flip chain's vertical blank (see flip_done) */
     BOOL flip_pending;          /* a flip is still waiting to be scanned out */
@@ -875,6 +908,10 @@ static DWORD APIENTRY D3dClear2(LPD3DNTHAL_CLEAR2DATA d);
 static DWORD APIENTRY D3dValidateTextureStageState(LPD3DNTHAL_VALIDATETEXTURESTAGESTATEDATA d);
 static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d);
 static DWORD APIENTRY D3dSetRenderTarget(LPD3DNTHAL_SETRENDERTARGETDATA d);
+struct _SURF;
+static struct _SURF *surf_slot(ULONG handle, BOOL create);
+static void d3d_handle_op(PPDEV p, ULONG op, ULONG handle);
+static void d3d_dirty_range(PPDEV p, ULONG handle, ULONG off, ULONG len);
 static DWORD APIENTRY D3dCanCreateD3DBuffer(PDD_CANCREATESURFACEDATA d);
 static DWORD APIENTRY D3dCreateD3DBuffer(PDD_CREATESURFACEDATA d);
 static DWORD APIENTRY D3dDestroyD3DBuffer(PDD_DESTROYSURFACEDATA d);
@@ -1784,6 +1821,13 @@ static void d3d_caps_init(PPDEV p)
     c8->Caps2 = D3DCAPS2_CANRENDERWINDOWED | D3DCAPS2_DYNAMICTEXTURES;
     c8->PresentationIntervals = D3DPRESENT_INTERVAL_ONE | D3DPRESENT_INTERVAL_IMMEDIATE;
     c8->DevCaps = c->dwDevCaps | D3DDEVCAPS_PUREDEVICE;
+    /* vertex / index buffers in video memory (v9): the runtime creates
+     * D3DPOOL_DEFAULT buffers through the buffer callbacks with
+     * DDSCAPS_VIDEOMEMORY, fills them by Lock / Unlock (its MANAGED ones by
+     * BUFFERBLT from their system-memory copy), and a draw names a buffer
+     * the host reads from VRAM instead of copying the vertices into the
+     * record (D3dDrawPrimitives2) */
+    if (!(ddflags(p) & DDF_NO_HWVB)) c8->DevCaps |= D3DDEVCAPS_HWVERTEXBUFFER_ | D3DDEVCAPS_HWINDEXBUFFER_;
     /* no CLIPTLVERTS: with it the runtime stops clipping pre-transformed
      * vertices and hands us polygons crossing the camera plane, which the
      * host rasterizes as garbage (Max Payne's alley walls, 2026-09-05);
@@ -1910,6 +1954,39 @@ static DWORD APIENTRY D3dCreateD3DBuffer(PDD_CREATESURFACEDATA d)
         }
         dbg_puts(p, "\n");
     }
+    /* A vertex / index buffer the runtime wants in video memory (it asks
+     * only under D3DDEVCAPS_HWVERTEXBUFFER / HWINDEXBUFFER, v9): dxg takes
+     * it from the linear heap when told the block size, as for a compressed
+     * texture (DdCreateSurface); dwLinearSize is its bytes. Command buffers
+     * and everything else stay in system memory, dxg's. */
+    if (p && p->reg_lines < 4096 && d->lpDDSurfaceDesc && d->dwSCnt && d->lplpSList[0] && d->lplpSList[0]->lpSurfMore) {
+        p->reg_lines++;
+        dbg_hex(p, "d3dptdisp:   caps2 ", d->lplpSList[0]->lpSurfMore->ddsCapsEx.dwCaps2);
+        dbg_puts(p, "\n");
+    }
+    /* The request's caps decide, not ddsCapsEx: the runtime's vertex buffers
+     * came without DDSCAPS2_VERTEXBUFFER (DDSD_FVF is their mark, the index
+     * buffers carry DDSCAPS2_INDEXBUFFER), and a buffer refused here while
+     * dxg had already picked the heap for it ended with SYSTEMMEMORY caps on
+     * a heap offset — the first D3DGAME8 run on v9 crashed in its first Lock */
+    if (p && !(ddflags(p) & DDF_NO_HWVB) && d->lpDDSurfaceDesc &&
+        (d->lpDDSurfaceDesc->ddsCaps.dwCaps & DDSCAPS_VIDEOMEMORY) &&
+        (d->lpDDSurfaceDesc->ddsCaps.dwCaps & DDSCAPS_EXECUTEBUFFER) && d->lpDDSurfaceDesc->dwLinearSize &&
+        d->dwSCnt && d->lplpSList[0]) {
+        for (i = 0; i < d->dwSCnt; i++) {
+            PDD_SURFACE_GLOBAL g = d->lplpSList[i]->lpGbl;
+            if (!g) {
+                continue;
+            }
+            g->dwLinearSize = d->lpDDSurfaceDesc->dwLinearSize;
+            g->dwBlockSizeX = d->lpDDSurfaceDesc->dwLinearSize;
+            g->dwBlockSizeY = 1;
+            g->fpVidMem = DDHAL_PLEASEALLOC_BLOCKSIZE;
+        }
+        d->lpDDSurfaceDesc->dwFlags |= DDSD_LINEARSIZE;
+        d->ddRVal = DD_OK;
+        return DDHAL_DRIVER_NOTHANDLED;
+    }
     for (i = 0; i < d->dwSCnt; i++) {
         d->lplpSList[i]->ddsCaps.dwCaps |= DDSCAPS_SYSTEMMEMORY;
         d->lplpSList[i]->ddsCaps.dwCaps &= ~DDSCAPS_VIDEOMEMORY;
@@ -1922,6 +1999,19 @@ static DWORD APIENTRY D3dCreateD3DBuffer(PDD_CREATESURFACEDATA d)
 
 static DWORD APIENTRY D3dDestroyD3DBuffer(PDD_DESTROYSURFACEDATA d)
 {
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    if (d->lpDDSurface) {
+        ULONG handle = surf_handle(d->lpDDSurface);
+        SURF *t = surf_slot(handle, FALSE);
+
+        if (t) {
+            t->used = 0;
+        }
+        if (p && !(d->lpDDSurface->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
+            d3d_handle_op(p, D3DPT_OP_VRAM_RELEASE, handle);   /* a VRAM buffer (v9) */
+        }
+    }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_NOTHANDLED;
 }
@@ -1937,7 +2027,28 @@ static DWORD APIENTRY D3dLockD3DBuffer(PDD_LOCKDATA d)
         dbg_hex(p, " vidmem ", (ULONG)d->lpDDSurface->lpGbl->fpVidMem);
         dbg_hex(p, " linear ", d->lpDDSurface->lpGbl->dwLinearSize);
         dbg_hex(p, " flags ", d->dwFlags);
+        if (d->bHasRect) {
+            dbg_hex(p, " range ", (ULONG)d->rArea.left);
+            dbg_hex(p, "..", (ULONG)d->rArea.right);
+        }
         dbg_puts(p, "\n");
+    }
+    /* a VRAM buffer (v9): remember what the runtime locks — the byte range
+     * in rArea (left..right) when it gives one, the whole buffer otherwise
+     * — for the VRAM_DIRTY_RANGE the Unlock sends. dxg hands the caller the
+     * pointer (NOTHANDLED); DISCARD / NOOVERWRITE need nothing here, every
+     * draw before this Lock has run (the DP2 records execute in the
+     * doorbell write) */
+    if (p && d->lpDDSurface && d->lpDDSurface->lpGbl && !(d->lpDDSurface->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
+        SURF *t = surf_slot(surf_handle(d->lpDDSurface), FALSE);
+        if (t && t->buffer) {
+            t->lock_off = 0;
+            t->lock_len = t->size;
+            if (d->bHasRect && d->rArea.left >= 0 && d->rArea.right > d->rArea.left && (ULONG)d->rArea.right <= t->size) {
+                t->lock_off = (ULONG)d->rArea.left;
+                t->lock_len = (ULONG)(d->rArea.right - d->rArea.left);
+            }
+        }
     }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_NOTHANDLED;
@@ -1945,6 +2056,16 @@ static DWORD APIENTRY D3dLockD3DBuffer(PDD_LOCKDATA d)
 
 static DWORD APIENTRY D3dUnlockD3DBuffer(PDD_UNLOCKDATA d)
 {
+    PPDEV p = (PPDEV)d->lpDD->dhpdev;
+
+    /* a VRAM buffer (v9): the locked range is the guest's now */
+    if (p && p->d3d && d->lpDDSurface && !(d->lpDDSurface->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)) {
+        ULONG handle = surf_handle(d->lpDDSurface);
+        SURF *t = surf_slot(handle, FALSE);
+        if (t && t->buffer && !t->sysmem) {
+            d3d_dirty_range(p, handle, t->lock_off, t->lock_len);
+        }
+    }
     d->ddRVal = DD_OK;
     return DDHAL_DRIVER_NOTHANDLED;
 }
@@ -2036,27 +2157,8 @@ static PDD_SURFACE_LOCAL surf_next_mip(PDD_SURFACE_LOCAL s)
  * the caller's (user-mode pointers for system-memory surfaces, read only
  * inside DrawPrimitives2, which runs in the caller's context) --- */
 
-typedef struct _SURF_LEVEL {
-    ULONG_PTR mem;
-    ULONG pitch;
-} SURF_LEVEL;
-
-typedef struct _SURF {
-    ULONG_PTR mem;              /* system memory: the user pointer; VRAM: the mapped address */
-    ULONG size;                 /* bytes (the linear size of a buffer, pitch * height otherwise) */
-    ULONG pitch, w, h, fmt;
-    UCHAR used, sysmem, buffer, levels;
-    SURF_LEVEL lv[15];          /* mip levels 1.. */
-    PDD_SURFACE_LOCAL lcl;      /* dxg's surface (valid until DestroySurface): the colour key lives in it */
-    UCHAR ck_on;                /* the key the host was told (0xff: not yet) */
-    ULONG ck_lo, ck_hi;
-} SURF;
-
 static SURF *surf_tab;
 static ULONG surf_tab_n;
-
-#define DDSCAPS2_VERTEXBUFFER_ 0x02000000
-#define DDSCAPS2_INDEXBUFFER_  0x04000000
 
 static SURF *surf_slot(ULONG handle, BOOL create)
 {
@@ -2132,7 +2234,7 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL qui
     PDD_SURFACE_LOCAL m;
     BOOL sysmem, buffer;
     SURF *t;
-    ULONG pitch0, rows0;
+    ULONG pitch0, rows0, bsize;
 
     if (!p->d3d || !s || !s->lpGbl) {
         return;
@@ -2145,6 +2247,13 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL qui
     sysmem = (s->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) != 0;
     buffer = (s->ddsCaps.dwCaps & DDSCAPS_EXECUTEBUFFER) != 0 ||
              (s->lpSurfMore && (s->lpSurfMore->ddsCapsEx.dwCaps2 & (DDSCAPS2_VERTEXBUFFER_ | DDSCAPS2_INDEXBUFFER_)));
+    bsize = buffer ? s->lpGbl->dwLinearSize : 0;
+    if (buffer) {
+        /* a vertex / index buffer: no pixel format; in VRAM it is the host's
+         * D3DPT_VS_BUFFER (v9), a byte range a DRAW8 names */
+        fmt = 0;
+        caps = D3DPT_VS_BUFFER;
+    }
     /* one line per surface in the QEMU log: what the host will know it as
      * (a "skipped" surface is one a later SETRENDERTARGET / TEXTUREMAP
      * would report unknown) */
@@ -2160,7 +2269,7 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL qui
         dbg_hex(p, " at ", offset);
         if (buffer) dbg_hex(p, " buffer of ", s->lpGbl->dwLinearSize);
         if (sysmem) dbg_puts(p, " sysmem");
-        else if (!fmt) dbg_puts(p, " no format, skipped");
+        else if (!fmt && !buffer) dbg_puts(p, " no format, skipped");
         dbg_puts(p, "\n");
     }
     if (!handle) {
@@ -2186,14 +2295,21 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL qui
         t->w = s->lpGbl->wWidth;
         t->h = s->lpGbl->wHeight;
         t->fmt = fmt;
-        t->size = buffer ? s->lpGbl->dwLinearSize : pitch0 * rows0;
+        t->size = buffer ? bsize : pitch0 * rows0;
         t->levels = (UCHAR)n;
+        t->vram_off = offset;
+        t->lock_off = 0;
+        t->lock_len = t->size;
         for (i = 0; i + 1 < n; i++) {
             t->lv[i].mem = sysmem ? (ULONG_PTR)lv[i].a : (ULONG_PTR)p->fb + lv[i].a;
             t->lv[i].pitch = lv[i].b;
         }
     }
-    if (sysmem || !fmt || (ULONGLONG)offset + (ULONGLONG)pitch0 * rows0 > heap_end(p)) {
+    if (sysmem) {
+        return;
+    }
+    if (buffer ? (!bsize || (ULONGLONG)offset + bsize > heap_end(p))
+               : (!fmt || (ULONGLONG)offset + (ULONGLONG)pitch0 * rows0 > heap_end(p))) {
         return;
     }
     r = d3dpt_enc_cmd(&p->enc, D3DPT_OP_VRAM_SURFACE, sizeof(*r), (n - 1) * sizeof(d3dpt_u32x2));
@@ -2202,9 +2318,9 @@ static void d3d_register_at(PPDEV p, PDD_SURFACE_LOCAL s, ULONG offset, BOOL qui
     }
     r->handle = handle;
     r->offset = offset;
-    r->width = s->lpGbl->wWidth;
-    r->height = s->lpGbl->wHeight;
-    r->pitch = pitch0;
+    r->width = buffer ? bsize : s->lpGbl->wWidth;     /* a buffer: width = pitch = its bytes, one row */
+    r->height = buffer ? 1 : s->lpGbl->wHeight;
+    r->pitch = buffer ? bsize : pitch0;
     r->format = fmt;
     r->caps = caps;
     r->levels = n;
@@ -2353,6 +2469,23 @@ static void d3d_handle_op(PPDEV p, ULONG op, ULONG handle)
     if (h) {
         h->handle = handle;
         h->pad = 0;
+    }
+}
+
+/* VRAM_DIRTY_RANGE (v9): the guest wrote len bytes at off of a VRAM buffer */
+static void d3d_dirty_range(PPDEV p, ULONG handle, ULONG off, ULONG len)
+{
+    d3dpt_u32x3 *r;
+
+    if (!p->d3d || !handle || !len) {
+        return;
+    }
+    r = d3dpt_enc_cmd(&p->enc, D3DPT_OP_VRAM_DIRTY_RANGE, sizeof(*r), 0);
+    if (r) {
+        r->a = handle;
+        r->b = off;
+        r->c = len;
+        r->pad = 0;
     }
 }
 
@@ -2835,12 +2968,28 @@ static void walk_pad(DP2WALK *w)
     walk_put(w, zero, pad);
 }
 
-/* one self-contained draw for the host */
+/* stream 0 / the index buffer bound to a buffer of the table by handle
+ * (SETSTREAMSOURCE / SETINDICES, or the context's bindings at the start of
+ * a call): its memory and size; in VRAM (v9) the draws name it */
+static void stream_bind(DP2STREAM *s, ULONG handle, ULONG stride)
+{
+    SURF *t = handle ? surf_slot(handle, FALSE) : NULL;
+
+    s->mem = t ? t->mem : 0;
+    s->bytes = t ? t->size : 0;
+    s->stride = stride;
+    s->handle = handle;
+    s->vram = t && t->buffer && !t->sysmem;
+}
+
+/* one self-contained draw for the host: the vertex range and the indices
+ * copied into the record, or (v9) a VRAM buffer's handle and offset each */
 static void walk_draw(DP2WALK *w, ULONG prim, ULONG count, const DP2STREAM *vs, ULONG voff, ULONG nverts,
                       ULONG ioff, ULONG nindices, ULONG min_index)
 {
     D3DNTHAL_DP2COMMAND h;
     d3dpt_dp2_draw8 t;
+    d3dpt_u32x2 ref;
     ULONG stride = vs->stride, vbytes;
 
     /* a stride wider than the FVF is legal (the runtime passes the
@@ -2883,14 +3032,26 @@ static void walk_draw(DP2WALK *w, ULONG prim, ULONG count, const DP2STREAM *vs, 
     t.nverts = nverts;
     t.nindices = nindices;
     t.min_index = min_index;
-    t.pad = 0;
+    t.flags = (vs->vram ? D3DPT_DRAW8_VRAM_VB : 0) | (nindices && w->ib.vram ? D3DPT_DRAW8_VRAM_IB : 0);
     walk_put(w, &h, sizeof(h));
     walk_put(w, &t, sizeof(t));
-    walk_put(w, (const void *)(vs->mem + voff), vbytes);
-    walk_pad(w);
-    if (nindices) {
-        walk_put(w, (const void *)(w->ib.mem + ioff), nindices * 2);
+    if (vs->vram) {
+        ref.a = vs->handle;
+        ref.b = voff;
+        walk_put(w, &ref, sizeof(ref));
+    } else {
+        walk_put(w, (const void *)(vs->mem + voff), vbytes);
         walk_pad(w);
+    }
+    if (nindices) {
+        if (w->ib.vram) {
+            ref.a = w->ib.handle;
+            ref.b = ioff;
+            walk_put(w, &ref, sizeof(ref));
+        } else {
+            walk_put(w, (const void *)(w->ib.mem + ioff), nindices * 2);
+            walk_pad(w);
+        }
     }
 }
 
@@ -2965,6 +3126,50 @@ static void walk_texblt(DP2WALK *w, const ULONG *b)
     }
     if (!dst->sysmem) {
         d3d_handle_op(p, D3DPT_OP_VRAM_DIRTY, b[0]);
+    }
+}
+
+/* BUFFERBLT (v9): the DX8 runtime fills a managed vertex / index buffer's
+ * video-memory copy from its system-memory one (dwDDDestSurface,
+ * dwDDSrcSurface, dwOffset, D3DRANGE rSrc); copied here, the range is the
+ * guest's (VRAM_DIRTY_RANGE). Never sent while every buffer was in system
+ * memory (before v9). */
+static void walk_bufferblt(DP2WALK *w, const ULONG *b)
+{
+    PPDEV p = w->p;
+    SURF *dst = surf_slot(b[0], FALSE), *src = surf_slot(b[1], FALSE);
+    ULONG doff = b[2], soff = b[3], len = b[4];
+
+    if (!dst || !src || !dst->buffer || !src->buffer || !dst->mem || !src->mem ||
+        doff > dst->size || len > dst->size - doff || soff > src->size || len > src->size - soff) {
+        if (p->dp2_errors < 8) {
+            p->dp2_errors++;
+            dbg_hex(p, "d3dptdisp: bufferblt refused, dst ", b[0]);
+            dbg_hex(p, " size ", dst ? dst->size : 0);
+            dbg_hex(p, " at ", doff);
+            dbg_hex(p, " src ", b[1]);
+            dbg_hex(p, " size ", src ? src->size : 0);
+            dbg_hex(p, " at ", soff);
+            dbg_hex(p, " len ", len);
+            dbg_puts(p, "\n");
+        }
+        return;
+    }
+    if (p->bufblt_lines < 8) {
+        p->bufblt_lines++;
+        dbg_hex(p, "d3dptdisp: bufferblt dst ", b[0]);
+        dbg_hex(p, " +", doff);
+        dbg_hex(p, " src ", b[1]);
+        dbg_hex(p, " +", soff);
+        dbg_hex(p, " len ", len);
+        dbg_hex(p, " sixth ", b[5]);                /* the 24-byte token's last dword (the first cut parsed 20 and desynchronised) */
+        dbg_puts(p, dst->sysmem ? " (sysmem)\n" : " (vram)\n");
+    }
+    if (len) {
+        memcpy((void *)(dst->mem + doff), (const void *)(src->mem + soff), len);
+    }
+    if (!dst->sysmem) {
+        d3d_dirty_range(p, b[0], doff, len);
     }
 }
 
@@ -3049,7 +3254,7 @@ static ULONG walk_body_size(ULONG op, ULONG count, const UCHAR *q, ULONG left, U
         }
         return sz;
     case 63: return count * 48;                                 /* VOLUMEBLT */
-    case 64: return count * 24;                                 /* BUFFERBLT */
+    case 64: return count * 24;                                 /* BUFFERBLT: dst, src, dst offset, D3DRANGE (offset, size), one more dword (see walk_bufferblt) */
     case 65: return count * 68;                                 /* MULTIPLYTRANSFORM */
     case 66: return count * 20;                                 /* ADDDIRTYRECT */
     case 67: return count * 28;                                 /* ADDDIRTYBOX */
@@ -3195,11 +3400,8 @@ static BOOL walk(DP2WALK *w)
         case 49:                                                /* SETSTREAMSOURCE: stream, handle, stride */
             for (i = 0; i < count; i++) {
                 const ULONG *e = (const ULONG *)(q + i * 12);
-                SURF *t = surf_slot(e[1], FALSE);
                 if (e[0] == 0) {
-                    w->vb.mem = t ? t->mem : 0;
-                    w->vb.bytes = t ? t->size : 0;
-                    w->vb.stride = e[2];
+                    stream_bind(&w->vb, e[1], e[2]);
                     w->vb_handle = e[1];
                     w->vb_um = FALSE;
                 }
@@ -3212,6 +3414,8 @@ static BOOL walk(DP2WALK *w)
                     w->vb.mem = (ULONG_PTR)w->vtx;
                     w->vb.bytes = w->vall;
                     w->vb.stride = e[1];
+                    w->vb.handle = 0;
+                    w->vb.vram = FALSE;
                     w->vb_um = TRUE;
                 }
             }
@@ -3219,10 +3423,7 @@ static BOOL walk(DP2WALK *w)
         case 51:                                                /* SETINDICES: handle, stride */
             for (i = 0; i < count; i++) {
                 const ULONG *e = (const ULONG *)(q + i * 8);
-                SURF *t = e[0] ? surf_slot(e[0], FALSE) : NULL;
-                w->ib.mem = t ? t->mem : 0;
-                w->ib.bytes = t ? t->size : 0;
-                w->ib.stride = e[1];
+                stream_bind(&w->ib, e[0], e[1]);
                 w->ib_handle = e[0];
             }
             break;
@@ -3261,7 +3462,12 @@ static BOOL walk(DP2WALK *w)
                 walk_draw(w, 6, e[2], &w->vb, e[0], 0, 0, 0, 0);
             }
             break;
-        case 61: case 62: case 63: case 64: case 66: case 67:            /* patches, volume / buffer blits, dirty rects */
+        case 64:                                                /* BUFFERBLT: done here, in pass 1 (v9) */
+            if (!w->out) {
+                for (i = 0; i < count; i++) walk_bufferblt(w, (const ULONG *)(q + i * 24));
+            }
+            break;
+        case 61: case 62: case 63: case 66: case 67:            /* patches, volume blits, dirty rects */
             break;
         default:                                                /* the DX7 state tokens and the shader tokens (45, 46, 48, 54..57) */
             walk_put(w, c, 4 + size);
@@ -3302,7 +3508,10 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
         dbg_hex(p, " at ", (ULONG)d->lpDDCommands->lpGbl->fpVidMem);
         dbg_hex(p, " +", d->dwCommandOffset);
         dbg_hex(p, " len ", d->dwCommandLength);
-        if (d->lpDDVertex && d->lpDDVertex->lpGbl) {
+        /* under USERMEMVERTICES lpDDVertex is not valid (the DDK's word; with
+         * video-memory buffers in play it arrived as a dangling pointer whose
+         * lpGbl was garbage: STOP 0x8E in this very log block, 2026-09-05) */
+        if (!(d->dwFlags & D3DNTHALDP2_USERMEMVERTICES) && d->lpDDVertex && d->lpDDVertex->lpGbl) {
             dbg_hex(p, " vtx caps ", d->lpDDVertex->ddsCaps.dwCaps);
             dbg_hex(p, " at ", (ULONG)d->lpDDVertex->lpGbl->fpVidMem);
             dbg_hex(p, " linear ", d->lpDDVertex->lpGbl->dwLinearSize);
@@ -3358,21 +3567,14 @@ static DWORD APIENTRY D3dDrawPrimitives2(LPD3DNTHAL_DRAWPRIMITIVES2DATA d)
     w0.vb_um = c->vb_um;
     w0.vb_handle = c->vb_handle;
     w0.ib_handle = c->ib_handle;
-    w0.vb.stride = c->vb_stride;
-    w0.ib.stride = c->ib_stride;
     if (w0.vb_um) {
         w0.vb.mem = (ULONG_PTR)vtx;
         w0.vb.bytes = vall;
-    } else if (w0.vb_handle) {
-        SURF *t = surf_slot(w0.vb_handle, FALSE);
-        w0.vb.mem = t ? t->mem : 0;
-        w0.vb.bytes = t ? t->size : 0;
+        w0.vb.stride = c->vb_stride;
+    } else {
+        stream_bind(&w0.vb, w0.vb_handle, c->vb_stride);
     }
-    if (w0.ib_handle) {
-        SURF *t = surf_slot(w0.ib_handle, FALSE);
-        w0.ib.mem = t ? t->mem : 0;
-        w0.ib.bytes = t ? t->size : 0;
-    }
+    stream_bind(&w0.ib, w0.ib_handle, c->ib_stride);
     w = w0;
     w.rstates = d->lpdwRStates;
     walk(&w);

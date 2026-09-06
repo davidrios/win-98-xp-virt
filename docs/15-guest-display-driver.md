@@ -1449,11 +1449,12 @@ working; Max Payne renders on it except its clipped fans (the
   `tools/xp-driver-test.sh <image> d3dgame8` boots the guest-tools ISO,
   copies `D3DGAME8.EXE` out alone and diffs its frame against the native
   d3d9 oracle of `scripts/test.sh` (HUD masked).
-- Not there: more than one stream, video-memory
-  buffers (`D3DDEVCAPS_HWVERTEXBUFFER`), cube and volume textures, N-
-  and RT-patches, palettized textures (ZBIAS → DEPTHBIAS landed 2026-09-05 evening). DXT textures on this path were fixed
+- Not there: more than one stream, cube and volume textures, N-
+  and RT-patches (ZBIAS → DEPTHBIAS landed 2026-09-05 evening). DXT textures on this path were fixed
   on 2026-09-05 (the compressed-textures bullet above); vertex and pixel
-  shaders 1.x the same night (the section below).
+  shaders 1.x the same night (the section below); palettized textures
+  with v8; video-memory vertex / index buffers
+  (`D3DDEVCAPS_HWVERTEXBUFFER`) with v9 (the last section).
 
 ### Vertex and pixel shaders 1.x on the DX8 DDI (2026-09-05, protocol v7)
 
@@ -1533,3 +1534,82 @@ out of it:
   layout itself, so the driver never sees such a declaration (the host
   test keeps the case because the executor handles it anyway).
 
+
+### Vertex and index buffers in video memory (2026-09-05 night, protocol v9)
+
+Until v9 every DX8 vertex and index buffer lived in system memory:
+`D3dCreateD3DBuffer` turned each request into `DDSCAPS_SYSTEMMEMORY`, the
+runtime filled the buffers in user mode, and `D3dDrawPrimitives2` copied
+every draw's vertex range and indices into its `D3DPT_DP2_DRAW8` token —
+GTA Vice City's 400–600 draws a frame were 400–600 memcpys through the
+command window, in the guest, under TCG. With `D3DDEVCAPS_HWVERTEXBUFFER`
+/ `HWINDEXBUFFER` (DDI-only bits of `D3DCAPS8.DevCaps`, `d3dhal.h`) the
+runtime asks for its `D3DPOOL_DEFAULT` buffers in video memory instead
+and keeps a MANAGED buffer's video-memory copy in step by `BUFFERBLT`
+tokens, and a draw can *name* the buffer:
+
+- **Allocation.** The buffer callbacks see `DDSCAPS_EXECUTEBUFFER |
+  DDSCAPS_VIDEOMEMORY` with `DDSCAPS2_VERTEXBUFFER` / `INDEXBUFFER` in
+  `ddsCapsEx` and `dwLinearSize`; as for a compressed texture the driver
+  hands dxg the block size (`dwBlockSizeX` = the bytes, `dwBlockSizeY` =
+  1, `fpVidMem = DDHAL_PLEASEALLOC_BLOCKSIZE`) and dxg takes it from the
+  linear heap; the `CreateSurfaceEx` that follows registers it on the
+  host as a `D3DPT_VS_BUFFER` surface (width = pitch = its bytes, height
+  1, no format, no host object — the host reads it from VRAM). Command
+  buffers, and everything under `ddflags=0x100000` (`DDF_NO_HWVB`, the
+  A/B), stay in system memory as before.
+- **Filling.** `D3dLockD3DBuffer` remembers the range the runtime locks
+  (`rArea.left..right` when `bHasRect`, else the whole buffer) and
+  `D3dUnlockD3DBuffer` reports it with `VRAM_DIRTY_RANGE` (v9); the
+  driver does the `BUFFERBLT` copy itself in pass 1 (system-memory copy →
+  VRAM copy, `dwOffset`, `D3DRANGE`) and reports the range the same way.
+  The token is 24 bytes: `dwDDDestSurface`, `dwDDSrcSurface`, `dwOffset`,
+  the `D3DRANGE` (offset, size) and one more dword — a first cut sized it
+  at the 20 the field list suggests and the stream desynchronised right
+  after the first blit (a "token 0" whose header was the blit's last
+  dword; the `bufferblt … sixth` log line shows that dword). `DISCARD` /
+  `NOOVERWRITE` need nothing: every draw before the Lock has already run
+  (the DP2 record executes inside the doorbell write), so there is no
+  pipeline to rename around. The host keeps no copy yet, so the range
+  records are informational (counted in the 5 s line as `N buffer writes
+  of M KiB`); they are what a host-side mirror of the buffers would
+  consume if the per-draw host copy ever shows up in a profile.
+- **Drawing.** `walk_draw` writes `D3DPT_DRAW8_VRAM_VB` / `VRAM_IB` in the
+  token's flags (the old `pad`) and one `{handle, byte offset}` pair in
+  place of the vertex bytes and / or the index bytes; the host resolves
+  the handle to a `D3DPT_VS_BUFFER` surface, checks the range against
+  the buffer's size and draws with `DrawPrimitiveUP` /
+  `DrawIndexedPrimitiveUP` straight from the VRAM pointer, exactly as
+  from an inline copy. Inline and VRAM sources mix freely in one draw
+  (the runtime's own clip stream is a `D3DPOOL_DEFAULT` buffer, so the
+  clipped fans now come from VRAM too; a user-memory `DrawPrimitiveUP`
+  still travels inline). A range beyond the buffer, an unknown handle or
+  a texture named as a buffer skip the draw with one log line; an
+  unknown flag refuses the record.
+- **Tests.** `tools/d3dpt-dp2-test.cpp`: the quad from a VRAM vertex
+  buffer and a VRAM index buffer at offsets, the two mixed with inline
+  data, the buffer rewritten by the guest (`VRAM_DIRTY_RANGE`) and the
+  draw moving with it, the three skipped cases, the refused flag, a
+  buffer beyond VRAM and a buffer with texture caps refused. In the
+  guest, D3DGAME8 covers MANAGED vertex and index buffers (`BUFFERBLT`)
+  and a DYNAMIC `D3DPOOL_DEFAULT` one (Lock with DISCARD / NOOVERWRITE);
+  `xp-driver-test.sh d3dgame8` diffs its frame against the native oracle
+  as before, SHTEST the index-buffer path under a shader.
+- **The numbers (GTA Vice City, `tools/xp-vicecity.sh play`, the city at
+  the Ocean View start, ~480 draws and 3 DrawPrimitives2 calls a frame,
+  800×600×32, the game's own frame limiter off and the flip chain's
+  vertical blank off with `ddflags=0x8000` so the rate is the pipeline's;
+  the A/B adds `0x100000`).** Under KVM (`-cpu pentium3`, this host):
+  **360–375 frames/s** with the buffers in VRAM against **265–285** with
+  every draw's vertices copied through the window — a third more, on the
+  path where the guest CPU is as fast as it gets. The buffer writes the
+  guest makes are ~1400–1900 ranges of 330–430 MiB per 5 s at that rate
+  (RenderWare rewrites its dynamic buffers every frame) — the host reads
+  them from VRAM at each draw, which is why no mirror was built. Under
+  TCG (`-cpu pentium3`, the Apple Silicon shape, this x86 host): **62–75
+  frames/s** against **51–55** — a fifth to a third more, the guest's
+  memcpys being the cost the change removes. (The 20–30 fps the user saw
+  by hand had the game's 30 fps limiter and the 60 Hz vertical blank on.)
+  `tools/xp-vicecity.sh play` gets there on its own under both
+  accelerators, reading the log's rate lines (draws per frame: the menu
+  is 10, the game hundreds) rather than the clock for every wait.

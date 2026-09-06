@@ -290,9 +290,39 @@ picture and the track rules, then this file, then doc 15.
 - **Resuming here (2026-09-05, after the DX8 DDI session):** pull main,
   then prepare → configure → ninja (protocol v8 is checked by the
   device), `scripts/build-d3dpt-exec.sh`, `guest-tools/build-driver.sh`,
-  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v8),
+  `guest-tools/build-wrappers.sh` (the ISO's DLLs speak v9),
   `cargo build --release`. `winxp-m7g` carries the last driver build
   (`install` it again after any driver change). State of the DX8 DDI:
+  0. **Video-memory vertex / index buffers (2026-09-05 night, protocol
+     v9; doc 15 "Vertex and index buffers in video memory").**
+     `D3DDEVCAPS_HWVERTEXBUFFER | HWINDEXBUFFER` in `D3DCAPS8`; the
+     runtime's `D3DPOOL_DEFAULT` buffers come out of dxg's linear heap
+     (the buffer callbacks hand it the block size), the MANAGED ones are
+     kept in step by `BUFFERBLT` (done in the driver; the token is 24
+     bytes, not the 20 its field list suggests), Lock / Unlock report the
+     written range (`VRAM_DIRTY_RANGE`), and a `DRAW8` names the buffer
+     and an offset (`D3DPT_DRAW8_VRAM_VB` / `VRAM_IB` in its flags)
+     instead of carrying the bytes; the host reads the range from VRAM.
+     `ddflags=0x100000` (`DDF_NO_HWVB`) is the A/B, and the number is
+     **GTA Vice City in the city** (`tools/xp-vicecity.sh play`, ~480
+     draws a frame, the game's frame limiter and the flip chain's
+     vertical blank both off): **KVM 360–375 frames/s with the buffers in
+     VRAM against 265–285 without; TCG 62–75 against 51–55.** The script
+     drives the menus by clicks (the pointer's position selects; Esc does
+     not skip the cutscenes, Space does) and every wait by the log's rate
+     lines, so it reaches the city under both accelerators; it needs the
+     play disc as D: (`VC_ISO`) and the frame limiter off in the image's
+     settings (Options / Display Setup; the session's overlay has it off,
+     `winxp-m7g` itself has it on). D3DGAME8's frame is
+     pixel-identical with and without it (only its fps bars differ);
+     both differ from the freshly regenerated native oracle at the
+     checker texels' edges (8692 pixels beyond the tolerance of 8, max
+     43 — a mip-filtering difference in the DX8 path that predates v9,
+     open). Two findings on the way: the runtime's vertex buffers arrive
+     *without* `DDSCAPS2_VERTEXBUFFER` in `ddsCapsEx` (the index buffers
+     do carry `INDEXBUFFER`), so the request's own caps decide; and
+     `lpDDVertex` is a dangling pointer under `USERMEMVERTICES` — the
+     driver's own debug line dereferenced it: STOP 0x8E.
   1. **Works:** D3DGAME8 through XP's own d3d8.dll with hardware vertex
      processing, render-to-texture and all (`tools/xp-driver-test.sh
      ~/vms/winxp-m7g.qcow2 d3dgame8`, ~575 fps); its frame differs from
@@ -483,10 +513,12 @@ build/d3dpt-dp2-test x.bmp                              # the same scene through
    showroom's 2D panels fixed first, doc 15 "Untracked writes"); the
    user's own `winxp-m7` still needs the driver reinstalled from the ISO.
    **GTA Vice City, the first DX8 title, plays (user, the same evening;
-   nothing refused, 400–600 draws a frame, 20–30 fps under TCG).** Next
-   for it: a KVM number, then video-memory vertex buffers
-   (`D3DDEVCAPS_HWVERTEXBUFFER`) so a draw stops copying its vertices
-   through the window. Then what the next title asks
+   nothing refused, 400–600 draws a frame, 20–30 fps under TCG).**
+   **Video-memory vertex / index buffers landed the same night (protocol
+   v9, state item 0 above; `tools/xp-vicecity.sh play` is the headless
+   loop):** under KVM the city runs at 360–375 frames/s with them against
+   265–285 without (vertical blank and the game's frame limiter off; the
+   TCG pair is in state item 0). Then what the next title asks
    for first among: **more than one stream** (the driver copies stream 0
    only; a multi-stream declaration's draws are skipped with a log line —
    the DRAW8 token would carry one blob per stream), cube / volume textures, presenting the
